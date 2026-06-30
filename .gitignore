@@ -11,3 +11,8 @@ runs/
 .idea/
 .vscode/
 
+runs/
+logs/
+execution_results/
+
+
