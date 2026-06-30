@@ -1,0 +1,76 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "disableBypassPermissionsMode": "disable",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash",
+      "Edit(/**)",
+      "Write(/**)",
+      "NotebookEdit(/**)",
+      "Agent",
+      "Skill",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./servers.json)",
+      "Edit(../**)",
+      "Write(../**)",
+      "NotebookEdit(../**)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": false,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_project_writes.py\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

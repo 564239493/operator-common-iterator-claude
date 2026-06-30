@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+servers.json
+logs/
+runs/
+.claude/runtime/
+.idea/
+.vscode/
+
