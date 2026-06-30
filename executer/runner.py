@@ -59,7 +59,7 @@ _REMOTE_CASES_DIR = f"{_REMOTE_HOME}/cases"
 _REMOTE_EXECUTOR_DIR = f"{_REMOTE_HOME}/atk_executor"
 _REMOTE_OUTPUT_ROOT = f"{_REMOTE_HOME}/atk_output"
 
-_DEFAULT_ENV_INIT = "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+_DEFAULT_ENV_INIT = "cd /home/operator_atk && source /home/marine/miniconda3/etc/profile.d/conda.sh && conda activate atk_env"
 _DEFAULT_ATK_TIMEOUT = 1800.0
 
 # ── Local generator assets (mirrored from operator-common-iterator) ───────
@@ -109,7 +109,11 @@ def _looks_like_placeholder(value: Any) -> bool:
     )
 
 
-def validate_server_info(server_info: dict[str, Any] | None) -> str | None:
+def validate_server_info(
+    server_info: dict[str, Any] | None,
+    *,
+    strict: bool = True,
+) -> str | None:
     """Return ``None`` if usable, else a short user-facing error message.
 
     Mirrors the runtime guard from ``scripts/runtime_config.py`` but runs
@@ -117,13 +121,17 @@ def validate_server_info(server_info: dict[str, Any] | None) -> str | None:
     ``password`` placeholder — that's exactly what tripped the previous
     ``environment-blocked (ZAI_API_KEY 占位符未替换)`` style failure on
     the old cross-project path.
+
+    When ``strict=False`` (preflight mode), password placeholder values
+    are tolerated — the caller won't open an SSH connection, so it only
+    needs the field to be *present* (for platform selection), not real.
     """
     if not isinstance(server_info, dict):
         return "server_info 缺失或不是 JSON object"
     for key in ("ip", "username", "password"):
         if not str(server_info.get(key) or "").strip():
             return f"server_info.{key} 必填且不能为空"
-    if _looks_like_placeholder(server_info.get("password")):
+    if strict and _looks_like_placeholder(server_info.get("password")):
         return (
             "server_info.password 仍为占位符 (replace-me / your-...), "
             "请在 servers.json 中填写真实口令后再执行。"
@@ -155,19 +163,14 @@ def pick_server(
 
 
 def _remote_cases_path(operator_name: str) -> str:
+    """Remote path for the *expanded* cases.json consumed by ATK.
+
+    Generator writes ``cases_expanded.json`` at iter root; we upload
+    that to the host (NOT the raw ``cases.json``), so the remote file
+    ends in ``_cases_expanded.json``.
+    """
     return (
         f"{_REMOTE_CASES_DIR}/{operator_name}_cases_expanded.json"
-    )
-
-
-def _local_expanded_cases_path(cases_path: Path) -> Path:
-    """Mirror ``{stem}_expanded{suffix}`` next to the cases file.
-
-    Used when the cases.json is already in the expanded form ATK consumes;
-    otherwise we upload the raw cases.json as-is.
-    """
-    return cases_path.with_name(
-        f"{cases_path.stem}_expanded{cases_path.suffix}"
     )
 
 
@@ -274,8 +277,8 @@ def filter_cases_by_platform(
 def _read_optional_json(path: Path) -> dict[str, Any] | None:
     """Best-effort JSON reader — returns None for missing / malformed files.
 
-    Filters cases.json coming from external sources (the project contract
-    is one run_dir/iter_NNN/ but the CLI may pass a path elsewhere) —
+    Cases files coming from external sources (the project contract is one
+    run_dir/iter_NNN/ but the CLI may pass a path elsewhere) —
     we should never crash the orchestrator on a missing summary file.
     """
     try:
@@ -284,66 +287,69 @@ def _read_optional_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-async def _select_cases_for_server(
+def _platform_to_cases_filename(platform: str) -> str:
+    """``Atlas A2 ... / Atlas A2 ...`` → ``cases_Atlas A2 ... _Atlas A2 ....json``.
+
+    Per-platform cases filename mirrors ``scripts/generate_cases.py``:
+    replace ``/`` with ``_`` (only char illegal in Windows filenames);
+    spaces, Chinese, ``_`` etc. survive intact because ``Path`` handles
+    them and we never shell-quote these names on the remote side.
+    """
+    safe = platform.replace("/", "_")
+    return f"cases_{safe}.json"
+
+
+async def _resolve_iter_cases_for_server(
     req: RunRequest,
-    cache_dir: Path,
-) -> tuple[Path, dict[str, Any] | None]:
-    """Resolve which ``cases.json`` ATK should consume.
+) -> tuple[Path | None, str | None]:
+    """Pick the per-platform ``cases_<platform>.json`` matching the server.
 
-    Returns ``(path, summary)`` where ``summary`` is the parsed
-    ``generation_summary.json`` (or ``None`` if unavailable).  When the
-    run's iter_dir carries a valid summary + the executor's
-    ``product_support`` agrees with the server's ``platforms``, this
-    writes a sliced copy to ``cache_dir/cases_filtered.json`` so ATK only
-    consumes the cases relevant to the chosen server.
+    Generation writes one file per ``product_support`` entry, named
+    ``cases_<sanitized_platform>.json``.  This helper scans the iter_dir
+    and copies the matching one to ``iter_dir/cases.json`` so the
+    downstream tools (generator.py → atk command) only ever see a file
+    called ``cases.json``.  The copied ``cases.json`` is what generator
+    expands into ``cases_expanded.json`` for SFTP-upload.
 
-    Falls back to the original ``cases_path`` when slicing is impossible
-    (missing summary / unsupported layout) so the pipeline keeps moving.
+    Returns ``(cases_path, error)``.  When ``cases_path`` is non-None,
+    the executor should consume it as if it were the original
+    ``cases.json``.
     """
     iter_dir = req.iter_dir or req.cases_path.parent
-    summary_path = iter_dir / "generation_summary.json"
-    constraints_path = iter_dir / "constraints.json"
-
-    summary = _read_optional_json(summary_path)
-    constraints = _read_optional_json(constraints_path)
-    if summary is None or constraints is None:
-        return req.cases_path, None
-
-    product_support = constraints.get("product_support")
-    platforms_count = summary.get("platforms")
-    if (
-        not isinstance(product_support, list)
-        or not isinstance(platforms_count, dict)
-    ):
-        return req.cases_path, summary
-
-    cases = json.loads(req.cases_path.read_text(encoding="utf-8"))
-    if not isinstance(cases, list):
-        return req.cases_path, summary
 
     server_platforms = req.server_info.get("platforms") or []
-    filtered, error = filter_cases_by_platform(
-        cases, product_support, platforms_count, server_platforms
-    )
-    if error or filtered is None:
-        return req.cases_path, summary
+    if not isinstance(server_platforms, list) or not server_platforms:
+        return None, "server_info.platforms 为空, 无法选择产品用例"
 
-    if len(filtered) == len(cases):
-        return req.cases_path, summary
+    # Try each server platform (in priority order) until we find a file.
+    for platform in server_platforms:
+        candidate = iter_dir / _platform_to_cases_filename(platform)
+        if candidate.is_file():
+            target = iter_dir / "cases.json"
+            target.write_bytes(candidate.read_bytes())
+            logger.info(
+                "platform_select: %s -> iter_dir/cases.json (%d bytes)",
+                candidate.name,
+                target.stat().st_size,
+            )
+            return target, None
 
-    filtered_path = cache_dir / f"{req.cases_path.stem}_filtered.json"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    filtered_path.write_text(
-        json.dumps(filtered, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    # Fallback: legacy layout — single combined ``cases.json`` in iter_dir.
+    legacy = iter_dir / "cases.json"
+    if legacy.is_file() and legacy != req.cases_path:
+        logger.info(
+            "platform_select: no per-platform file, using legacy %s",
+            legacy,
+        )
+        return legacy, None
+
+    available = sorted(p.name for p in iter_dir.glob("cases_*.json"))
+    return None, (
+        "未找到匹配 server.platforms={} 的产品用例文件；"
+        "iter_dir 下可用的有: {}".format(
+            server_platforms, available or "(none)"
+        )
     )
-    logger.info(
-        "platform_filter: kept %d/%d cases for server platforms %s",
-        len(filtered),
-        len(cases),
-        server_platforms,
-    )
-    return filtered_path, summary
 
 
 def _run_generator_blocking(cmd: list[str]) -> tuple[int, str, str]:
@@ -463,7 +469,175 @@ async def _generate_atk_executor(
     }
 
 
+# ── Execution logging ───────────────────────────────────────────────────────
+
+
+def _setup_execution_log(log_dir: Path) -> logging.FileHandler | None:
+    """Add a file handler so every run leaves a persistent audit trail.
+
+    The handler writes to ``<log_dir>/execution.log`` (UTF-8, append mode
+    if the file already exists).  Returns the handler so the caller can
+    remove it after the run completes — keeps the logger clean for the
+    next invocation.
+    """
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    log_path = log_dir / "execution.log"
+    try:
+        handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s | %(message)s"
+            )
+        )
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        return handler
+    except OSError as exc:
+        logger.warning("cannot open execution log %s: %s", log_path, exc)
+        return None
+
+
+def _cleanup_log_handler(handler: logging.FileHandler | None) -> None:
+    """Remove and close a log handler installed by :func:`_setup_execution_log`."""
+    if handler is not None:
+        try:
+            logger.removeHandler(handler)
+            handler.close()
+        except Exception:
+            pass  # best-effort cleanup
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────
+
+
+async def _execute_preflight(req: RunRequest) -> ExecutionResult:
+    """Run the local-only preparation steps of :class:`RunRequest`.
+
+    Skips SSH / ATK / report parsing — stops after generator.py writes
+    ``cases_expanded.json`` and ``cases_<op>_executor.py`` to iter_dir.
+    The user can SFTP-upload those files manually and run the exact atk
+    command surfaced in ``scripts/execute_cases.py --preflight``.
+
+    Used to validate the executor pipeline without a remote host
+    available.  ``status="preflight"`` so callers can distinguish from
+    real outcomes.
+    """
+    operator_name = _safe_operator(req.operator_name)
+    result = ExecutionResult(status="preflight")
+    overall_start = time.monotonic()
+
+    log_dir = req.iter_dir or _resolve_cache_dir(req, operator_name)
+    log_handler = _setup_execution_log(log_dir)
+    logger.info(
+        "===== preflight start: operator=%s run_id=%s =====",
+        operator_name,
+        req.run_id,
+    )
+
+    try:
+        # Preflight only needs field presence + valid platforms — it won't
+        # open an SSH connection, so placeholder passwords are tolerated.
+        server_error = validate_server_info(req.server_info, strict=False)
+        if server_error:
+            result.status = "error"
+            result.error_message = server_error
+            result.duration = time.monotonic() - overall_start
+            return result
+
+        cache_dir = _resolve_cache_dir(req, operator_name)
+
+        # Platform selection: same as _execute_real section 1.
+        scoped_cases_path, select_error = await _resolve_iter_cases_for_server(req)
+        if scoped_cases_path is None:
+            logger.error("preflight: %s", select_error)
+            result.status = "error"
+            result.error_message = select_error or "无法选择产品用例文件"
+            result.duration = time.monotonic() - overall_start
+            return result
+
+        scoped_request = RunRequest(
+            cases_path=scoped_cases_path,
+            server_info=req.server_info,
+            operator_name=req.operator_name,
+            run_id=req.run_id,
+            artifact_dir=req.artifact_dir,
+            project_root=req.project_root,
+            task_type=req.task_type,
+            env_init=req.env_init,
+            atk_timeout=req.atk_timeout,
+            iter_dir=req.iter_dir,
+        )
+
+        generator_work_dir = req.iter_dir or cache_dir
+
+        try:
+            generated = await _generate_atk_executor(
+                scoped_request, generator_work_dir
+            )
+        except SSHEngineError as exc:
+            logger.exception(
+                "preflight: ATK executor generation failed for %s",
+                operator_name,
+            )
+            result.status = "error"
+            result.error_message = f"生成 ATK executor 失败: {exc}"
+            result.duration = time.monotonic() - overall_start
+            return result
+
+        executor_files = generated["executor_files"]
+        expanded_cases = generated["expanded_cases"]
+
+        atk_command = _build_atk_command(
+            operator_name, req.task_type, _resolve_env_init(req.env_init)
+        )
+        remote_paths = {
+            "cases_expanded.json": _remote_cases_path(operator_name),
+            "cases_executor.py": _remote_executor_path(operator_name),
+        }
+
+        # Only list files the user needs to SFTP-upload.  ``cases.json`` is
+        # the intermediate source for generator.py and stays local — it is
+        # NOT consumed by ATK on the remote host.
+        result.set_preflight_artifacts(
+            {
+                "cases_expanded.json": expanded_cases,
+                "cases_executor.py": executor_files[0],
+            },
+            atk_command=atk_command,
+            remote_paths=remote_paths,
+        )
+        logger.info(
+            "preflight: source cases.json = %s", scoped_cases_path
+        )
+        if len(executor_files) > 1:
+            logger.warning(
+                "preflight: generator produced %d executor files; "
+                "the first (operator-prefixed) is the one ATK consumes.",
+                len(executor_files),
+            )
+
+        result.duration = time.monotonic() - overall_start
+        logger.info(
+            "preflight: ok for %s (%.2fs) -> %s",
+            operator_name,
+            result.duration,
+            generator_work_dir,
+        )
+        for label, path in result._preflight_artifacts.items():  # type: ignore[union-attr]
+            logger.info("  %s -> %s", label, path)
+        logger.info("preflight atk command: %s", atk_command)
+        logger.info(
+            "===== preflight done: operator=%s status=%s duration=%.2fs =====",
+            operator_name,
+            result.status,
+            result.duration,
+        )
+        return result
+    finally:
+        _cleanup_log_handler(log_handler)
 
 
 async def _execute_real(req: RunRequest) -> ExecutionResult:
@@ -472,8 +646,18 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
     result = ExecutionResult()
     overall_start = time.monotonic()
 
+    # --- execution audit log ------------------------------------------------
+    log_dir = req.iter_dir or _resolve_cache_dir(req, operator_name)
+    log_handler = _setup_execution_log(log_dir)
+    logger.info(
+        "===== execute start: operator=%s run_id=%s mode=real =====",
+        operator_name,
+        req.run_id,
+    )
+
     server_error = validate_server_info(req.server_info)
     if server_error:
+        _cleanup_log_handler(log_handler)
         result.status = "error"
         result.error_message = server_error
         result.duration = time.monotonic() - overall_start
@@ -490,25 +674,27 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         req.task_type,
     )
 
-    # ── 1. Filter cases to the chosen server's platforms ───────────────
-    # cases.json holds the full product_support × per-platform matrix.
-    # A given server only supports one of those products, so we slice it
-    # before generator.py — otherwise ATK consumes 30 cases but only the
-    # subset matching the server produces an honest xlsx record, leaving
-    # the rest invisible (which shows up as `total=10` instead of 30
-    # without an explanation).
-    try:
-        scoped_cases_path, _summary = await _select_cases_for_server(
-            req, cache_dir
+    # ── 1. Pick the per-platform cases file matching the server ─────────
+    # Generation writes one ``cases_<platform>.json`` per product_support
+    # entry; we copy the matching one to ``iter_dir/cases.json`` so the
+    # downstream pipeline (generator.py → ATK) sees a single canonical
+    # input file.  Without this, ATK would still consume only the server's
+    # platform subset, but the xlsx's ``total`` would be 10 instead of 30
+    # without an obvious reason, and the executor would have no place to
+    # write the platform-annotated ATK report.
+    scoped_cases_path, select_error = await _resolve_iter_cases_for_server(req)
+    if scoped_cases_path is None:
+        logger.error(
+            "execute_cases: per-platform cases selection failed: %s",
+            select_error,
         )
-    except Exception as exc:
-        logger.exception("execute_cases: platform filter crashed")
         result.status = "error"
-        result.error_message = f"按平台过滤 cases 失败: {exc}"
+        result.error_message = select_error or "无法选择产品用例文件"
         result.duration = time.monotonic() - overall_start
+        _cleanup_log_handler(log_handler)
         return result
 
-    filtered_request = RunRequest(
+    scoped_request = RunRequest(
         cases_path=scoped_cases_path,
         server_info=req.server_info,
         operator_name=req.operator_name,
@@ -531,7 +717,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
     generator_work_dir = req.iter_dir or cache_dir
     try:
         generated = await _generate_atk_executor(
-            filtered_request, generator_work_dir
+            scoped_request, generator_work_dir
         )
     except SSHEngineError as exc:
         logger.exception(
@@ -541,6 +727,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         result.status = "error"
         result.error_message = f"生成 ATK executor 失败: {exc}"
         result.duration = time.monotonic() - overall_start
+        _cleanup_log_handler(log_handler)
         return result
 
     # ── 3. Connect ────────────────────────────────────────────────────
@@ -553,6 +740,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         result.status = "error"
         result.error_message = f"SSH 连接失败: {exc}"
         result.duration = time.monotonic() - overall_start
+        _cleanup_log_handler(log_handler)
         return result
 
     try:
@@ -577,6 +765,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
             result.status = "error"
             result.error_message = f"SFTP 上传失败: {exc}"
             result.duration = time.monotonic() - overall_start
+            _cleanup_log_handler(log_handler)
             return result
 
         # ── 5. Run atk command ─────────────────────────────────────────
@@ -608,6 +797,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
                 result.status = "error"
                 result.error_message = str(exc)
                 result.duration = time.monotonic() - overall_start
+                _cleanup_log_handler(log_handler)
                 return result
 
         assert cmd_result is not None  # for type-checkers
@@ -722,6 +912,15 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
             "execute_cases: failed to write result.json: %s", exc
         )
 
+    logger.info(
+        "===== execute done: operator=%s status=%s passed=%d failed=%d duration=%.2fs =====",
+        operator_name,
+        result.status,
+        result.task_report_data.passed,
+        result.task_report_data.failed,
+        result.duration,
+    )
+    _cleanup_log_handler(log_handler)
     return result
 
 
@@ -803,7 +1002,7 @@ def run_cases(
         payload["mode"] = "mock"
         return payload
 
-    if mode != "real":
+    if mode not in ("real", "preflight"):
         return {
             "status": "error",
             "mode": mode,
@@ -811,19 +1010,40 @@ def run_cases(
             "failed": 0,
             "total": 0,
             "records": [],
-            "engine_error": f"未知执行模式: {mode!r}; 仅支持 mock / real。",
+            "engine_error": f"未知执行模式: {mode!r}; 仅支持 mock / real / preflight。",
         }
 
     if request is None:
         return {
             "status": "error",
-            "mode": "real",
+            "mode": mode,
             "passed": 0,
             "failed": 0,
             "total": 0,
             "records": [],
-            "engine_error": "real 模式必须通过 RunRequest 提供 cases_path 和 server_info。",
+            "engine_error": (
+                "real/preflight 模式必须通过 RunRequest 提供 "
+                "cases_path 和 server_info。"
+            ),
         }
+
+    if mode == "preflight":
+        try:
+            result = asyncio.run(_execute_preflight(request))
+        except Exception as exc:
+            logger.exception("execute_cases: preflight crashed")
+            return {
+                "status": "error",
+                "mode": "preflight",
+                "passed": 0,
+                "failed": 0,
+                "total": 0,
+                "records": [],
+                "engine_error": f"preflight 捕获未处理异常: {exc}",
+            }
+        payload = result.to_flat()
+        payload["mode"] = "preflight"
+        return payload
 
     try:
         result = asyncio.run(_execute_real(request))

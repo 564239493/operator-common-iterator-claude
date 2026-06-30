@@ -18,14 +18,41 @@ from runtime_config import (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--doc", required=True)
+    parser = argparse.ArgumentParser(
+        description=(
+            "创建 run 目录并初始化 workflow 状态。算子文档路径既可作为"
+            "位置参数传入，也可通过 --doc 指定。"
+        )
+    )
+    # 算子文档路径两种写法都接受:
+    #   1) 位置参数:        init_run.py <doc>
+    #   2) 显式 --doc flag:  init_run.py --doc <doc>
+    # 显式 --doc 优先, 位置参数作为回退; 都不给则报错。
+    parser.add_argument(
+        "doc_pos",
+        nargs="?",
+        default=None,
+        help="算子文档路径 (与 --doc 等价, 留空则必须用 --doc)",
+    )
+    parser.add_argument(
+        "--doc",
+        dest="doc",
+        default=None,
+        help="算子文档路径 (项目内或外部绝对路径)",
+    )
     parser.add_argument("--prompt", default="prompts/operator_constraints_extract_v1.md")
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
     args = parser.parse_args()
+
+    if args.doc is None:
+        args.doc = args.doc_pos
+    if not args.doc:
+        parser.error(
+            "必须提供算子文档路径: 位置参数 doc_pos 或 --doc 二选一。"
+        )
 
     doc = resolve_input_path(args.doc)
     prompt = resolve_input_path(args.prompt)

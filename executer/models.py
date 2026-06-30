@@ -70,9 +70,13 @@ class ExecutionResult(BaseModel):
       this verbatim into ``execution_result.json.engine_error``.
     """
 
-    status: Literal["success", "failed", "timeout", "error"] = Field(
+    status: Literal["success", "failed", "timeout", "error", "preflight"] = Field(
         default="success",
-        description="ATK 命令的执行结果状态.",
+        description=(
+            "ATK 命令的执行结果状态。"
+            "``preflight`` 表示已就位本地产物但未连远端 ATK, "
+            "常用于 ``scripts/execute_cases.py --preflight``。"
+        ),
     )
     exit_code: int | None = Field(
         default=None,
@@ -97,6 +101,33 @@ class ExecutionResult(BaseModel):
         default=None,
         description="远端 ATK 实际使用的输出目录 (含 operator_name 前缀).",
     )
+    _preflight_artifacts: dict[str, Path] | None = None
+    _preflight_atk_command: str | None = None
+    _preflight_remote_paths: dict[str, str] | None = None
+
+    def set_preflight_artifacts(
+        self,
+        artifacts: dict[str, Path],
+        *,
+        atk_command: str = "",
+        remote_paths: dict[str, str] | None = None,
+    ) -> None:
+        """Attach local paths the user needs to SFTP-upload (preflight mode).
+
+        Keys are arbitrary labels (``cases.json``, ``cases_expanded.json``,
+        ``cases_executor.py``); values are absolute ``Path`` objects.  Only
+        surfaced when ``status == "preflight"``.
+
+        Optionally records the ``atk_command`` to run on the remote host
+        and ``remote_paths`` mapping local artifact labels → remote SFTP
+        destination paths — surfaced verbatim in ``to_flat()`` so the user
+        knows exactly what to SFTP-upload and execute.
+        """
+        object.__setattr__(self, "_preflight_artifacts", artifacts)
+        if atk_command:
+            object.__setattr__(self, "_preflight_atk_command", atk_command)
+        if remote_paths:
+            object.__setattr__(self, "_preflight_remote_paths", remote_paths)
 
     def to_flat(self) -> dict[str, Any]:
         """Project to the flat ``execution_result.json`` contract.
@@ -104,7 +135,11 @@ class ExecutionResult(BaseModel):
         Mirrors what the reference ``run_atk`` returns — top-level passed /
         failed / total / records / status fields, with the full Pydantic
         body preserved under ``task_report_data`` for callers that want
-        the rich shape.
+        the rich shape.  Preflight mode emits ``status="preflight"``,
+        ``total=0``, ``records=[]``, with the local artifacts the user
+        still needs to SFTP-upload listed in ``preflight_artifacts``,
+        the ``atk`` shell command in ``preflight_atk_command``, and
+        remote SFTP destinations in ``preflight_remote_paths``.
         """
         record_count = self.task_report_data.record_count
         passed = self.task_report_data.passed
@@ -118,6 +153,10 @@ class ExecutionResult(BaseModel):
             }
             for r in self.task_report_data.report_records
         ]
+        preflight_artifacts: list[dict[str, str]] = []
+        if self.status == "preflight":
+            for k, v in (self._preflight_artifacts or {}).items():
+                preflight_artifacts.append({"key": k, "path": str(v)})
         payload: dict[str, Any] = {
             "status": self.status,
             "mode": "real",
@@ -133,7 +172,11 @@ class ExecutionResult(BaseModel):
             "log_content": self.log_content,
             "remote_output_dir": self.remote_output_dir,
             "task_report_data": self.task_report_data.model_dump(),
+            "preflight_artifacts": preflight_artifacts,
         }
+        if self.status == "preflight":
+            payload["preflight_atk_command"] = self._preflight_atk_command or ""
+            payload["preflight_remote_paths"] = self._preflight_remote_paths or {}
         return payload
 
 

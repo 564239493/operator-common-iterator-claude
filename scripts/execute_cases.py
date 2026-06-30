@@ -115,6 +115,16 @@ def main() -> int:
         help="服务器配置文件路径 (默认 servers.json)。",
     )
     parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help=(
+            "仅跑平台过滤 + generator.py, 不连 SSH/ATK。"
+            "等价于 ``--mode preflight``: 落盘 cases.json + "
+            "cases_expanded.json + cases_executor.py 到 iter_dir 后立即返回,"
+            "可用于手工 ssh 上传并执行 atk 命令验证。"
+        ),
+    )
+    parser.add_argument(
         "--run-id",
         default="manual",
         help="运行标识符, 用于缓存和诊断; 默认 manual。",
@@ -141,6 +151,12 @@ def main() -> int:
     output_path = resolve_input_path(args.output)
     cases = load_cases_payload(cases_path)
 
+    # --preflight 隐式选择 preflight 模式, 除非显式 --mode mock。
+    # 这是为了让用户调试时少敲一段。
+    effective_mode = args.mode
+    if args.preflight and effective_mode == "real":
+        effective_mode = "preflight"
+
     if args.mode == "mock":
         result = run_cases(
             "mock",
@@ -155,7 +171,7 @@ def main() -> int:
                     "requires_user_action": True,
                     "code": "OPERATOR_DOC_REQUIRED",
                     "message": (
-                        "真实执行需要 --doc 和 --operator; "
+                        "真实/preflight 执行需要 --doc 和 --operator; "
                         "请传入 run 目录中的算子文档快照与算子名。"
                     ),
                 }
@@ -185,21 +201,30 @@ def main() -> int:
             )
             return 2
 
-        server_error = validate_server_info(server)
-        if server_error:
-            _emit(
-                {
-                    "ok": False,
-                    "requires_user_action": True,
-                    "code": "SERVER_CONFIG_INCOMPLETE",
-                    "message": server_error,
-                    "server_config": str(config_path),
-                    "hint": (
-                        "编辑 servers.json, 填写真实 ip/username/password 后再执行。"
-                    ),
-                }
-            )
-            return 2
+        # Preflight skips SSH / ATK, so it can run even when servers.json
+        # still has placeholder credentials.  Relax the password check to
+        # the schema level (presence / fields) only — leave the strict
+        # placeholder detection for ``mode == real``.
+        if effective_mode == "real":
+            server_error = validate_server_info(server)
+            if server_error:
+                _emit(
+                    {
+                        "ok": False,
+                        "requires_user_action": True,
+                        "code": "SERVER_CONFIG_INCOMPLETE",
+                        "message": server_error,
+                        "server_config": str(config_path),
+                        "hint": (
+                            "编辑 servers.json, 填写真实 ip/username/password 后再执行。"
+                        ),
+                    }
+                )
+                return 2
+        else:
+            # Preflight: just sanity-check field presence.
+            from runtime_config import validate_server_config as _vsc_inner
+            _, _ = _vsc_inner(args.server_config)
 
         # Iter directory is used by the runner to find constraints.json
         # + generation_summary.json for platform-based case filtering,
@@ -225,11 +250,11 @@ def main() -> int:
             run_id=args.run_id,
             artifact_dir=artifact_dir,
             project_root=ROOT,
-            env_init=args.env_init,
+            env_init=args.env_init or server.get("env_init_script"),
             iter_dir=iter_dir,
         )
 
-        result = run_cases("real", cases, request=request)
+        result = run_cases(effective_mode, cases, request=request)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -250,6 +275,26 @@ def main() -> int:
             ensure_ascii=False,
         )
     )
+    # Preflight: surface the concrete next steps so the user can proceed
+    # without reading the full execution_result.json.
+    if result.get("status") == "preflight":
+        artifacts = result.get("preflight_artifacts") or []
+        remote_paths = result.get("preflight_remote_paths") or {}
+        atk_cmd = result.get("preflight_atk_command") or ""
+        print(
+            json.dumps(
+                {
+                    "hint": "本地产物已就绪, 请 SFTP 上传后执行 atk 命令",
+                    "preflight_artifacts": [
+                        {**a, "remote": remote_paths.get(a.get("key", ""), "?")}
+                        for a in artifacts
+                    ],
+                    "preflight_atk_command": atk_cmd,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     return 0 if not result.get("engine_error") else 2
 
 

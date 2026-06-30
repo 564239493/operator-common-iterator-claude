@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
 """Deterministically call the retained business case generator.
 
-Writes:
-- ``<output>``             — cases.json (JSON array; contract artifact)
-- ``<output_dir>/generation_summary.json`` — per-platform case counts +
-  coverage metrics
-- ``<iter_dir>/generation.log`` — ``--iter-dir`` 传入时额外写一份可追踪日志
+CLI-only adaptation of the reference generation pipeline (see
+``D:/operator_project/operator-common-iterator/generators`` and
+``executer/generate_atk.py``).  No NZ or shape post-processing is
+applied here — those constraints live in the upstream operator doc
+extraction step (constraints.json + generator.facade outputs match
+operator_case_generator's ``single_operator_handle`` semantics).
 
-调用流程：
-1. 读取 ``constraints.json``，传给 ``generators.facade.TestCaseGenerator``。
-2. facade 内部按平台调用 ``single_operator_handle`` 走 formal 算子生成
-   代码，产出原始 ``CaseConfig`` 列表。
-3. ``generators.nz_postprocess.fix_and_serialize`` 对原始结果做确定性
-   后处理：
-     - mat2 强制 5 维 NZ，且 mat2.shape[3] == 16、mat2.shape[4] == 16、
-       mat2.shape[1] != 1、mat2.shape[2] != 1；
-     - self.shape = (B, M, k1*16)、out.shape = (B, M, n1*16)；
-     - self/mat2/out dtype 一致（BFLOAT16 或 FLOAT16）；
-     - cubeMathType ∈ {0, 2}，并随 dtype 互斥；
-     - id 改写为 (platform, idx) 复合形式，并注入 platform 字段。
-4. 把结果落盘并写 summary。
-
-修复目的：避免上一轮 (aclnnBatchMatMulWeightNz-20260630-150530-734399)
-的 generator_bug —— id 重复 0-9 + mat2 shape 不满足 NZ 约束，导致
-30→10 覆盖缺口与 8/10 FAILED。
+Outputs:
+- ``<output>``                       — overall cases path; its parent dir
+  receives per-platform files (kept for backward CLI compatibility)
+- ``<output_dir>/cases_<platform>.json`` — one JSON array per product_support
+  entry, ``id`` is the integer the facade emits (per-platform 0, 1, 2, …)
+- ``<output_dir>/generation_summary.json`` — per-platform counts + paths
+- ``<iter_dir>/generation.log``       — when ``--iter-dir`` is passed, a
+  timestamped log mirror of the run for diagnostics
 """
 
 from __future__ import annotations
@@ -69,69 +61,11 @@ def _setup_iter_log(iter_dir: Path) -> Path | None:
         logger.setLevel(logging.INFO)
         return log_path
     except OSError as exc:
-        print(f"[generate_cases] warning: cannot open {log_path}: {exc}", file=sys.stderr)
-        return None
-
-
-def _check_nz_shape(shape: Any) -> bool:
-    """返回 True 表示该 mat2.shape 不满足 NZ 硬约束。
-
-    NZ (non-transposed) layout: (b, n1, k1, k0, n0) where k0=n0=16，
-    且 n1 != 1、k1 != 1。
-    """
-    if not isinstance(shape, list) or len(shape) != 5:
-        return True
-    b, n1, k1, k0, n0 = shape
-    if b < 1 or n1 < 1 or k1 < 1:
-        return True
-    if k0 != 16 or n0 != 16:
-        return True
-    if n1 == 1 or k1 == 1:
-        return True
-    return False
-
-
-def _compute_coverage(cases: list[dict[str, Any]]) -> dict[str, Any]:
-    """统计每条 case 的关键字段，计算覆盖率指标。"""
-    dtypes_seen: set[str] = set()
-    math_types_seen: set[int] = set()
-    nz_shape_violations = 0
-    per_platform: dict[str, int] = {}
-    id_collisions: set[str] = set()
-    seen_ids: set[str] = set()
-    for case in cases:
-        plat = case.get("platform", "<unknown>")
-        per_platform[plat] = per_platform.get(plat, 0) + 1
-        cid = case.get("id")
-        if cid in seen_ids:
-            id_collisions.add(str(cid))
-        seen_ids.add(str(cid))
-        mat2 = next(
-            (inp for inp in case.get("inputs", []) if inp.get("name") == "mat2"),
-            None,
+        print(
+            f"[generate_cases] warning: cannot open {log_path}: {exc}",
+            file=sys.stderr,
         )
-        for inp in case.get("inputs", []):
-            name = inp.get("name")
-            dtype = inp.get("dtype")
-            if name in ("self", "mat2", "out") and dtype:
-                dtypes_seen.add(dtype)
-            if name == "cubeMathType":
-                rv = inp.get("range_values")
-                if rv is not None:
-                    try:
-                        math_types_seen.add(int(rv))
-                    except (TypeError, ValueError):
-                        pass
-        if mat2 is not None and _check_nz_shape(mat2.get("shape")):
-            nz_shape_violations += 1
-    return {
-        "dtypes_seen": sorted(dtypes_seen),
-        "cube_math_types_seen": sorted(math_types_seen),
-        "nz_shape_violations": nz_shape_violations,
-        "unique_platforms": len(per_platform),
-        "unique_ids": len(seen_ids),
-        "id_collisions": sorted(id_collisions),
-    }
+        return None
 
 
 def main() -> int:
@@ -143,7 +77,8 @@ def main() -> int:
     parser.add_argument(
         "--iter-dir",
         default=None,
-        help="可选: 迭代目录 (如 runs/<run>/iter_001)。传入后, 生成过程日志会写到 <iter-dir>/generation.log。",
+        help="可选: 迭代目录 (如 runs/<run>/iter_001)。传入后, "
+        "生成过程日志会写到 <iter-dir>/generation.log。",
     )
     args = parser.parse_args()
     if args.count < 1:
@@ -171,59 +106,72 @@ def main() -> int:
         len(constraints.get("product_support", [])),
     )
 
+    # Reference entry point — facade.TestCaseGenerator delegates to
+    # ``single_operator_handle`` for each platform and returns
+    # ``Dict[platform, list[CaseConfig]]``.  No further field rewriting.
     from generators.facade import TestCaseGenerator
-    from generators.nz_postprocess import fix_and_serialize
 
     generator = TestCaseGenerator(constraints, seed=args.seed)
     by_platform = generator.generate_by_platform(args.count)
-    logger.info(
-        "raw generator output per platform: %s",
-        {k: len(v) for k, v in by_platform.items()},
-    )
-
-    # 修正 NZ 形状 / dtype / cubeMathType 并把 id 改写为 (platform, idx) 复合形式
-    cases = fix_and_serialize(by_platform, args.count)
-    if not cases:
+    if not by_platform:
         logger.error("generator produced no cases")
         raise SystemExit("generator produced no cases")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(cases, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    output_dir = output_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    coverage = _compute_coverage(cases)
-    per_platform: dict[str, int] = {}
-    for case in cases:
-        plat = case.get("platform", "<unknown>")
-        per_platform[plat] = per_platform.get(plat, 0) + 1
+    # 每个产品单独成文件: ``cases_<sanitized_platform>.json``。``/`` 是
+    # Windows 非法字符, 替换为 ``_``; 空格 / 中文保留原样 (Path 直接处理,
+    # 不走 shell, 不会触发引号问题)。执行阶段 runner 会按
+    # ``server_info.platforms`` 选出对应文件, 拷贝成 ``cases.json`` 后再
+    # 交给 generator.py / ATK。
+    per_platform_paths: dict[str, Path] = {}
+    per_platform_counts: dict[str, int] = {}
+    for platform, cases in by_platform.items():
+        sanitized = platform.replace("/", "_")
+        target = output_dir / f"cases_{sanitized}.json"
+        cases_dict = [serializable(case) for case in cases]
+        target.write_text(
+            json.dumps(cases_dict, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        per_platform_paths[platform] = target
+        per_platform_counts[platform] = len(cases_dict)
 
     summary = {
         "operator_name": generator.operator_name,
         "requested_per_platform": args.count,
-        "platforms": per_platform,
-        "total": len(cases),
+        "platforms": per_platform_counts,
+        "per_platform_files": {
+            k: str(v) for k, v in per_platform_paths.items()
+        },
+        "total": sum(per_platform_counts.values()),
         "seed": args.seed,
         "generator_version": (
-            "facade.TestCaseGenerator(single_operator_handle) + "
-            "generators.nz_postprocess.fix_and_serialize"
+            "generators.facade.TestCaseGenerator -> "
+            "generators.operator_handle_main.single_operator_handle"
         ),
-        "id_format": "(platform, idx) composite string id, 例 'Atlas 350 加速卡::000'",
-        "coverage": coverage,
+        "id_format": "platform 内 0 基整数 (per-platform 0,1,2,...)",
     }
-    (output_path.parent / "generation_summary.json").write_text(
+    (output_dir / "generation_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
     elapsed = time.monotonic() - started
     logger.info(
-        "done: wrote %d cases (%s) to %s in %.2fs",
-        len(cases),
-        ", ".join(f"{k}={v}" for k, v in per_platform.items()),
-        output_path,
+        "done: %d cases across %d platforms in %.2fs -> %s",
+        summary["total"],
+        len(by_platform),
         elapsed,
+        output_dir,
     )
-    logger.info("coverage: %s", coverage)
+    for platform, path in per_platform_paths.items():
+        logger.info(
+            "  %s -> %s (%d cases)",
+            platform,
+            path,
+            per_platform_counts[platform],
+        )
     if iter_log_path is not None:
         logger.info("generation log: %s", iter_log_path)
 
