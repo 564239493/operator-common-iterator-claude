@@ -241,7 +241,7 @@ _global_logger: Optional[ThreadSafeLogger] = None
 def init_logger(
     log_name: Optional[str] = None,
     log_dir: str = "./logs",
-    log_level: int = logging.ERROR,
+    log_level: int = logging.INFO,
     rotation_type: str = "time",
     rotation_interval: int = 1,
     rotation_when: str = "midnight",

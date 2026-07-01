@@ -1,6 +1,7 @@
 ---
 name: aclnn-cpu-golden-derivation
 description: Derive PyTorch CPU computation from ACLNN C++ operator signatures for ATK test scripts. Use when asked to replace dummy CPU output with real PyTorch computation in an ATK-generated test file, or when converting aclnn operator signatures to torch calls.
+argument-hint: <executor_path> [--doc <doc_snapshot_path>]
 metadata:
   type: skill
 ---
@@ -10,19 +11,28 @@ metadata:
 ## When to Use
 
 Use this skill when:
-- You have an ATK-generated test script (e.g. `test_aclnnAddmv.py`) with a `BaseApi` subclass that returns dummy `torch.ones()` outputs
+- You have an ATK-generated test script (e.g. `cases_executor.py` under `runs/<run-id>/iter_NNN/`,
+  or `test_aclnnAddmv.py`) with a `BaseApi` subclass that returns dummy `torch.ones()` outputs
 - You need to replace the dummy computation with real PyTorch CPU calls
 - The file contains `# TODO: CPU_GOLDEN` and `# END_CPU_GOLDEN` markers with the C++ signature in comments
+
+The target file is normally passed as `<executor_path>` in the skill arguments — in the
+operator-iterator pipeline this is `runs/<run-id>/iter_NNN/cases_executor.py`, produced by
+`scripts/execute_cases.py --generate`. Edit that file in place; do not create a new file.
 
 ## Step 0: Read the ACLNN Operator Documentation (MUST DO FIRST)
 
 **Before deriving the CPU golden, ALWAYS read the operator's CANN documentation to extract parameter constraints.**
 This is the single most important step — it prevents runtime errors that would otherwise only surface during testing.
 
-**How to find the doc:**
-- Directory: `D:\software\markitdown\CANN-aclnn-api-reference\context\`
-- Sub-directory by domain: `ops-nn/`, `ops-math/`, `ops-cv/`, `ops-transformer/`
-- File: `aclnn{OperatorName}.md` (e.g. `aclnnBinaryCrossEntropyWithLogits.md`)
+**How to find the doc (prefer the project-internal snapshot):**
+- If `--doc <doc_snapshot_path>` was passed (the operator-iterator pipeline always passes the
+  `runs/<run-id>/inputs/<doc>.md` snapshot), use that file first — per project rules, all Agents
+  consume the project-internal snapshot and must not modify the user's original external doc.
+- Only when `--doc` is not given, fall back to the local CANN reference:
+  - Directory: `D:\software\markitdown\CANN-aclnn-api-reference\context\`
+  - Sub-directory by domain: `ops-nn/`, `ops-math/`, `ops-cv/`, `ops-transformer/`
+  - File: `aclnn{OperatorName}.md` (e.g. `aclnnBinaryCrossEntropyWithLogits.md`)
 - If the user specifies a different path, use that instead
 
 **What to extract from the doc's "参数说明" table:**

@@ -74,13 +74,16 @@ def main() -> int:
         description=(
             "执行已生成的测试用例并写出 execution_result.json。"
             "默认 real 模式；显式 --mode mock 才回退到本地 Mock。"
+            "real 模式不再自动生成 executor：必须先跑 --generate 产出 "
+            "cases_executor.py + cases_expanded.json，并由 atc-cpu-golden-derivation "
+            "skill 完成 CPU golden 推导后，再以 real 上传执行。"
         )
     )
     parser.add_argument(
         "--mode",
         choices=("mock", "real"),
         default="real",
-        help="执行模式 (默认 real)。",
+        help="执行模式 (默认 real)。real 仅上传+跑 atk，不再生成 executor。",
     )
     parser.add_argument(
         "--cases", required=True, help="cases.json 路径 (项目内或外部)。"
@@ -115,13 +118,13 @@ def main() -> int:
         help="服务器配置文件路径 (默认 servers.json)。",
     )
     parser.add_argument(
-        "--preflight",
+        "--generate",
         action="store_true",
         help=(
             "仅跑平台过滤 + generator.py, 不连 SSH/ATK。"
-            "等价于 ``--mode preflight``: 落盘 cases.json + "
-            "cases_expanded.json + cases_executor.py 到 iter_dir 后立即返回,"
-            "可用于手工 ssh 上传并执行 atk 命令验证。"
+            "产出 cases_executor.py (含 dummy CPU golden) + cases_expanded.json "
+            "到 iter_dir。real 模式的前置步骤：generate 生成 → atc-cpu-golden-derivation "
+            "skill 改写 CPU golden → real 上传执行。"
         ),
     )
     parser.add_argument(
@@ -151,11 +154,11 @@ def main() -> int:
     output_path = resolve_input_path(args.output)
     cases = load_cases_payload(cases_path)
 
-    # --preflight 隐式选择 preflight 模式, 除非显式 --mode mock。
+    # --generate 隐式选择 generate 模式, 除非显式 --mode mock。
     # 这是为了让用户调试时少敲一段。
     effective_mode = args.mode
-    if args.preflight and effective_mode == "real":
-        effective_mode = "preflight"
+    if args.generate and effective_mode == "real":
+        effective_mode = "generate"
 
     if args.mode == "mock":
         result = run_cases(
@@ -171,7 +174,7 @@ def main() -> int:
                     "requires_user_action": True,
                     "code": "OPERATOR_DOC_REQUIRED",
                     "message": (
-                        "真实/preflight 执行需要 --doc 和 --operator; "
+                        "真实/generate 执行需要 --doc 和 --operator; "
                         "请传入 run 目录中的算子文档快照与算子名。"
                     ),
                 }
@@ -201,7 +204,7 @@ def main() -> int:
             )
             return 2
 
-        # Preflight skips SSH / ATK, so it can run even when servers.json
+        # Generate skips SSH / ATK, so it can run even when servers.json
         # still has placeholder credentials.  Relax the password check to
         # the schema level (presence / fields) only — leave the strict
         # placeholder detection for ``mode == real``.
@@ -222,7 +225,7 @@ def main() -> int:
                 )
                 return 2
         else:
-            # Preflight: just sanity-check field presence.
+            # Generate: just sanity-check field presence.
             from runtime_config import validate_server_config as _vsc_inner
             _, _ = _vsc_inner(args.server_config)
 
@@ -275,21 +278,21 @@ def main() -> int:
             ensure_ascii=False,
         )
     )
-    # Preflight: surface the concrete next steps so the user can proceed
+    # Generate: surface the concrete next steps so the user can proceed
     # without reading the full execution_result.json.
-    if result.get("status") == "preflight":
-        artifacts = result.get("preflight_artifacts") or []
-        remote_paths = result.get("preflight_remote_paths") or {}
-        atk_cmd = result.get("preflight_atk_command") or ""
+    if result.get("status") == "generate":
+        artifacts = result.get("generate_artifacts") or []
+        remote_paths = result.get("generate_remote_paths") or {}
+        atk_cmd = result.get("generate_atk_command") or ""
         print(
             json.dumps(
                 {
                     "hint": "本地产物已就绪, 请 SFTP 上传后执行 atk 命令",
-                    "preflight_artifacts": [
+                    "generate_artifacts": [
                         {**a, "remote": remote_paths.get(a.get("key", ""), "?")}
                         for a in artifacts
                     ],
-                    "preflight_atk_command": atk_cmd,
+                    "generate_atk_command": atk_cmd,
                 },
                 ensure_ascii=False,
                 indent=2,

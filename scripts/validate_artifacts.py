@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import sys
 from pathlib import Path
@@ -58,11 +59,46 @@ def validate_analysis(value) -> list[str]:
     return [] if value.get("root_cause") in allowed else ["invalid root_cause"]
 
 
+# CPU golden 推导 (atc-cpu-golden-derivation skill) 完成后, cases_executor.py
+# 里 generator.py 写入的 dummy 块必须被替换. 这里的标记 / dummy 函数若仍存在,
+# 说明推导未真正执行或未生效, real 模式上传的会是 torch.ones 假参考, 精度比对
+# 无意义. 该校验是质量门禁兜住 "dummy 上线" 的确定性依据.
+_EXECUTOR_DUMMY_MARKERS = (
+    "_dummy_output",
+    "# [FALLBACK]",
+    "# TODO: CPU_GOLDEN",
+)
+
+
+def validate_executor(path: str) -> list[str]:
+    file_path = Path(path)
+    if not file_path.is_file():
+        return [f"executor file not found: {path}"]
+    try:
+        source = file_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"cannot read executor file: {exc}"]
+    errors: list[str] = []
+    hits = [m for m in _EXECUTOR_DUMMY_MARKERS if m in source]
+    if hits:
+        errors.append(
+            "CPU golden 推导未完成, 仍含 dummy 标记: "
+            + ", ".join(hits)
+            + " — 需先跑 atc-cpu-golden-derivation skill 替换后再执行 real"
+        )
+    try:
+        ast.parse(source)
+    except SyntaxError as exc:
+        errors.append(f"executor 语法错误 (推导输出可能残缺): {exc}")
+    return errors
+
+
 VALIDATORS = {
     "constraints": validate_constraints,
     "cases": validate_cases,
     "execution": validate_execution,
     "analysis": validate_analysis,
+    "executor": validate_executor,
 }
 
 
@@ -72,7 +108,12 @@ def main() -> int:
     parser.add_argument("path")
     args = parser.parse_args()
     try:
-        errors = VALIDATORS[args.kind](load(args.path))
+        # executor 校验对象是 Python 源文件, 直接传路径; 其余校验对象是
+        # JSON 产物, 先解析再传结构.
+        if args.kind == "executor":
+            errors = VALIDATORS[args.kind](args.path)
+        else:
+            errors = VALIDATORS[args.kind](load(args.path))
     except Exception as exc:
         errors = [str(exc)]
     print(json.dumps({"valid": not errors, "errors": errors}, ensure_ascii=False, indent=2))

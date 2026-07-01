@@ -21,7 +21,8 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
 5. 每轮按顺序委派：
    - `constraint-extractor`
    - `case-generator`
-   - `case-executor`
+   - `case-executor`（real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
+     三子步骤；推导须清除 `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run）
    - `quality-reviewer`
 6. 若门禁确认全部通过，更新 run_state 为 SUCCESS 并结束。
 7. 若有用例失败，委派 `failure-analyst`：

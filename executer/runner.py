@@ -122,7 +122,7 @@ def validate_server_info(
     ``environment-blocked (ZAI_API_KEY 占位符未替换)`` style failure on
     the old cross-project path.
 
-    When ``strict=False`` (preflight mode), password placeholder values
+    When ``strict=False`` (generate mode), password placeholder values
     are tolerated — the caller won't open an SSH connection, so it only
     needs the field to be *present* (for platform selection), not real.
     """
@@ -513,32 +513,32 @@ def _cleanup_log_handler(handler: logging.FileHandler | None) -> None:
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 
-async def _execute_preflight(req: RunRequest) -> ExecutionResult:
+async def _execute_generate(req: RunRequest) -> ExecutionResult:
     """Run the local-only preparation steps of :class:`RunRequest`.
 
     Skips SSH / ATK / report parsing — stops after generator.py writes
     ``cases_expanded.json`` and ``cases_<op>_executor.py`` to iter_dir.
     The user can SFTP-upload those files manually and run the exact atk
-    command surfaced in ``scripts/execute_cases.py --preflight``.
+    command surfaced in ``scripts/execute_cases.py --generate``.
 
     Used to validate the executor pipeline without a remote host
-    available.  ``status="preflight"`` so callers can distinguish from
+    available.  ``status="generate"`` so callers can distinguish from
     real outcomes.
     """
     operator_name = _safe_operator(req.operator_name)
-    result = ExecutionResult(status="preflight")
+    result = ExecutionResult(status="generate")
     overall_start = time.monotonic()
 
     log_dir = req.iter_dir or _resolve_cache_dir(req, operator_name)
     log_handler = _setup_execution_log(log_dir)
     logger.info(
-        "===== preflight start: operator=%s run_id=%s =====",
+        "===== generate start: operator=%s run_id=%s =====",
         operator_name,
         req.run_id,
     )
 
     try:
-        # Preflight only needs field presence + valid platforms — it won't
+        # Generate only needs field presence + valid platforms — it won't
         # open an SSH connection, so placeholder passwords are tolerated.
         server_error = validate_server_info(req.server_info, strict=False)
         if server_error:
@@ -552,7 +552,7 @@ async def _execute_preflight(req: RunRequest) -> ExecutionResult:
         # Platform selection: same as _execute_real section 1.
         scoped_cases_path, select_error = await _resolve_iter_cases_for_server(req)
         if scoped_cases_path is None:
-            logger.error("preflight: %s", select_error)
+            logger.error("generate: %s", select_error)
             result.status = "error"
             result.error_message = select_error or "无法选择产品用例文件"
             result.duration = time.monotonic() - overall_start
@@ -579,7 +579,7 @@ async def _execute_preflight(req: RunRequest) -> ExecutionResult:
             )
         except SSHEngineError as exc:
             logger.exception(
-                "preflight: ATK executor generation failed for %s",
+                "generate: ATK executor generation failed for %s",
                 operator_name,
             )
             result.status = "error"
@@ -601,7 +601,7 @@ async def _execute_preflight(req: RunRequest) -> ExecutionResult:
         # Only list files the user needs to SFTP-upload.  ``cases.json`` is
         # the intermediate source for generator.py and stays local — it is
         # NOT consumed by ATK on the remote host.
-        result.set_preflight_artifacts(
+        result.set_generate_artifacts(
             {
                 "cases_expanded.json": expanded_cases,
                 "cases_executor.py": executor_files[0],
@@ -610,27 +610,27 @@ async def _execute_preflight(req: RunRequest) -> ExecutionResult:
             remote_paths=remote_paths,
         )
         logger.info(
-            "preflight: source cases.json = %s", scoped_cases_path
+            "generate: source cases.json = %s", scoped_cases_path
         )
         if len(executor_files) > 1:
             logger.warning(
-                "preflight: generator produced %d executor files; "
+                "generate: generator produced %d executor files; "
                 "the first (operator-prefixed) is the one ATK consumes.",
                 len(executor_files),
             )
 
         result.duration = time.monotonic() - overall_start
         logger.info(
-            "preflight: ok for %s (%.2fs) -> %s",
+            "generate: ok for %s (%.2fs) -> %s",
             operator_name,
             result.duration,
             generator_work_dir,
         )
-        for label, path in result._preflight_artifacts.items():  # type: ignore[union-attr]
+        for label, path in result._generate_artifacts.items():  # type: ignore[union-attr]
             logger.info("  %s -> %s", label, path)
-        logger.info("preflight atk command: %s", atk_command)
+        logger.info("generate atk command: %s", atk_command)
         logger.info(
-            "===== preflight done: operator=%s status=%s duration=%.2fs =====",
+            "===== generate done: operator=%s status=%s duration=%.2fs =====",
             operator_name,
             result.status,
             result.duration,
@@ -707,28 +707,47 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         iter_dir=req.iter_dir,
     )
 
-    # ── 2. Generate per-operator ATK executor (deterministic) ─────────
-    # Runs locally before SSH so a missing signature is surfaced as
-    # engine_error instead of wasting a remote connection.  Generator
-    # outputs (cases_expanded.json, cases_<op>_executor.py) are pure
-    # rebuilds of inputs that already live at iter root — write them
-    # there, NOT inside execution_logs (which is reserved for raw ATK
-    # artifacts downloaded from the remote host).
+    # ── 2. Locate generate-generated executor + expanded cases ───────
+    # real 模式不再重生成: ``generator.py`` 永远产出 dummy CPU golden
+    # (``_dummy_output`` / ``torch.ones``), 若在此重调 ``_generate_atk_executor``
+    # 会覆盖 Claude 推导 (``atc-cpu-golden-derivation`` skill) 已改写的
+    # ``cases_executor.py``, 推导白做. 生成职责已整体移到 ``--generate``;
+    # real 只复用 iter_dir 里已落盘的 executor + expanded.
+    #
+    # ``scoped_request.cases_path`` 经 ``_resolve_iter_cases_for_server``
+    # 定到 ``iter_dir/cases.json`` (stem="cases"), 与 generate 一致, 因此
+    # 这里 ``_resolve_generated_executors(iter_dir, "cases")`` 能命中 generate
+    # 写出的 ``cases_executor.py`` (或 ``cases_<op>_executor.py`` 多算子情形).
     generator_work_dir = req.iter_dir or cache_dir
-    try:
-        generated = await _generate_atk_executor(
-            scoped_request, generator_work_dir
-        )
-    except SSHEngineError as exc:
-        logger.exception(
-            "execute_cases: ATK executor generation failed for %s",
-            operator_name,
+    stem = scoped_request.cases_path.stem
+    expanded = generator_work_dir / f"{stem}_expanded.json"
+    executor_files = _resolve_generated_executors(generator_work_dir, stem)
+    if not executor_files or not expanded.is_file():
+        missing: list[str] = []
+        if not executor_files:
+            missing.append(f"{stem}_executor.py")
+        if not expanded.is_file():
+            missing.append(expanded.name)
+        logger.error(
+            "execute_cases: real 模式缺少 generate 产物 %s (iter_dir=%s)",
+            ", ".join(missing), generator_work_dir,
         )
         result.status = "error"
-        result.error_message = f"生成 ATK executor 失败: {exc}"
+        result.error_message = (
+            f"real 模式需先跑 --generate 生成: {', '.join(missing)} "
+            f"(iter_dir={generator_work_dir})"
+        )
         result.duration = time.monotonic() - overall_start
         _cleanup_log_handler(log_handler)
         return result
+    generated = {
+        "executor_files": executor_files,
+        "expanded_cases": expanded,
+    }
+    logger.info(
+        "execute_real: reuse generate executor=%s expanded=%s (no regeneration)",
+        executor_files[0], expanded,
+    )
 
     # ── 3. Connect ────────────────────────────────────────────────────
     try:
@@ -1002,7 +1021,7 @@ def run_cases(
         payload["mode"] = "mock"
         return payload
 
-    if mode not in ("real", "preflight"):
+    if mode not in ("real", "generate"):
         return {
             "status": "error",
             "mode": mode,
@@ -1010,7 +1029,7 @@ def run_cases(
             "failed": 0,
             "total": 0,
             "records": [],
-            "engine_error": f"未知执行模式: {mode!r}; 仅支持 mock / real / preflight。",
+            "engine_error": f"未知执行模式: {mode!r}; 仅支持 mock / real / generate。",
         }
 
     if request is None:
@@ -1022,27 +1041,27 @@ def run_cases(
             "total": 0,
             "records": [],
             "engine_error": (
-                "real/preflight 模式必须通过 RunRequest 提供 "
+                "real/generate 模式必须通过 RunRequest 提供 "
                 "cases_path 和 server_info。"
             ),
         }
 
-    if mode == "preflight":
+    if mode == "generate":
         try:
-            result = asyncio.run(_execute_preflight(request))
+            result = asyncio.run(_execute_generate(request))
         except Exception as exc:
-            logger.exception("execute_cases: preflight crashed")
+            logger.exception("execute_cases: generate crashed")
             return {
                 "status": "error",
-                "mode": "preflight",
+                "mode": "generate",
                 "passed": 0,
                 "failed": 0,
                 "total": 0,
                 "records": [],
-                "engine_error": f"preflight 捕获未处理异常: {exc}",
+                "engine_error": f"generate 捕获未处理异常: {exc}",
             }
         payload = result.to_flat()
-        payload["mode"] = "preflight"
+        payload["mode"] = "generate"
         return payload
 
     try:
