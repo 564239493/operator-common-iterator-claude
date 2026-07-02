@@ -198,7 +198,9 @@ def main():
     if args.operator_constraint_directory is None and args.operator_constraint_path is None:
         raise ValueError("operator_constraint_directory and operator_constraint_path cannot be empty at the same time")
     elif args.operator_constraint_directory is not None:
-        operators = args.operators.split(",") if args.operators is not None else None
+        # operators = args.operators.split(",") if args.operators is not None else None
+        # operators = ["aclnnFFNV31"]
+        operators = ["aclnnSwinTransformerLnQkvQuant","aclnnSwinAttentionScoreQuant"]
         batch_operator_handel(operator_constraint_directory=args.operator_constraint_directory, operators=operators,
                               platform=args.platform, case_save_path=args.case_save_path, case_num=args.case_num)
     else:

@@ -31,7 +31,7 @@ WORKFLOW.md 定义的状态。
 
 ## constraints.json
 
-必须满足 `generators.common_model_definition.OperatorRule`。关键字段包括
+必须满足 `agent.generators.common_model_definition.OperatorRule`。关键字段包括
 operator_name、product_support、parameters 和 constraints_in_parameters。每个约束
 应来自原文，不用聊天内容补充。
 

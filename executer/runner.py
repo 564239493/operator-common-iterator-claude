@@ -8,8 +8,8 @@ task`` → discover & download report → parse xlsx → return a flat
 Differences from the reference:
 
 * The LLM ``exec_generate_atk`` step that *produced* the ATK executor
-  file is replaced by the deterministic :mod:`generators.generator`
-  shipped under ``executer/resources/``.  Both the operator signature
+  file is replaced by the deterministic ``executer/resources/generator.py``.
+  Both the operator signature
   table (``aclnn_extracted.txt``) and the code-generation script
   (``generator.py``) live next to the executer.
 * The LLM ``exec_cpu_derivation`` step is dropped from Python entirely.

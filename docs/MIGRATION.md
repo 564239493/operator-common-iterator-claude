@@ -1,6 +1,7 @@
 # 从旧项目迁移到 Claude Code CLI 模式
 
-保留了原项目的 `generators/`、算子文档和初始提示词。被替代的部分：
+保留了原项目的确定性用例生成逻辑，并将其迁移到 `agent/generators/`；同时保留
+算子文档和初始提示词。被替代的部分：
 
 - `orchestrator.py` → CLAUDE.md + iterate-operator Skill；
 - `constraint_extractor.py` 的 LLM 调用 → constraint-extractor Agent；

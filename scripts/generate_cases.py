@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Deterministically call the retained business case generator.
 
-CLI-only adaptation of the reference generation pipeline (see
-``D:/operator_project/operator-common-iterator/generators`` and
-``executer/generate_atk.py``).  No NZ or shape post-processing is
+CLI-only adaptation of the retained generation pipeline in
+``agent/generators`` and the reference ``executer/generate_atk.py``.
+No NZ or shape post-processing is
 applied here — those constraints live in the upstream operator doc
-extraction step (constraints.json + generator.facade outputs match
+extraction step (constraints.json + agent.generators.facade outputs match
 operator_case_generator's ``single_operator_handle`` semantics).
 
 Outputs:

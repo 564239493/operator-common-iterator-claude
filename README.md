@@ -88,7 +88,8 @@ claude -p "/iterate-operator D:\operator_docs\aclnnFoo.md --max-iterations 3" `
   hooks/               # CLI 生命周期调度观测
   settings.json        # 项目级权限与 Hooks
 docs/                  # 流程、观测和产物契约
-generators/            # 原项目确定性用例生成逻辑
+agent/
+  generators/          # 原项目确定性用例生成逻辑
 operator_docs/         # 输入算子文档
 prompts/               # 初始与迭代提示词
 scripts/               # 确定性工具，不调用 LLM

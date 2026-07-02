@@ -11,7 +11,7 @@
 > 3. **可移植** —— 不依赖任何项目内部代码 / 数据库 / MCP server，单凭本提示词 + 算子官方文档即可产出约束；
 > 4. **可溯源** —— 关键字段保留 `src_text`，便于人工校对与回溯。
 >
-> **Schema 对齐说明**：本提示词的 Pydantic schema 与项目源码 [common_model_definition.py](packages/agent/src/agent/generators/common_model_definition.py) 中的 `OperatorRule` / `ParamAttributes` / `ValueWithSrcText` / `InterParamConstraint` 结构**完全一致**，可直接交叉校验。
+> **Schema 对齐说明**：本提示词的 Pydantic schema 与项目源码 [common_model_definition.py](../agent/generators/common_model_definition.py) 中的 `OperatorRule` / `ParamAttributes` / `ValueWithSrcText` / `InterParamConstraint` 结构**完全一致**，可直接交叉校验。
 
 ---
 
