@@ -109,7 +109,7 @@ def main() -> int:
     # Reference entry point — facade.TestCaseGenerator delegates to
     # ``single_operator_handle`` for each platform and returns
     # ``Dict[platform, list[CaseConfig]]``.  No further field rewriting.
-    from generators.facade import TestCaseGenerator
+    from agent.generators.facade import TestCaseGenerator
 
     generator = TestCaseGenerator(constraints, seed=args.seed)
     by_platform = generator.generate_by_platform(args.count)
@@ -148,8 +148,8 @@ def main() -> int:
         "total": sum(per_platform_counts.values()),
         "seed": args.seed,
         "generator_version": (
-            "generators.facade.TestCaseGenerator -> "
-            "generators.operator_handle_main.single_operator_handle"
+            "agent.generators.facade.TestCaseGenerator -> "
+            "agent.generators.operator_handle_main.single_operator_handle"
         ),
         "id_format": "platform 内 0 基整数 (per-platform 0,1,2,...)",
     }

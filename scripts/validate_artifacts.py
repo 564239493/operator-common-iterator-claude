@@ -22,7 +22,7 @@ def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
     try:
-        from generators.common_model_definition import OperatorRule
+        from agent.generators.common_model_definition import OperatorRule
 
         OperatorRule(**value)
         return []
