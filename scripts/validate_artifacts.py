@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import json
 import sys
+import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +20,151 @@ def load(path: str):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def normalize_expr_null(expr: str) -> str:
+    """Normalize JSON-style bare ``null`` tokens to Python ``None``.
+
+    String literals containing ``"null"`` are preserved. This keeps the
+    constraints JSON ergonomic while ensuring expressions remain valid Python.
+    """
+    tokens = []
+    for token in tokenize.generate_tokens(io.StringIO(expr).readline):
+        if token.type == tokenize.NAME and token.string == "null":
+            token = tokenize.TokenInfo(
+                token.type, "None", token.start, token.end, token.line
+            )
+        tokens.append(token)
+    return tokenize.untokenize(tokens)
+
+
+def _iter_param_attributes(value):
+    for section_name in ("inputs", "outputs"):
+        section = value.get(section_name, {})
+        if not isinstance(section, dict):
+            continue
+        for param_name, platforms in section.items():
+            if not isinstance(platforms, dict):
+                continue
+            for platform, attributes in platforms.items():
+                if isinstance(attributes, dict):
+                    yield section_name, param_name, platform, attributes
+
+
+def _iter_constraints(value):
+    raw = value.get("constraints_in_parameters", {})
+    if isinstance(raw, list):
+        for index, constraint in enumerate(raw):
+            if isinstance(constraint, dict):
+                yield "common", index, constraint
+        return
+    if not isinstance(raw, dict):
+        return
+    for platform, constraints in raw.items():
+        if not isinstance(constraints, list):
+            continue
+        for index, constraint in enumerate(constraints):
+            if isinstance(constraint, dict):
+                yield platform, index, constraint
+
+
+def _is_nested_numeric_interval_membership(node: ast.AST) -> bool:
+    for item in ast.walk(node):
+        if not isinstance(item, ast.Compare):
+            continue
+        for op, comparator in zip(item.ops, item.comparators):
+            if not isinstance(op, (ast.In, ast.NotIn)):
+                continue
+            if not isinstance(comparator, (ast.List, ast.Tuple)):
+                continue
+            for candidate in comparator.elts:
+                if not isinstance(candidate, (ast.List, ast.Tuple)):
+                    continue
+                values = candidate.elts
+                if len(values) != 2:
+                    continue
+                if all(
+                    isinstance(value, ast.Constant)
+                    and (
+                        value.value is None
+                        or (
+                            isinstance(value.value, (int, float))
+                            and not isinstance(value.value, bool)
+                        )
+                    )
+                    for value in values
+                ):
+                    return True
+    return False
+
+
+def validate_constraint_semantics(value) -> list[str]:
+    errors: list[str] = []
+
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        allowed = attributes.get("allowed_range_value")
+        if not isinstance(allowed, dict) or allowed.get("type") != "range":
+            continue
+        range_value = allowed.get("value", [])
+        if any(item is None for item in _walk_values(range_value)):
+            errors.append(
+                f"{section}.{param}[{platform}].allowed_range_value: "
+                "type=range does not allow null boundaries; use an inequality "
+                "in constraints_in_parameters. type=enum may contain null"
+            )
+
+    for platform, index, constraint in _iter_constraints(value):
+        expr = constraint.get("expr", "")
+        if not expr:
+            continue
+        if not isinstance(expr, str):
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}].expr "
+                "must be a string"
+            )
+            continue
+        try:
+            normalized = normalize_expr_null(expr)
+            tree = ast.parse(normalized, mode="eval")
+        except (SyntaxError, tokenize.TokenError) as exc:
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}].expr "
+                f"is not valid after null->None normalization: {exc}"
+            )
+            continue
+        if _is_nested_numeric_interval_membership(tree):
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}].expr uses "
+                "'in [[min, max]]' as a numeric range; use chained "
+                "inequalities such as 'min <= value <= max'"
+            )
+        for item in ast.walk(tree):
+            if not isinstance(item, ast.Compare):
+                continue
+            operands = [item.left, *item.comparators]
+            has_none = any(
+                isinstance(operand, ast.Constant) and operand.value is None
+                for operand in operands
+            )
+            if has_none and any(
+                isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE))
+                for op in item.ops
+            ):
+                errors.append(
+                    f"constraints_in_parameters[{platform}][{index}].expr "
+                    "uses null/None as a numeric comparison boundary"
+                )
+                break
+
+    return errors
+
+
+def _walk_values(value):
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _walk_values(item)
+    else:
+        yield value
+
+
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
@@ -25,7 +172,7 @@ def validate_constraints(value) -> list[str]:
         from agent.generators.common_model_definition import OperatorRule
 
         OperatorRule(**value)
-        return []
+        return validate_constraint_semantics(value)
     except Exception as exc:
         return [f"OperatorRule validation failed: {exc}"]
 

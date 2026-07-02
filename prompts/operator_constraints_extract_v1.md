@@ -391,7 +391,7 @@ class OperatorRule(BaseModel):
 ##### F. 漏抽取补充
 
 正则可能漏掉仅在**约束描述文字**中出现、但未在任何 shape 元组里出现的变量（如 "rankSize 的取值依赖于 NPU 卡数"）。**应当**将其补加到 `inputs`，类别为 `external_constant`。
-| `allowed_range_value.value` | 是 | `List[Any]` | 范围：`[[min, max], [min2, max2]]`（允许 `null` 边界表示无界）；枚举：`["val1", "val2"]` 或 `[false]`；不适用 → `[]` |
+| `allowed_range_value.value` | 是 | `List[Any]` | 范围：`[[min, max], [min2, max2]]`，`min/max` 必须是实际数值，禁止用 `null` 表示无界；枚举：`["val1", null]`、`[false]` 等，`type=enum` 时允许 `null` 作为离散候选；不适用 → `[]` |
 | `allowed_range_value.type` | 是 | `str` | `"range"`（区间）/ `"enum"`（离散枚举） |
 | `allowed_range_value.src_text` | 是 | `str` | 摘录原文 |
 
@@ -404,16 +404,23 @@ class OperatorRule(BaseModel):
 | `"0-100"` / `"[-1,1]"` | `[[0, 100]]` / `[[-1, 1]]` | `range` | 区间 |
 | `"0或1"` | `[[0, 1]]` | `range` | 二元 |
 | `"0到5"` | `[[0, 5]]` | `range` | 中文区间 |
-| `"大于0"` | `[[1, null]]` | `range` | 半开（用 `null` 表示无界） |
-| `"小于1024"` | `[[null, 1023]]` | `range` | 半开 |
-| `"大于等于1"` | `[[1, null]]` | `range` | 半开 |
+| `"大于0"` | `[]` | `range` | 单边/开区间不在 `allowed_range_value` 中伪造边界；写 `value_dependency`：`param.range_value > 0` |
+| `"小于1024"` | `[]` | `range` | 写 `value_dependency`：`param.range_value < 1024` |
+| `"大于等于1"` | `[]` | `range` | 写 `value_dependency`：`param.range_value >= 1` |
 | `"取值范围为245~333"` | `[[245, 333]]` | `range` | ~分隔 |
 | `"fastgelu/gelu/relu/silu"` | `["fastgelu", "gelu", "relu", "silu"]` | `enum` | `/` 分隔 |
 | `"fastgelu/gelu/relu/silu以及geglu/swiglu/reglu"` | `["fastgelu","gelu","relu","silu","geglu","swiglu","reglu"]` | `enum` | **必须拆分**为独立项 |
 | `"支持配置空或者[-2,-1]"` | `["空", [-2, -1]]` 或拆为两条 | `enum` | aclIntArray 特殊 |
 | `"per-channel/per-group/per-tensor/per-token"` | `["per-channel","per-group","per-tensor","per-token"]` | `enum` | 量化粒度 |
 | `"true/false"` | `[true, false]` | `enum` | bool 列举 |
+| `"支持空或某个固定值"` | `[null, fixed_value]` | `enum` | `type=enum` 时 `null` 是合法离散候选 |
 | 文档无任何取值约束 | `[]` | `range` | **不**在数组中产出该参数 |
+
+`type=range` 与 `type=enum` 对 `null` 的规则不同：
+
+- `type=range`：任何区间端点都不得为 `null`。当前生成器不把 `null` 当作数值无界；
+  单边、开区间必须用 `constraints_in_parameters` 中的不等式表达。
+- `type=enum`：允许 `null`，表示“空值/未传值”本身是一个明确的离散候选。
 
 ##### aclIntArray 特殊取值（`knowledge/allowed_range/examples/acl_int_array.md`）
 
@@ -426,7 +433,7 @@ class OperatorRule(BaseModel):
 
 ##### bool 类型参数（`no_constraint.md`）
 
-bool 参数（`is_xxx`/`xxxFlag` 等）若文档未给固定取值约束，**不**在 `allowed_range_value` 中产出；项目代码会短路处理（`code=` 中的 fallback）。仅当文档明确说"暂不支持配为 True" 时，填 `[false]` + `type=range`。
+bool 参数（`is_xxx`/`xxxFlag` 等）若文档未给固定取值约束，**不**在 `allowed_range_value` 中产出；项目代码会短路处理（`code=` 中的 fallback）。仅当文档明确说"暂不支持配为 True" 时，填 `[false]` + `type=enum`。
 
 ##### 无约束参数处理（`no_constraint.md`）
 
@@ -446,7 +453,7 @@ bool 参数（`is_xxx`/`xxxFlag` 等）若文档未给固定取值约束，**不
 | 字段 | 必填 | 说明 |
 | ---- | ---- | ---- |
 | `expr_type` | 是 | **自由字符串**。优先从 §7 字典中选用；若字典无法覆盖，允许使用实际语义值（如 `cross_param_constraint`、`parameter_representation`、`self_value_enum`、`self_string_length`、`self_value_dependency`） |
-| `expr` | 是 | 合法 Python 布尔表达式（第 6 章）；无法写出时填 `""` |
+| `expr` | 是 | 规范化后合法的 Python 布尔表达式（第 6 章）；允许裸 `null`，执行前转换为 `None`；无法写出时填 `""` |
 | `relation_params` | 是 | 表达式中**所有**被引用的参数名（按出现顺序，去重） |
 | `src_text` | 是 | 原文摘录，**可为空字符串** |
 
@@ -457,6 +464,10 @@ bool 参数（`is_xxx`/`xxxFlag` 等）若文档未给固定取值约束，**不
 3. **单参数 shape 约束**：若已在 `dimensions` 中表达（如 `[2,3]`），可省略重复。
 4. **存在性约束**必须用完整布尔表达式（如 `(scale is None) == (zeroPoint is None)`），不允许退化为"可选/必选"自然语言。
 5. **禁止**把"算子功能说明"或"参数描述"塞入 `constraints_in_parameters`。
+6. **保护值语义**：参数名为 `epsilon`/`eps`，且功能描述明确称其为“除0保护值”、
+   “分母保护值”或数值稳定项时，应推导严格正值约束。若另有上界说明，合并成链式
+   不等式，例如 `0 < epsilon.range_value <= 1e-4`。`src_text` 必须同时摘录保护值
+   描述和上界说明，使隐式下界可追溯。
 
 ### 4.8 `return_info`（错误返回码）
 
@@ -538,7 +549,8 @@ NDC1HWC0, FRACTAL_NZ_C0_16, NDHWC, NCHW_VECT_C0_16, NC1HWC0
 
 ## 6. 表达式编写规范
 
-`expr` 字段必须是**合法 Python 布尔表达式**（`eval()` 可执行，返回 `bool`）。
+`expr` 字段在将裸 `null` 规范化为 Python `None` 后，必须是**合法 Python 布尔表达式**
+（`eval()` 可执行，返回 `bool`）。
 
 ### 6.1 语法细则（综合 `knowledge/relation_skills/SKILL.md`）
 
@@ -549,12 +561,14 @@ NDC1HWC0, FRACTAL_NZ_C0_16, NDHWC, NCHW_VECT_C0_16, NC1HWC0
    - ✅ `x1.shape[0] == BS.range_value`
    - ✅ `x1.format == x2.format`
    - ❌ `tensor_x.dim == 3`（**禁止**别名）
-2. **取值范围**：用区间 `[[min, max]]` 或离散列表 `[v1, v2]`：
-   - ✅ `actType.range_value in [[0, 5]]`（对区间查）
+2. **取值范围**：数值区间必须使用比较运算；离散枚举使用 `in [v1, v2]`：
+   - ✅ `0 <= actType.range_value <= 5`（数值闭区间）
+   - ✅ `0 < epsilon.range_value <= 1e-4`（数值开/闭区间）
    - ✅ `activation.range_value in ["relu", "gelu"]`（对枚举查）
    - ✅ `alltoAllAxesOptional.range_value == [-2, -1]`（对固定值等号）
    - ✅ `transposeX1.range_value == False`（bool 等号）
-   - 允许 `null` 边界：`[[null, 2147483647]]` 表示无下界
+   - ❌ `actType.range_value in [[0, 5]]`（嵌套列表是数据结构，不是区间谓词）
+   - ❌ `epsilon.range_value in [[null, 0.0001]]`（不得用 `null` 充当数值边界）
 3. **复合逻辑 —— 蕴含两种等价形式**：
    - **形式 A（if/else）**：`(B) if (A) else True` —— 条件不满足时返回 True（约束不适用）
      - ✅ `(bias.dtype == "FLOAT16") if (x.dtype == "FLOAT16") else True`
@@ -571,7 +585,11 @@ NDC1HWC0, FRACTAL_NZ_C0_16, NDHWC, NCHW_VECT_C0_16, NC1HWC0
 7. **命名维度变量 / 外部常量引用**：使用 `变量名.range_value` 形式（如 `BS.range_value`、`rankSize.range_value`），不写 `BS.shape[0]`。
 8. **已知常量直接使用数值**：若文档给出 `k0 = 16` 这种赋值，表达式里直接写 `16`，不需要 `k0.range_value`。
 9. **禁止关键字**：`lambda`、非蕴含三元运算符滥用、`implies`、伪代码、平台值作为判断条件。
-10. **空表达式**：不允许 `null`；无法表达时统一使用空字符串 `""`，保留 `expr_type` 与 `relation_params`。
+10. **`null` / `None`**：表达式允许使用 JSON 风格裸值 `null`，执行前会规范化为
+    Python `None`；也可直接写 `None`。它只用于空值、可选值和存在性判断，例如
+    `bias is null` 或 `bias is not None`，
+    不得作为数值区间端点参与 `<`、`<=`、`>`、`>=`。无法表达时统一使用空字符串
+    `""`，不要用整个 JSON 值 `null` 代替 `expr` 字符串。
 11. **参数名冲突**：当参数名为 `max`/`min`/`sum` 等内置函数名时，表达式中**不要再调用**同名内置函数；`relation_params` 仍写原名。
 
 ### 6.2 表达式与 src_text 的对应
@@ -657,7 +675,7 @@ else True
 | --- | --- | --- |
 | `cross_param_constraint` | 通用跨参数约束（语义较泛） | 按具体上下文 |
 | `parameter_representation` | 隐式维度变量/外部常量与张量 shape 的绑定 | `x1.shape[0] == BS.range_value` 或 `rankSize.range_value in [2,4,8]` |
-| `self_value_range` | 单参数取值范围（区间） | `actType.range_value in [[0, 5]]` |
+| `self_value_range` | 单参数取值范围（区间） | `0 <= actType.range_value <= 5` |
 | `self_value_enum` | 单参数取值枚举 | `activation.range_value in ["relu", "gelu", "silu"]` |
 | `self_value_dependency` | 单参数取值 ≈ 固定布尔/唯一合法值 | `transposeX1.range_value == False` |
 | `self_string_length` | 字符串参数长度约束 | `0 < len(group.range_value) < 128` |
@@ -681,7 +699,7 @@ else True
 | 文档给出"确定性计算：默认确定性" | `deterministic_computing["平台"].value = "true"`，`src_text` 摘录该句 |
 | 文档给出"确定性计算：默认非确定性" | `deterministic_computing["平台"].value = "false"`，`src_text` 摘录该句 |
 | 文档**完全没有** `返回码` 章节 | `return_info=[]` |
-| `allowed_range_value` 区间无下界（"不小于0"但无上界或上界为INT32_MAX） | `value=[[null, 2147483647]]`（null表示无下/上界） |
+| `allowed_range_value` 只有单边界或开区间 | `allowed_range_value.value=[]`；在 `constraints_in_parameters` 中用 `value_dependency` 不等式表达，禁止为 `type=range` 写 `null` 端点 |
 | 表达式无法用 Python 表达（自然语言公式） | `expr=""`，`src_text` 摘录原文，待人工校对 |
 | 文档出现矛盾（A段dtype=X，B段dtype=Y） | 优先**保守**取值（取并集），`src_text` 摘录矛盾原文，等待人工确认 |
 | 文档写"1维，最大长度256" | `dimensions.value=[1, 1]`，**长度256 不得放入 `dimensions`**；须在 `constraints_in_parameters` 中加 `self_shape_axis_value` 约束 |
@@ -695,7 +713,8 @@ else True
 | 文档写"仅 Atlas A2 支持 BF16" | 在对应平台的 `dtype.value` 中体现差异，`src_text` 摘录原文 |
 | 文档写"shape 为 [E, N1] / [N1]（per-channel / per-tensor）" | `dimensions.value=[1, 3]`（HTML 多变体取区间），shape 选择逻辑走 `shape_choice` / `shape_value_dependency` 约束 |
 | 文档写"x 和 y 必须共存，要么都存在要么都不存在" | `expr_type=presence_dependency`，`expr=(x is None) == (y is None)` |
-| 文档写"actType 取值为 0 到 5" | `allowed_range_value.value=[[0, 5]]`，`type=range`；不必重复进 `constraints_in_parameters`，但可附加 `self_value_range` 条目增强机器可判定性 |
+| 文档写"actType 取值为 0 到 5" | `allowed_range_value.value=[[0, 5]]`，`type=range`；可附加 `self_value_range`：`0 <= actType.range_value <= 5` 增强机器可判定性 |
+| 文档把 epsilon/eps 描述为“除0保护值”，并建议“≤1e-4” | `allowed_range_value.value=[]`；增加 `value_dependency`：`0 < epsilon.range_value <= 1e-4`，`src_text` 同时摘录两句 |
 
 ---
 
@@ -707,12 +726,17 @@ else True
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
 3. **平台字典一致**：`product_support` 中的每个平台名，在 `deterministic_computing`、`inputs`/`outputs` 的二级 key、`constraints_in_parameters` 的 key 中**至少出现一次**。
 4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。
-5. **表达式合法**：每条 `expr`（非空）用 `python -c` 试 `eval`，无 `SyntaxError`/`NameError`；返回 `bool`。
+5. **表达式合法**：每条 `expr`（非空）先把裸 `null` token 规范化为 `None`，再用
+   Python AST 解析；不得有 `SyntaxError`。`null`/`None` 不得作为数值大小比较边界。
 6. **关系参数一致**：`expr` 中**所有出现的标识符**都在 `relation_params` 中；`relation_params` 中所有参数名都在 `inputs`/`outputs` 有对应卡片（隐式维度变量/外部常量允许例外，但须在 `inputs` 中登记）。
 7. **来源可溯**：`function_explanation`/`dtype`/`format`/`dimensions`/`allowed_range_value` 的 `src_text` 至少 30% 非空（无来源的纯模型外推视为无效）。
 8. **隐式参数完整性**：所有在 `constraints_in_parameters` 的 `expr` 中出现的**非函数签名标识符**（如 `BS`、`H`、`N`、`rankSize`），必须**全部**出现在 `inputs` 中，且 `is_operator_param.value=false`。
 9. **dimensions 合理性**：`dimensions.value` 若非空，则形态必须合规（rank 格式 `[min, max]` 且 `0 ≤ min ≤ max ≤ 10`，或 per-dim 格式 `[[min,max], ...]`）。
 10. **枚举拆分完整**：若 `allowed_range_value.type=enum` 且 value 是 `List[str]`，则字符串中**不得**再包含 `/`、`、`、`以及`、`and`、`/` 等分隔符（必须已被拆成独立元素）。
+11. **range 的 null 禁令**：若 `allowed_range_value.type=range`，所有区间端点必须为
+    实际数值且不得为 `null`；`type=enum` 的离散候选允许包含 `null`。
+12. **数值范围表达式**：禁止生成 `.range_value in [[min, max]]`；必须改写为
+    `min <= param.range_value <= max` 或对应的单边/开区间不等式。
 
 ---
 

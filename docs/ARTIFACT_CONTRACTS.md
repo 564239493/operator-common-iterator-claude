@@ -35,6 +35,11 @@ WORKFLOW.md 定义的状态。
 operator_name、product_support、parameters 和 constraints_in_parameters。每个约束
 应来自原文，不用聊天内容补充。
 
+`allowed_range_value.type=range` 的区间端点必须为实际数值，不允许用 `null` 表示
+无界；单边或开区间写入 `constraints_in_parameters`，使用不等式表达。
+`type=enum` 允许 `null` 作为明确的离散候选。`expr` 中允许裸 `null`，校验和求解前
+会规范化为 Python `None`，但只能用于空值/存在性判断，不能参与数值大小比较。
+
 ## cases.json
 
 JSON 数组，每项为生成器 CaseConfig 的 model_dump 结果。禁止 Agent 手工伪造。
