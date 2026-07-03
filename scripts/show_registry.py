@@ -57,10 +57,12 @@ def main() -> int:
     print("       -> quality-reviewer -> SUCCESS")
     print("       -> failure-analyst -> prompt-optimizer -> next iteration")
     print("       -> generator_bug | executor_bug -> STOP")
-    print("\nLive views: /agents (instances) | /hooks (lifecycle) | /iterate-operator (run)")
+    print(
+        "\nLive views: /agents (instances) | /hooks (lifecycle) | "
+        "/iterate-operator (run) | /iterate-directory (batch)"
+    )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

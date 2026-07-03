@@ -71,3 +71,20 @@ specific_issues 应关联 case id、日志或文档证据。
 
 至少包含 status、checks、blocking_issues、next_state。blocking_issues 非空时
 status 必须为 blocked，主协调器不得越过门禁。
+
+## 目录批次产物
+
+```text
+runs/batches/<batch-id>/
+  batch_state.json
+  batch_summary.json
+```
+
+`batch_state.json` 必须冻结 source_directory、glob、recursive、prompt、
+max_iterations、case_count、mode、server_config、continue_on_error 和有序 operators。
+每个 operator 包含原文档绝对路径、PENDING/RUNNING/COMPLETED 状态、单算子 run_id、
+run_dir 与 terminal_state。任意时刻最多只能有一个 RUNNING 项。
+
+`batch_summary.json` 是由批次状态确定性生成的只读汇总视图，包含 total、pending、
+running、completed、success 和 failed。仅 `SUCCESS` 计入 success；`BLOCKED`、
+`MAX_ITERATIONS`、`STOP_GENERATOR_BUG` 和 `STOP_EXECUTOR_BUG` 计入 failed。

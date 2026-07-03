@@ -36,6 +36,19 @@ PyTorch/昇腾镜像，请按内部源安装后再执行其余依赖。
 /iterate-operator operator_docs/aclnnAlltoAllMatmul.md --max-iterations 3 --case-count 10
 ```
 
+串行执行一个目录中的全部算子文档：
+
+```text
+/iterate-directory operator_docs --max-iterations 3 --case-count 10
+```
+
+默认某个算子失败后继续执行下一个；需要首个失败即停止时增加 `--fail-fast`，需要扫描
+子目录时增加 `--recursive`。会话中断后可用批次目录恢复：
+
+```text
+/iterate-directory --batch-dir runs/batches/<batch-id>
+```
+
 默认执行真实用例。如果 `servers.json` 缺失或字段不完整，流程会停止并提示配置，不会
 自动降级 Mock。仅需演练编排时显式传入 `--mode mock`。
 
