@@ -410,7 +410,7 @@ class OperatorRule(BaseModel):
 | `"取值范围为245~333"` | `[[245, 333]]` | `range` | ~分隔 |
 | `"fastgelu/gelu/relu/silu"` | `["fastgelu", "gelu", "relu", "silu"]` | `enum` | `/` 分隔 |
 | `"fastgelu/gelu/relu/silu以及geglu/swiglu/reglu"` | `["fastgelu","gelu","relu","silu","geglu","swiglu","reglu"]` | `enum` | **必须拆分**为独立项 |
-| `"支持配置空或者[-2,-1]"` | `["空", [-2, -1]]` 或拆为两条 | `enum` | aclIntArray 特殊 |
+| `"支持配置空或者[-2,-1]"` | `[null, [-2, -1]]` | `enum` | aclIntArray 的“空”表示未传值，必须序列化为 JSON `null` |
 | `"per-channel/per-group/per-tensor/per-token"` | `["per-channel","per-group","per-tensor","per-token"]` | `enum` | 量化粒度 |
 | `"true/false"` | `[true, false]` | `enum` | bool 列举 |
 | `"支持空或某个固定值"` | `[null, fixed_value]` | `enum` | `type=enum` 时 `null` 是合法离散候选 |
@@ -421,15 +421,22 @@ class OperatorRule(BaseModel):
 - `type=range`：任何区间端点都不得为 `null`。当前生成器不把 `null` 当作数值无界；
   单边、开区间必须用 `constraints_in_parameters` 中的不等式表达。
 - `type=enum`：允许 `null`，表示“空值/未传值”本身是一个明确的离散候选。
+- 当原文中的“空”表示未传值、缺省、空指针或 `nullptr` 时，必须输出 JSON `null`，
+  禁止照抄为字符串 `"空"`。只有 API 明确接收字面字符串“空”时才能输出 `"空"`。
+- “未传容器”和“传入零长度容器”不是同一语义：前者为 `null`；只有原文明示传入
+  长度为 0 的数组/列表实例时，才将空容器候选表示为 `[[]]`。空 Tensor 应使用
+  shape/dimensions 约束表达，不在 `allowed_range_value` 中写 `"空"`。
 
 ##### aclIntArray 特殊取值（`knowledge/allowed_range/examples/acl_int_array.md`）
 
-`aclIntArray` 参数的取值往往是**特定数组值**或**空数组**，`type` 统一设为 `enum`：
+`aclIntArray` 参数的取值往往是**特定数组值**或**未传值**，`type` 统一设为 `enum`。
+若上下文出现“传入空”“缺省”“空指针”或参数为指针/Optional，空候选使用 JSON
+`null`；不得使用字符串 `"空"`：
 
 | 原文 | `value` |
 | ---- | ------- |
-| `"支持配置空或者[-2,-1]"` | `["空", [-2, -1]]`（或拆为两条 enum 条目） |
-| `"支持配置[-2,-1]或[-1,-2]或空"` | `[[-2, -1], [-1, -2], "空"]` |
+| `"支持配置空或者[-2,-1]"` | `[null, [-2, -1]]` |
+| `"支持配置[-2,-1]或[-1,-2]或空"` | `[[-2, -1], [-1, -2], null]` |
 
 ##### bool 类型参数（`no_constraint.md`）
 
@@ -709,7 +716,7 @@ else True
 | 文档写"H*rankSize"中的 `rankSize` 仅在复合表达式出现 | 归类为 `external_constant`，按平台分别给 `allowed_range_value` |
 | 文档写"Reduce 维度需要…" | `Reduce` 是 reduce 操作概念词，**不**抽取为隐式维度变量 |
 | 文档写"Softmax、LayerNorm" | **不**抽取为隐式维度变量（是操作名 / 算法名） |
-| 文档写"支持配置空或者[-2,-1]"（aclIntArray） | `allowed_range_value.value=[[-2, -1]]` 或拆为两条 enum 条目，`type=enum` |
+| 文档写"支持配置空或者[-2,-1]"（aclIntArray） | `allowed_range_value.value=[null, [-2, -1]]`，`type=enum`；“空”表示未传值，不得写成字符串 |
 | 文档写"仅 Atlas A2 支持 BF16" | 在对应平台的 `dtype.value` 中体现差异，`src_text` 摘录原文 |
 | 文档写"shape 为 [E, N1] / [N1]（per-channel / per-tensor）" | `dimensions.value=[1, 3]`（HTML 多变体取区间），shape 选择逻辑走 `shape_choice` / `shape_value_dependency` 约束 |
 | 文档写"x 和 y 必须共存，要么都存在要么都不存在" | `expr_type=presence_dependency`，`expr=(x is None) == (y is None)` |
@@ -737,6 +744,9 @@ else True
     实际数值且不得为 `null`；`type=enum` 的离散候选允许包含 `null`。
 12. **数值范围表达式**：禁止生成 `.range_value in [[min, max]]`；必须改写为
     `min <= param.range_value <= max` 或对应的单边/开区间不等式。
+13. **空值枚举序列化**：若 `allowed_range_value.type=enum` 且原文的“空”表示未传值、
+    缺省、空指针或 `nullptr`，候选必须是 JSON `null`，不得是字符串 `"空"`；只有
+    原文明示零长度容器时才使用空容器候选 `[[]]`。
 
 ---
 
@@ -789,7 +799,7 @@ else True
 | `aclnnGroupedMatmulV5` | NN / 分组 MatMul | `actType ∈ [0,5]`；大量 `Optional` 参数与 `aclTensorList` |
 | `aclnnSwinAttentionScoreQuant` | Transformer | int8 量化；`biasDequant*Optional` 取值为 0–255 整型 |
 | `aclnnSwinTransformerLnQkvQuant` | Transformer | LN + QKV 拆分；`headNum`/`seqLength`/`epsilon` 等标量属性 |
-| `aclnnAlltoAllMatmul` | 通信 + MatMul | `alltoAllAxesOptional` 取值 `空` 或 `[-2,-1]`；隐式变量 `BS`/`H`/`N` + 外部常量 `rankSize` |
+| `aclnnAlltoAllMatmul` | 通信 + MatMul | `alltoAllAxesOptional` 取值 JSON `null`（原文“空”）或 `[-2,-1]`；隐式变量 `BS`/`H`/`N` + 外部常量 `rankSize` |
 | `aclnnFFNV3` | NN / MoE FFN | `activation` 为枚举字符串；`innerPrecise` 标量属性 |
 | `aclnnNpuFormatCast` | 格式转换 | 输入格式集 `["FRACTAL_Z_3D","NCDHW",...]`；dtype 与 format 强耦合 |
 | `aclnnCalculateMatmulWeightSize` | 辅助计算 | 仅计算输出，无 Tensor 真正计算；`workspaceSize`/`executor` 是唯一输出 |
@@ -821,7 +831,7 @@ else True
 | [`knowledge/allowed_range/SKILL.md`](knowledge/allowed_range/SKILL.md) | `range` vs `enum` 语义、枚举拆分规则（`/`/`、`/`以及`/`and`）、平台差异标注 | §4.6.3 allowed_range 文本→结构化映射 |
 | [`knowledge/allowed_range/examples/numeric_range.md`](knowledge/allowed_range/examples/numeric_range.md) | `"0-100"` / `"[1,8]"` / `"大于0"` / `"取值范围为0或1"` 格式转换 | §4.6.3 allowed_range 映射表 |
 | [`knowledge/allowed_range/examples/enum_string.md`](knowledge/allowed_range/examples/enum_string.md) | 字符串枚举拆分（激活函数、量化类型） | §4.6.3 allowed_range 映射表 + §8 |
-| [`knowledge/allowed_range/examples/acl_int_array.md`](knowledge/allowed_range/examples/acl_int_array.md) | aclIntArray 取 `空` 或特定数组 | §4.6.3 + §8 |
+| [`knowledge/allowed_range/examples/acl_int_array.md`](knowledge/allowed_range/examples/acl_int_array.md) | aclIntArray 取 JSON `null`（未传值）或特定数组 | §4.6.3 + §8 |
 | [`knowledge/allowed_range/examples/no_constraint.md`](knowledge/allowed_range/examples/no_constraint.md) | 无约束参数不产出、bool 参数不产出 | §4.6.3 + §8 |
 | [`knowledge/allowed_range/examples/platform_specific.md`](knowledge/allowed_range/examples/platform_specific.md) | 按平台分行处理取值差异 | §4.6.2 二级 key 规则 |
 | [`knowledge/implicit_params/SKILL.md`](knowledge/implicit_params/SKILL.md) | 命名维度变量、概念词剔除、操作名剔除、常量/外部常量识别 | §4.6.4 隐式参数识别 |
