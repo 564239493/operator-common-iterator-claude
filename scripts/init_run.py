@@ -12,6 +12,7 @@ from pathlib import Path
 from runtime_config import (
     ROOT,
     config_error_payload,
+    find_latest_operator_prompt,
     resolve_input_path,
     validate_server_config,
 )
@@ -40,7 +41,14 @@ def main() -> int:
         default=None,
         help="算子文档路径 (项目内或外部绝对路径)",
     )
-    parser.add_argument("--prompt", default="prompts/operator_constraints_extract_v1.md")
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help=(
+            "约束提取提示词路径；省略时自动选择 "
+            "prompts/operator_constraints_extract_vN.md 中数值版本最大的文件"
+        ),
+    )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
@@ -55,7 +63,11 @@ def main() -> int:
         )
 
     doc = resolve_input_path(args.doc)
-    prompt = resolve_input_path(args.prompt)
+    prompt = (
+        resolve_input_path(args.prompt)
+        if args.prompt
+        else find_latest_operator_prompt()
+    )
     if not doc.is_file():
         print(json.dumps(
             {
@@ -68,14 +80,17 @@ def main() -> int:
             ensure_ascii=False,
         ))
         return 2
-    if not prompt.is_file():
+    if prompt is None or not prompt.is_file():
         print(json.dumps(
             {
                 "ok": False,
                 "requires_user_action": True,
                 "code": "PROMPT_NOT_FOUND",
-                "message": "约束提取提示词不存在。",
-                "prompt": str(prompt),
+                "message": (
+                    "约束提取提示词不存在。请通过 --prompt 指定文件，或在 prompts "
+                    "目录提供 operator_constraints_extract_vN.md。"
+                ),
+                "prompt": str(prompt) if prompt else "",
             },
             ensure_ascii=False,
         ))

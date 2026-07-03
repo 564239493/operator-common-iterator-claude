@@ -12,6 +12,7 @@ from batch_state import save_batch, utc_now
 from runtime_config import (
     ROOT,
     config_error_payload,
+    find_latest_operator_prompt,
     resolve_input_path,
     validate_server_config,
 )
@@ -24,7 +25,14 @@ def main() -> int:
     parser.add_argument("directory", help="算子文档目录（项目内或外部路径）")
     parser.add_argument("--glob", default="*.md", help="文档匹配模式，默认 *.md")
     parser.add_argument("--recursive", action="store_true", help="递归扫描子目录")
-    parser.add_argument("--prompt", default="prompts/operator_constraints_extract_v1.md")
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help=(
+            "约束提取提示词路径；省略时自动选择 "
+            "prompts/operator_constraints_extract_vN.md 中数值版本最大的文件"
+        ),
+    )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
@@ -46,7 +54,11 @@ def main() -> int:
     args = parser.parse_args()
 
     directory = resolve_input_path(args.directory)
-    prompt = resolve_input_path(args.prompt)
+    prompt = (
+        resolve_input_path(args.prompt)
+        if args.prompt
+        else find_latest_operator_prompt()
+    )
     if not directory.is_dir():
         return print_error(
             "OPERATOR_DIRECTORY_NOT_FOUND",
@@ -55,11 +67,14 @@ def main() -> int:
         )
     if not args.glob.strip():
         return print_error("INVALID_GLOB", "glob 匹配模式不能为空。")
-    if not prompt.is_file():
+    if prompt is None or not prompt.is_file():
         return print_error(
             "PROMPT_NOT_FOUND",
-            "约束提取提示词不存在。",
-            prompt=str(prompt),
+            (
+                "约束提取提示词不存在。请通过 --prompt 指定文件，或在 prompts "
+                "目录提供 operator_constraints_extract_vN.md。"
+            ),
+            prompt=str(prompt) if prompt else "",
         )
     if args.max_iterations < 1 or args.case_count < 1:
         return print_error(

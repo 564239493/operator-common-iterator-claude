@@ -20,7 +20,7 @@
 | 项 | 默认值 | 规划影响 |
 |---|---|---|
 | operator-doc | 必填；支持项目外路径 | 初始化时只读快照到 run/inputs |
-| prompt | v1 prompt | 确定首轮提取规则 |
+| prompt | 数值版本最新的 vN prompt | 确定首轮提取规则；显式 `--prompt` 可固定版本 |
 | max-iterations | 5 | 防止无界循环 |
 | case-count | 10/平台 | 控制生成与执行规模 |
 | mode | real | 缺配置则停止提示；仅显式 `--mode mock` 使用 Mock |
@@ -30,6 +30,11 @@
 run；校验通过后将外部文档复制为项目内快照并创建 run_state。主协调器必须展示调度
 计划，用户能在真正执行前看见：
 哪些 Agent 会参与、每个 Agent 接收什么、产出什么、为何停止或继续。
+
+未显式传入 `--prompt` 时，初始化脚本扫描
+`prompts/operator_constraints_extract_vN.md`，按整数 N（而非文件名字典序）选择最新
+版本。选中的源路径和项目内快照均写入 run_state，因此后续新增提示词版本不会改变
+已经创建的 run。
 
 ## 3. 执行状态机
 

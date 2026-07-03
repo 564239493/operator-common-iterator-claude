@@ -10,7 +10,8 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
 先读 `docs/WORKFLOW.md` 与 `docs/ARTIFACT_CONTRACTS.md`，然后严格执行：
 
 1. 解析参数。算子文档支持绝对路径、项目相对路径和包含 `..` 的外部相对路径。
-   默认 prompt 为 `prompts/operator_constraints_extract_v1.md`，
+   未传 `--prompt` 时，由 `init_run.py` 自动选择
+   `prompts/operator_constraints_extract_vN.md` 中数值版本 N 最大的文件；
    max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
 2. 调用 `python scripts/init_run.py` 创建 run。`--batch-dir` 是目录批次内部参数，
    不传给 `init_run.py`。该命令会把外部文档只读复制到 run 的 `inputs/` 目录，

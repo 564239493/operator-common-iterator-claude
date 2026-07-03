@@ -36,6 +36,14 @@ PyTorch/昇腾镜像，请按内部源安装后再执行其余依赖。
 /iterate-operator operator_docs/aclnnAlltoAllMatmul.md --max-iterations 3 --case-count 10
 ```
 
+未指定 `--prompt` 时，项目会自动选择
+`prompts/operator_constraints_extract_vN.md` 中数值版本最大的文件。需要复现指定版本
+时仍可显式传入：
+
+```text
+/iterate-operator operator_docs/aclnnAlltoAllMatmul.md --prompt prompts/operator_constraints_extract_v1.md
+```
+
 串行执行一个目录中的全部算子文档：
 
 ```text

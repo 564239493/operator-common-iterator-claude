@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+PROMPT_DIRECTORY = ROOT / "prompts"
+OPERATOR_PROMPT_PATTERN = re.compile(
+    r"^operator_constraints_extract_v(?P<version>\d+)\.md$"
+)
 
 
 def resolve_input_path(value: str | Path) -> Path:
@@ -15,6 +20,21 @@ def resolve_input_path(value: str | Path) -> Path:
     if not path.is_absolute():
         path = ROOT / path
     return path.resolve()
+
+
+def find_latest_operator_prompt(directory: Path | None = None) -> Path | None:
+    """Return the highest numerically versioned operator extraction prompt."""
+    prompt_dir = (directory or PROMPT_DIRECTORY).resolve()
+    candidates: list[tuple[int, Path]] = []
+    if not prompt_dir.is_dir():
+        return None
+    for path in prompt_dir.iterdir():
+        if not path.is_file():
+            continue
+        match = OPERATOR_PROMPT_PATTERN.fullmatch(path.name)
+        if match:
+            candidates.append((int(match.group("version")), path.resolve()))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
@@ -60,4 +80,3 @@ def config_error_payload(path: Path, errors: list[str]) -> dict[str, Any]:
         "server_config": str(path),
         "errors": errors,
     }
-

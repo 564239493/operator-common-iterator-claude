@@ -10,8 +10,10 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt pat
 先完整读取 `iterate-operator` Skill、`docs/WORKFLOW.md` 和
 `docs/ARTIFACT_CONTRACTS.md`，然后严格执行：
 
-1. 解析参数。默认 glob=`*.md`、不递归、prompt、max-iterations、case-count、mode 和
-   server-config 与 `/iterate-operator` 相同；默认 `--continue-on-error`。
+1. 解析参数。默认 glob=`*.md`、不递归；未传 `--prompt` 时自动选择
+   `prompts/operator_constraints_extract_vN.md` 中数值版本 N 最大的文件；
+   max-iterations、case-count、mode 和 server-config 与 `/iterate-operator` 相同；
+   默认 `--continue-on-error`。
 2. 新批次调用：
 
    ```text
