@@ -245,7 +245,7 @@ def init_logger(
     rotation_backup_count: int = 7,
     max_bytes: int = 10 * 1024 * 1024,
     size_backup_count: int = 5,
-    console_output: bool = False
+    console_output: bool = True
 ) -> ThreadSafeLogger:
     """
     初始化全局日志实例
