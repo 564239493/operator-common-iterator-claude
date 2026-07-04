@@ -75,6 +75,11 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--jsonl-save-path",
+        default=None,
+        help="JSONL checkpoint 根目录；默认写入 <output-dir>/jsonl_checkpoints",
+    )
+    parser.add_argument(
         "--iter-dir",
         default=None,
         help="可选: 迭代目录 (如 runs/<run>/iter_001)。传入后, "
@@ -99,6 +104,11 @@ def main() -> int:
 
     constraints_path = Path(args.constraints)
     output_path = Path(args.output)
+    jsonl_save_path = (
+        Path(args.jsonl_save_path)
+        if args.jsonl_save_path
+        else output_path.parent / "jsonl_checkpoints"
+    )
     constraints = json.loads(constraints_path.read_text(encoding="utf-8"))
     from scripts.normalize_constraints import normalize_constraints
 
@@ -120,7 +130,10 @@ def main() -> int:
     from agent.generators.facade import TestCaseGenerator
 
     generator = TestCaseGenerator(constraints, seed=args.seed)
-    by_platform = generator.generate_by_platform(args.count)
+    by_platform = generator.generate_by_platform(
+        args.count,
+        jsonl_save_path=str(jsonl_save_path),
+    )
     if not by_platform:
         logger.error("generator produced no cases")
         raise SystemExit("generator produced no cases")
@@ -152,6 +165,14 @@ def main() -> int:
         "platforms": per_platform_counts,
         "per_platform_files": {
             k: str(v) for k, v in per_platform_paths.items()
+        },
+        "jsonl_checkpoint_files": {
+            platform: str(
+                jsonl_save_path
+                / platform.replace("/", "_")
+                / f"{generator.operator_name}.jsonl"
+            )
+            for platform in by_platform
         },
         "total": sum(per_platform_counts.values()),
         "seed": args.seed,

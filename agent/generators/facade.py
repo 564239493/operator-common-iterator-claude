@@ -39,6 +39,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
@@ -175,7 +176,10 @@ class TestCaseGenerator:
             logger.debug("Failed to apply random seed %s: %s", self._seed, seed_err)
 
     def generate_for_platform(
-        self, platform: str, count: int = DEFAULT_COUNT,
+        self,
+        platform: str,
+        count: int = DEFAULT_COUNT,
+        jsonl_save_path: str | None = None,
     ) -> list[CaseConfig]:
         """针对单个 ``platform`` 调用 ``single_operator_handle``，返回原始 ``CaseConfig`` 列表。
 
@@ -196,6 +200,7 @@ class TestCaseGenerator:
                 operator_constraint=self._constraints,
                 platform=platform,
                 case_num=count,
+                jsonl_save_path=jsonl_save_path,
             )
         except Exception as gen_err:
             logger.exception(
@@ -205,15 +210,30 @@ class TestCaseGenerator:
             return []
         return list(cases or [])
 
-    def generate_by_platform(self, count: int = DEFAULT_COUNT) -> dict[str, list[CaseConfig]]:
+    def generate_by_platform(
+        self,
+        count: int = DEFAULT_COUNT,
+        jsonl_save_path: str | None = None,
+    ) -> dict[str, list[CaseConfig]]:
         """按平台分组生成用例，返回 ``dict[platform, list[CaseConfig]]``。
 
         当 ``json_constraints`` 没有 ``product_support`` 字段时，会回退到默认平台。
+        指定 ``jsonl_save_path`` 时，每个平台写入独立子目录，避免同名算子的
+        JSONL checkpoint 相互覆盖。
         """
         platforms = self._resolve_platforms()
         result: dict[str, list[CaseConfig]] = {}
         for platform in platforms:
-            result[platform] = self.generate_for_platform(platform, count)
+            platform_jsonl_path = None
+            if jsonl_save_path is not None:
+                platform_jsonl_path = os.path.join(
+                    jsonl_save_path, platform.replace("/", "_")
+                )
+            result[platform] = self.generate_for_platform(
+                platform,
+                count,
+                jsonl_save_path=platform_jsonl_path,
+            )
         logger.info(
             "TestCaseGenerator: operator=%s platforms=%d per_platform=%d total=%d",
             self._operator_name,
@@ -223,7 +243,11 @@ class TestCaseGenerator:
         )
         return result
 
-    def generate(self, count: int = DEFAULT_COUNT) -> list[CaseConfig]:
+    def generate(
+        self,
+        count: int = DEFAULT_COUNT,
+        jsonl_save_path: str | None = None,
+    ) -> list[CaseConfig]:
         """跨所有平台生成用例，返回扁平 ``list[CaseConfig]``（按平台顺序拼接）。"""
         if count < 0:
             raise ValueError(f"count must be >= 0, got {count}")
@@ -233,7 +257,18 @@ class TestCaseGenerator:
         platforms = self._resolve_platforms()
         all_cases: list[CaseConfig] = []
         for platform in platforms:
-            all_cases.extend(self.generate_for_platform(platform, count))
+            platform_jsonl_path = None
+            if jsonl_save_path is not None:
+                platform_jsonl_path = os.path.join(
+                    jsonl_save_path, platform.replace("/", "_")
+                )
+            all_cases.extend(
+                self.generate_for_platform(
+                    platform,
+                    count,
+                    jsonl_save_path=platform_jsonl_path,
+                )
+            )
         logger.info(
             "TestCaseGenerator: operator=%s platforms=%d per_platform=%d total=%d",
             self._operator_name, len(platforms), count, len(all_cases),
