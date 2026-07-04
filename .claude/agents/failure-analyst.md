@@ -13,4 +13,12 @@ color: purple
 引用文档条款或具体 case id。生成器报错前必须先检查 constraints 是否遗漏原文语义、
 是否把 `type=range` 的边界写成 `null`、是否使用了无效的嵌套列表区间表达式。
 上游约束错误足以解释失败时，主因应为 constraint_extraction，生成器健壮性问题只作
-次要记录。只写 analysis.json，不修改提示词或业务代码。
+次要记录。
+
+`cases.json` 是紧凑表示，列表类参数由单个描述和 `length` 表示，执行阶段才写入
+`cases_expanded.json`。带 `length` 参数的标量 `range_values` 表示所有元素共用
+该规格，是合法格式；不得据此建议修改 `ListVar.resolve_model()` 按 `seq_len`
+展开。诊断格式问题必须对照展开前后同一 case，并从异常栈确认失败参数；执行展开
+错误应归为 executor_bug。
+
+只写 analysis.json，不修改提示词或业务代码。

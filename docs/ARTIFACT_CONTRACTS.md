@@ -44,6 +44,17 @@ operator_name、product_support、parameters 和 constraints_in_parameters。每
 
 JSON 数组，每项为生成器 CaseConfig 的 model_dump 结果。禁止 Agent 手工伪造。
 
+`cases.json` 是执行前的紧凑表示。对于带 `length` 的列表类输入，只保留一个输入
+描述，由执行阶段生成 `cases_expanded.json`：
+
+- `range_values` 为标量时，表示列表中每个元素共用该取值规格；
+- `range_values` 为列表且长度等于 `length` 时，表示逐元素取值规格；
+- 生成阶段不得为了匹配 `length`，在 `ListVar.resolve_model()` 中把标量复制成列表。
+
+诊断用例格式问题时必须同时检查 `cases.json` 和 `cases_expanded.json`。如果紧凑
+表示已被正确展开，不能把标量 `range_values` 判为 generator_bug；如果展开过程
+本身有误，应归入执行适配层的 executor_bug。
+
 ## execution_result.json
 
 至少包含：
