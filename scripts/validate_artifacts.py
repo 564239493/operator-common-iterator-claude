@@ -145,6 +145,15 @@ def validate_constraint_semantics(value) -> list[str]:
                 "'in [[min, max]]' as a numeric range; use chained "
                 "inequalities such as 'min <= value <= max'"
             )
+        if any(
+            isinstance(item, ast.Attribute) and item.attr == "array_length"
+            for item in ast.walk(tree)
+        ):
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}].expr uses "
+                "'.array_length', which is JSON metadata rather than a "
+                "runtime expression attribute; use len(container)"
+            )
         for item in ast.walk(tree):
             if not isinstance(item, ast.Compare):
                 continue
@@ -208,6 +217,79 @@ def _validate_conditional_shape_constraints(value) -> list[str]:
     return errors
 
 
+_EXACT_LENGTH_EQUALITY_RE = re.compile(
+    r"^\s*长度与\s*([A-Za-z_]\w*)\s*相同[。.]?\s*$"
+)
+
+
+def _validate_tensor_list_length_constraints(value) -> list[str]:
+    """Ensure every explicit TensorList length-equality statement is modeled."""
+    errors: list[str] = []
+    constraints_by_platform: dict[str, list[dict]] = {}
+    for platform, _, constraint in _iter_constraints(value):
+        constraints_by_platform.setdefault(platform, []).append(constraint)
+
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        raw_type = attributes.get("type")
+        type_name = raw_type.get("value") if isinstance(raw_type, dict) else raw_type
+        if type_name != "aclTensorList":
+            continue
+        array_length = attributes.get("array_length")
+        if not isinstance(array_length, dict):
+            continue
+        src_text = array_length.get("src_text", "")
+        if not isinstance(src_text, str):
+            continue
+        match = _EXACT_LENGTH_EQUALITY_RE.fullmatch(src_text)
+        if not match:
+            continue
+
+        reference = match.group(1)
+        platform_constraints = list(constraints_by_platform.get(platform, []))
+        if platform != "common":
+            platform_constraints.extend(constraints_by_platform.get("common", []))
+        param_len_re = re.compile(rf"\blen\(\s*{re.escape(param)}\s*\)")
+        reference_len_re = re.compile(
+            rf"\blen\(\s*{re.escape(reference)}\s*\)"
+        )
+        none_guard_re = re.compile(rf"\b{re.escape(param)}\s+is\s+None\b")
+        is_optional = attributes.get("is_optional")
+        optional_value = (
+            is_optional.get("value")
+            if isinstance(is_optional, dict)
+            else is_optional
+        )
+        has_length_constraint = False
+        for constraint in platform_constraints:
+            expr = constraint.get("expr")
+            relation_params = constraint.get("relation_params", [])
+            if not isinstance(expr, str):
+                continue
+            if not (
+                param_len_re.search(expr)
+                and reference_len_re.search(expr)
+                and param in relation_params
+                and reference in relation_params
+            ):
+                continue
+            if optional_value is True and not none_guard_re.search(expr):
+                continue
+            has_length_constraint = True
+            break
+
+        if not has_length_constraint:
+            guard_hint = (
+                f"({param} is None) or " if optional_value is True else ""
+            )
+            errors.append(
+                f"{section}.{param}[{platform}].array_length says "
+                f"'长度与{reference}相同', but no matching expression was "
+                f"found; expected {guard_hint}"
+                f"(len({param}) == len({reference}))"
+            )
+    return errors
+
+
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
@@ -218,6 +300,7 @@ def validate_constraints(value) -> list[str]:
         return (
             validate_constraint_semantics(value)
             + _validate_conditional_shape_constraints(value)
+            + _validate_tensor_list_length_constraints(value)
         )
     except Exception as exc:
         return [f"OperatorRule validation failed: {exc}"]

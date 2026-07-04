@@ -26,10 +26,10 @@
 | 3 | 顶层 JSON Schema | 定义 `OperatorRule` 的 Pydantic 模型 |
 | 4 | 字段级提取规则 | 10 个一级字段 + dimensions/隐式参数/allowed_range/NZ 格式/条件 Shape 详细映射 |
 | 5 | 平台与 dtype 命名规范 | 强约束的字符串字典 |
-| 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + 6 大模式模板（含门控条件 Shape） |
+| 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 16 项检查（含条件 Shape 门控自检） |
+| 9 | 自检清单 | 提取完成后必须执行 17 项检查（含条件 Shape、TensorList 长度关系自检） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 A | 典型算子示例 | 10 个算子的关键提取点对照 |
 | 附录 B | v1→v2→v3 升级注意事项 | 升级路径与扩展占位 |
@@ -300,6 +300,21 @@ class OperatorRule(BaseModel):
 | `dtype.src_text` | 是 | `str` | 摘录原文 |
 | `dimensions.value` | 是 | `List[int]` 或 `[]` | **维度（rank）约束**：如 `[2, 3]` 表示 `2 ≤ rank ≤ 3`；不适用 → `[]` |
 | `dimensions.src_text` | 是 | `str` | 摘录原文（如 `"2-3"`、`"2维"`） |
+
+**TensorList 长度关系（强制规则）**：
+
+- 对 `type.value="aclTensorList"`，文档中的“长度”表示 TensorList 包含的 Tensor
+  个数，表达式必须写 `len(param)`；它既不是 Tensor 的 rank，也不是某个 Tensor 的
+  shape，因此禁止写 `len(param.shape)`。
+- `array_length` 是约束 JSON 的静态元数据字段，不是求解表达式支持的运行时属性；
+  `constraints_in_parameters.expr` 中禁止出现 `param.array_length`。
+- 文档明确写“P 长度与 Q 相同”时，必须生成
+  `len(P) == len(Q)`；若 P 为 Optional，则写
+  `(P is None) or (len(P) == len(Q))`。
+- 必须逐参数、逐平台提取。多行参数描述重复出现“长度与 weight 相同”时，每个参数
+  都要各自生成约束，不得按相同文案去重。
+- “一般情况下/通常情况下长度相同”属于带条件关系，须继续读取综合约束确定适用条件；
+  不得在条件未知时擅自生成无条件长度等式。
 
 **dtype 为空时的类型回填规则**：
 - 优先使用文档明确给出的 dtype；只有未提取到任何 dtype、即 `dtype.value=[]` 时才执行回填；
@@ -828,8 +843,37 @@ NDC1HWC0, FRACTAL_NZ_C0_16, NDHWC, NCHW_VECT_C0_16, NC1HWC0
 
 ### 6.3 表达式模式库（按关系特征匹配）
 
-> 来自 `knowledge/relation_skills/` 4 个模式文件 + v3 新增模式 6。按以下流程匹配：
+> 来自 `knowledge/relation_skills/` 4 个模式文件 + v3 扩展模式。按以下流程匹配：
 > 先识别场景特征 → 套用对应模板。
+
+#### 模式 0：Optional TensorList 长度相等
+
+**适用场景**：参数 P、Q 均为 `aclTensorList`，文档明确说明“P 长度与 Q 相同”。
+
+```text
+# P 为 Optional
+(P is None) or (len(P) == len(Q))
+
+# P 为必选
+len(P) == len(Q)
+```
+
+示例：
+
+```text
+(biasOptional is None) or (len(biasOptional) == len(weight))
+(offsetOptional is None) or (len(offsetOptional) == len(weight))
+(antiquantScaleOptional is None) or (len(antiquantScaleOptional) == len(weight))
+(antiquantOffsetOptional is None) or (len(antiquantOffsetOptional) == len(weight))
+```
+
+`relation_params` 必须为 `[P, Q]`（按表达式首次出现顺序去重），`expr_type` 可使用
+`presence_dependency`。禁止以下错误写法：
+
+```text
+len(P.shape) == Q.array_length
+P.array_length == Q.array_length
+```
 
 #### 模式 1：枚举条件 + 条件 Shape（`enum_conditional_shape.md`）
 
@@ -1028,12 +1072,13 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | **文档同时写明非转置与转置 NZ 两种布局（v2 新增）** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`allowed_range_value` 的 `value` 仍为 `[[16,16],[16,16]]`（数值上等价，但约束条目按布局拆分） |
 | **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
 | **文档写"X 的 shape 为 (A, B)；当 Y 配置为 True 时 shape 为 (C, D)"（v3 新增）** | **不可**拆为两条独立无条件 shape 描述；必须在 `constraints_in_parameters` 中为 X 产出**单一条件 shape 约束**（§6.3 模式 6），用 `Y.range_value` 等门控参数分支；`expr_type` 优先 `shape_choice` 或 `parameter_representation`；`src_text` 同时摘录默认 shape 短语与"配置为 X 时…为…"短语，确保门控可溯源（典型反例：aclnnAlltoAllMatmul 中 x2.shape 在 transposeX2=True 时应为 (N, H*rankSize) 而非无条件 (H*rankSize, N)） |
+| **aclTensorList 参数 P 写“长度与 Q 相同”** | P 为 Optional 时生成 `(P is None) or (len(P) == len(Q))`，否则生成 `len(P) == len(Q)`；禁止 `.array_length` 和 `len(P.shape)`；相同文案出现在多个参数行时逐参数生成，不能去重 |
 
 ---
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 16 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 17 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1082,6 +1127,13 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
        `shape_equality` / `shape_choice` 条目同时存在且互不引用 G；
     e. `src_text` 必须同时摘录默认 shape 短语与"配置为 X 时…为…"短语（或同义信号词），
        确保门控可溯源。
+17. **TensorList 长度关系完整性**：遍历所有 `type.value="aclTensorList"` 参数；
+    a. `array_length.src_text` 明确写“长度与 Q 相同”时，必须存在
+       `len(P) == len(Q)` 约束；
+    b. P 为 Optional 时表达式必须带 `(P is None) or ...` 守卫；
+    c. 禁止在 expr 中出现 `.array_length`，也禁止用 `len(P.shape)` 表示列表长度；
+    d. 相同文案出现在多个参数行时逐行核对，禁止只为第一个参数生成约束；
+    e. 含“一般情况下/通常情况下”的描述必须结合综合约束补全条件，不能直接无条件化。
 
 ---
 
@@ -1097,8 +1149,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 - 识别隐式维度变量时参考 §4.6.4（概念词/操作名/类型词需剔除）
 - 处理 NZ / FRACTAL_NZ 张量时参考 §4.6.5（块尺寸硬约束、转置/非转置布局区分）
 - 识别条件 Shape（被 enum/boolean 门控的 shape）时参考 §4.6.3 G 与 §6.3 模式 6
+- 处理 aclTensorList 容器长度关系时参考 §4.6.3 TensorList 长度规则与 §6.3 模式 0
 - 写 expr 表达式时参考 §6.3 模式库（按关系特征匹配模板；NZ 块尺寸使用模式 5；
-  条件 Shape 使用模式 6）
+  条件 Shape 使用模式 6；TensorList 长度相等使用模式 0）
 - 写 allowed_range_value 时参考 §4.6.3 allowed_range 文本→结构化映射
 
 输出必须是**纯 JSON 字符串**，无任何前后缀。
@@ -1120,7 +1173,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 16 项自检（含 §9.15 NZ 块尺寸硬约束自检、§9.16 条件 Shape 门控自检）；
+3. 内部执行第 9 章 17 项自检（含 §9.15 NZ 块尺寸、§9.16 条件 Shape、
+   §9.17 TensorList 长度关系自检）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
