@@ -95,7 +95,7 @@ class ParamModelConfig:
     DIM_VALUE_PROFILE_LIST = ["Has_Large_Size", "Has_Size_1", "Has_Odd_Size", "Typical"]
     # 定义属于float, int, bool等可枚举的数据类型
     FLOAT_DTYPE = ["fp16", "fp32", "fp64", "bf16", "fp", "double"]
-    INT_DTYPE = ["int", "int16", "int8", "int32", "int64", "uint8", "uint16", "uint32", "uint64"]
+    INT_DTYPE = ["int", "int16", "int8", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "int4"]
     BOOL_DTYPE = ["bool"]
 
     # 数值类参数以及bool类参数填充值模型全集
@@ -155,7 +155,7 @@ class DataMatchMap:
                                      "ACL_FLOAT32": "fp32", "ACL_FLOAT64": "fp64", "ACL_FLOAT": "fp32",
                                      "ACL_BF16": "bf16", "BOOL": "bool", "STRING": "string", "CHAR": "string",
                                      "string": "string", "bool": "bool", "double": "double", "int64_t": "int64",
-                                     "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8",
+                                     "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8","int4": "int4",
                                      "ACL_HIFLOAT8": "hifloat8", "FLOAT8_E5M2": "float8_e5m2",
                                      "ACL_FLOAT8_E5M2": "float8_e5m2", "FLOAT8_E4M3FN": "float8_e4m3fn",
                                      "ACL_FLOAT8_E4M3FN": "float8_e4m3fn", "FLOAT8_E8M0": "float8_e8m0",

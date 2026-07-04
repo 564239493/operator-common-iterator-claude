@@ -7,6 +7,7 @@ import argparse
 import ast
 import io
 import json
+import re
 import sys
 import tokenize
 from pathlib import Path
@@ -14,6 +15,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+_CONDITIONAL_SHAPE_SIGNAL_RE = re.compile(
+    r"(?:配置|设置|设为|为|等于)\s*(?:true|false|0|1|[-+]?\d+)\s*时"
+    r"[^。；;\n]*shape"
+    r"|when\b[^\n.]*\b(?:true|false|0|1)\b[^\n.]*\bshape\b",
+    re.IGNORECASE,
+)
 
 
 def load(path: str):
@@ -165,6 +174,40 @@ def _walk_values(value):
         yield value
 
 
+def _validate_conditional_shape_constraints(value) -> list[str]:
+    """Require a gated shape expression when an enum/bool description says so."""
+    errors: list[str] = []
+    constraints_by_platform: dict[str, list[dict]] = {}
+    for platform, _, constraint in _iter_constraints(value):
+        constraints_by_platform.setdefault(platform, []).append(constraint)
+
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        description = attributes.get("description", "")
+        if not isinstance(description, str):
+            continue
+        if not _CONDITIONAL_SHAPE_SIGNAL_RE.search(description):
+            continue
+
+        platform_constraints = list(constraints_by_platform.get(platform, []))
+        if platform != "common":
+            platform_constraints.extend(constraints_by_platform.get("common", []))
+        gate_ref = f"{param}.range_value"
+        has_gated_shape = any(
+            isinstance(constraint.get("expr"), str)
+            and gate_ref in constraint["expr"]
+            and ".shape" in constraint["expr"]
+            and param in constraint.get("relation_params", [])
+            for constraint in platform_constraints
+        )
+        if not has_gated_shape:
+            errors.append(
+                f"{section}.{param}[{platform}].description contains a "
+                "conditional Shape rule, but constraints_in_parameters has "
+                f"no shape expression gated by {gate_ref}"
+            )
+    return errors
+
+
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
@@ -172,7 +215,10 @@ def validate_constraints(value) -> list[str]:
         from agent.generators.common_model_definition import OperatorRule
 
         OperatorRule(**value)
-        return validate_constraint_semantics(value)
+        return (
+            validate_constraint_semantics(value)
+            + _validate_conditional_shape_constraints(value)
+        )
     except Exception as exc:
         return [f"OperatorRule validation failed: {exc}"]
 
