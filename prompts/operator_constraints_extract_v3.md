@@ -29,7 +29,7 @@
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 17 项检查（含条件 Shape、TensorList 长度关系自检） |
+| 9 | 自检清单 | 提取完成后必须执行 18 项检查（含条件 Shape、TensorList 长度、动态边界分层自检） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 A | 典型算子示例 | 10 个算子的关键提取点对照 |
 | 附录 B | v1→v2→v3 升级注意事项 | 升级路径与扩展占位 |
@@ -377,6 +377,7 @@ class OperatorRule(BaseModel):
 | `"0到5"` | `[[0, 5]]` | `range` | 中文区间 |
 | `"大于0"` | `[]` | `range` | 单边/开区间不在 `allowed_range_value` 中伪造边界；写 `value_dependency`：`param.range_value > 0` |
 | `"小于1024"` | `[]` | `range` | 写 `value_dependency`：`param.range_value < 1024` |
+| `"padding的两个数值都需小于self最后一维度"` | `[]` | `range` | 动态边界依赖 `self.shape[-1]`，必须写入 `constraints_in_parameters`，禁止枚举几个样例值 |
 | `"大于等于1"` | `[]` | `range` | 写 `value_dependency`：`param.range_value >= 1` |
 | `"取值范围为245~333"` | `[[245, 333]]` | `range` | ~分隔 |
 | `"fastgelu/gelu/relu/silu"` | `["fastgelu", "gelu", "relu", "silu"]` | `enum` | `/` 分隔 |
@@ -396,6 +397,8 @@ class OperatorRule(BaseModel):
 - `type=enum`：允许 `null`，表示"空值/未传值"本身是一个明确的离散候选。
 - 当原文中的"空"表示未传值、缺省、空指针或 `nullptr` 时，必须输出 JSON `null`，
   禁止照抄为字符串 `"空"`。只有 API 明确接收字面字符串"空"时才能输出 `"空"`。
+- 参数为必选（`is_optional.value=false`）且原文未明确允许未传值/空指针时，
+  `allowed_range_value` 禁止包含 `null`；C/C++ 签名是指针不等于参数可以为空。
 - "未传容器"和"传入零长度容器"不是同一语义：前者为 `null`；只有原文明示传入
   长度为 0 的数组/列表实例时，才将空容器候选表示为 `[[]]`。空 Tensor 应使用
   shape/dimensions 约束表达，不在 `allowed_range_value` 中写 `"空"`。
@@ -403,8 +406,8 @@ class OperatorRule(BaseModel):
 ##### aclIntArray 特殊取值（`knowledge/allowed_range/examples/acl_int_array.md`）
 
 `aclIntArray` 参数的取值往往是**特定数组值**或**未传值**，`type` 统一设为 `enum`。
-若上下文出现"传入空""缺省""空指针"或参数为指针/Optional，空候选使用 JSON
-`null`；不得使用字符串 `"空"`：
+仅当上下文明确出现"传入空""缺省""空指针"，或参数确为 Optional 时，空候选使用
+JSON `null`；不得仅因 C/C++ 类型是指针就添加 `null`，也不得使用字符串 `"空"`：
 
 | 原文 | `value` |
 | ---- | ------- |
@@ -430,6 +433,10 @@ bool 参数（`is_xxx`/`xxxFlag` / `transposeX*` 等）**必须**产出 `allowed
 下列场景**不**产出 `allowed_range_value.value` 条目（保持 `[]`）：
 - 描述只涉及 shape/dtype/format，不涉及值域；
 - Tensor / TensorList 参数（`aclTensor` / `aclTensorList`），维度不属于取值范围；
+- 取值上下界依赖其他参数的 shape、长度或取值；这种动态关系必须完整写入
+  `constraints_in_parameters`，禁止用少量“代表性样例”伪造枚举；
+- 动态表达式只编码原文明示的比较方向和边界；原文仅写“小于”时禁止自行补充
+  `>= 0`、非空等额外条件；
 - **bool 参数例外**：见上一子节"bool 类型参数"，必须产出 `type="enum"` 条目。
 
 ##### G. 条件 Shape 描述识别（门控维度，v3 新增，通用规则）
@@ -1078,7 +1085,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 17 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 18 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1134,6 +1141,15 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
     c. 禁止在 expr 中出现 `.array_length`，也禁止用 `len(P.shape)` 表示列表长度；
     d. 相同文案出现在多个参数行时逐行核对，禁止只为第一个参数生成约束；
     e. 含“一般情况下/通常情况下”的描述必须结合综合约束补全条件，不能直接无条件化。
+18. **动态取值边界分层**：若 `allowed_range_value.src_text` 引用了其他参数，并描述
+    小于/大于/等于/相同/依赖等关系：
+    a. `allowed_range_value.value` 必须为 `[]`，不得枚举模型猜测的样例值；
+    b. 完整关系必须进入每个平台的 `constraints_in_parameters`，并在
+       `relation_params` 中包含双方参数；
+    c. 必选参数且原文没有空值语义时禁止包含 `null`；
+    d. 例如“padding 两个数值均小于 self 最后一维”应写
+       `padding.range_value[0] < self.shape[-1] and padding.range_value[1] < self.shape[-1]`；
+    e. 原文未说明 padding 非负时，不得擅自增加 `0 <= padding.range_value[i]`。
 
 ---
 
@@ -1173,8 +1189,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 17 项自检（含 §9.15 NZ 块尺寸、§9.16 条件 Shape、
-   §9.17 TensorList 长度关系自检）；
+3. 内部执行第 9 章 18 项自检（含 §9.15 NZ 块尺寸、§9.16 条件 Shape、
+   §9.17 TensorList 长度关系、§9.18 动态取值边界分层自检）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 

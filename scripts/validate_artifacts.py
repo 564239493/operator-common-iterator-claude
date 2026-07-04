@@ -290,6 +290,102 @@ def _validate_tensor_list_length_constraints(value) -> list[str]:
     return errors
 
 
+_DYNAMIC_VALUE_RELATION_RE = re.compile(
+    r"(?:小于|大于|不超过|不小于|等于|相同|一致|依赖|根据)"
+)
+_EXPLICIT_NULL_RE = re.compile(
+    r"(?:空指针|nullptr|未传|缺省|支持空|可为空|配置空)",
+    re.IGNORECASE,
+)
+
+
+def _validate_dynamic_allowed_ranges(value) -> list[str]:
+    """Keep cross-parameter value bounds out of allowed_range_value."""
+    errors: list[str] = []
+    parameter_names = set()
+    for section_name in ("inputs", "outputs"):
+        section = value.get(section_name, {})
+        if isinstance(section, dict):
+            parameter_names.update(section)
+
+    constraints_by_platform: dict[str, list[dict]] = {}
+    for platform, _, constraint in _iter_constraints(value):
+        constraints_by_platform.setdefault(platform, []).append(constraint)
+
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        allowed = attributes.get("allowed_range_value")
+        if not isinstance(allowed, dict):
+            continue
+        allowed_value = allowed.get("value", [])
+        src_text = allowed.get("src_text", "")
+        src_text = src_text if isinstance(src_text, str) else ""
+        is_optional = attributes.get("is_optional")
+        optional_value = (
+            is_optional.get("value")
+            if isinstance(is_optional, dict)
+            else is_optional
+        )
+        description = attributes.get("description", "")
+        null_context = " ".join(
+            text
+            for text in (
+                src_text,
+                description if isinstance(description, str) else "",
+                is_optional.get("src_text", "")
+                if isinstance(is_optional, dict)
+                else "",
+            )
+            if isinstance(text, str)
+        )
+        if (
+            allowed.get("type") == "enum"
+            and any(item is None for item in _walk_values(allowed_value))
+            and optional_value is not True
+            and not _EXPLICIT_NULL_RE.search(null_context)
+        ):
+            errors.append(
+                f"{section}.{param}[{platform}].allowed_range_value contains "
+                "null, but the parameter is required and its source text "
+                "does not permit an unset/null value"
+            )
+
+        references = [
+            name
+            for name in parameter_names
+            if name != param
+            and re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+                src_text,
+            )
+        ]
+        if not references or not _DYNAMIC_VALUE_RELATION_RE.search(src_text):
+            continue
+        if allowed_value != []:
+            errors.append(
+                f"{section}.{param}[{platform}].allowed_range_value derives "
+                f"a dynamic bound from {references}; keep value=[] and "
+                "express the relationship in constraints_in_parameters"
+            )
+
+        platform_constraints = list(constraints_by_platform.get(platform, []))
+        if platform != "common":
+            platform_constraints.extend(constraints_by_platform.get("common", []))
+        for reference in references:
+            has_relation = any(
+                isinstance(constraint.get("expr"), str)
+                and param in constraint.get("relation_params", [])
+                and reference in constraint.get("relation_params", [])
+                for constraint in platform_constraints
+            )
+            if not has_relation:
+                errors.append(
+                    f"{section}.{param}[{platform}].allowed_range_value source "
+                    f"references {reference}, but no corresponding "
+                    "constraints_in_parameters expression was found"
+                )
+    return errors
+
+
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
@@ -301,6 +397,7 @@ def validate_constraints(value) -> list[str]:
             validate_constraint_semantics(value)
             + _validate_conditional_shape_constraints(value)
             + _validate_tensor_list_length_constraints(value)
+            + _validate_dynamic_allowed_ranges(value)
         )
     except Exception as exc:
         return [f"OperatorRule validation failed: {exc}"]
