@@ -2,11 +2,10 @@
 算子规则 JSON 的 Pydantic 数据模型定义（新版）
 用于严格校验 JSON 数据结构和类型
 """
-import re
 from enum import Enum
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class InterConstraintsRuleType(str, Enum):
@@ -48,21 +47,6 @@ class ParamAttributes(BaseModel):
     allowed_range_value: ValueWithSrcText | str = Field(default_factory=lambda : ValueWithSrcText(value=[], src_text=""), description="允许的取值范围")
 
     model_config = {"extra": "forbid"}
-
-    @model_validator(mode="after")
-    def clear_dimensions_for_non_tensor_types(self):
-        """Only tensor-like parameters have a shape rank."""
-        raw_type = self.type.value if isinstance(self.type, ValueWithSrcText) else self.type
-        normalized_type = ""
-        if isinstance(raw_type, str):
-            normalized_type = re.sub(r"\b(?:const|struct)\b|[*&]", "", raw_type).strip()
-
-        if normalized_type not in {"aclTensor", "aclTensorList"}:
-            if isinstance(self.dimensions, ValueWithSrcText):
-                self.dimensions.value = []
-            else:
-                self.dimensions = ValueWithSrcText(value=[], src_text="")
-        return self
 
 
 # ==================== 参数间约束 ====================

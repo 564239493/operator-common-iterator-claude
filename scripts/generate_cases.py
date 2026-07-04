@@ -100,6 +100,14 @@ def main() -> int:
     constraints_path = Path(args.constraints)
     output_path = Path(args.output)
     constraints = json.loads(constraints_path.read_text(encoding="utf-8"))
+    from scripts.normalize_constraints import normalize_constraints
+
+    normalized_count = normalize_constraints(constraints)
+    if normalized_count:
+        logger.info(
+            "normalized dimensions for %d non-Tensor parameter entries",
+            normalized_count,
+        )
     logger.info(
         "constraints loaded: operator=%s, product_support=%d 项",
         constraints.get("operator_name", "<unknown>"),
