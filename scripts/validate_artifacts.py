@@ -290,6 +290,63 @@ def _validate_tensor_list_length_constraints(value) -> list[str]:
     return errors
 
 
+def _validate_array_lengths(value) -> list[str]:
+    """Reject null lengths and lossy representations of alternative ranges."""
+    errors: list[str] = []
+    alternative_range_re = re.compile(
+        r"\[\s*-?\d+\s*,\s*-?\d+\s*\].*"
+        r"(?:或者|或是|或).*"
+        r"\[\s*-?\d+\s*,\s*-?\d+\s*\]"
+    )
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        array_length = attributes.get("array_length")
+        if not isinstance(array_length, dict):
+            continue
+        length_value = array_length.get("value")
+        path = f"{section}.{param}[{platform}].array_length.value"
+        if length_value is None:
+            errors.append(f"{path} must not be null; use [] when unconstrained")
+            continue
+        is_single_interval = (
+            isinstance(length_value, list)
+            and len(length_value) == 2
+            and all(isinstance(item, int) for item in length_value)
+        )
+        is_interval_list = (
+            isinstance(length_value, list)
+            and all(
+                isinstance(item, list)
+                and len(item) == 2
+                and all(isinstance(boundary, int) for boundary in item)
+                for item in length_value
+            )
+        )
+        if not (is_single_interval or is_interval_list):
+            errors.append(
+                f"{path} must be [], [min,max], or "
+                "[[min1,max1],[min2,max2],...]"
+            )
+            continue
+        src_text = array_length.get("src_text", "")
+        if (
+            isinstance(src_text, str)
+            and alternative_range_re.search(src_text)
+            and not (
+                isinstance(length_value, list)
+                and len(length_value) >= 2
+                and all(
+                    isinstance(item, list) and len(item) == 2
+                    for item in length_value
+                )
+            )
+        ):
+            errors.append(
+                f"{path} must preserve every alternative interval from "
+                "src_text as [[min1,max1],[min2,max2],...]"
+            )
+    return errors
+
+
 _DYNAMIC_VALUE_RELATION_RE = re.compile(
     r"(?:小于|大于|不超过|不小于|等于|相同|一致|依赖|根据)"
 )
@@ -389,18 +446,20 @@ def _validate_dynamic_allowed_ranges(value) -> list[str]:
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
+    array_length_errors = _validate_array_lengths(value)
     try:
         from agent.generators.common_model_definition import OperatorRule
 
         OperatorRule(**value)
         return (
             validate_constraint_semantics(value)
+            + array_length_errors
             + _validate_conditional_shape_constraints(value)
             + _validate_tensor_list_length_constraints(value)
             + _validate_dynamic_allowed_ranges(value)
         )
     except Exception as exc:
-        return [f"OperatorRule validation failed: {exc}"]
+        return array_length_errors + [f"OperatorRule validation failed: {exc}"]
 
 
 def validate_cases(value) -> list[str]:

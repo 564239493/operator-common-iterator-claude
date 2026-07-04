@@ -128,6 +128,15 @@ class ValueWithSrcText(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ArrayLengthWithSrcText(BaseModel):
+    """数组长度字段；value 必须是非 null 的区间列表。"""
+    value: Union[List[int], List[List[int]]] = Field(default_factory=list)
+    src_text: str = Field(default="")
+    type: Optional[str] = Field(default=None)
+
+    model_config = {"extra": "forbid"}
+
+
 # ---------- 单个参数在某个平台下的约束卡片 ----------
 
 class ParamAttributes(BaseModel):
@@ -138,9 +147,13 @@ class ParamAttributes(BaseModel):
     is_optional: Union[ValueWithSrcText, str] = Field(..., description="是否可选（true / false）")
     is_support_discontinuous: Union[ValueWithSrcText, str] = Field(..., description="是否支持非连续 Tensor")
     is_operator_param: Union[ValueWithSrcText, str] = Field(..., description="是否为算子参数")
-    array_length: Union[ValueWithSrcText, str] = Field(
-        default="N/A",
-        description="数组长度：([2,2] 表示固定长度2) 或 'N/A'（不适用）",
+    array_length: ArrayLengthWithSrcText = Field(
+        default_factory=ArrayLengthWithSrcText,
+        description=(
+            "数组长度：[min,max] 表示单一区间；"
+            "[[min1,max1],[min2,max2]] 表示多个可选区间；"
+            "无明确长度约束使用 []，value 禁止为 null"
+        ),
     )
     dtype: Union[ValueWithSrcText, str] = Field(..., description="支持的数据类型列表")
     dimensions: Union[ValueWithSrcText, str] = Field(..., description="维度（rank）约束")
@@ -293,9 +306,18 @@ class OperatorRule(BaseModel):
 | `is_support_discontinuous.src_text` | 是 | `str` | 摘录原符号 |
 | `is_operator_param.value` | 是 | `bool` | 函数签名真实参数 → `true`；隐式维度变量/量化粒度 → `false` |
 | `is_operator_param.src_text` | 是 | `str` | 摘录原文 |
-| `array_length` | 是 | `ValueWithSrcText` 或 `str "N/A"` | 数组参数：`value=[min, max]` 或 `[len, len]`；标量 → `"N/A"` 字符串 |
+| `array_length` | 是 | `ArrayLengthWithSrcText` | 数组参数：单一区间用 `value=[min, max]` / `[len, len]`；多个可选区间用 `value=[[min1,max1],[min2,max2]]`；标量或无明确长度约束用 `value=[]` |
 | `array_length.type` | 否 | `str` 或 `null` | 固定长度 → `"range"`；离散枚举 → `"enum"`；不适用 → `null` |
 | `array_length.src_text` | 是 | `str` | 摘录原文（如 `"长度为2"`） |
+
+`array_length.value` 的强制规则：
+
+- `array_length` 必须始终为对象，禁止写 `"N/A"` 或 JSON `null`。
+- `value` **禁止为 JSON `null`**；标量、不适用或没有明确长度约束时必须写 `[]`。
+- 原文给出由“或 / 或者 / 或是”连接的多个闭区间时，必须逐区间保留，禁止合并成覆盖范围。
+- 例如原文 `"tensorList长度支持[1, 128]或者[1, 1024]"` 必须提取为：
+  `{"value": [[1, 128], [1, 1024]], "src_text": "tensorList长度支持[1, 128]或者[1, 1024]", "type": "range"}`；
+  禁止错误合并为 `[1, 1024]`。
 | `dtype.value` | 是 | `List[str]` | 支持的 dtype 字符串（见 §5.2）；标量参数允许填写其自身类型字符串（如 `"bool"`、`"char"`、`"int"`）；不适用 → `[]` |
 | `dtype.src_text` | 是 | `str` | 摘录原文 |
 | `dimensions.value` | 是 | `List[int]` 或 `[]` | **维度（rank）约束**：如 `[2, 3]` 表示 `2 ≤ rank ≤ 3`；不适用 → `[]` |
@@ -1240,6 +1262,12 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
     d. `relation_params` 与切片/公式实际引用参数一致；
     e. 不得用 `gradInput.shape == self.shape` 替代 a/b；
     f. `src_text` 必须能回溯到“维度一致”和派生公式原文。
+20. **array_length 结构完整性**：遍历全部输入和输出参数：
+    a. `array_length` 必须为对象，且 `array_length.value` 不得为 `null`；
+    b. 标量、不适用或文档未给出长度约束时，`value` 必须为 `[]`；
+    c. 单个闭区间使用 `[min,max]`，多个“或”关系闭区间使用
+       `[[min1,max1],[min2,max2],...]`；
+    d. 对照 `src_text` 逐个核验区间数量和端点，禁止把多个可选区间合并为其包络区间。
 
 ---
 
