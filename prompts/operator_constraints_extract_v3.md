@@ -24,12 +24,12 @@
 | 1 | 角色与目标 | 明确模型身份、输入、输出 |
 | 2 | 全局输出规则 | 5 条铁律，缺一不可 |
 | 3 | 顶层 JSON Schema | 定义 `OperatorRule` 的 Pydantic 模型 |
-| 4 | 字段级提取规则 | 10 个一级字段 + dimensions/隐式参数/allowed_range/NZ 格式/条件 Shape 详细映射 |
+| 4 | 字段级提取规则 | 10 个一级字段 + dimensions/隐式参数/allowed_range/NZ 格式/条件 Shape/反向算子 Partial-Shape 详细映射 |
 | 5 | 平台与 dtype 命名规范 | 强约束的字符串字典 |
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 18 项检查（含条件 Shape、TensorList 长度、动态边界分层自检） |
+| 9 | 自检清单 | 提取完成后必须执行 19 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 A | 典型算子示例 | 10 个算子的关键提取点对照 |
 | 附录 B | v1→v2→v3 升级注意事项 | 升级路径与扩展占位 |
@@ -659,6 +659,57 @@ src_text: "NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 
   range 通用规则一致）；若文档只写"块尺寸为 16"未指明具体轴位，按 §4.6.5 D.2
   使用 `[[16, 16]]` 并在 `src_text` 中说明"统一块尺寸"。
 
+#### 4.6.6 Forward-Output Partial-Shape 跟随约束（两轮实测闭环）
+
+> 本规则来自 `aclnnReflectionPad1dBackward` 两轮迭代：首轮只提取末维派生关系，
+> 遗漏 `gradOutput` 与 `self` 的前缀维度和 rank 关系，执行结果为 44/80；第二轮
+> 补齐以下约束后为 80/80。该规则按语义触发，不按算子名硬编码。
+
+##### A. 适用判定
+
+满足下列条件时必须执行本节：
+
+1. 算子属于 backward / grad / 反向传播场景；
+2. 文档明确说明 `gradOutput` / `dout` 的维度与 `self` / `input` 一致，或说明其
+   shape 与正向算子的 output 一致；
+3. 文档又给出最后若干维由 `padding`、`kernel_size`、`stride`、`output_size`
+   等参数派生，因而不能简单写成两个完整 shape 相等。
+
+##### B. 必须拆分落库
+
+前缀跟随与派生轴关系是彼此独立的约束，不能只保留其中一类：
+
+```text
+# 1. 非派生轴（此例为除最后一维外）必须跟随
+expr_type: shape_equality
+expr: gradOutput.shape[:-1] == self.shape[:-1]
+relation_params: ["gradOutput", "self"]
+
+# 2. rank 必须显式一致
+expr_type: shape_equality
+expr: len(gradOutput.shape) == len(self.shape)
+relation_params: ["gradOutput", "self"]
+
+# 3. 派生轴按文档公式单独表达；以下仅为 reflection_pad1d 示例
+expr_type: shape_value_dependency
+expr: gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_value[1]
+relation_params: ["gradOutput", "self", "padding"]
+```
+
+参数名和切片边界必须按文档确定。上例使用 `[:-1]`，是因为 ReflectionPad1d 文档
+把 padding 明确绑定到 `self` 最后一维，且末维公式单独发生变化，所以切片表示
+“除最后一维外的其余维度”。不得仅凭算子名中的 2d/3d 就外推为 `[:-2]` /
+`[:-3]`；只有文档明确给出多个尾部派生轴时，才能采用对应切片并逐轴表达公式。
+
+##### C. 防漏规则
+
+1. `gradInput.shape == self.shape` 不能替代 `gradOutput` 与 `self` 的跟随关系；
+2. 末维公式成立不能推出前缀维度或 rank 一致，三类约束必须分别检查；
+3. `dimensions.value` 只记录静态 rank 范围，跨参数跟随必须进入
+   `constraints_in_parameters`；
+4. 每条 `src_text` 摘录对应的维度一致或派生公式原文；同一句覆盖多条约束时可复用；
+5. 正向算子、MatMul broadcast、卷积反向等不满足上述语义的场景不得套用此模板。
+
 ### 4.7 `constraints_in_parameters`（跨参数 / 单参数约束）
 
 #### 4.7.1 顶层 key
@@ -718,6 +769,10 @@ src_text: "NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 
    若文档同时给出 Y 的默认值与非默认值两套 shape（例如 "shape 为 (H*rankSize, N)，配
    置为True时为 (N, H*rankSize)"），**必须**把它们合并为**单一**带门控的 expr 条目，
    并在 `src_text` 中摘录原文中的"配置为True时…为…"那一短语。
+
+9. **Forward-Output Partial-Shape 必须显式落库**：满足 §4.6.6 的 backward /
+   grad 场景，必须同时检查并落库“前缀维度跟随”“rank 一致”“文档明确给出的派生轴
+   公式”。不得用 `gradInput.shape == self.shape` 或仅末维公式代替前两项。
 
 ### 4.8 `return_info`（错误返回码）
 
@@ -842,6 +897,12 @@ NDC1HWC0, FRACTAL_NZ_C0_16, NDHWC, NCHW_VECT_C0_16, NC1HWC0
     不得作为数值区间端点参与 `<`、`<=`、`>`、`>=`。无法表达时统一使用空字符串
     `""`，不要用整个 JSON 值 `null` 代替 `expr` 字符串。
 11. **参数名冲突**：当参数名为 `max`/`min`/`sum` 等内置函数名时，表达式中**不要再调用**同名内置函数；`relation_params` 仍写原名。
+12. **Partial-Shape 切片**：当文档明确表明只有最后一维是派生轴时，
+    `gradOutput.shape[:-1] == self.shape[:-1]` 是合法的 `shape_equality`
+    表达式。`-1` 表示排除这个已被文档确认的末维派生轴，并非由 backward /
+    1d 名称自动决定。必须直接使用 shape 切片等式，不得改写为
+    `in [self.shape[:-1]]`，也不得用无关的 `gradInput.shape` 近似替代；其他切片
+    边界只有在文档明确给出对应派生轴时才能使用。
 
 ### 6.2 表达式与 src_text 的对应
 
@@ -1005,6 +1066,25 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | "group=tp 时 x shape 为 (BS/rankSize, H)" | `x.shape` | `group` |
 | "squeeze 为 True 时输出 shape 去除 axis 维" | `output.shape` | `squeeze` |
 
+#### 模式 7：Forward-Output Partial-Shape 跟随
+
+**适用场景**：backward / grad 算子中，`gradOutput` 与 `self` / `input` 共享
+非派生轴，而末尾空间轴由 padding、stride、kernel 等参数改变。
+
+```text
+# 前缀维度跟随
+gradOutput.shape[:-1] == self.shape[:-1]
+
+# rank 一致（必须显式落库）
+len(gradOutput.shape) == len(self.shape)
+
+# 派生轴按文档公式表达；reflection_pad1d 示例
+gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_value[1]
+```
+
+三条约束语义独立。尤其禁止用 `gradInput.shape == self.shape` 替代第一条，或认为
+末维公式成立便会自动保证 batch 维和 rank 一致。
+
 ---
 
 ## 7. `expr_type` 取值字典
@@ -1080,12 +1160,13 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
 | **文档写"X 的 shape 为 (A, B)；当 Y 配置为 True 时 shape 为 (C, D)"（v3 新增）** | **不可**拆为两条独立无条件 shape 描述；必须在 `constraints_in_parameters` 中为 X 产出**单一条件 shape 约束**（§6.3 模式 6），用 `Y.range_value` 等门控参数分支；`expr_type` 优先 `shape_choice` 或 `parameter_representation`；`src_text` 同时摘录默认 shape 短语与"配置为 X 时…为…"短语，确保门控可溯源（典型反例：aclnnAlltoAllMatmul 中 x2.shape 在 transposeX2=True 时应为 (N, H*rankSize) 而非无条件 (H*rankSize, N)） |
 | **aclTensorList 参数 P 写“长度与 Q 相同”** | P 为 Optional 时生成 `(P is None) or (len(P) == len(Q))`，否则生成 `len(P) == len(Q)`；禁止 `.array_length` 和 `len(P.shape)`；相同文案出现在多个参数行时逐参数生成，不能去重 |
+| **backward / grad 文档写“gradOutput 与 self/input 维度一致”，同时末尾轴由 padding 等参数派生** | 按 §4.6.6 / §6.3 模式 7 拆分：①前缀切片相等；②rank 相等；③文档明确的派生轴公式。禁止只提取末维公式，也禁止用 `gradInput.shape == self.shape` 替代 gradOutput 跟随关系 |
 
 ---
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 18 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 19 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1150,6 +1231,15 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
     d. 例如“padding 两个数值均小于 self 最后一维”应写
        `padding.range_value[0] < self.shape[-1] and padding.range_value[1] < self.shape[-1]`；
     e. 原文未说明 padding 非负时，不得擅自增加 `0 <= padding.range_value[i]`。
+19. **Forward-Output Partial-Shape 完整性**：若 backward / grad 文档明确说明
+    `gradOutput` / `dout` 与 `self` / `input` 维度一致，同时又给出末尾派生轴公式：
+    a. 必须存在文档可证的前缀跟随表达式；仅最后一维为派生轴时写
+       `gradOutput.shape[:-1] == self.shape[:-1]`，不得仅按 1d/2d/3d 名称猜测切片；
+    b. 必须存在 `len(gradOutput.shape) == len(self.shape)`；
+    c. 文档明确给出的每个派生轴公式必须分别落库；
+    d. `relation_params` 与切片/公式实际引用参数一致；
+    e. 不得用 `gradInput.shape == self.shape` 替代 a/b；
+    f. `src_text` 必须能回溯到“维度一致”和派生公式原文。
 
 ---
 
@@ -1166,8 +1256,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 - 处理 NZ / FRACTAL_NZ 张量时参考 §4.6.5（块尺寸硬约束、转置/非转置布局区分）
 - 识别条件 Shape（被 enum/boolean 门控的 shape）时参考 §4.6.3 G 与 §6.3 模式 6
 - 处理 aclTensorList 容器长度关系时参考 §4.6.3 TensorList 长度规则与 §6.3 模式 0
+- 处理 backward / grad 的 gradOutput partial-shape 跟随时参考 §4.6.6 与 §6.3 模式 7
 - 写 expr 表达式时参考 §6.3 模式库（按关系特征匹配模板；NZ 块尺寸使用模式 5；
-  条件 Shape 使用模式 6；TensorList 长度相等使用模式 0）
+  条件 Shape 使用模式 6；Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0）
 - 写 allowed_range_value 时参考 §4.6.3 allowed_range 文本→结构化映射
 
 输出必须是**纯 JSON 字符串**，无任何前后缀。
@@ -1189,8 +1280,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 18 项自检（含 §9.15 NZ 块尺寸、§9.16 条件 Shape、
-   §9.17 TensorList 长度关系、§9.18 动态取值边界分层自检）；
+3. 内部执行第 9 章 19 项自检（含 §9.15 NZ 块尺寸、§9.16 条件 Shape、
+   §9.17 TensorList 长度关系、§9.18 动态取值边界、§9.19 Partial-Shape 自检）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
@@ -1202,7 +1293,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 
 | 算子 | 类型 | 关键提取点 |
 | ---- | ---- | ---------- |
-| `aclnnReflectionPad1dBackward` | NN / 反向 | `padding` 长度固定 2；`padding` 数值 < `self` 最后一维 |
+| `aclnnReflectionPad1dBackward` | NN / 反向 | `padding` 长度固定 2；`padding` 数值 < `self` 最后一维；`gradOutput.shape[:-1] == self.shape[:-1]`、rank 一致及末维派生公式必须分别落库 |
 | `aclnnBatchMatMulWeightNz` | NN / MatMul | `mat2` 强制 NZ 格式；**§4.6.5 双布局**：非转置 `(b, n1, k1, k0=16, n0=16)` + 转置 `(b, k1, n1, n0=16, k0=16)` 各落两条 `shape[3]/shape[4]==16`；`cubeMathType` 可选 int8 |
 | `aclnnGroupedMatmulV5` | NN / 分组 MatMul | `actType ∈ [0,5]`；大量 `Optional` 参数与 `aclTensorList` |
 | `aclnnSwinAttentionScoreQuant` | Transformer | int8 量化；`biasDequant*Optional` 取值为 0–255 整型 |
@@ -1267,6 +1358,25 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 + §6.3 模式 6 + §9.16 自检四道防线，确保条件 Shape 在首轮 EXTRACT 阶段即可分支
 落库，使其它算子在首轮 EXTRACT 阶段即可避免同样根因。
 
+### B++：v3 Partial-Shape 增量（基于 aclnnReflectionPad1dBackward 两轮闭环）
+
+任务 `runs/aclnnReflectionPad1dBackward-20260703-092902-630061` 的首轮约束已经包含
+`gradInput.shape == self.shape` 和 `gradOutput` 末维派生公式，但遗漏
+`gradOutput.shape[:-1] == self.shape[:-1]` 及 rank 一致关系，导致四个平台合计
+44/80 通过；第二轮补齐这两条约束后达到 80/80。
+
+本次将成功增量通用化为：
+
+1. §4.6.6：按文档语义识别 backward / grad 的 forward-output partial-shape 跟随；
+2. §4.7.3 rule 9：前缀维度、rank、派生轴公式分别显式落库；
+3. §6.1 rule 12：允许并要求使用 `shape[:-k]` 切片等式；
+4. §6.3 模式 7：提供三类约束共存模板；
+5. §8 与 §9.19：增加边缘场景处置和完整性自检；
+6. §10 与附录 A：将该模式加入调用提示和真实算子关键提取点。
+
+该增量不按 `aclnnReflectionPad1dBackward` 名称硬编码；只有文档同时给出维度跟随和
+派生轴语义时才触发，避免误用于 MatMul broadcast、正向算子或复杂卷积反向关系。
+
 ---
 
 ## 附录 C：知识库路径速查表
@@ -1284,7 +1394,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | [`knowledge/allowed_range/examples/platform_specific.md`](knowledge/allowed_range/examples/platform_specific.md) | 按平台分行处理取值差异 | §4.6.2 二级 key 规则 |
 | [`knowledge/implicit_params/SKILL.md`](knowledge/implicit_params/SKILL.md) | clamp 含门控 shape 提取（v3 新增 §4.6.3 G + §6.3 模式 6） | §4.6.3 G + §6.3 模式 6 |
 | [`knowledge/implicit_params/SKILL.md`](knowledge/implicit_params/SKILL.md) | 命名维度变量、概念词剔除、操作名剔除、常量/外部常量识别、NZ 块尺寸常量（v2） | §4.6.4 隐式参数识别 + §4.6.5 E |
-| [`knowledge/relation_skills/SKILL.md`](knowledge/relation_skills/SKILL.md) | `expr` 通用规则、`.range_value` / `.dtype` / `.format` 引用、`all()/any()` 包裹、负索引、NZ 块尺寸直接写常量 | §6.1 语法细则 |
+| [`knowledge/relation_skills/SKILL.md`](knowledge/relation_skills/SKILL.md) | `expr` 通用规则、`.range_value` / `.dtype` / `.format` 引用、`all()/any()` 包裹、负索引、NZ 块尺寸常量、由文档派生轴确定的 Partial-Shape 切片 | §6.1 语法细则 + §6.3 模式 7 |
 | [`knowledge/relation_skills/self_constraint.md`](knowledge/relation_skills/self_constraint.md) | 单参数自身约束 5 类模板 | §6.3 模式 4 |
 | [`knowledge/relation_skills/multi_shape_choice.md`](knowledge/relation_skills/multi_shape_choice.md) | 多 Shape 候选模板（条件 / 枚举 / unless） | §6.3 模式 2 |
 | [`knowledge/relation_skills/enum_conditional_shape.md`](knowledge/relation_skills/enum_conditional_shape.md) | 枚举条件 + 条件 Shape 模板 | §6.3 模式 1 |
