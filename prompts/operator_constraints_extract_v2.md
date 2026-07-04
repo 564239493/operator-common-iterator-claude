@@ -1,5 +1,5 @@
-# 算子约束提取通用提示词 · v2
-# Operator Constraints Extraction Universal Prompt · v2
+# 算子约束提取通用提示词 · v2 (含 v2-iter-2026-07-04 强化)
+# Operator Constraints Extraction Universal Prompt · v2 (with v2-iter-2026-07-04 hardening)
 
 > **用途**：从昇腾 CANN（Compute Architecture for Neural Networks）算子官方说明文档（Markdown / HTML）中，**人工 + LLM 协同** 提取结构化的算子约束信息，并以**纯 JSON** 形式输出，可直接喂给下游的测试用例生成引擎。
 >
@@ -269,9 +269,14 @@ class OperatorRule(BaseModel):
 
 - 二级 key 为**平台名**，取值集合：
   - 第 5.1 章列出的标准平台名；
-  - 当**同一参数在所有平台下约束完全一致**时，用单个平台名即可（无需发明 `"common"` 键）；
-  - 当不同平台存在差异时，**按平台拆分**为多个条目。
+  - **每个非隐式参数都必须为 `product_support` 中列出的每一个平台分别产出条目**。
+    即使所有平台下 `ParamAttributes` 字段值完全一致，也必须**逐平台复制**相同的卡片，
+    不得用单个平台名"代笔"，也不得遗漏任何平台；典型反例见 §9.3、§8。
+  - 当不同平台存在差异时，**按平台拆分**为多个条目（字段值不同）。
 - **不要**在单条 `ParamAttributes` 内混合多平台逻辑（用条件表达式兜底属于违规）。
+- **隐式维度变量 / 外部常量** 仅在 `constraints_in_parameters` 中需要按平台区分时
+  才为该平台保留条目；其它隐式参数同样按平台分别产出，保证每个支持的平台都有
+  对应条目。
 
 #### 4.6.3 `ParamAttributes` 字段细则
 
@@ -391,16 +396,26 @@ class OperatorRule(BaseModel):
 | `"支持配置空或者[-2,-1]"` | `[null, [-2, -1]]` |
 | `"支持配置[-2,-1]或[-1,-2]或空"` | `[[-2, -1], [-1, -2], null]` |
 
-##### bool 类型参数（`no_constraint.md`）
+##### bool 类型参数（`no_constraint.md` / v3 加强）
 
-bool 参数（`is_xxx`/`xxxFlag` 等）若文档未给固定取值约束，**不**在 `allowed_range_value` 中产出；项目代码会短路处理（`code=` 中的 fallback）。仅当文档明确说"暂不支持配为 True" 时，填 `[false]` + `type=enum`。
+bool 参数（`is_xxx`/`xxxFlag` / `transposeX*` 等）**必须**产出 `allowed_range_value`，
+`type` 统一为 `"enum"`，并按下表选择 `value`：
 
-##### 无约束参数处理（`no_constraint.md`）
+| 原文约束 | `allowed_range_value.value` |
+| -------- | --------------------------- |
+| "暂不支持配为 True" / "仅支持 False" | `[false]` |
+| "暂不支持配为 False" / "仅支持 True" | `[true]` |
+| 无明确固定值约束（仅描述为 bool） | `[false, true]` |
+
+禁止：填写 `value=[]` + `type="range"`，否则下游生成器按浮点范围填充，
+会产生 `1.0`、`0.0`、`1.23e-40`、`-2147483648.0` 等非法 bool 值。
+
+##### 无约束参数处理（`no_constraint.md` / v3 加强）
 
 下列场景**不**产出 `allowed_range_value.value` 条目（保持 `[]`）：
 - 描述只涉及 shape/dtype/format，不涉及值域；
 - Tensor / TensorList 参数（`aclTensor` / `aclTensorList`），维度不属于取值范围；
-- bool 类型且无固定值约束。
+- **bool 参数例外**：见上一子节"bool 类型参数"，必须产出 `type="enum"` 条目。
 
 #### 4.6.4 隐式参数（命名维度变量 / 外部常量）识别
 
@@ -858,6 +873,7 @@ mat2.shape[4] == 16
 | 文档给出"确定性计算：默认非确定性" | `deterministic_computing["平台"].value = "false"`，`src_text` 摘录该句 |
 | 文档**完全没有** `返回码` 章节 | `return_info=[]` |
 | `allowed_range_value` 只有单边界或开区间 | `allowed_range_value.value=[]`；在 `constraints_in_parameters` 中用 `value_dependency` 不等式表达，禁止为 `type=range` 写 `null` 端点 |
+| **文档写 bool 参数（无固定值约束）** | `allowed_range_value.type="enum"`、`value=[false, true]`；强行 bool 枚举，不允许填 `[]` 配 `type="range"`（否则下游生成器按浮点填充，会产生 1.0/1.23e-40 等非法值） |
 | 表达式无法用 Python 表达（自然语言公式） | `expr=""`，`src_text` 摘录原文，待人工校对 |
 | 文档出现矛盾（A段dtype=X，B段dtype=Y） | 优先**保守**取值（取并集），`src_text` 摘录矛盾原文，等待人工确认 |
 | 文档写"1维，最大长度256" | `dimensions.value=[1, 1]`，**长度256 不得放入 `dimensions`**；须在 `constraints_in_parameters` 中加 `self_shape_axis_value` 约束 |
@@ -876,16 +892,22 @@ mat2.shape[4] == 16
 | **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"（v2 新增）** | 按 §4.6.5 全流程处理：①`mat2.dimensions.value=[5,5]`；②`mat2.allowed_range_value.value=[[16,16],[16,16]]`，`type=range`；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
 | **文档写"NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 16， k0为16"（v2 新增，转置 NZ）** | 同上，但**作为独立两条约束**落库（与上一种布局不合并），`src_text` 摘录对应的转置原文；`mat2.allowed_range_value` 同样含 `[[16,16],[16,16]]` |
 | **文档同时写明非转置与转置 NZ 两种布局（v2 新增）** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`allowed_range_value` 的 `value` 仍为 `[[16,16],[16,16]]`（数值上等价，但约束条目按布局拆分） |
+| **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
 
 ---
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 12 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 15 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
-3. **平台字典一致**：`product_support` 中的每个平台名，在 `deterministic_computing`、`inputs`/`outputs` 的二级 key、`constraints_in_parameters` 的 key 中**至少出现一次**。
+3. **平台字典一致 & 平台覆盖完整**：`product_support` 中的每个平台名，在
+   `deterministic_computing`、`constraints_in_parameters` 的 key 中**至少出现一次**。
+   **`inputs` / `outputs` 中的每个 `is_operator_param.value=true` 的非隐式参数，必须为
+   `product_support` 中的每一个平台都产出条目**——即使各平台 `ParamAttributes` 内容完全
+   一致，也必须逐平台复制；不得用单个平台名"代笔"。常见错误模式：从 `Atlas 350 加速卡`
+   文档表格读取约束后，只输出 `Atlas 350 加速卡` 条目，遗漏 `Atlas A3 / A2` 条目。
 4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；非 Tensor 参数若非“仅支持空指针”，`dtype.value` 不得为空，缺失时按 type 回填；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。
 5. **表达式合法**：每条 `expr`（非空）先把裸 `null` token 规范化为 `None`，再用
    Python AST 解析；不得有 `SyntaxError`。`null`/`None` 不得作为数值大小比较边界。
@@ -901,7 +923,11 @@ mat2.shape[4] == 16
 13. **空值枚举序列化**：若 `allowed_range_value.type=enum` 且原文的“空”表示未传值、
     缺省、空指针或 `nullptr`，候选必须是 JSON `null`，不得是字符串 `"空"`；只有
     原文明示零长度容器时才使用空容器候选 `[[]]`。
-13. **NZ 块尺寸硬约束（v2 新增）**：若存在 5D NZ 张量（`format ∈ {"NZ","FRACTAL_NZ","FRACTAL_NZ_C0_16"}` 且 `dimensions.value=[5,5]`），
+14. **bool 参数 allowed_range_value 强枚举**：对所有 `type.value` 为 `"bool"` 的参数，
+    `allowed_range_value.type` 必须为 `"enum"`，`value` 必须是 `[false]` / `[true]` /
+    `[false, true]` 三者之一；禁止留 `value=[]` 或 `type="range"`（否则生成器按浮点
+    范围填充会产生非法 bool 取值，触发 `create_dataset` 报告 `attr bool error`）。
+15. **NZ 块尺寸硬约束（v2 新增）**：若存在 5D NZ 张量（`format ∈ {"NZ","FRACTAL_NZ","FRACTAL_NZ_C0_16"}` 且 `dimensions.value=[5,5]`），
     必须满足**全部**下列子项：
     a. `mat2.allowed_range_value.value` 包含 `[[16,16],[16,16]]` 或文档明示的其他端点（`type=range`）；
     b. `constraints_in_parameters[每个支持平台]` 含 `mat2.shape[3] == 16` 与 `mat2.shape[4] == 16` 两条 `shape_equality`（或 `shape_value_dependency`）；
@@ -985,6 +1011,30 @@ mat2.shape[4] == 16
   §8 新增三条 NZ 相关边缘场景；§9 新增第 13 项自检（NZ 块尺寸硬约束）；
   §10 调用模板引用 §4.6.5 与模式 5。
 - v2 **不**改变 `OperatorRule` schema 字段；所有新增规则均为已有字段的更精细约束。
+
+### B+：v2 → v2-iter-2026-07-04 变更记录（基于 `aclnnAlltoAllMatmul` 实战）
+
+下列变更在不变 schema、不破坏现有算子的前提下，强化了"全平台覆盖"与"bool 参数
+枚举化"两条关键防线，避免在多个支持的平台文档（尤其是表格化文档）中只填写单平台条目：
+
+1. **§4.6.2 二级 key 规则重写**：删除"约束完全一致时用单个平台名"的措辞，
+   改为强制逐平台复制 `ParamAttributes`（即便内容相同）。
+2. **§4.6.3 bool 类型参数子节重写**：所有 bool 参数（包括无明确固定值约束的）必须产出
+   `type="enum"` 条目；取值按文档限定选择 `[false]` / `[true]` / `[false, true]`。
+   删除"`no_constraint.md` 中 bool 参数不产出"的旧规则。
+3. **§8 边缘场景新增两行**：
+   - "bool 参数（无固定值约束）" → enum `[false, true]`；
+   - "`product_support` 含 ≥2 平台但某非隐式参数只产出 1 平台条目" → 漏抽，逐平台复制。
+4. **§9.3 平台字典一致**：强化"逐平台复制"检查，新增"常见错误模式"反例说明。
+5. **§9 自检清单新增第 14 项**：bool 参数 `allowed_range_value` 必须 enum，value 为
+   `[false]` / `[true]` / `[false, true]`；自检总数从 12 → 14 → 15（含原 v2 §9.13
+   的 NZ 块尺寸硬约束）。
+
+**触发背景**：`aclnnAlltoAllMatmul` 闭环测试发现 v1 提示词产出 `iter_001` 时，
+11 个非隐式参数中只有 2 个有完整的三平台条目，导致 A3/A2 平台用例无法生成，且
+`transposeX2` 因 `allowed_range_value.value=[]` + `type=range` 被生成器错误填充为浮点。
+`iter_002` 通过 prompt_v2（含本节所有变更）将这两个问题一次修复（用例从 0/10 → 9/30）。
+本节变更同步到主提示词，使其它算子在首轮 EXTRACT 阶段即可避免同样根因。
 
 ---
 
