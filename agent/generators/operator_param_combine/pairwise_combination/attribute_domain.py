@@ -102,7 +102,10 @@ class AttributeDomain:
         if raw is None:
             return [ParamModelConfig.DEFAULT_PARAM_DTYPE_DTYPE_IN_ORIGINAL_DOC]
         if isinstance(raw, list):
-            return [str(v) for v in raw if v is not None]
+            valid_dtype_set = [str(each) for each in raw if each not in ParamModelConfig.UNSUPPORT_DTYPE]
+            return valid_dtype_set
+        if isinstance(raw, str) and raw in ParamModelConfig.UNSUPPORT_DTYPE:
+            return [ParamModelConfig.DEFAULT_PARAM_DTYPE_DTYPE_IN_ORIGINAL_DOC]
         return [str(raw)]
 
     def _extract_dimensions_domain(self, param_name: str, param_attr: ParamAttributes) -> List[int]:
@@ -116,13 +119,7 @@ class AttributeDomain:
         if isinstance(raw, int):
             return [raw]
         if isinstance(raw, list):
-            vals = []
-            for item in raw:
-                if isinstance(item, int):
-                    vals.append(item)
-                elif isinstance(item, list) and len(item) == 2 and all(isinstance(v, int) for v in item):
-                    vals.extend(range(item[0], item[1] + 1))
-            return sorted(set(vals)) if vals else [ParamModelConfig.DEFAULT_TENSOR_SHAPE_DIM]
+            return raw
         return [ParamModelConfig.DEFAULT_TENSOR_SHAPE_DIM]
 
     def _extract_array_length_domain(self, param_name: str, param_attr: ParamAttributes) -> List[int]:
