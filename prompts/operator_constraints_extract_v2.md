@@ -296,6 +296,14 @@ class OperatorRule(BaseModel):
 | `dimensions.value` | 是 | `List[int]` 或 `[]` | **维度（rank）约束**：如 `[2, 3]` 表示 `2 ≤ rank ≤ 3`；不适用 → `[]` |
 | `dimensions.src_text` | 是 | `str` | 摘录原文（如 `"2-3"`、`"2维"`） |
 
+**dtype 为空时的类型回填规则**：
+- 优先使用文档明确给出的 dtype；只有未提取到任何 dtype、即 `dtype.value=[]` 时才执行回填；
+- `aclIntArray` → `["int"]`，`aclFloatArray` → `["float"]`，`aclBoolArray` → `["bool"]`；
+- 其他非 Tensor 参数使用 `type.value` 回填，例如 `type.value="int"` 时输出 `dtype.value=["int"]`；
+- `aclTensor` / `aclTensorList` 不得用类型名回填 dtype；其 dtype 必须来自文档，确实未说明时保持 `[]`；
+- 文档明确参数“只支持传空指针”“必须为空指针”或“仅支持空指针”时保持 `[]`；
+- 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`。
+
 **类型前置规则（必须先于下表执行）**：
 - 仅当 `type.value` 为 `aclTensor` 或 `aclTensorList` 时，才从文档提取并填写 `dimensions.value`；
 - 其他所有类型（包括 `aclIntArray`、`aclFloatArray`、`aclScalar`、`bool`、整数、浮点数和字符串）的 `dimensions.value` 必须为 `[]`，即使其描述中出现“长度”“数组”“维度”“axes”或方括号取值；
@@ -878,7 +886,7 @@ mat2.shape[4] == 16
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
 3. **平台字典一致**：`product_support` 中的每个平台名，在 `deterministic_computing`、`inputs`/`outputs` 的二级 key、`constraints_in_parameters` 的 key 中**至少出现一次**。
-4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。
+4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；非 Tensor 参数若非“仅支持空指针”，`dtype.value` 不得为空，缺失时按 type 回填；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。
 5. **表达式合法**：每条 `expr`（非空）先把裸 `null` token 规范化为 `None`，再用
    Python AST 解析；不得有 `SyntaxError`。`null`/`None` 不得作为数值大小比较边界。
 6. **关系参数一致**：`expr` 中**所有出现的标识符**都在 `relation_params` 中；`relation_params` 中所有参数名都在 `inputs`/`outputs` 有对应卡片（隐式维度变量/外部常量允许例外，但须在 `inputs` 中登记）。

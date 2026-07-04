@@ -105,7 +105,7 @@ def main() -> int:
     normalized_count = normalize_constraints(constraints)
     if normalized_count:
         logger.info(
-            "normalized dimensions for %d non-Tensor parameter entries",
+            "normalized %d type-dependent constraint attribute values",
             normalized_count,
         )
     logger.info(

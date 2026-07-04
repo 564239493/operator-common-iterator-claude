@@ -10,6 +10,14 @@ from pathlib import Path
 from typing import Any
 
 TENSOR_TYPES = {"aclTensor", "aclTensorList"}
+ARRAY_TYPE_DTYPE_FALLBACK = {
+    "aclIntArray": "int",
+    "aclFloatArray": "float",
+    "aclBoolArray": "bool",
+}
+NULL_POINTER_ONLY_RE = re.compile(
+    r"(只支持传空指针|传空指针|必须为空指针|仅支持空指针)"
+)
 
 
 def _attribute_groups(section: Any):
@@ -35,13 +43,27 @@ def _type_name(attributes: dict[str, Any]) -> str:
     return re.sub(r"\b(?:const|struct)\b|[*&]", "", raw_type).strip()
 
 
+def _is_null_pointer_only(attributes: dict[str, Any]) -> bool:
+    source_texts = [attributes.get("description", "")]
+    for field_name in ("is_optional", "dtype"):
+        field = attributes.get(field_name)
+        if isinstance(field, dict):
+            source_texts.append(field.get("src_text", ""))
+    return any(
+        isinstance(text, str) and NULL_POINTER_ONLY_RE.search(text)
+        for text in source_texts
+    )
+
+
 def normalize_constraints(value: dict[str, Any]) -> int:
-    """Clear dimensions for all non-Tensor input and output parameters."""
+    """Normalize type-dependent dimensions and dtype fallback values."""
     normalized_count = 0
     for section_name in ("inputs", "outputs"):
         for attributes in _attribute_groups(value.get(section_name, {})):
-            if _type_name(attributes) in TENSOR_TYPES:
+            type_name = _type_name(attributes)
+            if type_name in TENSOR_TYPES:
                 continue
+
             dimensions = attributes.get("dimensions")
             if isinstance(dimensions, dict):
                 if dimensions.get("value") != []:
@@ -49,6 +71,16 @@ def normalize_constraints(value: dict[str, Any]) -> int:
                     normalized_count += 1
             elif dimensions != {"value": [], "src_text": ""}:
                 attributes["dimensions"] = {"value": [], "src_text": ""}
+                normalized_count += 1
+
+            dtype = attributes.get("dtype")
+            dtype_value = dtype.get("value") if isinstance(dtype, dict) else dtype
+            if dtype_value == [] and type_name and not _is_null_pointer_only(attributes):
+                fallback = ARRAY_TYPE_DTYPE_FALLBACK.get(type_name, type_name)
+                if isinstance(dtype, dict):
+                    dtype["value"] = [fallback]
+                else:
+                    attributes["dtype"] = {"value": [fallback], "src_text": ""}
                 normalized_count += 1
     return normalized_count
 
