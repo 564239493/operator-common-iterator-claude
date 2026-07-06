@@ -446,6 +446,11 @@ def _validate_dynamic_allowed_ranges(value) -> list[str]:
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
+    if "is_single_function_mode" in value:
+        return [
+            "is_single_function_mode 已废弃，不得出现在 constraints.json；"
+            "一段式判定由 function_signature 是否含 GetWorkspaceSize 隐式表达。"
+        ]
     array_length_errors = _validate_array_lengths(value)
     try:
         from agent.generators.common_model_definition import OperatorRule
@@ -460,23 +465,6 @@ def validate_constraints(value) -> list[str]:
         )
     except Exception as exc:
         return [f"OperatorRule validation failed: {exc}"]
-    # 一段式 / 两段式 一致性（v3 新增）：is_single_function_mode 与
-    # function_signature 是否含 GetWorkspaceSize 必须一致。字段缺省（遗留
-    # 两段式产物）时跳过，保持向后兼容。
-    sfn = value.get("is_single_function_mode")
-    sig = value.get("function_signature", "")
-    if sfn is not None and sig:
-        has_gws = "GetWorkspaceSize" in sig
-        if sfn and has_gws:
-            errors.append(
-                "is_single_function_mode=true 但 function_signature 仍含 "
-                "GetWorkspaceSize；一段式算子应取唯一函数声明"
-            )
-        elif (not sfn) and (not has_gws):
-            errors.append(
-                "is_single_function_mode=false 但 function_signature 不含 "
-                "GetWorkspaceSize；两段式算子应取 GetWorkspaceSize 段"
-            )
     return errors
 
 
