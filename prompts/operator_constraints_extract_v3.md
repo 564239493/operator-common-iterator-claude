@@ -1,5 +1,5 @@
 # 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int)
-# Operator Constraints Extraction Universal Prompt · v6 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int)
+# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int)
 
 > **用途**：从昇腾 CANN（Compute Architecture for Neural Networks）算子官方说明文档（Markdown / HTML）中，**人工 + LLM 协同** 提取结构化的算子约束信息，并以**纯 JSON** 形式输出，可直接喂给下游的测试用例生成引擎。
 >
@@ -196,7 +196,6 @@ class OperatorRule(BaseModel):
     function_explanation: str = Field(..., description="功能说明")
     product_support: List[str] = Field(..., description="支持的产品列表")
     function_signature: str = Field(..., description="函数签名（两段式取 GetWorkspaceSize 段；一段式取唯一函数）")
-    is_single_function_mode: bool = Field(default=False, description="是否为单函数算子（无 GetWorkspaceSize，如 aclnnCalculateMatmulWeightSize）")
     deterministic_computing: Dict[str, Union[ValueWithSrcText, str]] = Field(
         default_factory=dict, description="确定性计算信息（key=平台名）"
     )
@@ -253,7 +252,7 @@ class OperatorRule(BaseModel):
 
 ### 4.4 `function_signature`（函数原型字符串）
 
-先判定模式：若文档"函数原型"章节出现 `aclnnXxxGetWorkspaceSize` → **两段式**；若只有 `aclnnXxx(...)` 单函数、无 `GetWorkspaceSize` 变体 → **一段式**（`is_single_function_mode=true`）。
+先判定模式：若文档"函数原型"章节出现 `aclnnXxxGetWorkspaceSize` → **两段式**；若只有 `aclnnXxx(...)` 单函数、无 `GetWorkspaceSize` 变体 → **一段式**。一段式判定仅为**内部**取段依据，**不得**在 JSON 中写入 `is_single_function_mode` 字段；下游由 `function_signature` 是否含 `GetWorkspaceSize` 隐式区分。
 
 - **两段式**：取 `aclnnXxxGetWorkspaceSize` 那一段（**不是**执行函数）的完整 C 风格声明，含：
   - 返回类型（`aclnnStatus`）
@@ -263,7 +262,6 @@ class OperatorRule(BaseModel):
   - 返回类型（`aclnnStatus`）
   - 函数名（**无** `GetWorkspaceSize` 后缀，与算子同名）
   - 完整参数列表（一段式无 `workspaceSize` / `executor` / `stream`）
-  - 置 `is_single_function_mode=true`
 - 单行字符串，不做换行 / 注释 / 类型省略。
 
 ### 4.5 `deterministic_computing`（确定性计算）
@@ -354,18 +352,18 @@ class OperatorRule(BaseModel):
 - `aclTensor` / `aclTensorList` 不得用类型名回填 dtype；其 dtype 必须来自文档，确实未说明时保持 `[]`；
 - 文档明确参数"只支持传空指针""必须为空指针"或"仅支持空指针"时保持 `[]`；
 - 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`。
-- 注：`aclIntArray` 的 dtype 不走"文档张量 dtype 列回填"——见下方「aclIntArray 参数的固定 dtype 规则」（v6 废止 v3 旧例外，`dtype.value` 固定 `["int"]`）。
+- 注：`aclIntArray` 的 dtype 不走"文档张量 dtype 列回填"——见下方「aclIntArray 参数的固定 dtype 规则」（`dtype.value` 固定 `["int"]`）。
 
-**aclDataType 参数的固定 dtype 规则（v5 新增）**：
+**aclDataType 参数的固定 dtype 规则**：
 - 当 `type.value == "aclDataType"` 时，`dtype.value` **固定**为 `["string"]`。`aclDataType` 是表示数据类型的标量枚举，参数本身取值为 dtype 名称字符串，故其"自身 dtype"恒为 `string`。此规则**优先级高于**上面的"类型回填规则"——无论文档"数据类型"列是否给出候选都强制执行，**不**因列值非空而改写，也**不**走"其他非 Tensor 参数使用 `type.value` 回填"分支（否则会错误地产出 `["aclDataType"]`）。
 - 文档"数据类型"列里的候选（如 `FLOAT16`/`BFLOAT16`/`INT8`）是参数的**取值域**，必须写入 `allowed_range_value`：`type="enum"`、`value=["FLOAT16","BFLOAT16","INT8"]`；若文档允许"空/缺省/不传"则追加 `null` 候选。**禁止**把这些候选写进 `dtype.value`，也**禁止**给 `dtype.type` 填 `"enum"`（`ValueWithSrcText.type` 仅 `allowed_range_value` 使用，`dtype.type` 恒为 `null`）。
 - 其余字段按标量非 Tensor 处理：`format.value="N/A"`、`dimensions.value=[]`（非 `aclTensor`/`aclTensorList`，按下方"类型前置规则"恒为空）、`is_support_discontinuous.value="N/A"`、`array_length="N/A"`。
 - 典型场景：`aclnnCalculateMatmulWeightSizeV2` 的 `dataType`（函数原型 `aclDataType dataType`，文档"数据类型"列 `FLOAT16、BFLOAT16、INT8`）→ `type.value="aclDataType"`、`dtype.value=["string"]`、`allowed_range_value.value=["FLOAT16","BFLOAT16","INT8"]`（`type="enum"`）。错误反例：把候选抄进 `dtype.value=["FLOAT16","BFLOAT16","INT8"]`（与 `allowed_range_value` 重复，且使 `dtype` 语义从"参数自身类型"退化为"取值候选"）——`dtype` 应只表达参数自身类型，取值候选由 `allowed_range_value` 承载。注意：本规则只修正 `dtype` 字段的语义错误，**不**改变 `allowed_range_value.type=enum` 这一合规表达；若下游生成器对字符串枚举 `allowed_range_value` 仍有 Z3 求解缺陷，属生成器侧 bug，不在此规则范围内。
 
-**aclIntArray 参数的固定 dtype 规则（v6 新增，废止 v3 例外）**：
+**aclIntArray 参数的固定 dtype 规则**：
 - 当 `type.value == "aclIntArray"` 时，`dtype.value` **固定**为 `["int"]`。`aclIntArray` 是 int 元素的数组，其"自身元素 dtype"恒为 `int`，与数组元素的语义含义无关。此规则**优先级高于**上面的"类型回填规则"——无论文档"数据类型"列是否给出候选都强制执行，**不**因列值非空而改写为张量 dtype。
-- **废止 v3「aclIntArray 例外」**：文档"数据类型"列若给 `aclIntArray` 参数列出张量 dtype（如 `FLOAT16`/`BFLOAT16`），这些列值描述的是**关联张量**的 dtype（应由独立的 `aclDataType` 参数承载，如 `aclnnCalculateMatmulWeightSizeV2.dataType`，见上方 aclDataType 规则），**不**是该数组参数的元素类型；**禁止**把它们写进 `dtype.value`（`dtype.value=["FLOAT16","BFLOAT16"]` 属 v3 旧例外遗留的错误表达），也**不**写进 `allowed_range_value`（`aclIntArray` 的取值域是数组值本身，如 `[-2,-1]`，见 §4.6.3 aclIntArray 特殊取值）。
-- 典型场景：`aclnnCalculateMatmulWeightSize` 的 `tensorShape`（`aclIntArray`，文档"数据类型"列 `FLOAT16`/`BFLOAT16`）→ `type.value="aclIntArray"`、`dtype.value=["int"]`；列里的 `FLOAT16`/`BFLOAT16` 描述该 shape 所属权重张量的 dtype，不是数组元素类型，不写入 `tensorShape` 的 `dtype` 或 `allowed_range_value`。错误反例：`dtype.value=["FLOAT16","BFLOAT16"]`（v3 旧例外，把关联张量 dtype 错当成数组元素 dtype）。注意：本规则只修正 `dtype` 字段的语义错误，**不**改变 `allowed_range_value` 的合规表达。
+- 文档"数据类型"列若给 `aclIntArray` 参数列出张量 dtype（如 `FLOAT16`/`BFLOAT16`），这些列值描述的是**关联张量**的 dtype（应由独立的 `aclDataType` 参数承载，如 `aclnnCalculateMatmulWeightSizeV2.dataType`，见上方 aclDataType 规则），**不**是该数组参数的元素类型；**禁止**把它们写进 `dtype.value`（`dtype.value=["FLOAT16","BFLOAT16"]` 是把关联张量 dtype 错当成数组元素 dtype 的错误表达），也**不**写进 `allowed_range_value`（`aclIntArray` 的取值域是数组值本身，如 `[-2,-1]`，见 §4.6.3 aclIntArray 特殊取值）。
+- 典型场景：`aclnnCalculateMatmulWeightSize` 的 `tensorShape`（`aclIntArray`，文档"数据类型"列 `FLOAT16`/`BFLOAT16`）→ `type.value="aclIntArray"`、`dtype.value=["int"]`；列里的 `FLOAT16`/`BFLOAT16` 描述该 shape 所属权重张量的 dtype，不是数组元素类型，不写入 `tensorShape` 的 `dtype` 或 `allowed_range_value`。错误反例：`dtype.value=["FLOAT16","BFLOAT16"]`（把关联张量 dtype 错当成数组元素 dtype）。注意：本规则只修正 `dtype` 字段的语义错误，**不**改变 `allowed_range_value` 的合规表达。
 
 **类型前置规则（必须先于下表执行）**：
 - 仅当 `type.value` 为 `aclTensor` 或 `aclTensorList` 时，才从文档提取并填写 `dimensions.value`；
@@ -1085,7 +1083,7 @@ else True
 # 空 Tensor 限制（aclTensor/aclTensorList）：all(d > 0 for d in {param}.shape)
 ```
 
-**非 Tensor 数组类型的长度区间（v4 修正）**：`aclIntArray` / `aclFloatArray` / `aclBoolArray` **本身即数组**（int/float/bool 的一维序列），**没有 `.shape` 属性**——`.shape` 仅对 `aclTensor` / `aclTensorList` 合法。当文档对这类数组参数写"支持 N-M 维"（如 `aclnnCalculateMatmulWeightSize.tensorShape` 的"输入shape支持2-6维"），表达的是**数组长度区间**，必须写成 `2 <= len(tensorShape) <= 6`（裸参数名直接入 `len()`）；**禁止**写成 `2 <= len(tensorShape.shape) <= 6`（aclIntArray 无 `.shape`，运行期 `AttributeError`）或 `2 <= tensorShape.shape[0] <= 6`（第一元素值范围，语义错误）。`array_length.value=[2,6]`（`type="range"`），`dimensions.value=[]`（非 Tensor 类型按 §4.6.3 类型前置规则恒为空，**不**写 `[2,6]`）。
+**非 Tensor 数组类型的长度区间**：`aclIntArray` / `aclFloatArray` / `aclBoolArray` **本身即数组**（int/float/bool 的一维序列），**没有 `.shape` 属性**——`.shape` 仅对 `aclTensor` / `aclTensorList` 合法。当文档对这类数组参数写"支持 N-M 维"（如 `aclnnCalculateMatmulWeightSize.tensorShape` 的"输入shape支持2-6维"），表达的是**数组长度区间**，必须写成 `2 <= len(tensorShape) <= 6`（裸参数名直接入 `len()`）；**禁止**写成 `2 <= len(tensorShape.shape) <= 6`（aclIntArray 无 `.shape`，运行期 `AttributeError`）或 `2 <= tensorShape.shape[0] <= 6`（第一元素值范围，语义错误）。`array_length.value=[2,6]`（`type="range"`），`dimensions.value=[]`（非 Tensor 类型按 §4.6.3 类型前置规则恒为空，**不**写 `[2,6]`）。
 
 #### 模式 5：NZ 块尺寸硬约束（v2 新增）
 
@@ -1258,10 +1256,10 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | **文档同时写明非转置与转置 NZ 两种布局（v2 新增）** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`allowed_range_value` 的 `value` 仍为 `[[16,16],[16,16]]`（数值上等价，但约束条目按布局拆分） |
 | **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
 | **文档写"X 的 shape 为 (A, B)；当 Y 配置为 True 时 shape 为 (C, D)"（v3 新增）** | **不可**拆为两条独立无条件 shape 描述；必须在 `constraints_in_parameters` 中为 X 产出**单一条件 shape 约束**（§6.3 模式 6），用 `Y.range_value` 等门控参数分支；`expr_type` 优先 `shape_choice` 或 `parameter_representation`；`src_text` 同时摘录默认 shape 短语与"配置为 X 时…为…"短语，确保门控可溯源（典型反例：aclnnAlltoAllMatmul 中 x2.shape 在 transposeX2=True 时应为 (N, H*rankSize) 而非无条件 (H*rankSize, N)） |
-| **一段式算子：函数原型无 `GetWorkspaceSize`（v3 新增）** | `function_signature` 取唯一函数声明；`is_single_function_mode=true`；参数列表无 `workspaceSize`/`executor`。不得伪造 `GetWorkspaceSize` 段 |
+| **一段式算子：函数原型无 `GetWorkspaceSize`（v3 新增）** | `function_signature` 取唯一函数声明；参数列表无 `workspaceSize`/`executor`。不得伪造 `GetWorkspaceSize` 段；**不得**写入 `is_single_function_mode` 字段 |
 | **一段式算子：输出为标量指针（`uint64_t*`/`int64_t*` 等）（v3 新增）** | 该参数**进 `outputs`**（`type.value` 去 `*`、`format="N/A"`、`dimensions=[]`、`is_operator_param=true`），**不**当流程参数排除；`aclnnCalculateMatmulWeightSize` 的 `weightTensorSize` 即此 |
-| **aclIntArray 参数的 dtype 固定为 int（v6 新增，废止 v3 例外）** | `type.value="aclIntArray"` → `dtype.value=["int"]`（固定，见 §4.6.3 aclIntArray 规则）；文档"数据类型"列若列张量 dtype（如 `FLOAT16`/`BFLOAT16`）描述的是关联张量，**不**写入 `dtype`（v3 旧例外的 `dtype.value=["FLOAT16","BFLOAT16"]` 已废止） |
-| **aclIntArray / aclFloatArray / aclBoolArray 的 expr 禁用 `.shape`（v4 新增）** | 这类非 Tensor 数组无 `.shape` 属性；长度约束写 `len(paramName)`（如 `2 <= len(tensorShape) <= 6`、`len(tensorShape) >= 1`），**禁止** `len(paramName.shape)` / `paramName.shape[i]`（运行期 `AttributeError`）；`.shape` 仅 `aclTensor`/`aclTensorList` 可用 |
+| **aclIntArray 参数的 dtype 固定为 int** | `type.value="aclIntArray"` → `dtype.value=["int"]`（固定，见 §4.6.3 aclIntArray 规则）；文档"数据类型"列若列张量 dtype（如 `FLOAT16`/`BFLOAT16`）描述的是关联张量，**不**写入 `dtype`（不得写成 `dtype.value=["FLOAT16","BFLOAT16"]`） |
+| **aclIntArray / aclFloatArray / aclBoolArray 的 expr 禁用 `.shape`** | 这类非 Tensor 数组无 `.shape` 属性；长度约束写 `len(paramName)`（如 `2 <= len(tensorShape) <= 6`、`len(tensorShape) >= 1`），**禁止** `len(paramName.shape)` / `paramName.shape[i]`（运行期 `AttributeError`）；`.shape` 仅 `aclTensor`/`aclTensorList` 可用 |
 | **aclTensorList 参数 P 写“长度与 Q 相同”** | P 为 Optional 时生成 `(P is None) or (len(P) == len(Q))`，否则生成 `len(P) == len(Q)`；禁止 `.array_length` 和 `len(P.shape)`；相同文案出现在多个参数行时逐参数生成，不能去重 |
 | **backward / grad 文档写“gradOutput 与 self/input 维度一致”，同时末尾轴由 padding 等参数派生** | 按 §4.6.6 / §6.3 模式 7 拆分：①前缀切片相等；②rank 相等；③文档明确的派生轴公式。禁止只提取末维公式，也禁止用 `gradInput.shape == self.shape` 替代 gradOutput 跟随关系 |
 
@@ -1306,12 +1304,12 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
     b. `constraints_in_parameters[每个支持平台]` 含 `mat2.shape[3] == 16` 与 `mat2.shape[4] == 16` 两条 `shape_equality`（或 `shape_value_dependency`）；
     c. 文档同时描述非转置与转置 NZ 两种布局时，两套 `shape[3]/shape[4]==16` 须**分别落库**为不同条目（共 4 条），`src_text` 摘录对应原文；
     d. `src_text` 非空，且包含 `k0` / `n0` / `16` 等关键词。
-16. **一段式算子一致性（v3 新增）**：若 `is_single_function_mode=true`，必须满足**全部**：
-    a. `function_signature` **不含** `GetWorkspaceSize`；函数名与 `operator_name` 一致；
+16. **一段式算子一致性（v3 新增）**：若 `function_signature` **不含** `GetWorkspaceSize`（一段式），必须满足**全部**：
+    a. 函数名与 `operator_name` 一致（无 `GetWorkspaceSize` 后缀）；
     b. 标量指针输出（如 `uint64_t*`/`int64_t*`）在 `outputs` 中，`type.value` 去 `*`、`format.value="N/A"`、`dimensions.value=[]`、`is_operator_param.value=true`；
     c. 不得出现 `workspaceSize`/`executor`/`stream` 被误标为 `outputs` 流程参数。
-    若 `is_single_function_mode` 缺省（false），`function_signature` 应含 `GetWorkspaceSize`（两段式）。
-17. **非 Tensor 数组类型禁用 `.shape`（v4 新增）**：对所有 `type.value` 为 `aclIntArray` / `aclFloatArray` / `aclBoolArray` 的参数，`constraints_in_parameters` 的 `expr` 中**禁止**出现 `paramName.shape`（这些类型无 `.shape` 属性，执行/校验期对一维数组实例求值会触发 `AttributeError`）；其长度用 `len(paramName)` 表达（如 `2 <= len(tensorShape) <= 6`、`len(tensorShape) >= 1`）。仅 `aclTensor` / `aclTensorList` 允许 `.shape` / `.dtype` / `.format` 属性引用。
+    两段式算子的 `function_signature` 应含 `GetWorkspaceSize`。**不得**在 JSON 中写入 `is_single_function_mode` 字段——一段式判定由 `function_signature` 隐式表达，写入该字段会触发校验阻断。
+17. **非 Tensor 数组类型禁用 `.shape`**：对所有 `type.value` 为 `aclIntArray` / `aclFloatArray` / `aclBoolArray` 的参数，`constraints_in_parameters` 的 `expr` 中**禁止**出现 `paramName.shape`（这些类型无 `.shape` 属性，执行/校验期对一维数组实例求值会触发 `AttributeError`）；其长度用 `len(paramName)` 表达（如 `2 <= len(tensorShape) <= 6`、`len(tensorShape) >= 1`）。仅 `aclTensor` / `aclTensorList` 允许 `.shape` / `.dtype` / `.format` 属性引用。
 18. **条件 Shape 约束自检（v3 新增）**：遍历所有 `inputs` 中 `type.value == "bool"`
     或 `allowed_range_value.type == "enum"`（且 value 至少 2 项）的参数作为**候选门控
     参数 G**；同时重新扫描原文及参数 `description` 中“配置为 True/False/某值时
@@ -1429,7 +1427,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | `aclnnAlltoAllMatmul` | 通信 + MatMul | `alltoAllAxesOptional` 取值 JSON `null`（原文"空"）或 `[-2,-1]`；**条件 Shape**：`x2.shape` 由 `transposeX2` 门控（`§6.3` 模式 6）——False 时 `(H*rankSize, N)`，True 时 `(N, H*rankSize)`；隐式变量 `BS`/`H`/`N` + 外部常量 `rankSize` |
 | `aclnnFFNV3` | NN / MoE FFN | `activation` 为枚举字符串；`innerPrecise` 标量属性 |
 | `aclnnNpuFormatCast` | 格式转换 | 输入格式集 `["FRACTAL_Z_3D","NCDHW",...]`；dtype 与 format 强耦合 |
-| `aclnnCalculateMatmulWeightSize` | 辅助计算 / 一段式 | 仅计算输出，无 Tensor 真正计算；`workspaceSize`/`executor` 是唯一输出 | `tensorShape` 为 `aclIntArray` 输入（2-6 维，`dtype.value=["int"]` 固定；文档列 `FLOAT16`/`BFLOAT16` 描述关联权重张量 dtype，不写入 `tensorShape.dtype`）；`weightTensorSize` 为 `uint64_t*` 标量输出（公式 result）；一段式无 `GetWorkspaceSize`，`is_single_function_mode=true` |
+| `aclnnCalculateMatmulWeightSize` | 辅助计算 / 一段式 | 仅计算输出，无 Tensor 真正计算；`workspaceSize`/`executor` 是唯一输出 | `tensorShape` 为 `aclIntArray` 输入（2-6 维，`dtype.value=["int"]` 固定；文档列 `FLOAT16`/`BFLOAT16` 描述关联权重张量 dtype，不写入 `tensorShape.dtype`）；`weightTensorSize` 为 `uint64_t*` 标量输出（公式 result）；一段式 `function_signature` 无 `GetWorkspaceSize`，不写入 `is_single_function_mode` 字段 |
 | `aclnnCalculateMatmulWeightSizeV2` | 辅助计算 | 同上 V2，差异在 weight 排布 / NZ 转换 |
 
 > **参考产物位置**：
@@ -1478,55 +1476,19 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 
 ### B++：v2 → v3 变更记录（一段式算子支持）
 
-下列变更新增对**一段式算子**（无 `GetWorkspaceSize`，如 `aclnnCalculateMatmulWeightSize`）的解析支持，移植自参考项目 `operator-agent-wsl` 的 `is_single_function_mode` / `get_primary_function_names` 机制：
+下列变更新增对**一段式算子**（无 `GetWorkspaceSize`，如 `aclnnCalculateMatmulWeightSize`）的解析支持，移植自参考项目 `operator-agent-wsl` 的 `get_primary_function_names` 机制（一段式判定由 `function_signature` 是否含 `GetWorkspaceSize` 隐式表达，不落盘为独立字段）：
 
-1. **§3 schema 新增 `is_single_function_mode` 字段**（`bool`，default `false`）；与 `common_model_definition.py` 同步。
-2. **§4.4 `function_signature` 拆两段式 / 一段式分支**：一段式取唯一函数声明，置 `is_single_function_mode=true`。
+1. **§3 schema**：一段式判定由 `function_signature` 是否含 `GetWorkspaceSize` 隐式表达，**不**新增独立字段（`is_single_function_mode` 不落盘）。
+2. **§4.4 `function_signature` 拆两段式 / 一段式分支**：一段式取唯一函数声明（无 `GetWorkspaceSize` 后缀），**不得**写入 `is_single_function_mode` 字段。
 3. **§4.6.1 流程参数排除补一段式例外**：标量指针输出（`uint64_t*`/`int64_t*` 等）进 `outputs`，不当框架参数排除。
-4. **§4.6.3 dtype 回填补 aclIntArray 例外**：文档"数据类型"列给张量 dtype 时以列值为准，不走 `→["int"]` 回填（对应 `weightNz-fix` 缺陷①）。
+4. **§4.6.3 aclIntArray 参数 dtype 固定为 int**：文档"数据类型"列给张量 dtype 时描述的是关联张量，`dtype.value` 固定 `["int"]`，不写入 `dtype` 或 `allowed_range_value`。
 5. **§6.3 模式 4 补一段式 rank 区间样例**："支持 N-M 维"→ `len(param.shape)`，禁 `shape[0]`（对应 `weightNz-fix` 缺陷②）。
-6. **§8 边缘场景新增三行**：一段式 function_signature、标量指针输出、aclIntArray 张量 dtype 列。
+6. **§8 边缘场景新增三行**：一段式 function_signature、标量指针输出、aclIntArray dtype 固定为 int。
 7. **§9 自检新增第 16 项**：一段式一致性（function_signature 不含 GetWorkspaceSize + 标量指针输出在 outputs）。
 8. **附录 A 修正 `aclnnCalculateMatmulWeightSize` 注解**：原误注"workspaceSize/executor 是唯一输出"改为正确参数描述。
 9. **§1.2 输入补一段式说明**。
 
 **范围说明**：v3 仅支持一段式**解析/约束提取**。执行层（`generator.py` 标量指针输出识别、签名表、ATK 单函数调用、CPU golden）仍为两段式，不在 v3 范围。
-
-### B+++：v3 → v4 变更记录（修正非 Tensor 数组类型 `.shape` 误用）
-
-下列变更修复 `aclnnCalculateMatmulWeightSize` 闭环暴露的约束提取缺陷：`aclIntArray` 参数被当作 tensor 处理，`constraints_in_parameters` 的 `expr` 误写 `len(tensorShape.shape)`，而 `aclIntArray` 无 `.shape` 属性，执行/校验期对一维 int 数组实例求值触发 `AttributeError`，覆盖全部用例。
-
-1. **§6.3 模式4 "一段式 aclIntArray rank 区间" 重写为 "非 Tensor 数组类型的长度区间"**：`len(tensorShape.shape)` → `len(tensorShape)`；扩展到 `aclIntArray` / `aclFloatArray` / `aclBoolArray` 通用规则（均无 `.shape`）；明确 `array_length.value=[2,6]`、`dimensions.value=[]`（修正原行"`dimensions.value` 同步为 `[2,6]`"与 §4.6.3 类型前置规则的冲突）。
-2. **§6.1 语法细则 rule 5 补充**：`.shape` 仅 `aclTensor` / `aclTensorList` 可用；非 Tensor 数组用 `len(paramName)`。
-3. **§6.3 模式4 模板补充**：新增"数组长度（aclIntArray 等，无 .shape）：`{min} <= len({param}) <= {max}`"行；原有 `.shape` 行标注为 `aclTensor`/`aclTensorList` 专用。
-4. **§7.2 `self_shape_dim_range` 行**：典型 `expr` 区分 `aclTensor`（`len(x.shape)`）与非 Tensor 数组（`len(arr)`）。
-5. **§8 边缘场景新增一行**：`aclIntArray` / `aclFloatArray` / `aclBoolArray` 的 `expr` 禁用 `.shape`。
-6. **§9 自检新增第 17 项**：非 Tensor 数组类型禁用 `.shape`；自检总数 16 → 17。§10 调用模板同步引用 §9.17。
-7. **头部标题与调用模板版本号** v3 → v4。
-
-**为何不硬编码算子名**：规则以"非 Tensor 数组类型（`aclIntArray`/`aclFloatArray`/`aclBoolArray`）"为条件触发，不出现 `aclnnCalculateMatmulWeightSize` 的专属判定分支；该算子仅作为示例出现在说明性文字中（与 v3 一致）。
-
-### B++++：v4 → v5 变更记录（aclDataType 参数 dtype 固定为 string）
-
-下列变更修正 `aclnnCalculateMatmulWeightSizeV2` 闭环暴露的 `dtype` 字段语义错误：`aclDataType` 参数（标量数据类型枚举）的文档"数据类型"列候选（`FLOAT16`/`BFLOAT16`/`INT8`）被错误抄进 `dtype.value`，与 `allowed_range_value` 重复，使 `dtype` 语义从"参数自身类型"退化为"取值候选"。
-
-1. **§4.6.3 新增「aclDataType 参数的固定 dtype 规则」**：`type.value=="aclDataType"` → `dtype.value` 固定 `["string"]`，优先级高于类型回填规则；候选写入 `allowed_range_value`（`type="enum"`），不写入 `dtype`，`dtype.type` 恒 `null`。
-2. **§8 边缘场景新增一行**：`aclDataType` 标量枚举参数的 dtype 固定与候选落库规则。
-3. **头部标题** v4 → v5。
-
-**范围说明**：本变更只修正 `dtype` 字段语义，**不**改变 `allowed_range_value.type=enum` 合规表达；下游生成器对字符串枚举 `allowed_range_value` 的 Z3 求解缺陷属生成器侧 bug，不在此范围。
-
-### B+++++：v5 → v6 变更记录（aclIntArray 参数 dtype 固定为 int，废止 v3 例外）
-
-下列变更修正 `aclnnCalculateMatmulWeightSize` 闭环暴露的 `aclIntArray` 参数 `dtype` 语义错误：v3 曾立"aclIntArray 例外"——当文档"数据类型"列给 `aclIntArray` 参数列出张量 dtype（如 `tensorShape` 列 `FLOAT16`/`BFLOAT16`）时，以列值为 `dtype.value`（如 `["FLOAT16","BFLOAT16"]`）。此为类别错误：`aclIntArray` 元素恒为 int，列里的张量 dtype 描述的是**关联权重张量**（由独立 `aclDataType` 参数承载，如 V2 的 `dataType`），非数组元素类型。与 v5 aclDataType 固定 dtype 规则同理：参数自身类型固定，关联/取值信息不落入 `dtype`。
-
-1. **§4.6.3 新增「aclIntArray 参数的固定 dtype 规则（v6 新增，废止 v3 例外）」**：`type.value=="aclIntArray"` → `dtype.value` 固定 `["int"]`，优先级高于类型回填规则；废止 v3 例外，文档列张量 dtype 不写入 `dtype` 或 `allowed_range_value`。
-2. **§4.6.3 类型回填规则**：原 v3「aclIntArray 例外」bullet 改为指向新规则的注释（标注 v6 废止）。
-3. **§8 边缘场景**：原 v3「aclIntArray 张量 dtype 列」行改写为 v6「aclIntArray dtype 固定为 int」行。
-4. **附录 A `aclnnCalculateMatmulWeightSize` 注解**：`tensorShape` 描述由"dtype 取文档列 FLOAT16/BFLOAT16"改为"`dtype.value=["int"]` 固定；列值描述关联张量，不写入 `tensorShape.dtype`"。
-5. **头部标题** v5 → v6。
-
-**为何与 v5 aclDataType 规则对称**：两者都把"参数自身 dtype"固定为类型名（`aclDataType`→`string`、`aclIntArray`→`int`），把文档"数据类型"列的候选/关联信息排除出 `dtype` 字段——`aclDataType` 的候选是取值域走 `allowed_range_value`，`aclIntArray` 的列值是关联张量 dtype 不入本参数约束。规则以 `type.value` 为条件触发，不出现算子名专属判定分支。
 
 ---
 
