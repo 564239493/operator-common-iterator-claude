@@ -1,5 +1,5 @@
-# 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int)
-# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int)
+# 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束)
+# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters)
 
 > **用途**：从昇腾 CANN（Compute Architecture for Neural Networks）算子官方说明文档（Markdown / HTML）中，**人工 + LLM 协同** 提取结构化的算子约束信息，并以**纯 JSON** 形式输出，可直接喂给下游的测试用例生成引擎。
 >
@@ -24,12 +24,12 @@
 | 1 | 角色与目标 | 明确模型身份、输入、输出 |
 | 2 | 全局输出规则 | 5 条铁律，缺一不可 |
 | 3 | 顶层 JSON Schema | 定义 `OperatorRule` 的 Pydantic 模型 |
-| 4 | 字段级提取规则 | 10 个一级字段 + dimensions/隐式参数/allowed_range/NZ 格式/条件 Shape/反向算子 Partial-Shape 详细映射 |
+| 4 | 字段级提取规则 | 10 个一级字段 + dimensions/隐式参数/allowed_range/NZ 格式/条件 Shape/反向算子 Partial-Shape/大小数量语义隐式 >0 约束 详细映射 |
 | 5 | 平台与 dtype 命名规范 | 强约束的字符串字典 |
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 19 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检） |
+| 9 | 自检清单 | 提取完成后必须执行 25 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 A | 典型算子示例 | 10 个算子的关键提取点对照 |
 | 附录 B | v1→v2→v3 升级注意事项 | 升级路径与扩展占位 |
@@ -1023,6 +1023,75 @@ src_text: "必须先调用 aclnnNpuFormatCastCalculateSizeAndFormat 计算出 ds
 - 因 `dstTensor` 是派生量就省略 §4.6.7 的 `format_rank_consistency` 守卫 →
   派生量仍须满足 format↔rank 一致性，二者职责不同，不得互相替代。
 
+#### 4.6.9 隐式 >0 约束（大小/数量语义参数，v3 增补，通用规则）
+
+> 本节来自大小/数量语义参数的闭环：输出参数（如 `uint64_t*` 标量指针）的
+> description 含"元素的数据量""空间大小""元素个数"等短语，语义上必然 > 0，
+> 但文档未显式写"大于0"。v3 提示词无规则要求提取这种隐式 >0 约束，导致
+> `constraints_in_parameters` 漏掉该约束，下游生成器可能产出 size=0 的非法用例。
+> 该规则按 description 中的语义短语触发，**不**按算子名硬编码。
+
+##### A. 适用判定
+
+满足下列**全部**条件时，**必须**执行本节规则：
+
+1. 某**标量取值参数**（输入或输出，常见于一段式算子的标量指针输出如 `uint64_t*` /
+   `int64_t*`，但不限于输出）的 `description` 中出现以下语义短语之一（含同义表达）：
+   - "空间大小" / "占用空间大小" / "所占用的空间大小"
+   - "的数据量" / "元素个数" / "元素的数量"
+   - "的数量" / "个数" / "数据量"
+   - 其他明确表示该参数的取值是一个"大小 / 数量 / 个数"的短语；
+2. 该参数的取值语义为**非负标量计数**（即该参数表示的是元素个数、字节数、空间大小
+   等物理量，而非 shape、dtype、format、枚举标签或布尔标志）；
+3. 文档**未**显式写明该参数的取值范围（如未出现"大于0"、"≥0"、"[0, ...]"等明确
+   数值约束）——若文档已显式给出取值约束，以文档为准，不再追加隐式 >0。
+
+##### B. 不适用场景（禁止套用）
+
+以下场景**不得**套用本规则：
+
+1. `aclTensor` / `aclTensorList` 参数的 shape / dimensions —— shape 各维大小约束
+   由 §4.6.3 dimensions 规则与 §6.3 模式 4 `all(d > 0 for d in x.shape)` 处理；
+2. `aclIntArray` / `aclFloatArray` / `aclBoolArray` 参数的元素值或长度 —— 数组长度
+   约束由 `array_length` 字段和 `len(param)` 表达式处理；
+3. `aclDataType`、`aclFormat` 等枚举型参数 —— 其取值是离散标签，不是数值计数；
+4. bool 参数 —— 由 §4.6.3 bool 类型参数子节强制 enum 处理；
+5. 描述中虽出现"大小""数量"等词，但上下文明确指代 shape 维度、dtype 位宽等非
+   标量计数语义的参数。
+
+##### C. 必须产出的 `constraints_in_parameters` 条目
+
+对每个满足适用判定的参数 `P`，必须在 `constraints_in_parameters[每个支持平台]` 中
+追加**一条**隐式 >0 约束：
+
+```text
+expr_type: value_dependency
+expr: P.range_value > 0
+relation_params: ["P"]
+src_text: "<摘录 description 中空间大小/数据量/元素个数/数量等原文字句>；大小/数量语义隐含 >0"
+```
+
+**规则要点**：
+
+1. **expr 模板**：`P.range_value > 0`（与 §4.6.3 allowed_range 映射表"大于0"行的
+   `value_dependency: param.range_value > 0` 惯例一致）；`expr_type` 使用
+   `value_dependency`（亦可使用 §7.2 的 `self_value_range`，二者均合规，以项目
+   既有惯例为准）。
+2. **禁止用 `allowed_range_value` 伪造 0 下界**：`allowed_range_value.value` 保持
+   `[]`（与 §4.6.3 "大于0"行规则一致：单边/开区间不在 `allowed_range_value` 中
+   伪造边界）；`allowed_range_value.type` 保持 `"range"`。不得写成 `[[0, ...]]`
+   或 `[[0, null]]` 等。
+3. **逐平台落库**：与其它约束一致，`product_support` 中每个平台都必须有对应条目，
+   即使各平台 expr 完全相同。
+4. **src_text 可溯源**：`src_text` 必须摘录 description 中表示"大小/数量/个数"的
+   原文字句，并补注"大小/数量语义隐含 >0"，使隐式下界的推导依据可追溯。
+5. **不重复落库**：若文档已显式写明 `P > 0` 或 `P >= 1` 等取值约束并已按 §4.6.3
+   allowed_range 映射表"大于0"行落库了对应的 `value_dependency` 条目，则**不再**
+   追加本节隐式 >0 条目（避免重复）。
+6. **仅针对标量取值参数**：本规则只针对"表示大小/数量/个数"的标量取值参数（如
+   `uint64_t*` / `int64_t*` / `size_t*` 等标量指针输出或标量输入），不针对
+   shape/dtype/format/枚举值。
+
 ### 4.7 `constraints_in_parameters`（跨参数 / 单参数约束）
 
 #### 4.7.1 顶层 key
@@ -1087,6 +1156,12 @@ src_text: "必须先调用 aclnnNpuFormatCastCalculateSizeAndFormat 计算出 ds
    grad 场景，必须同时检查并落库“前缀维度跟随”“rank 一致”“文档明确给出的派生轴
    公式”。不得用 `gradInput.shape == self.shape` 或仅末维公式代替前两项。
 
+10. **大小/数量语义参数的隐式 >0 约束（v3 增补）**：当某标量取值参数的
+    `description` 含"空间大小"/"的数据量"/"元素个数"/"的数量"/"占用空间大小"
+    等表示"大小/数量/个数"的语义短语时，必须按 §4.6.9 在 `constraints_in_parameters`
+    中追加 `P.range_value > 0` 条目（`expr_type=value_dependency`，
+    `allowed_range_value.value=[]`）。不适用于 shape/dtype/format/枚举/bool 参数。
+
 ### 4.8 `return_info`（错误返回码）
 
 - 来自 `## 返回码` / `## 错误码` 章节。
@@ -1107,8 +1182,6 @@ src_text: "必须先调用 aclnnNpuFormatCastCalculateSizeAndFormat 计算出 ds
 - 结构与 `dtype_support_description` 对称：key 为平台名，value 为格式组合列表；
 - 仅当文档存在**显式 format 组合表格**时填写；
 - 无此表时填 `{}`。
-
----
 
 ## 5. 平台与 dtype 命名规范
 
@@ -1305,6 +1378,11 @@ else True
 
 **非 Tensor 数组类型的长度区间**：`aclIntArray` / `aclFloatArray` / `aclBoolArray` **本身即数组**（int/float/bool 的一维序列），**没有 `.shape` 属性**——`.shape` 仅对 `aclTensor` / `aclTensorList` 合法。当文档对这类数组参数写"支持 N-M 维"（如 `aclnnCalculateMatmulWeightSize.tensorShape` 的"输入shape支持2-6维"），表达的是**数组长度区间**，必须写成 `2 <= len(tensorShape) <= 6`（裸参数名直接入 `len()`）；**禁止**写成 `2 <= len(tensorShape.shape) <= 6`（aclIntArray 无 `.shape`，运行期 `AttributeError`）或 `2 <= tensorShape.shape[0] <= 6`（第一元素值范围，语义错误）。`array_length.value=[2,6]`（`type="range"`），`dimensions.value=[]`（非 Tensor 类型按 §4.6.3 类型前置规则恒为空，**不**写 `[2,6]`）。
 
+**隐式 >0 约束（大小/数量语义参数，v3 增补）**：当某标量取值参数的 description 含
+"空间大小"/"数据量"/"元素个数"/"数量"等语义短语时，必须按 §4.6.9 追加
+`P.range_value > 0` 条目（`expr_type=value_dependency`）。此约束来自参数语义而非
+文档显式取值范围描述，`src_text` 摘录 description 原文并补注"大小/数量语义隐含 >0"。
+
 #### 模式 5：NZ 块尺寸硬约束（v2 新增）
 
 **适用场景**：5D NZ 张量的 `shape[3]` 与 `shape[4]` 必须等于块尺寸 16（`k0` 或 `n0`）。
@@ -1482,12 +1560,11 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | **aclIntArray / aclFloatArray / aclBoolArray 的 expr 禁用 `.shape`** | 这类非 Tensor 数组无 `.shape` 属性；长度约束写 `len(paramName)`（如 `2 <= len(tensorShape) <= 6`、`len(tensorShape) >= 1`），**禁止** `len(paramName.shape)` / `paramName.shape[i]`（运行期 `AttributeError`）；`.shape` 仅 `aclTensor`/`aclTensorList` 可用 |
 | **aclTensorList 参数 P 写“长度与 Q 相同”** | P 为 Optional 时生成 `(P is None) or (len(P) == len(Q))`，否则生成 `len(P) == len(Q)`；禁止 `.array_length` 和 `len(P.shape)`；相同文案出现在多个参数行时逐参数生成，不能去重 |
 | **backward / grad 文档写“gradOutput 与 self/input 维度一致”，同时末尾轴由 padding 等参数派生** | 按 §4.6.6 / §6.3 模式 7 拆分：①前缀切片相等；②rank 相等；③文档明确的派生轴公式。禁止只提取末维公式，也禁止用 `gradInput.shape == self.shape` 替代 gradOutput 跟随关系 |
-
----
+| **文档写参数描述含“空间大小/数据量/元素个数/数量”等大小/数量语义短语（v3 增补）** | 按 §4.6.9 处理：在 `constraints_in_parameters` 中追加 `P.range_value > 0`（`expr_type=value_dependency`），`allowed_range_value.value=[]`；`src_text` 摘录 description 原文 + 补注“大小/数量语义隐含 >0”；不适用于 shape/dtype/format/枚举/bool 参数 |
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 24 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 25 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1539,10 +1616,10 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
     b. 形如 `G.range_value == "{v}"` 出现在某 expr 中时，该 expr 必然是一个条件分支
        （即 expr 形如 `(... if G.range_value == "{v}" else ...)` 或 `not(G.range_value == "{v}") or (...)`）；
     c. 若发现某参数 X 的 shape expr 引用了 G 的某取值，但 expr 中**没有**出现 G 的
-       等式分支，则视为"条件 shape 被错误地无条件化"，必须重写为模式 6 形式；
+       等式分支，则视为“条件 shape 被错误地无条件化”，必须重写为模式 6 形式；
     d. 默认 shape 与门控后 shape **必须合并为单一 expr 条目**，不允许两条独立
        `shape_equality` / `shape_choice` 条目同时存在且互不引用 G；
-    e. `src_text` 必须同时摘录默认 shape 短语与"配置为 X 时…为…"短语（或同义信号词），
+    e. `src_text` 必须同时摘录默认 shape 短语与“配置为 X 时…为…”短语（或同义信号词），
        确保门控可溯源。
 19. **TensorList 长度关系完整性**：遍历所有 `type.value="aclTensorList"` 参数；
     a. `array_length.src_text` 明确写“长度与 Q 相同”时，必须存在
@@ -1596,8 +1673,17 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
        `FRACTAL_Z_3D + 非8D`、`NZ/FRACTAL_NZ + 非5D` 必须全部求值为 false；
     e. 对 `aclnnNpuFormatCast`，`srcTensor` 与 `dstTensor` 必须逐平台分别通过上述检查，
        禁止只为其中一个张量生成守卫。
-
----
+25. **大小/数量语义参数的隐式 >0 约束（v3 增补）**：遍历全部输入和输出参数的
+    `description`，凡含"空间大小"/"占用空间大小"/"数据量"/"元素个数"/"的数量"/
+    "个数"等表示"大小/数量/个数"语义短语的**标量取值参数**（非 shape/dtype/
+    format/枚举/bool），必须满足**全部**：
+    a. `constraints_in_parameters[每个支持平台]` 中存在 `P.range_value > 0` 条目
+       （`expr_type=value_dependency` 或 `self_value_range`）；
+    b. `allowed_range_value.value` 为 `[]`（未伪造 0 下界）；
+    c. `relation_params` 仅含该参数自身；
+    d. `src_text` 摘录 description 中"空间大小/数据量/个数"原文字句并补注
+       "大小/数量语义隐含 >0"；
+    e. 若文档已显式写明该参数取值范围并已落库对应约束，则不重复追加（见 §4.6.9 C.5）。
 
 ## 10. 调用模板
 
@@ -1615,6 +1701,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 - 识别条件 Shape（被 enum/boolean 门控的 shape）时参考 §4.6.3 G 与 §6.3 模式 6
 - 处理 aclTensorList 容器长度关系时参考 §4.6.3 TensorList 长度规则与 §6.3 模式 0
 - 处理 backward / grad 的 gradOutput partial-shape 跟随时参考 §4.6.6 与 §6.3 模式 7
+- 处理大小/数量语义参数的隐式 >0 约束时参考 §4.6.9
 - 写 expr 表达式时参考 §6.3 模式库（按关系特征匹配模板；NZ 块尺寸使用模式 5；
   条件 Shape 使用模式 6；Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0）
 - 写 allowed_range_value 时参考 §4.6.3 allowed_range 文本→结构化映射
@@ -1638,8 +1725,8 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 19 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape、
-   §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检）；
+3. 内部执行第 9 章 25 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape、
+   §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
@@ -1663,8 +1750,8 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | `aclnnCalculateMatmulWeightSizeV2` | 辅助计算 | 同上 V2，差异在 weight 排布 / NZ 转换 |
 
 > **参考产物位置**：
-> - 旧版（`temp/batch-20260625_195726-results/`）—— 历史产物，不一定准确；
-> - 新版（`batch-20260626_182854-constraints/`）—— 基于项目实际 `assemble_result.py` 产出的新约束 JSON。
+> - 旧版（`temp/batch-20250625_195726-results/`）—— 历史产物，不一定准确；
+> - 新版（`batch-20250626_182854-constraints/`）—— 基于项目实际 `assemble_result.py` 产出的新约束 JSON。
 > 两者均仅作参考，**不保证完全正确**。
 
 ---
@@ -1721,6 +1808,29 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 9. **§1.2 输入补一段式说明**。
 
 **范围说明**：v3 仅支持一段式**解析/约束提取**。执行层（`generator.py` 标量指针输出识别、签名表、ATK 单函数调用、CPU golden）仍为两段式，不在 v3 范围。
+
+### B+++：v3 增补记录（大小/数量语义参数的隐式 >0 约束）
+
+下列变更新增对**大小/数量语义参数**的隐式 >0 约束提取规则，来自
+大小/数量语义参数闭环：输出参数（如 `uint64_t*` 标量指针）的 description 含
+"元素的数据量"/"空间大小"等短语，语义上必然 > 0，但文档未显式写"大于0"。
+v3 无规则要求提取这种隐式 >0 约束，导致 `constraints_in_parameters` 漏掉该约束。
+本规则按 description 语义短语触发，不按算子名硬编码：
+
+1. **§4.6.9 新增**：隐式 >0 约束（大小/数量语义参数）——适用判定（触发短语清单 +
+   标量取值参数前提 + 文档未显式给值域）、不适用场景（shape/dtype/format/枚举/bool/
+   数组参数禁止套用）、必须产出的 `constraints_in_parameters` 条目（`expr: P.range_value > 0`、
+   `expr_type=value_dependency`、`allowed_range_value.value=[]`）+ 6 条规则要点。
+2. **§4.7.3 新增第 10 项**：大小/数量语义参数的隐式 >0 约束提取规则。
+3. **§6.3 模式 4 补注**：隐式 >0 约束模板（`P.range_value > 0`）及 §4.6.9 引用。
+4. **§8 边缘场景新增一行**：description 含"空间大小/数据量/元素个数/数量"的处理。
+5. **§9 自检新增第 25 项**：大小/数量语义参数的隐式 >0 约束自检（5 个子项 a-e）。
+6. **§10 调用模板更新**：知识库引用追加 §4.6.9；
+   自检项数 19 → 25，补引 §9.25。
+
+**范围说明**：本次增补不改变 `OperatorRule` schema 字段；所有新增规则均为已有字段的
+更精细约束。规则按 description 语义短语触发，通用适用于所有含"大小/数量/个数"
+语义参数的算子，不限于特定算子系列。
 
 ---
 
