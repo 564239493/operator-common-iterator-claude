@@ -79,7 +79,8 @@ class OperatorRule(BaseModel):
     operator_name: str = Field(..., description="算子名称")
     function_explanation: str = Field(..., description="功能说明")
     product_support: List[str] = Field(..., description="支持的产品列表")
-    function_signature: str = Field(..., description="函数签名")
+    function_signature: str = Field(..., description="函数签名（两段式取 GetWorkspaceSize 段；一段式取唯一函数）")
+    is_single_function_mode: bool = Field(default=False, description="是否为单函数算子（无 GetWorkspaceSize，如 aclnnCalculateMatmulWeightSize）")
     deterministic_computing: Dict[str, ValueWithSrcText] | str | ValueWithSrcText = Field(
         default_factory=dict, description="确定性计算信息（按平台）"
     )
