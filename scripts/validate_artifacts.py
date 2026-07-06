@@ -451,7 +451,7 @@ def validate_constraints(value) -> list[str]:
         from agent.generators.common_model_definition import OperatorRule
 
         OperatorRule(**value)
-        return (
+        errors = (
             validate_constraint_semantics(value)
             + array_length_errors
             + _validate_conditional_shape_constraints(value)
@@ -459,7 +459,25 @@ def validate_constraints(value) -> list[str]:
             + _validate_dynamic_allowed_ranges(value)
         )
     except Exception as exc:
-        return array_length_errors + [f"OperatorRule validation failed: {exc}"]
+        return [f"OperatorRule validation failed: {exc}"]
+    # 一段式 / 两段式 一致性（v3 新增）：is_single_function_mode 与
+    # function_signature 是否含 GetWorkspaceSize 必须一致。字段缺省（遗留
+    # 两段式产物）时跳过，保持向后兼容。
+    sfn = value.get("is_single_function_mode")
+    sig = value.get("function_signature", "")
+    if sfn is not None and sig:
+        has_gws = "GetWorkspaceSize" in sig
+        if sfn and has_gws:
+            errors.append(
+                "is_single_function_mode=true 但 function_signature 仍含 "
+                "GetWorkspaceSize；一段式算子应取唯一函数声明"
+            )
+        elif (not sfn) and (not has_gws):
+            errors.append(
+                "is_single_function_mode=false 但 function_signature 不含 "
+                "GetWorkspaceSize；两段式算子应取 GetWorkspaceSize 段"
+            )
+    return errors
 
 
 def validate_cases(value) -> list[str]:

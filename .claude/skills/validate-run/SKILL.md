@@ -14,6 +14,7 @@ description: 对单轮 constraints、cases、execution 和 analysis 产物执行
 - execution records 中 case id 可回溯到 cases；
 - analysis 的根因属于固定枚举；
 - 下一状态与根因/通过统计一致。
+- 一段式算子（`is_single_function_mode=true` 或 `function_signature` 不含 `GetWorkspaceSize`）合法；其 `outputs` 可含标量指针输出（`type` 为 `uint64_t`/`int64_t` 等、`format=N/A`、`dimensions=[]`），不得判为“缺失 GetWorkspaceSize”或误标框架参数。
 
 real 模式额外追加 CPU golden 推导门禁：对 `iter_dir/cases_executor.py` 运行
 `python scripts/validate_artifacts.py executor <iter>/cases_executor.py`，命中
