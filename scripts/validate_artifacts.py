@@ -183,6 +183,32 @@ def _walk_values(value):
         yield value
 
 
+def _validate_tensor_format_values(value) -> list[str]:
+    """Require Tensor format domains to use a list, even for one format."""
+    errors: list[str] = []
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        raw_type = attributes.get("type")
+        type_name = raw_type.get("value") if isinstance(raw_type, dict) else raw_type
+        if not isinstance(type_name, str):
+            continue
+        type_name = re.sub(r"\b(?:const|struct)\b|[*&]", "", type_name).strip()
+        if type_name not in {"aclTensor", "aclTensorList"}:
+            continue
+
+        raw_format = attributes.get("format")
+        format_value = (
+            raw_format.get("value") if isinstance(raw_format, dict) else raw_format
+        )
+        if not isinstance(format_value, list) or not all(
+            isinstance(item, str) for item in format_value
+        ):
+            errors.append(
+                f"{section}.{param}[{platform}].format.value must be a "
+                "list[str] for Tensor parameters; use ['ND'] for a single format"
+            )
+    return errors
+
+
 def _validate_conditional_shape_constraints(value) -> list[str]:
     """Require a gated shape expression when an enum/bool description says so."""
     errors: list[str] = []
@@ -459,6 +485,7 @@ def validate_constraints(value) -> list[str]:
         errors = (
             validate_constraint_semantics(value)
             + array_length_errors
+            + _validate_tensor_format_values(value)
             + _validate_conditional_shape_constraints(value)
             + _validate_tensor_list_length_constraints(value)
             + _validate_dynamic_allowed_ranges(value)

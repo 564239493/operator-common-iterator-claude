@@ -18,6 +18,7 @@ ARRAY_TYPE_DTYPE_FALLBACK = {
 NULL_POINTER_ONLY_RE = re.compile(
     r"(只支持传空指针|传空指针|必须为空指针|仅支持空指针)"
 )
+FORMAT_SEPARATOR_RE = re.compile(r"[、，,/]")
 
 
 def _attribute_groups(section: Any):
@@ -55,13 +56,47 @@ def _is_null_pointer_only(attributes: dict[str, Any]) -> bool:
     )
 
 
+def _normalize_tensor_format(attributes: dict[str, Any]) -> bool:
+    """Normalize a Tensor format domain to ``ValueWithSrcText.value: list[str]``.
+
+    The reference constraint builder always splits the stored format text into
+    a list, including the single-format case.  Accept legacy flat strings here
+    so previously extracted constraints remain usable.
+    """
+    raw_format = attributes.get("format")
+    if isinstance(raw_format, dict):
+        raw_value = raw_format.get("value")
+        if not isinstance(raw_value, str):
+            return False
+        value = raw_value.strip()
+        normalized = (
+            []
+            if not value or value.upper() == "N/A"
+            else sorted({item.strip() for item in FORMAT_SEPARATOR_RE.split(value) if item.strip()})
+        )
+        raw_format["value"] = normalized
+        return True
+    if isinstance(raw_format, str):
+        value = raw_format.strip()
+        normalized = (
+            []
+            if not value or value.upper() == "N/A"
+            else sorted({item.strip() for item in FORMAT_SEPARATOR_RE.split(value) if item.strip()})
+        )
+        attributes["format"] = {"value": normalized, "src_text": ""}
+        return True
+    return False
+
+
 def normalize_constraints(value: dict[str, Any]) -> int:
-    """Normalize type-dependent dimensions and dtype fallback values."""
+    """Normalize type-dependent format, dimensions, and dtype values."""
     normalized_count = 0
     for section_name in ("inputs", "outputs"):
         for attributes in _attribute_groups(value.get(section_name, {})):
             type_name = _type_name(attributes)
             if type_name in TENSOR_TYPES:
+                if _normalize_tensor_format(attributes):
+                    normalized_count += 1
                 continue
 
             dimensions = attributes.get("dimensions")

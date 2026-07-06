@@ -143,7 +143,7 @@ class ParamAttributes(BaseModel):
     """参数信息模型（按平台区分，通用结构）。"""
     description: str = Field(default="", description="参数描述")
     type: Union[ValueWithSrcText, str] = Field(..., description="参数类型（aclTensor / int64_t / bool …）")
-    format: Union[ValueWithSrcText, str] = Field(..., description="数据格式（ND / NZ … 或 'N/A'）")
+    format: Union[ValueWithSrcText, str] = Field(..., description="数据格式（Tensor 始终使用字符串列表；非 Tensor 使用 'N/A'）")
     is_optional: Union[ValueWithSrcText, str] = Field(..., description="是否可选（true / false）")
     is_support_discontinuous: Union[ValueWithSrcText, str] = Field(..., description="是否支持非连续 Tensor")
     is_operator_param: Union[ValueWithSrcText, str] = Field(..., description="是否为算子参数")
@@ -305,7 +305,7 @@ class OperatorRule(BaseModel):
 | `description` | 是 | `str`（直写，非 ValueWithSrcText） | 表格"描述"列 / 文字说明原文摘录（≤ 200 字） |
 | `type.value`   | 是 | `str` | 函数原型中基础类型名，去掉 `*`/`const`/`struct`（如 `aclTensor`、`int64_t`、`bool`） |
 | `type.src_text`| 是 | `str` | 若文档未显式说明，填 `""` |
-| `format.value` | 是 | `Union[List[str], str]` | 单格式 → 字符串（`"ND"`）；多格式 → 列表（`["ND", "NZ"]`）；标量 → `"N/A"` |
+| `format.value` | 是 | `Union[List[str], str]` | Tensor 始终使用列表：单格式 → `["ND"]`，多格式 → `["ND", "NZ"]`，未提取到格式 → `[]`；标量 / 非 Tensor → `"N/A"` |
 | `format.src_text` | 是 | `str` | 原文摘录 |
 | `is_optional.value` | 是 | `bool` | 仅当文档明确出现"可选/Optional/default/可为空/缺省值"时为 `true`；"支持空Tensor" **不等于**可选 |
 | `is_optional.src_text` | 是 | `str` | 摘录原文 |
@@ -1160,7 +1160,7 @@ ND, NC, NCL, NCHW, NCDHW, NHWC, NZ, FRACTAL_NZ, FRACTAL_Z, FRACTAL_Z_3D,
 NDC1HWC0, FRACTAL_NZ_C0_16, NDHWC, NCHW_VECT_C0_16, NC1HWC0
 ```
 
-- 多格式参数用 `List[str]`（如 `["FRACTAL_Z_3D", "ND"]`），单格式用 `str`；
+- Tensor 参数始终用 `List[str]`：多格式如 `["FRACTAL_Z_3D", "ND"]`，单格式也必须写成 `["ND"]`，没有明确格式时使用 `[]`；
 - 标量 / 非 Tensor 参数用 `"N/A"`（注意是字符串，不是 `null`）。
 - **`NZ` / `FRACTAL_NZ` / `FRACTAL_NZ_C0_16` 张量必须配套应用 §4.6.5**（v2 新增）。
 
