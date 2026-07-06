@@ -468,6 +468,10 @@ bool 参数（`is_xxx`/`xxxFlag` / `transposeX*` 等）**必须**产出 `allowed
 | "暂不支持配为 False" / "仅支持 True" | `[true]` |
 | 无明确固定值约束（仅描述为 bool） | `[false, true]` |
 
+**算子特例优先级**：`aclnnBatchMatMulWeightNz` 的隐式布尔变量
+`self_transposed`、`mat2_transposed` 必须按 §4.6.5 B.1 使用
+`value=[true, false]`（顺序也必须一致），不得套用本表的默认 `[false, true]`。
+
 禁止：填写 `value=[]` + `type="range"`，否则下游生成器按浮点范围填充，
 会产生 `1.0`、`0.0`、`1.23e-40`、`-2147483648.0` 等非法 bool 值。
 
@@ -622,6 +626,54 @@ transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
 
 两种布局的"块尺寸等于 16"在数值上等价，**但表达必须分别落库**，否则后续会
 被 `shape_value_dependency` 的 ceil 关系合并匹配掩盖。
+
+##### B.1 `aclnnBatchMatMulWeightNz` 转置隐式变量（算子特例，强制）
+
+当且仅当 `operator_name == "aclnnBatchMatMulWeightNz"` 时，即使函数签名和参数表中
+没有转置标志，也必须主动向 `inputs` 新增以下两个**隐式控制变量**：
+
+- `self_transposed`：标识 `self` 是否按转置布局解释；
+- `mat2_transposed`：标识 `mat2` 是否按转置布局解释。
+
+两个变量都不是 API 的真实入参，**不得**写入 `function_signature`，但必须为
+`product_support` 中的每个平台分别生成完整 `ParamAttributes` 卡片。字段要求如下：
+
+```json
+{
+  "description": "隐式变量，标识 self 是否需要转置",
+  "type": {"value": "bool", "src_text": ""},
+  "format": {"value": "N/A", "src_text": ""},
+  "is_optional": {"value": false, "src_text": ""},
+  "is_support_discontinuous": {"value": "N/A", "src_text": ""},
+  "is_operator_param": {"value": false, "src_text": ""},
+  "array_length": {"value": [], "src_text": "", "type": null},
+  "dtype": {"value": ["bool"], "src_text": ""},
+  "dimensions": {"value": [], "src_text": ""},
+  "allowed_range_value": {
+    "value": [true, false],
+    "src_text": "由 self 的转置与非转置布局描述抽象出的隐式控制变量",
+    "type": "enum"
+  }
+}
+```
+
+`mat2_transposed` 使用相同字段结构，仅将 `description` 和
+`allowed_range_value.src_text` 中的 `self` 替换为 `mat2`。以下规则均为强制：
+
+1. 名称必须精确为 `self_transposed`、`mat2_transposed`，不得改成
+   `transposeSelf`、`transposeMat2` 或其他别名；
+2. `type.value="bool"`、`dtype.value=["bool"]`、
+   `allowed_range_value.type="enum"`，且
+   `allowed_range_value.value=[true, false]`；不得反转顺序、不得写成字符串；
+3. `is_operator_param.value=false`，因为二者是生成器求解使用的隐式变量，不是函数
+   签名参数；
+4. 当 `self` 或 `mat2` 的 shape、NZ 轴位、K/N 对应关系因是否转置而变化时，对应
+   `constraints_in_parameters` 表达式必须引用
+   `self_transposed.range_value` 或 `mat2_transposed.range_value` 作为门控条件，
+   `relation_params` 同时包含实际张量和对应隐式变量；禁止把转置与非转置布局写成
+   两条互不受门控的无条件约束；
+5. `src_text` 优先摘录文档中转置/非转置布局的原文；变量名和布尔值是为生成器补充
+   的结构化控制信息，不得伪造成函数签名原文。
 
 ##### C. 必须产出的 `constraints_in_parameters` 条目
 
@@ -1217,7 +1269,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 22 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 23 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1246,6 +1298,8 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
     `allowed_range_value.type` 必须为 `"enum"`，`value` 必须是 `[false]` / `[true]` /
     `[false, true]` 三者之一；禁止留 `value=[]` 或 `type="range"`（否则生成器按浮点
     范围填充会产生非法 bool 取值，触发 `create_dataset` 报告 `attr bool error`）。
+    唯一顺序特例：`aclnnBatchMatMulWeightNz` 的 `self_transposed` 与
+    `mat2_transposed` 必须使用 `[true, false]`，见 §4.6.5 B.1。
 15. **NZ 块尺寸硬约束（v2 新增）**：若存在 5D NZ 张量（`format ∈ {"NZ","FRACTAL_NZ","FRACTAL_NZ_C0_16"}` 且 `dimensions.value=[5,5]`），
     必须满足**全部**下列子项：
     a. `mat2.allowed_range_value.value` 包含 `[[16,16],[16,16]]` 或文档明示的其他端点（`type=range`）；
@@ -1303,6 +1357,17 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
     c. 单个闭区间使用 `[min,max]`，多个“或”关系闭区间使用
        `[[min1,max1],[min2,max2],...]`；
     d. 对照 `src_text` 逐个核验区间数量和端点，禁止把多个可选区间合并为其包络区间。
+23. **`aclnnBatchMatMulWeightNz` 转置隐式变量完整性**：当
+    `operator_name == "aclnnBatchMatMulWeightNz"` 时，必须满足**全部**：
+    a. `inputs` 同时包含 `self_transposed` 和 `mat2_transposed`，且两个变量均覆盖
+       `product_support` 的全部平台；
+    b. 两者均为 `type.value="bool"`、`dtype.value=["bool"]`、
+       `is_operator_param.value=false`、`dimensions.value=[]`；
+    c. 两者的 `allowed_range_value` 均严格为
+       `{"value":[true,false], "type":"enum"}`，不得使用默认顺序 `[false,true]`；
+    d. 两者均不出现在 `function_signature`；
+    e. 文档中的转置/非转置 shape 或 NZ 布局约束分别由对应隐式变量门控，
+       `relation_params` 包含实际张量与隐式变量，不存在两套互相冲突的无条件布局约束。
 
 ---
 
@@ -1357,7 +1422,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | 算子 | 类型 | 关键提取点 |
 | ---- | ---- | ---------- |
 | `aclnnReflectionPad1dBackward` | NN / 反向 | `padding` 长度固定 2；`padding` 数值 < `self` 最后一维；`gradOutput.shape[:-1] == self.shape[:-1]`、rank 一致及末维派生公式必须分别落库 |
-| `aclnnBatchMatMulWeightNz` | NN / MatMul | `mat2` 强制 NZ 格式；**§4.6.5 双布局**：非转置 `(b, n1, k1, k0=16, n0=16)` + 转置 `(b, k1, n1, n0=16, k0=16)` 各落两条 `shape[3]/shape[4]==16`；`cubeMathType` 可选 int8 |
+| `aclnnBatchMatMulWeightNz` | NN / MatMul | 必须主动新增隐式 bool 变量 `self_transposed`、`mat2_transposed`（逐平台，`is_operator_param=false`，`allowed_range_value=[true,false]`）；转置相关布局由对应变量门控；`mat2` 强制 NZ 格式；**§4.6.5 双布局**：非转置 `(b, n1, k1, k0=16, n0=16)` + 转置 `(b, k1, n1, n0=16, k0=16)` 各落两条 `shape[3]/shape[4]==16`；`cubeMathType` 可选 int8 |
 | `aclnnGroupedMatmulV5` | NN / 分组 MatMul | `actType ∈ [0,5]`；大量 `Optional` 参数与 `aclTensorList` |
 | `aclnnSwinAttentionScoreQuant` | Transformer | int8 量化；`biasDequant*Optional` 取值为 0–255 整型 |
 | `aclnnSwinTransformerLnQkvQuant` | Transformer | LN + QKV 拆分；`headNum`/`seqLength`/`epsilon` 等标量属性 |
