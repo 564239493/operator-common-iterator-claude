@@ -35,16 +35,6 @@ if str(ROOT) not in sys.path:
 logger = logging.getLogger("generate_cases")
 
 
-def serializable(value: Any) -> Any:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {key: serializable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [serializable(item) for item in value]
-    return value
-
-
 def _setup_iter_log(iter_dir: Path) -> Path | None:
     """Mirror the script's run into ``<iter_dir>/generation.log``."""
     try:
@@ -66,6 +56,57 @@ def _setup_iter_log(iter_dir: Path) -> Path | None:
             file=sys.stderr,
         )
         return None
+
+
+def generate_platform_outputs(
+    generator: Any,
+    count: int,
+    jsonl_save_path: Path,
+    output_dir: Path,
+) -> tuple[dict[str, Path], dict[str, int], dict[str, Path]]:
+    """逐平台生成 JSONL，并在该平台结束时立即转换为正式 JSON 产物。"""
+    from agent.generators.data_definition.param_models_def import RunPlatform
+
+    platforms = generator.supported_platforms or [RunPlatform.DEFAULT_PLATFORM.value]
+    per_platform_paths: dict[str, Path] = {}
+    per_platform_counts: dict[str, int] = {}
+    checkpoint_paths: dict[str, Path] = {}
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for platform in platforms:
+        sanitized = platform.replace("/", "_")
+        checkpoint_dir = jsonl_save_path / sanitized
+        checkpoint_file = checkpoint_dir / f"{generator.operator_name}.jsonl"
+        converted_source = output_dir / f"{generator.operator_name}.json"
+        target = output_dir / f"cases_{sanitized}.json"
+        checkpoint_paths[platform] = checkpoint_file
+        target.unlink(missing_ok=True)
+        converted_source.unlink(missing_ok=True)
+
+        try:
+            generator.generate_for_platform(
+                platform,
+                count,
+                jsonl_save_path=str(checkpoint_dir),
+                json_save_path=str(output_dir),
+            )
+        finally:
+            # facade 按 DataHandleUtil 的既有约定生成 <operator>.json；
+            # 这里立即重命名为平台正式产物，且中断时也保留已转换结果。
+            if converted_source.exists():
+                converted_source.replace(target)
+        if not target.exists():
+            raise RuntimeError(
+                f"Final case JSON was not produced for platform={platform}, "
+                f"operator={generator.operator_name}"
+            )
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError(f"Converted case payload is not a list: {target}")
+        per_platform_paths[platform] = target
+        per_platform_counts[platform] = len(payload)
+
+    return per_platform_paths, per_platform_counts, checkpoint_paths
 
 
 def main() -> int:
@@ -125,39 +166,17 @@ def main() -> int:
     )
 
     # Reference entry point — facade.TestCaseGenerator delegates to
-    # ``single_operator_handle`` for each platform and returns
-    # ``Dict[platform, list[CaseConfig]]``.  No further field rewriting.
+    # ``single_operator_handle`` for each platform.
     from agent.generators.facade import TestCaseGenerator
 
     generator = TestCaseGenerator(constraints, seed=args.seed)
-    by_platform = generator.generate_by_platform(
-        args.count,
-        jsonl_save_path=str(jsonl_save_path),
-    )
-    if not by_platform:
-        logger.error("generator produced no cases")
-        raise SystemExit("generator produced no cases")
-
     output_dir = output_path.parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # 每个产品单独成文件: ``cases_<sanitized_platform>.json``。``/`` 是
-    # Windows 非法字符, 替换为 ``_``; 空格 / 中文保留原样 (Path 直接处理,
-    # 不走 shell, 不会触发引号问题)。执行阶段 runner 会按
-    # ``server_info.platforms`` 选出对应文件, 拷贝成 ``cases.json`` 后再
-    # 交给 generator.py / ATK。
-    per_platform_paths: dict[str, Path] = {}
-    per_platform_counts: dict[str, int] = {}
-    for platform, cases in by_platform.items():
-        sanitized = platform.replace("/", "_")
-        target = output_dir / f"cases_{sanitized}.json"
-        cases_dict = [serializable(case) for case in cases]
-        target.write_text(
-            json.dumps(cases_dict, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        per_platform_paths[platform] = target
-        per_platform_counts[platform] = len(cases_dict)
+    per_platform_paths, per_platform_counts, checkpoint_paths = generate_platform_outputs(
+        generator,
+        args.count,
+        jsonl_save_path,
+        output_dir,
+    )
 
     summary = {
         "operator_name": generator.operator_name,
@@ -167,13 +186,9 @@ def main() -> int:
             k: str(v) for k, v in per_platform_paths.items()
         },
         "jsonl_checkpoint_files": {
-            platform: str(
-                jsonl_save_path
-                / platform.replace("/", "_")
-                / f"{generator.operator_name}.jsonl"
-            )
-            for platform in by_platform
+            platform: str(path) for platform, path in checkpoint_paths.items()
         },
+        "jsonl_checkpoint_status": "converted_and_removed",
         "total": sum(per_platform_counts.values()),
         "seed": args.seed,
         "generator_version": (
@@ -190,7 +205,7 @@ def main() -> int:
     logger.info(
         "done: %d cases across %d platforms in %.2fs -> %s",
         summary["total"],
-        len(by_platform),
+        len(per_platform_paths),
         elapsed,
         output_dir,
     )

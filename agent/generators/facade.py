@@ -43,6 +43,7 @@ import os
 from typing import Any
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
+from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.data_definition.param_models_def import RunPlatform
 from agent.generators.operator_handle_main import single_operator_handle
 
@@ -180,10 +181,12 @@ class TestCaseGenerator:
         platform: str,
         count: int = DEFAULT_COUNT,
         jsonl_save_path: str | None = None,
+        json_save_path: str | None = None,
     ) -> list[CaseConfig]:
         """针对单个 ``platform`` 调用 ``single_operator_handle``，返回原始 ``CaseConfig`` 列表。
 
-        这是最贴近正式代码的入口 —— 不做任何额外包装。
+        指定 ``jsonl_save_path`` 时，生成过程逐条写入 JSONL；调用结束（包括异常
+        或中断）后立即转换为正式 JSON。``json_save_path`` 默认与 JSONL 目录相同。
         """
         if count < 0:
             raise ValueError(f"count must be >= 0, got {count}")
@@ -195,6 +198,7 @@ class TestCaseGenerator:
         _ensure_formal_logger_initialized(self._operator_name)
         self._apply_seed()
 
+        cases: list[CaseConfig] = []
         try:
             cases = single_operator_handle(
                 operator_constraint=self._constraints,
@@ -207,7 +211,13 @@ class TestCaseGenerator:
                 "single_operator_handle failed for platform=%s, operator=%s: %s",
                 platform, self._operator_name, gen_err,
             )
-            return []
+        finally:
+            if jsonl_save_path is not None:
+                DataHandleUtil.convert_jsonl_to_json(
+                    api_name=self._operator_name,
+                    jsonl_save_path=jsonl_save_path,
+                    json_save_path=json_save_path or jsonl_save_path,
+                )
         return list(cases or [])
 
     def generate_by_platform(
@@ -218,8 +228,8 @@ class TestCaseGenerator:
         """按平台分组生成用例，返回 ``dict[platform, list[CaseConfig]]``。
 
         当 ``json_constraints`` 没有 ``product_support`` 字段时，会回退到默认平台。
-        指定 ``jsonl_save_path`` 时，每个平台写入独立子目录，避免同名算子的
-        JSONL checkpoint 相互覆盖。
+        指定 ``jsonl_save_path`` 时，每个平台先写入独立子目录，随后由
+        ``generate_for_platform`` 转换为 JSON，避免同名算子产物相互覆盖。
         """
         platforms = self._resolve_platforms()
         result: dict[str, list[CaseConfig]] = {}
