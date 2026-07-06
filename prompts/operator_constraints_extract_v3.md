@@ -803,6 +803,226 @@ relation_params: ["gradOutput", "self", "padding"]
 4. 每条 `src_text` 摘录对应的维度一致或派生公式原文；同一句覆盖多条约束时可复用；
 5. 正向算子、MatMul broadcast、卷积反向等不满足上述语义的场景不得套用此模板。
 
+#### 4.6.7 格式-秩（format↔rank）硬对应表（v7 新增，通用规则）
+
+> 本节来自 `aclnnNpuFormatCast` 闭环：iter_001 把 `dstTensor.dimensions=[4,8]`
+> 与 `srcTensor.dimensions=[2,6]` 当成**扁平 rank 区间**提取，但漏掉 format 与
+> rank 的一一对应关系，生成器把 `format` 与 `dimensions` 当独立字段采样，产出
+> `NCDHW + 8D`、`NDC1HWC0 + 2D`、`FRACTAL_Z_3D + 6D` 这类非法组合。NPU 真机校验
+> 直接拒绝（`AclNN_Parameter_Error(EZ1001): Input Tensor format not match it's
+> shape`），CPU golden 只做 reshape 不校验 format↔rank 故全部漏网。该规则按
+> `format.value` 的形态触发，**不**按算子名硬编码。
+
+##### A. 昇腾格式标准 rank 对应表
+
+| `format.value` | 标准 rank | 说明 |
+| -------------- | --------- | ---- |
+| `ND` | 变量（由文档 view shape 区间给出） | 自由 rank，仍须落入文档给定的 `[min,max]` |
+| `NCL` | 3 | `(N, C, L)` |
+| `NCHW` / `NHWC` | 4 | 4D 排布 |
+| `NCDHW` / `NDHWC` | 5 | 5D 排布 |
+| `NC1HWC0` | 5 | 5D，`C1`/`C0` 为分块轴 |
+| `NDC1HWC0` | 6 | 6D，`C1`/`C0` 为分块轴 |
+| `NZ` / `FRACTAL_NZ` / `FRACTAL_NZ_C0_16` / `FRACTAL_NZ_C0_32` | 5 | 沿用 §4.6.5 既有 NZ 块尺寸规则（不重复块尺寸细节，仅引用 rank） |
+| `FRACTAL_Z_3D` | 8 | storage shape 8D |
+| `FRACTAL_Z` | 4 | storage shape 4D（若文档涉及） |
+| `NCHW_VECT_C0_16` | 5 | 5D 向量化排布 |
+
+> 标准 rank 是**不可违反的硬约束**：当文档显式声明某张量的 `format.value` 是
+> 上表中某格式时，其 `len(shape)` 必须等于对应 rank（ND 例外，落入文档区间即可）。
+
+##### B. 适用判定
+
+满足下列**任一**条件时，**必须**执行本节规则：
+
+1. 某个 `aclTensor` / `aclTensorList` 参数的 `format.value`（按平台）是**多格式
+   列表**（如 `["ND","NCDHW","NDC1HWC0","FRACTAL_Z_3D","NZ"]`），且这些格式在
+   §A 对应表中**存在不同的标准 rank**；
+2. 文档原文出现"format 与 shape 维度需匹配 / shape 维度需与 format 对应 /
+   Input Tensor format not match it's shape"等 format↔rank 一致性约束信号；
+3. 文档给出某张量 view shape rank 区间（如 `[2,6]`）与 storage shape rank
+   区间（如 `[4,8]`），且 format 列表跨多种 rank 不同的格式族（ND/NCDHW/
+   NDC1HWC0/FRACTAL_Z_3D 等）。
+
+##### C. 必须产出的 `constraints_in_parameters` 条目
+
+对每个满足适用判定、且 `format.value` 为多格式列表的张量参数 `T`，必须在
+`constraints_in_parameters[平台]` 中追加**单一** `format_rank_consistency` 条目，
+把"逐格式 rank 守卫"合并为一条带分支的布尔表达式（参考 §6.3 模式 8）。模板：
+
+```text
+expr_type: format_rank_consistency
+expr: (T.format == "ND" and 2 <= len(T.shape) <= 6) or \
+      (T.format == "NCL" and len(T.shape) == 3) or \
+      (T.format == "NCDHW" and len(T.shape) == 5) or \
+      (T.format == "NDC1HWC0" and len(T.shape) == 6) or \
+      (T.format == "FRACTAL_Z_3D" and len(T.shape) == 8) or \
+      (T.format in ("NZ","FRACTAL_NZ","FRACTAL_NZ_C0_16","FRACTAL_NZ_C0_32") and len(T.shape) == 5)
+relation_params: ["T"]
+src_text: "srcTensor 的 view shape 维度不在[2, 6]的范围；dstTensor 的 storage
+shape 维度不在[4, 8]的范围；Input Tensor format not match it's shape。"
+```
+
+**规则要点**：
+
+1. **逐格式守卫不可省略**：只要 `format.value` 列表里出现某格式，上表中对应
+   rank 必须在 `expr` 中以 `(T.format == "X" and len(T.shape) == R)` 形式出现；
+   ND 类按文档区间写 `min <= len(T.shape) <= max`。**不允许**只保留 `dimensions.value`
+   的扁平 `[min,max]` 区间而省略逐格式守卫。
+2. **合并为单一 expr**：所有分支用 `or` 串接为**一条** `format_rank_consistency`
+   条目，**不**拆成多条独立 `shape_equality`（否则生成器会把它们当作并列候选
+   而丢失 format 门控上下文，与 §6.3 模式 6 反例同理）。
+3. **`dimensions.value` 仍可保留**文档给出的 `[min,max]` 作为弱范围（供生成器
+   初筛 rank 槽数），但**必须**同时落库上述逐格式守卫，作为不可违反的硬约束。
+4. **src 必须可溯**：`src_text` 摘录文档中"维度区间""format↔shape 一致性"等
+   原文短语；若文档未显式写一致性短语但 format 列表跨多种 rank，仍须按 §A 表
+   落库，`src_text` 摘录 format 列表与维度区间原文并补注"format↔rank 由 §4.6.7
+   标准对应表推导"。
+5. **NZ 族不重复块尺寸**：NZ/FRACTAL_NZ 等只在本节写 rank==5 的守卫，块尺寸
+   硬约束（`shape[3]==16`/`shape[4]==16`）仍按 §4.6.5 落库，不在此重复。
+6. **平台差异**：若不同平台 format 列表不同（如 A2 含 `NCL`、A3 不含），逐平台
+   分别落库对应分支；同一平台 format 列表里的每个格式都必须出现在该平台的 expr 中。
+
+##### D. 反例（禁止）
+
+- `format.value=["ND","NCDHW","NDC1HWC0","FRACTAL_Z_3D"]` 但 `constraints_in_parameters`
+  只有 `2 <= len(T.shape) <= 8` 一条扁平区间，**无**逐格式守卫 → 漏抓，违规则 C.1。
+- 把逐格式守卫写成 4 条独立 `shape_equality`（`len(T.shape)==5`、`len(T.shape)==6`、
+  `len(T.shape)==8`、`2<=len(T.shape)<=6`）→ 丢失 format 门控，违规则 C.2。
+- `dstTensor.format == "NCDHW"` 但 `len(dstTensor.shape) == 8`（NCDHW 应为 5D）
+  未被任何约束拦截 → 正是 aclnnNpuFormatCast iter_001 的根因。
+
+##### E. aclnnNpuFormatCast 落库示例（srcTensor / dstTensor）
+
+```json
+{
+  "srcTensor": {
+    "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+      "description": "输入张量，view shape rank∈[2,6]，format 与 rank 须满足 §4.6.7 逐格式守卫",
+      "type": {"value": "aclTensor", "src_text": ""},
+      "format": {"value": ["ND","NCL","NCDHW","NDC1HWC0","NZ","FRACTAL_NZ","FRACTAL_Z_3D"], "src_text": "支持的数据格式..."},
+      "dimensions": {"value": [2, 6], "src_text": "srcTensor 的 view shape 维度不在[2, 6]的范围"},
+      "dtype": {"value": ["FLOAT16","FLOAT32","INT8","BFLOAT16"], "src_text": ""},
+      "is_optional": {"value": false, "src_text": ""},
+      "is_support_discontinuous": {"value": true, "src_text": ""},
+      "is_operator_param": {"value": true, "src_text": ""}
+    }
+  },
+  "dstTensor": {
+    "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+      "description": "[DERIVED] shape 与 format 由 aclnnNpuFormatCastCalculateSizeAndFormat(srcTensor, dstFormat, additionalDtype) 派生，见 §4.6.8；storage shape rank∈[4,8]，format↔rank 须满足 §4.6.7 逐格式守卫",
+      "type": {"value": "aclTensor", "src_text": ""},
+      "format": {"value": ["ND","FRACTAL_NZ","NCDHW","NDC1HWC0","FRACTAL_Z_3D","FRACTAL_NZ_C0_16","FRACTAL_NZ_C0_32"], "src_text": "actualFormat 取值：ACL_FORMAT_ND(2)/FRACTAL_NZ(29)/NCDHW(30)/NDC1HWC0(32)/FRACTAL_Z_3D(33)/FRACTAL_NZ_C0_16(50)/FRACTAL_NZ_C0_32(51)"},
+      "dimensions": {"value": [4, 8], "src_text": "dstTensor 的 storage shape 维度不在[4, 8]的范围"},
+      "dtype": {"value": ["FLOAT16","FLOAT32","INT8","BFLOAT16"], "src_text": ""},
+      "is_optional": {"value": false, "src_text": ""},
+      "is_support_discontinuous": {"value": true, "src_text": ""},
+      "is_operator_param": {"value": true, "src_text": ""}
+    }
+  }
+}
+```
+
+对应 `constraints_in_parameters`（同一平台）至少包含：
+
+```text
+# srcTensor format-rank 一致性
+expr_type: format_rank_consistency
+expr: (srcTensor.format == "ND" and 2 <= len(srcTensor.shape) <= 6) or \
+      (srcTensor.format == "NCL" and len(srcTensor.shape) == 3) or \
+      (srcTensor.format == "NCDHW" and len(srcTensor.shape) == 5) or \
+      (srcTensor.format == "NDC1HWC0" and len(srcTensor.shape) == 6) or \
+      (srcTensor.format in ("NZ","FRACTAL_NZ","FRACTAL_NZ_C0_16","FRACTAL_NZ_C0_32") and len(srcTensor.shape) == 5) or \
+      (srcTensor.format == "FRACTAL_Z_3D" and len(srcTensor.shape) == 8)
+relation_params: ["srcTensor"]
+src_text: "srcTensor 的 view shape 维度不在[2, 6]的范围；Input Tensor format not match it's shape。"
+
+# dstTensor format-rank 一致性（dstTensor.shape/format 由子接口派生，见 §4.6.8）
+expr_type: format_rank_consistency
+expr: (dstTensor.format == "ND" and 4 <= len(dstTensor.shape) <= 8) or \
+      (dstTensor.format == "FRACTAL_NZ" and len(dstTensor.shape) == 5) or \
+      (dstTensor.format == "NCDHW" and len(dstTensor.shape) == 5) or \
+      (dstTensor.format == "NDC1HWC0" and len(dstTensor.shape) == 6) or \
+      (dstTensor.format == "FRACTAL_Z_3D" and len(dstTensor.shape) == 8) or \
+      (dstTensor.format in ("FRACTAL_NZ_C0_16","FRACTAL_NZ_C0_32") and len(dstTensor.shape) == 5)
+relation_params: ["dstTensor"]
+src_text: "dstTensor 的 storage shape 维度不在[4, 8]的范围；actualFormat 取值：ACL_FORMAT_ND(2)/FRACTAL_NZ(29)/NCDHW(30)/NDC1HWC0(32)/FRACTAL_Z_3D(33)/FRACTAL_NZ_C0_16(50)/FRACTAL_NZ_C0_32(51)。"
+```
+
+#### 4.6.8 派生输出张量（CalculateSizeAndFormat 类两段式语义，v7 新增）
+
+> 本节来自 `aclnnNpuFormatCast` 闭环：iter_001 生成器直接给 `dstTensor` 随机
+> 赋 shape/format，违背两段式语义——文档第 28、32 行明确「必须先调用
+> `aclnnNpuFormatCastCalculateSizeAndFormat` 计算出 dstTensor 的 shape 和实际
+> 数据格式，再调用两段式接口」。生成器独立赋值导致 dstTensor.shape 与
+> srcTensor 不可由子接口推导，叠加 §4.6.7 缺失产生大量非法组合。该规则按
+> "是否存在派生子接口"的语义触发，**不**按算子名硬编码。
+
+##### A. 适用判定
+
+满足下列**全部**条件时，**必须**执行本节规则：
+
+1. 算子文档中存在形如 `aclnnXxxCalculateSizeAndFormat` / `aclnnXxxGetSizeAndFormat`
+   / `aclnnXxxGetShapeAndFormat` 的**子接口**（函数原型独立出现）；
+2. 该子接口的输出包含 `dstShape` + `actualFormat`（或同义返回量），用于构造
+   主接口的 dstTensor；
+3. 主接口文档明确写出「必须先调用 ...CalculateSizeAndFormat ... 再调用两段式
+   接口」「dstTensor 的 shape/format 由 ... 计算」等派生语义短语。
+
+##### B. 必须产出的派生标记
+
+满足适用判定时，对主接口中由子接口派生 shape/format 的输出张量 `D`（如
+`aclnnNpuFormatCast` 的 `dstTensor`）：
+
+1. **ParamAttributes 标记**：在 `D` 的 `description` 字段（复用既有字段，**不**
+   新增 schema 字段）前缀 `[DERIVED]`，并写明派生子接口签名，例如：
+   `"[DERIVED] shape 与 format 由 aclnnNpuFormatCastCalculateSizeAndFormat(srcTensor, dstFormat, additionalDtype) 派生，生成器不得独立随机赋值；见 §4.6.8"`；
+2. **`dimensions.value` / `format.value` 保留文档候选**作为弱提示（供生成器
+   初筛与 §4.6.7 逐格式守卫使用），但 `description` 的 `[DERIVED]` 标记表明
+   这些字段的真实取值由子接口在执行期填充，生成器**不得**独立随机赋值；
+3. **生成器侧只采样** `srcTensor(shape, dtype, format) + dstFormat + additionalDtype`
+   等子接口入参；`D.shape` / `D.format` 在用例构造期留空或标记为 `DERIVED`，
+   由执行器调用子接口回填。
+
+##### C. 必须产出的 `constraints_in_parameters` 条目
+
+对每个派生输出张量 `D`，在 `constraints_in_parameters[平台]` 中追加**一条**
+`derived_value` 约束（新约束种类，登记于 §7.1 与 §6.3 模式 9）：
+
+```text
+expr_type: derived_value
+expr: ""
+relation_params: ["D", "srcTensor", "dstFormat", "additionalDtype"]
+src_text: "必须先调用 aclnnNpuFormatCastCalculateSizeAndFormat 计算出 dstTensor
+的 shape 和实际数据格式，再调用两段式接口。"
+```
+
+> `expr` 留空字符串是合法的（§4.7.2 已允许 `expr=""`），因为派生关系不是可在
+> 生成期 `eval()` 的布尔谓词，而是"由执行器调用子接口填充"的语义标记；机器可
+> 判定性由 `relation_params` + `expr_type=derived_value` + `src_text` 共同承载。
+> 派生张量仍须满足 §4.6.7 的 `format_rank_consistency` 守卫（针对子接口回填
+> 后的实际 shape/format），二者不冲突：§4.6.7 守卫 rank↔format 一致性，
+> §4.6.8 声明 shape/format 来源。
+
+##### D. 平台差异
+
+- 若不同平台的派生子接口或 `dstFormat` 候选不同（如 Atlas 350 dstFormat 固定
+  为 `FRACTAL_NZ(29)`，A2/A3 dstFormat 为 `ND/NZ/NCDHW/NDC1HWC0/FRACTAL_Z_3D`），
+  逐平台分别落库 `derived_value` 条目，`src_text` 摘录对应平台原文；
+- `dstFormat` 作为独立输入参数（非派生）正常提取 `allowed_range_value`（`type=enum`），
+  不标记 `[DERIVED]`。
+
+##### E. 反例（禁止）
+
+- `dstTensor` 的 `description` 无 `[DERIVED]` 标记，`constraints_in_parameters`
+  无 `derived_value` 条目 → 生成器把 `dstTensor.shape`/`format` 当独立字段随机
+  采样，违规则 B.1 + C。
+- 把 `dstTensor.shape == aclnnNpuFormatCastCalculateSizeAndFormat(...).dstShape`
+  写进 `expr` 当布尔表达式 → 该签名无法在生成期 `eval()`（子接口是 NPU 侧运行期
+  调用），违 §6.1 合法 Python 布尔表达式要求；正确做法是 `expr=""` + `derived_value`。
+- 因 `dstTensor` 是派生量就省略 §4.6.7 的 `format_rank_consistency` 守卫 →
+  派生量仍须满足 format↔rank 一致性，二者职责不同，不得互相替代。
+
 ### 4.7 `constraints_in_parameters`（跨参数 / 单参数约束）
 
 #### 4.7.1 顶层 key
@@ -1267,7 +1487,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 23 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 24 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1366,6 +1586,16 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
     d. 两者均不出现在 `function_signature`；
     e. 文档中的转置/非转置 shape 或 NZ 布局约束分别由对应隐式变量门控，
        `relation_params` 包含实际张量与隐式变量，不存在两套互相冲突的无条件布局约束。
+24. **format↔rank 完整性**：逐平台遍历所有 `aclTensor` / `aclTensorList` 参数；若
+    `format.value` 是包含不同标准 rank 格式的列表，必须满足**全部**：
+    a. 存在且仅存在一条引用该参数的 `format_rank_consistency` 约束；
+    b. `format.value` 中除 `ND` 外的每种已知格式，都在该约束中有对应的精确
+       `len(T.shape) == rank` 分支；`ND` 使用文档给出的 rank 区间；
+    c. `relation_params` 包含该参数，表达式同时引用 `T.format` 与 `T.shape`；
+    d. 对表达式逐分支做反例检查：`NCDHW + 非5D`、`NDC1HWC0 + 非6D`、
+       `FRACTAL_Z_3D + 非8D`、`NZ/FRACTAL_NZ + 非5D` 必须全部求值为 false；
+    e. 对 `aclnnNpuFormatCast`，`srcTensor` 与 `dstTensor` 必须逐平台分别通过上述检查，
+       禁止只为其中一个张量生成守卫。
 
 ---
 
@@ -1380,6 +1610,8 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 - 解析 shape/dimensions 时参考 §4.6.3 dimensions 解析表
 - 识别隐式维度变量时参考 §4.6.4（概念词/操作名/类型词需剔除）
 - 处理 NZ / FRACTAL_NZ 张量时参考 §4.6.5（块尺寸硬约束、转置/非转置布局区分）
+- 处理多格式 Tensor 时参考 §4.6.7 与 §6.3 模式 8；必须生成逐格式
+  `format_rank_consistency` 守卫，尤其禁止 `NCDHW + 非5D`
 - 识别条件 Shape（被 enum/boolean 门控的 shape）时参考 §4.6.3 G 与 §6.3 模式 6
 - 处理 aclTensorList 容器长度关系时参考 §4.6.3 TensorList 长度规则与 §6.3 模式 0
 - 处理 backward / grad 的 gradOutput partial-shape 跟随时参考 §4.6.6 与 §6.3 模式 7
@@ -1426,7 +1658,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | `aclnnSwinTransformerLnQkvQuant` | Transformer | LN + QKV 拆分；`headNum`/`seqLength`/`epsilon` 等标量属性 |
 | `aclnnAlltoAllMatmul` | 通信 + MatMul | `alltoAllAxesOptional` 取值 JSON `null`（原文"空"）或 `[-2,-1]`；**条件 Shape**：`x2.shape` 由 `transposeX2` 门控（`§6.3` 模式 6）——False 时 `(H*rankSize, N)`，True 时 `(N, H*rankSize)`；隐式变量 `BS`/`H`/`N` + 外部常量 `rankSize` |
 | `aclnnFFNV3` | NN / MoE FFN | `activation` 为枚举字符串；`innerPrecise` 标量属性 |
-| `aclnnNpuFormatCast` | 格式转换 | 输入格式集 `["FRACTAL_Z_3D","NCDHW",...]`；dtype 与 format 强耦合 |
+| `aclnnNpuFormatCast` | 格式转换 | `srcTensor`、`dstTensor` 必须逐平台生成 `format_rank_consistency`：NCDHW=5D、NDC1HWC0=6D、FRACTAL_Z_3D=8D、NZ/FRACTAL_NZ=5D，ND 使用文档 rank 区间；专项反例 `NCDHW + 8D` 必须被排除；dtype 与 format 强耦合 |
 | `aclnnCalculateMatmulWeightSize` | 辅助计算 / 一段式 | 仅计算输出，无 Tensor 真正计算；`workspaceSize`/`executor` 是唯一输出 | `tensorShape` 为 `aclIntArray` 输入（2-6 维，`dtype.value=["int"]` 固定；文档列 `FLOAT16`/`BFLOAT16` 描述关联权重张量 dtype，不写入 `tensorShape.dtype`）；`weightTensorSize` 为 `uint64_t*` 标量输出（公式 result）；一段式 `function_signature` 无 `GetWorkspaceSize`，不写入 `is_single_function_mode` 字段 |
 | `aclnnCalculateMatmulWeightSizeV2` | 辅助计算 | 同上 V2，差异在 weight 排布 / NZ 转换 |
 
