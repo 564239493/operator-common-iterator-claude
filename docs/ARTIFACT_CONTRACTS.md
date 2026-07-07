@@ -8,8 +8,12 @@ runs/<operator>-<timestamp>/
   inputs/
     <原算子文档文件名>.md
     prompt_v1.md
+    src_snapshot/              # 可选：--source-root 时只读复制（op_host/**/*.{cpp,h,hpp,json} + docs/aclnn*.md）
   iter_001/
     constraints.json
+    source_raw.json            # 可选：源码启用时，extract_source_constraints.py 确定性产物
+    source_evidence.json       # 可选：source-analyst 产（hard_constraints + cross_check + doc_error）
+    constraints_patch.json     # 可选：source-analyst 产，由 apply_constraints_patch.py 机械应用
     generation_summary.json
     cases.json
     execution_result.json
@@ -21,10 +25,12 @@ runs/<operator>-<timestamp>/
 
 ## run_state.json
 
-必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`current_prompt_source`、
-`current_prompt`、`mode`、`server_config`、`max_iterations`、
-`case_count`、`current_iteration`、`state`、`history` 和时间戳。state 只能取
-WORKFLOW.md 定义的状态。
+必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、
+`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、`mode`、
+`server_config`、`max_iterations`、`case_count`、`current_iteration`、`state`、
+`history` 和时间戳。state 只能取 WORKFLOW.md 定义的状态。
+`operator_src_source`/`operator_src_snapshot` 在 `--source-root` 未提供或为空时为空串，
+此时源码校验全程跳过。
 
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
 目录内的快照，后续 Agent 只使用快照。
@@ -33,12 +39,33 @@ WORKFLOW.md 定义的状态。
 
 必须满足 `agent.generators.common_model_definition.OperatorRule`。关键字段包括
 operator_name、product_support、parameters 和 constraints_in_parameters。每个约束
-应来自原文，不用聊天内容补充。
+应来自原文，不用聊天内容补充。每条约束带 `origin` 字段：`doc`（文档提取，默认）或
+`source_analysis`（源码校验 patch 写入）；`origin=source_analysis` 的约束只能由
+`scripts/apply_constraints_patch.py` 机械写入，source-analyst 不直接写 constraints.json。
 
 `allowed_range_value.type=range` 的区间端点必须为实际数值，不允许用 `null` 表示
 无界；单边或开区间写入 `constraints_in_parameters`，使用不等式表达。
 `type=enum` 允许 `null` 作为明确的离散候选。`expr` 中允许裸 `null`，校验和求解前
 会规范化为 Python `None`，但只能用于空值/存在性判断，不能参与数值大小比较。
+
+## source_evidence.json（可选，源码启用时）
+
+source-analyst 在每轮 EXTRACT 后产出。必含 `operator_name`、`aclnn_interfaces`、
+`platform_matrix`、`hard_constraints`（每项 constraint_id/expr_type/expr/
+relation_params/source_location/error_string/src_text）、`cross_check`（mismatch_overbroad/
+mismatch_overnarrow）、`doc_error`（源码否决文档的条目列表，可为空）。`hard_constraints.expr_type`
+必须属 `InterConstraintsRuleType` 枚举，`expr` 对齐当前提示词（v3）§6 语法。不产
+诊断/预检类额外字段。`validate_artifacts.py source_evidence` 校验上述字段存在性，
+quality-reviewer 读 `cross_check.mismatch_overbroad` 残留作 blocking。
+
+## constraints_patch.json（可选，源码启用时）
+
+source-analyst 产出的补丁建议数组，由 `scripts/apply_constraints_patch.py` 机械应用
+（单轮内仅一次，失败回滚不重试）。每项 `op` 为 `add_constraint` 或 `narrow_param_range`；
+`basis_type` 为 `doc_quote`（文档有但 constraints 漏）或 `source_authoritative`（源码强制
+但文档无）；`origin` 为 `doc` 或 `source_analysis`。`apply_constraints_patch.py` 写回后
+重跑 `OperatorRule` 校验，不通过则不写输出、返回结构化错误。`validate_artifacts.py
+constraints_patch` 校验 op/basis_type/origin/proposed 取值受控。
 
 ## cases.json
 

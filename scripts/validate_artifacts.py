@@ -558,11 +558,108 @@ def validate_executor(path: str) -> list[str]:
     return errors
 
 
+def validate_source_evidence(value) -> list[str]:
+    """校验 source-analyst 产出的 source_evidence.json 结构。
+
+    定位为每轮 EXTRACT 后的交叉校验证据,不参与根因枚举。必含 operator_name、
+    aclnn_interfaces、platform_matrix、hard_constraints、cross_check、doc_error
+    六字段(不含 log_match)。hard_constraints.expr_type 必须属
+    InterConstraintsRuleType 枚举,expr 必须是合法 Python 表达式。
+    cross_check 必须含 mismatch_overbroad/mismatch_overnarrow(quality-reviewer 读)。
+    """
+    if not isinstance(value, dict):
+        return ["source_evidence must be an object"]
+    errors: list[str] = []
+    if not isinstance(value.get("operator_name"), str) or not value.get("operator_name"):
+        errors.append("operator_name must be a non-empty string")
+    if not isinstance(value.get("aclnn_interfaces"), list) or not value.get("aclnn_interfaces"):
+        errors.append("aclnn_interfaces must be a non-empty array")
+    if not isinstance(value.get("platform_matrix"), dict):
+        errors.append("platform_matrix must be an object (platform -> matrix)")
+    if not isinstance(value.get("cross_check"), dict):
+        errors.append("cross_check must be an object (mismatch_overbroad/overnarrow)")
+    else:
+        cc = value["cross_check"]
+        for key in ("mismatch_overbroad", "mismatch_overnarrow"):
+            if key not in cc:
+                errors.append(f"cross_check missing field: {key}")
+            elif not isinstance(cc[key], list):
+                errors.append(f"cross_check.{key} must be an array")
+    if not isinstance(value.get("doc_error"), list):
+        errors.append("doc_error must be an array")
+    hc = value.get("hard_constraints")
+    if not isinstance(hc, list):
+        errors.append("hard_constraints must be an array")
+    else:
+        try:
+            from agent.generators.common_model_definition import InterConstraintsRuleType
+            allowed_expr_types = {t.value for t in InterConstraintsRuleType}
+        except Exception:
+            allowed_expr_types = set()
+        required_hc = ("constraint_id", "expr_type", "expr", "relation_params",
+                       "source_location", "error_string", "src_text")
+        for index, c in enumerate(hc):
+            if not isinstance(c, dict):
+                errors.append(f"hard_constraints[{index}] must be an object")
+                continue
+            for key in required_hc:
+                if key not in c:
+                    errors.append(f"hard_constraints[{index}] missing field: {key}")
+            et = c.get("expr_type")
+            if allowed_expr_types and et not in allowed_expr_types:
+                errors.append(f"hard_constraints[{index}] invalid expr_type: {et}")
+            expr = c.get("expr")
+            if isinstance(expr, str) and expr:
+                try:
+                    ast.parse(expr, mode="eval")
+                except SyntaxError:
+                    errors.append(f"hard_constraints[{index}] expr is not valid Python: {expr}")
+    return errors
+
+
+def validate_constraints_patch(value) -> list[str]:
+    """校验 source-analyst 产出的 constraints_patch.json 结构。
+    op 仅允许 add_constraint / narrow_param_range；origin/basis_type 取值受控。
+    """
+    if not isinstance(value, list):
+        return ["constraints_patch must be an array"]
+    errors: list[str] = []
+    allowed_op = {"add_constraint", "narrow_param_range"}
+    allowed_basis = {"doc_quote", "source_authoritative"}
+    allowed_origin = {"doc", "source_analysis"}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            errors.append(f"patch[{index}] must be an object")
+            continue
+        op = item.get("op")
+        if op not in allowed_op:
+            errors.append(f"patch[{index}].op invalid: {op}")
+        if item.get("basis_type") and item.get("basis_type") not in allowed_basis:
+            errors.append(f"patch[{index}].basis_type invalid: {item.get('basis_type')}")
+        if item.get("origin") and item.get("origin") not in allowed_origin:
+            errors.append(f"patch[{index}].origin invalid: {item.get('origin')}")
+        proposed = item.get("proposed")
+        if not isinstance(proposed, dict):
+            errors.append(f"patch[{index}].proposed must be an object")
+        elif op == "add_constraint":
+            for key in ("expr_type", "expr", "relation_params"):
+                if key not in proposed:
+                    errors.append(f"patch[{index}].proposed missing field: {key}")
+        elif op == "narrow_param_range":
+            if "allowed_range_value" not in proposed:
+                errors.append(f"patch[{index}].proposed missing field: allowed_range_value")
+            if not item.get("target_param"):
+                errors.append(f"patch[{index}] missing field: target_param")
+    return errors
+
+
 VALIDATORS = {
     "constraints": validate_constraints,
     "cases": validate_cases,
     "execution": validate_execution,
     "analysis": validate_analysis,
+    "source_evidence": validate_source_evidence,
+    "constraints_patch": validate_constraints_patch,
     "executor": validate_executor,
 }
 

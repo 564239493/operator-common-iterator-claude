@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--source-root path] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -13,9 +13,18 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
    未传 `--prompt` 时，由 `init_run.py` 自动选择
    `prompts/operator_constraints_extract_vN.md` 中数值版本 N 最大的文件；
    max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
+   `--source-root` 可选：提供算子源码目录时启用源码校验（见步骤 2、5）；
+   未提供或为空则跳过源码分析，按纯文档驱动迭代。
 2. 调用 `python scripts/init_run.py` 创建 run。`--batch-dir` 是目录批次内部参数，
    不传给 `init_run.py`。该命令会把外部文档只读复制到 run 的 `inputs/` 目录，
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。
+   若用户提供 `--source-root`，先调
+   `python scripts/locate_operator_source.py --aclnn-name <算子名>` 自动定位源码目录；
+   locate 失败或返回 `ok=false` 时退回无源码场景（不阻断）。定位成功后把返回的
+   `operator_dirs[0]` 作为 `--source-root` 透传给 `init_run.py`，由其只读复制到
+   `inputs/src_snapshot/`，run_state 记 `operator_src_snapshot` 非空。用户直接给
+   `--source-root` 目录时跳过 locate 直接透传。`--source-root` 未提供或为空时
+   `operator_src_snapshot` 为空，源码校验全程跳过。
    如果提供了 `--batch-dir`，创建成功后必须立刻调用
    `python scripts/batch_state.py --batch-dir <batch-dir> attach-run --run-dir <run-dir>`，
    再进入 EXTRACT；这样会话中断时目录批次可以定位并恢复该 run。
@@ -24,7 +33,15 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
    只有用户显式传入 `--mode mock` 才能执行 Mock。
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
 5. 每轮按顺序委派：
-   - `constraint-extractor`
+   - `constraint-extractor`（产 `constraints.json`）
+   - **源码校验（每轮一次，可选）**：仅当 `run_state.operator_src_snapshot` 非空时，在
+     EXTRACT 完成、GENERATE 之前委派 `source-analyst`（首轮与 re-EXTRACT 后都跑；单轮内
+     只跑一次）。source-analyst 读 `src_snapshot` + `constraints.json` + 算子文档快照，产
+     `source_raw.json`/`source_evidence.json`/`constraints_patch.json`。随后**主协调器**调
+     `python scripts/apply_constraints_patch.py --constraints <constraints.json> --patch
+     <constraints_patch.json> --output <constraints.json>` 单次应用并重跑 `OperatorRule`
+     校验；apply 失败/回滚不重试源码分析，残留 `cross_check.overbroad` 交 GATE 阻断。
+     `operator_src_snapshot` 为空时跳过本步，直接进 GENERATE。
    - `case-generator`
    - `case-executor`（real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
      三子步骤；推导须清除 `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run）
