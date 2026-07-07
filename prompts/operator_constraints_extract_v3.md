@@ -307,7 +307,7 @@ class OperatorRule(BaseModel):
 | `type.src_text`| 是 | `str` | 若文档未显式说明，填 `""` |
 | `format.value` | 是 | `Union[List[str], str]` | Tensor 始终使用列表：单格式 → `["ND"]`，多格式 → `["ND", "NZ"]`，未提取到格式 → `[]`；标量 / 非 Tensor → `"N/A"` |
 | `format.src_text` | 是 | `str` | 原文摘录 |
-| `is_optional.value` | 是 | `bool` | 仅当文档明确出现"可选/Optional/default/可为空/缺省值"时为 `true`；"支持空Tensor" **不等于**可选 |
+| `is_optional.value` | 是 | `bool` | 只能依据文档参数分类或正文显式可选语义判定：分类为"输入"/"输出"默认 `false`；分类为"可选输入"/"可选输出"或正文明确"可选/可不传/default/缺省值/可为空指针"时才为 `true`；"支持空Tensor" **不等于**可选；参数名中的 `Optional` 等字样**不得**作为可选证据 |
 | `is_optional.src_text` | 是 | `str` | 摘录原文 |
 | `is_support_discontinuous.value` | 是 | `Union[bool, str]` | 表格 `√` → `true`；`×` 或无标记 → `false`；非 Tensor 参数 → `"N/A"` |
 | `is_support_discontinuous.src_text` | 是 | `str` | 摘录原符号 |
@@ -329,6 +329,30 @@ class OperatorRule(BaseModel):
 | `dtype.src_text` | 是 | `str` | 摘录原文 |
 | `dimensions.value` | 是 | `List[int]` 或 `[]` | **维度（rank）约束**：如 `[2, 3]` 表示 `2 ≤ rank ≤ 3`；不适用 → `[]` |
 | `dimensions.src_text` | 是 | `str` | 摘录原文（如 `"2-3"`、`"2维"`） |
+
+**`is_optional` 判定强制规则**：
+
+- **优先依据参数表的"输入/输出/可选输入/可选输出"等分类列**：分类为"输入"或"输出"时，
+  默认 `is_optional.value=false`；只有分类为"可选输入"、"可选输出"或等价明确分类时，
+  才可置为 `true`。若同一参数在不同 API 表格或平台表格中分类不一致，必须按对应表格/平台
+  拆分，并在 `src_text` 中摘录产生差异的原文。
+- **其次依据正文中的显式可选语义**：只有出现"可选"、"可不传"、"不传即为 nullptr"、
+  "缺省值/default"、"可为空指针"、"optional input" 等明确说明参数调用时可以省略/传空时，
+  才可置为 `true`。
+- **禁止依据参数名推断可选性**：参数名包含 `Optional`、`optional`、`Opt`、`Maybe`、
+  `Nullable` 等字样时，不能据此把 `is_optional.value` 置为 `true`，也不能把这些名字片段
+  作为 `is_optional.src_text`。参数名只是接口命名，不是文档约束证据。
+- **"支持/仅支持输入 nullptr" 不等于参数可省略**：如果参数表分类仍为"输入"，但使用说明写
+  "当前仅支持输入 nullptr"，应提取为 `is_optional.value=false`，并另行在
+  `constraints_in_parameters` 中表达 `param is None` / `param == nullptr` 之类的取值约束。
+  该参数仍是必填入参，只是必填值为 `nullptr`。
+- **`is_optional.src_text` 必须引用真实分类或显式说明**：非可选参数推荐摘录 `"输入"`、`"输出"`
+  或包含该分类的表格行原文；可选参数摘录 `"可选输入"` / `"可不传（即为nullptr）"` 等明确原文。
+  禁止 `src_text` 仅写 `"Optional"`，除非这是文档分类/正文中的独立显式说明，而不是参数名的一部分。
+- **反例**：`aclnnSwinAttentionScoreQuant` 的 `biasQuantOptional`、`biasDequant1Optional`、
+  `biasDequant2Optional`、`paddingMask1Optional`、`paddingMask2Optional` 在参数表"输入/输出"列均为
+  "输入"，因此 `is_optional.value=false`；不得因名称后缀 `Optional` 置为 `true`。其中
+  `paddingMask2Optional` 的"当前仅支持输入nullptr"应作为取值约束提取，而不是作为可选性证据。
 
 **TensorList 长度关系（强制规则）**：
 
@@ -529,6 +553,44 @@ transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
 4. `src_text` 必须合并摘录默认 shape 与“配置为/等于某值时”的 shape 原文，禁止只
    保留默认 shape 句子。
 
+##### D+. `shape_value_dependency` 必须按 §4.6.5 B.1 隐式 bool 门控分支（v3 合并 v4 增补）
+
+当算子含 §4.6.5 B.1 强制新增的隐式 bool 变量
+（如 `aclnnBatchMatMulWeightNz` 的 `self_transposed` / `mat2_transposed`），
+其 `constraints_in_parameters` 中的**任何** `shape_value_dependency` 表达式，
+只要涉及：
+
+- `mat2.shape[j]`（j ∈ [1, 2, 3]，对应非转置 `(b, n1, k1, 16, 16)` 与转置
+  `(b, k1, n1, 16, 16)` 的不同轴位）；
+- `self.shape[i]`（i ∈ [1, 2]，对应非转置 `(b, m, k)` 与转置 `(b, k, m)` 的不同轴位）；
+
+**必须**按对应隐式 bool 变量分支。
+
+| 引用 | 隐式 bool | False 分支（默认） | True 分支（门控后） |
+| ---- | --------- | ------------------- | ------------------- |
+| `mat2.shape[1]` | `mat2_transposed` | n1（列轴） | k1（行轴） |
+| `mat2.shape[2]` | `mat2_transposed` | k1（行轴） | n1（列轴） |
+| `mat2.shape[3]` | `mat2_transposed` | k0 = 16 | n0 = 16 |
+| `mat2.shape[4]` | `mat2_transposed` | n0 = 16 | k0 = 16 |
+| `self.shape[1]` | `self_transposed` | m（行） | k（归约轴） |
+| `self.shape[2]` | `self_transposed` | k（归约轴） | m（行） |
+| `out.shape[2]` | `mat2_transposed` | n = n1 × n0 | n = k1 × k0（一般化为 n1' × n0'） |
+
+规则要点：
+
+1. **典型错误反例**（必须避免）：`((self.shape[2] + 15) // 16 == mat2.shape[2])`
+   写成无条件，会在 `mat2_transposed=True` 时把 `self.k` 等同于 `mat2.shape[2] = n1`。
+2. **正确写法**：单条 `if/elif/else` 表达式（§6.3 模式 6）或多条
+   `not(...) or ...` 等价形式（§6.3 模式 6.1），必须覆盖 False/True 分支，并以
+   `else True` 兜底。
+3. **`relation_params` 必须包含对应隐式 bool 变量**以及张量本身，例如
+   `["self", "mat2", "mat2_transposed", "self_transposed"]`。
+4. **`src_text` 必须同时摘录非转置布局与转置布局原文**，不能只摘默认布局。
+5. **`out.shape` 引用按 `mat2_transposed` 门控**：out 的 N 由 mat2 的最后一根归约轴与
+   最后一根输出轴决定，与 `mat2_transposed` 直接相关。
+6. **同一 expr 不得交叉门控**：单一 expr 只对一个隐式 bool 门控；如果同时涉及
+   `self_transposed` 与 `mat2_transposed`，拆为两条独立 expr（每条对应一个 bool）。
+
 #### 4.6.4 隐式参数（命名维度变量 / 外部常量）识别
 
 文档中常在 shape 描述里出现 **形如 `(BS, H)`、`(H*rankSize, N)`、`[E, N1]/[N1]` 的命名变量**，它们**不是函数签名参数**，但被下游 `constraints_in_parameters` 中的表达式引用。**必须**抽取到 `inputs` 中（`is_operator_param: false`），按以下规则分类（来自 `knowledge/implicit_params/SKILL.md`）：
@@ -672,6 +734,12 @@ transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
    两条互不受门控的无条件约束；
 5. `src_text` 优先摘录文档中转置/非转置布局的原文；变量名和布尔值是为生成器补充
    的结构化控制信息，不得伪造成函数签名原文。
+6. 当 `mat2` 引用 `mat2.shape[j]`、`self` 引用 `self.shape[i]`
+   （j ∈ [1, 2, 3]，i ∈ [1, 2]）时，对应的 `shape_value_dependency` **必须**按本节
+   隐式 bool 变量分支。触发条件为：`operator_name == "aclnnBatchMatMulWeightNz"`、
+   `constraints_in_parameters[平台]` 含 `expr_type == "shape_value_dependency"`，且
+   expr 包含 `mat2.shape[j]` 或 `self.shape[i]`。三条同时成立时强制执行；具体模板见
+   §6.3 模式 6.1，典型反例见 §8 边缘场景表。
 
 ##### C. 必须产出的 `constraints_in_parameters` 条目
 
@@ -1460,6 +1528,81 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | "group=tp 时 x shape 为 (BS/rankSize, H)" | `x.shape` | `group` |
 | "squeeze 为 True 时输出 shape 去除 axis 维" | `output.shape` | `squeeze` |
 
+#### 模式 6.1：`shape_value_dependency` 弱门控模板（v3 合并 v4 增补）
+
+**适用场景**：
+
+- `mat2_transposed` 隐式 bool 门控下，`mat2.shape[j]` 的轴语义反转；
+- `self_transposed` 隐式 bool 门控下，`self.shape[i]` 的轴语义反转；
+- 两者的 ceil 关系（`k1 = ceil(k / k0)`、`n1 = ceil(n / n0)`）需要落为
+  `shape_value_dependency`。
+
+##### mat2 引用模板
+
+非转置分支（`mat2_transposed=False`）：`mat2.shape == (b, n1, k1, 16, 16)`，
+**`shape[2] = k1`**。
+转置分支（`mat2_transposed=True`）：`mat2.shape == (b, k1, n1, 16, 16)`，
+**`shape[1] = k1`**。
+
+推荐单条 if/else 写法：
+
+```text
+expr_type: shape_value_dependency
+expr: ((self.shape[2] + 15) // 16 == mat2.shape[2])
+        if (mat2_transposed.range_value == False)
+      else ((self.shape[2] + 15) // 16 == mat2.shape[1])
+        if (mat2_transposed.range_value == True)
+      else True
+relation_params: ["self", "mat2", "mat2_transposed"]
+src_text: "mat2 非转置时 NZ 为 (b, n1, k1, 16, 16)；转置时为 (b, k1, n1, 16, 16)；
+           ceil(k, k0) = k1，由 mat2_transposed 门控。"
+```
+
+等价写法（`unless` 多分支合并）：
+
+```text
+expr_type: shape_value_dependency
+expr: not (mat2_transposed.range_value == False)
+        or ((self.shape[2] + 15) // 16 == mat2.shape[2])
+relation_params: ["self", "mat2", "mat2_transposed"]
+
+expr_type: shape_value_dependency
+expr: not (mat2_transposed.range_value == True)
+        or ((self.shape[2] + 15) // 16 == mat2.shape[1])
+relation_params: ["self", "mat2", "mat2_transposed"]
+```
+
+注：多分支等价写法必须拆为多条独立 `InterParamConstraint`；禁止在单条 JSON 表达式中
+把 `not(A) or B and not(C) or D` 直接连写，避免 `and` / `or` 优先级歧义。
+
+##### self 引用模板
+
+`self` 隐式 bool 与轴位的对应：
+
+- `self_transposed=False`：`self.shape == (b, m, k)`；`shape[1] = m`，`shape[2] = k`；
+- `self_transposed=True`：`self.shape == (b, k, m)`；`shape[1] = k`，`shape[2] = m`。
+
+按 `self_transposed` 门控的 `shape_value_dependency` 应同样使用 if/else 链。
+
+##### 反例（禁止）
+
+```text
+((self.shape[2] + 15) // 16 == mat2.shape[2])
+# 无条件，在 mat2_transposed=True 时语义错误（UNSAT）
+```
+
+```text
+((self.shape[2] + 15) // 16 == mat2.shape[2]) if (mat2_transposed.range_value == False) else True
+# 缺转置分支，self.shape[2] 在转置布局下等同 m 而非 k
+```
+
+##### `expr_type` 与 `src_text` 选择
+
+- `expr_type` 优先 `shape_value_dependency`（与原风格一致）；亦可使用
+  `shape_choice` / `parameter_representation`。
+- `src_text` 必须**同时摘录两个布局的 NZ 维度元组原文**（"当B矩阵不转置时..."
+  与 "当B矩阵转置时..."），不可只摘默认布局。
+
 #### 模式 7：Forward-Output Partial-Shape 跟随
 
 **适用场景**：backward / grad 算子中，`gradOutput` 与 `self` / `input` 共享
@@ -1554,6 +1697,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | **文档同时写明非转置与转置 NZ 两种布局（v2 新增）** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`allowed_range_value` 的 `value` 仍为 `[[16,16],[16,16]]`（数值上等价，但约束条目按布局拆分） |
 | **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
 | **文档写"X 的 shape 为 (A, B)；当 Y 配置为 True 时 shape 为 (C, D)"（v3 新增）** | **不可**拆为两条独立无条件 shape 描述；必须在 `constraints_in_parameters` 中为 X 产出**单一条件 shape 约束**（§6.3 模式 6），用 `Y.range_value` 等门控参数分支；`expr_type` 优先 `shape_choice` 或 `parameter_representation`；`src_text` 同时摘录默认 shape 短语与"配置为 X 时…为…"短语，确保门控可溯源（典型反例：aclnnAlltoAllMatmul 中 x2.shape 在 transposeX2=True 时应为 (N, H*rankSize) 而非无条件 (H*rankSize, N)） |
+| **`shape_value_dependency` 写成无条件形式（含 `mat2.shape[j]` / `self.shape[i]` 引用但未按 §4.6.5 B.1 隐式 bool 门控）** | 改写为 §6.3 模式 6.1 单条 if/else 或 unless 多分支；`relation_params` 包含对应隐式 bool；`src_text` 同时摘录"非转置 NZ (b, n1, k1, k0, n0)" 与 "转置 NZ (b, k1, n1, n0, k0)" 原文 |
 | **一段式算子：函数原型无 `GetWorkspaceSize`（v3 新增）** | `function_signature` 取唯一函数声明；参数列表无 `workspaceSize`/`executor`。不得伪造 `GetWorkspaceSize` 段；**不得**写入 `is_single_function_mode` 字段 |
 | **一段式算子：输出为标量指针（`uint64_t*`/`int64_t*` 等）（v3 新增）** | 该参数**进 `outputs`**（`type.value` 去 `*`、`format="N/A"`、`dimensions=[]`、`is_operator_param=true`），**不**当流程参数排除；`aclnnCalculateMatmulWeightSize` 的 `weightTensorSize` 即此 |
 | **aclIntArray 参数的 dtype 固定为 int** | `type.value="aclIntArray"` → `dtype.value=["int"]`（固定，见 §4.6.3 aclIntArray 规则）；文档"数据类型"列若列张量 dtype（如 `FLOAT16`/`BFLOAT16`）描述的是关联张量，**不**写入 `dtype`（不得写成 `dtype.value=["FLOAT16","BFLOAT16"]`） |
@@ -1621,6 +1765,13 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
        `shape_equality` / `shape_choice` 条目同时存在且互不引用 G；
     e. `src_text` 必须同时摘录默认 shape 短语与“配置为 X 时…为…”短语（或同义信号词），
        确保门控可溯源。
+    f. **shape_value_dependency 门控完整性**：遍历所有
+       `expr_type == "shape_value_dependency"` 的约束；若 `expr` 含 `mat2.shape[j]`
+       引用，且 `operator_name == "aclnnBatchMatMulWeightNz"`，必须同时引用
+       `mat2_transposed.range_value`；若 `expr` 含 `self.shape[i]` 引用，必须同时引用
+       `self_transposed.range_value`。表达式必须以 if/elif/else 链（§6.3 模式 6）或
+       `not(...)/or` 等价形式（§6.3 模式 6.1）呈现，禁止无条件 expr；`relation_params`
+       必须包含对应隐式 bool 与张量。漏掉任一项视为漏抽，违反 §4.6.3 D+。
 19. **TensorList 长度关系完整性**：遍历所有 `type.value="aclTensorList"` 参数；
     a. `array_length.src_text` 明确写“长度与 Q 相同”时，必须存在
        `len(P) == len(Q)` 约束；
@@ -1699,11 +1850,14 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 - 处理多格式 Tensor 时参考 §4.6.7 与 §6.3 模式 8；必须生成逐格式
   `format_rank_consistency` 守卫，尤其禁止 `NCDHW + 非5D`
 - 识别条件 Shape（被 enum/boolean 门控的 shape）时参考 §4.6.3 G 与 §6.3 模式 6
+- 对含 `self_transposed` / `mat2_transposed` 隐式 bool 的 NZ 算子，`shape_value_dependency`
+  必须参考 §4.6.3 D+ 与 §6.3 模式 6.1 按隐式 bool 门控
 - 处理 aclTensorList 容器长度关系时参考 §4.6.3 TensorList 长度规则与 §6.3 模式 0
 - 处理 backward / grad 的 gradOutput partial-shape 跟随时参考 §4.6.6 与 §6.3 模式 7
 - 处理大小/数量语义参数的隐式 >0 约束时参考 §4.6.9
 - 写 expr 表达式时参考 §6.3 模式库（按关系特征匹配模板；NZ 块尺寸使用模式 5；
-  条件 Shape 使用模式 6；Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0）
+  条件 Shape 使用模式 6；shape_value_dependency 隐式 bool 门控使用模式 6.1；
+  Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0）
 - 写 allowed_range_value 时参考 §4.6.3 allowed_range 文本→结构化映射
 
 输出必须是**纯 JSON 字符串**，无任何前后缀。
@@ -1725,7 +1879,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 25 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape、
+3. 内部执行第 9 章 25 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
    §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
@@ -1739,7 +1893,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | 算子 | 类型 | 关键提取点 |
 | ---- | ---- | ---------- |
 | `aclnnReflectionPad1dBackward` | NN / 反向 | `padding` 长度固定 2；`padding` 数值 < `self` 最后一维；`gradOutput.shape[:-1] == self.shape[:-1]`、rank 一致及末维派生公式必须分别落库 |
-| `aclnnBatchMatMulWeightNz` | NN / MatMul | 必须主动新增隐式 bool 变量 `self_transposed`、`mat2_transposed`（逐平台，`is_operator_param=false`，`allowed_range_value=[true,false]`）；转置相关布局由对应变量门控；`mat2` 强制 NZ 格式；**§4.6.5 双布局**：非转置 `(b, n1, k1, k0=16, n0=16)` + 转置 `(b, k1, n1, n0=16, k0=16)` 各落两条 `shape[3]/shape[4]==16`；`cubeMathType` 可选 int8 |
+| `aclnnBatchMatMulWeightNz` | NN / MatMul | 必须主动新增隐式 bool 变量 `self_transposed`、`mat2_transposed`（逐平台，`is_operator_param=false`，`allowed_range_value=[true,false]`）；转置相关布局由对应变量门控；涉及 `mat2.shape[j]` / `self.shape[i]` 的 `shape_value_dependency` 必须按隐式 bool 分支；`mat2` 强制 NZ 格式；**§4.6.5 双布局**：非转置 `(b, n1, k1, k0=16, n0=16)` + 转置 `(b, k1, n1, n0=16, k0=16)` 各落两条 `shape[3]/shape[4]==16`；`cubeMathType` 可选 int8 |
 | `aclnnGroupedMatmulV5` | NN / 分组 MatMul | `actType ∈ [0,5]`；大量 `Optional` 参数与 `aclTensorList` |
 | `aclnnSwinAttentionScoreQuant` | Transformer | int8 量化；`biasDequant*Optional` 取值为 0–255 整型 |
 | `aclnnSwinTransformerLnQkvQuant` | Transformer | LN + QKV 拆分；`headNum`/`seqLength`/`epsilon` 等标量属性 |
@@ -1831,6 +1985,52 @@ v3 无规则要求提取这种隐式 >0 约束，导致 `constraints_in_paramete
 **范围说明**：本次增补不改变 `OperatorRule` schema 字段；所有新增规则均为已有字段的
 更精细约束。规则按 description 语义短语触发，通用适用于所有含"大小/数量/个数"
 语义参数的算子，不限于特定算子系列。
+
+### B++++：v3 合并 v4 增补记录（shape_value_dependency 隐式 bool 强制门控 + is_optional 判定）
+
+下列变更来自原 `operator_constraints_extract_v4.md` 增量补丁，现已回合并到 v3 主提示词；
+后续不再保留独立 v4 文件。
+
+**触发背景**：`aclnnBatchMatMulWeightNz` iter_001 闭环测试发现 v3 提示词产出时，
+4 条 `shape_value_dependency`（编号 A/B/C/D）为无条件 expr，使 Z3 在
+`mat2_transposed=True` 下 UNSAT，导致该分支覆盖率为 0、`self_transposed=True`
+仅 12/300 = 4%。另一次 `aclnnSwinAttentionScoreQuant` 提取发现，参数名带
+`Optional` 的必填入参被误判为可选参数。
+
+**变更清单**：
+
+1. **§4.6.3 D+ 新增**：`shape_value_dependency` 必须按 §4.6.5 B.1 隐式 bool
+   门控分支，含隐式 bool 与轴位对应表、`out.shape` 门控说明、`relation_params` 与
+   `src_text` 要求。
+2. **§4.6.5 B.1 第 6 点新增**：对 `aclnnBatchMatMulWeightNz`，凡
+   `shape_value_dependency` 引用 `mat2.shape[j]` 或 `self.shape[i]`，必须按
+   `mat2_transposed` / `self_transposed` 分支。
+3. **§6.3 模式 6.1 新增**：`shape_value_dependency` 弱门控模板，含 mat2 引用 if/else
+   模板、等价 `not(...)/or` 多条约束写法、self 引用模板、典型反例与 `src_text` 要求。
+4. **§8 边缘场景新增一行**：无条件 `shape_value_dependency` 改写为模式 6.1。
+5. **§9.18 子项 f 新增**：`shape_value_dependency` 门控完整性自检。
+6. **§10 调用模板更新**：知识库引用追加 §4.6.3 D+ 与 §6.3 模式 6.1。
+7. **附录 A 更新**：`aclnnBatchMatMulWeightNz` 注解追加
+   `shape_value_dependency` 必须按隐式 bool 分支。
+8. **§4.6.3 `is_optional` 判定增补**：可选性必须依据"输入/输出/可选输入"等
+   文档分类或正文显式可选语义，禁止按参数名中的 `Optional` 等字样推断；
+   `"当前仅支持输入nullptr"` 应作为取值约束，不作为可选性证据。
+
+**典型反例 → 修复案例**：
+
+```text
+# 错误：无条件 shape_value_dependency
+expr = "((self.shape[2] + 15) // 16 == mat2.shape[2])"
+relation_params = ["self", "mat2"]
+
+# 正确：按 mat2_transposed 分支
+expr = "((self.shape[2] + 15) // 16 == mat2.shape[2])
+        if (mat2_transposed.range_value == False)
+        else ((self.shape[2] + 15) // 16 == mat2.shape[1])
+        if (mat2_transposed.range_value == True)
+        else True"
+relation_params = ["self", "mat2", "mat2_transposed"]
+```
 
 ---
 
