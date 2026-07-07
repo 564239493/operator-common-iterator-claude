@@ -40,18 +40,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from runtime_config import (  # noqa: E402  (sys.path bootstrap above)
-    config_error_payload,
-    resolve_input_path,
-    validate_server_config,
-)
-from executer import run_cases  # noqa: E402  (project-local package)
-from executer.runner import (  # noqa: E402
-    RunRequest,
-    load_cases_payload,
-    pick_server,
-    validate_server_info,
-)
+try:  # noqa: E402  (sys.path bootstrap above)
+    from runtime_config import (
+        config_error_payload,
+        resolve_input_path,
+        validate_server_config,
+    )
+except ModuleNotFoundError:  # imported as ``scripts.execute_cases`` in tests
+    from scripts.runtime_config import (
+        config_error_payload,
+        resolve_input_path,
+        validate_server_config,
+    )
 
 
 def _emit(payload: dict[str, Any]) -> None:
@@ -69,7 +69,105 @@ def _load_server_config(path: Path) -> list[dict[str, Any]]:
     return servers
 
 
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _platform_from_cases_name(path: Path) -> str | None:
+    name = path.name
+    if not name.startswith("cases_") or not name.endswith(".json"):
+        return None
+    return name[len("cases_") : -len(".json")].replace("_", "/")
+
+
+def _load_operator_supported_platforms(iter_dir: Path | None) -> list[str]:
+    """Return platform names the operator has generated/supports.
+
+    Priority is the contract source ``constraints.json.product_support``.
+    ``generation_summary.json`` and per-platform case filenames are fallbacks
+    for ad-hoc runs where constraints were not passed along.
+    """
+    if iter_dir is None:
+        return []
+
+    constraints = _read_json_object(iter_dir / "constraints.json")
+    product_support = constraints.get("product_support") if constraints else None
+    if isinstance(product_support, list):
+        return [str(p) for p in product_support if str(p).strip()]
+
+    summary = _read_json_object(iter_dir / "generation_summary.json")
+    platforms = summary.get("platforms") if summary else None
+    if isinstance(platforms, dict):
+        return [str(p) for p in platforms.keys() if str(p).strip()]
+    per_platform_files = summary.get("per_platform_files") if summary else None
+    if isinstance(per_platform_files, dict):
+        return [str(p) for p in per_platform_files.keys() if str(p).strip()]
+
+    inferred: list[str] = []
+    for path in sorted(iter_dir.glob("cases_*.json")):
+        platform = _platform_from_cases_name(path)
+        if platform:
+            inferred.append(platform)
+    return inferred
+
+
+def _select_server_for_execution(
+    servers: list[dict[str, Any]],
+    requested_platform: str | None,
+    operator_platforms: list[str],
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Choose one server and one product platform for this execution.
+
+    Without ``--platform``, selection follows ``servers.json`` order:
+    iterate servers in file order, then each server's ``platforms`` array in
+    priority order, and pick the first product supported by the operator.
+    """
+    if requested_platform:
+        for server in servers:
+            if requested_platform in (server.get("platforms") or []):
+                return server, requested_platform, None
+        return (
+            None,
+            None,
+            f"servers.json 中没有匹配平台 {requested_platform!r} 的条目。",
+        )
+
+    if not operator_platforms:
+        if servers:
+            server = servers[0]
+            platforms = server.get("platforms") or []
+            selected = platforms[0] if platforms else None
+            return server, selected, None
+        return None, None, "servers.json 中没有可用服务器。"
+
+    supported = set(operator_platforms)
+    for server in servers:
+        server_platforms = server.get("platforms") or []
+        for platform in server_platforms:
+            if platform in supported:
+                return server, platform, None
+
+    return (
+        None,
+        None,
+        "servers.json 中配置的 platforms 与算子 product_support 没有交集: "
+        f"servers={[s.get('platforms') for s in servers]}, "
+        f"operator={operator_platforms}",
+    )
+
+
 def main() -> int:
+    from executer import run_cases  # noqa: WPS433  (lazy: needs asyncssh)
+    from executer.runner import (  # noqa: WPS433
+        RunRequest,
+        load_cases_payload,
+        validate_server_info,
+    )
+
     parser = argparse.ArgumentParser(
         description=(
             "执行已生成的测试用例并写出 execution_result.json。"
@@ -109,8 +207,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--platform",
-        default="Atlas A3 训练系列产品/Atlas A3 推理系列产品",
-        help="匹配 servers.json 中 platforms 列表的平台名。",
+        default=None,
+        help=(
+            "可选: 手动指定执行平台。未指定时按 servers.json 中每台服务器 "
+            "platforms 数组顺序, 选择第一个与算子 product_support 匹配的平台。"
+        ),
     )
     parser.add_argument(
         "--server-config",
@@ -183,33 +284,48 @@ def main() -> int:
         args.doc = str(resolve_input_path(args.doc))
         args.operator = args.operator or Path(args.doc).stem
 
+        # Iter directory is used by the runner to find constraints.json
+        # + generation_summary.json for platform-based case filtering,
+        # and to determine where ATK's log + xlsx + result.json land.
+        iter_dir = cases_path.parent if cases_path.parent.is_dir() else None
+        operator_platforms = _load_operator_supported_platforms(iter_dir)
+
         config_path, config_errors = validate_server_config(args.server_config)
         if config_errors:
             _emit(config_error_payload(config_path, config_errors))
             return 2
 
         servers = _load_server_config(config_path)
-        server = pick_server(servers, args.platform)
+        server, selected_platform, select_error = _select_server_for_execution(
+            servers,
+            args.platform,
+            operator_platforms,
+        )
         if server is None:
             _emit(
                 {
                     "ok": False,
                     "requires_user_action": True,
                     "code": "NO_SERVER_FOR_PLATFORM",
-                    "message": (
-                        f"servers.json 中没有匹配平台 {args.platform!r} 的条目。"
-                    ),
+                    "message": select_error or "没有可用于执行该算子的服务器平台。",
                     "server_config": str(config_path),
+                    "operator_platforms": operator_platforms,
                 }
             )
             return 2
+        selected_server = dict(server)
+        if selected_platform:
+            original_platforms = list(server.get("platforms") or [])
+            selected_server["platforms"] = [selected_platform] + [
+                p for p in original_platforms if p != selected_platform
+            ]
 
         # Generate skips SSH / ATK, so it can run even when servers.json
         # still has placeholder credentials.  Relax the password check to
         # the schema level (presence / fields) only — leave the strict
         # placeholder detection for ``mode == real``.
         if effective_mode == "real":
-            server_error = validate_server_info(server)
+            server_error = validate_server_info(selected_server)
             if server_error:
                 _emit(
                     {
@@ -226,13 +342,7 @@ def main() -> int:
                 return 2
         else:
             # Generate: just sanity-check field presence.
-            from runtime_config import validate_server_config as _vsc_inner
-            _, _ = _vsc_inner(args.server_config)
-
-        # Iter directory is used by the runner to find constraints.json
-        # + generation_summary.json for platform-based case filtering,
-        # and to determine where ATK's log + xlsx + result.json land.
-        iter_dir = cases_path.parent if cases_path.parent.is_dir() else None
+            _, _ = validate_server_config(args.server_config)
 
         # Default to ``runs/<run-id>/iter_NNN/execution_logs/`` when we can
         # infer the iter layout — keeps ATK artifacts co-located with
@@ -248,12 +358,12 @@ def main() -> int:
 
         request = RunRequest(
             cases_path=cases_path,
-            server_info=server,
+            server_info=selected_server,
             operator_name=args.operator,
             run_id=args.run_id,
             artifact_dir=artifact_dir,
             project_root=ROOT,
-            env_init=args.env_init or server.get("env_init_script"),
+            env_init=args.env_init or selected_server.get("env_init_script"),
             iter_dir=iter_dir,
         )
 
