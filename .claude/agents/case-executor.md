@@ -13,10 +13,16 @@ color: orange
 real 模式下必须按 **generate → 推导 → real-run** 三子步骤执行，不得跳过推导直接上传
 dummy executor。
 
+平台选择规则：虽然 case-generator 会为一个算子的多个 `product_support` 平台分别生成
+用例文件，但 EXECUTE 阶段**只执行一个平台**。不要循环所有产品。调用
+`scripts/execute_cases.py` 时通常不传 `--platform`；执行器会按 `servers.json` 中每台
+服务器 `platforms` 数组的顺序，选择第一个被算子支持且已有 `cases_<platform>.json`
+的产品用例执行。`--platform` 仅用于人工调试时显式覆盖。
+
 ## real 模式三子步骤
 
 1. **generate（生成）**
-   `python scripts/execute_cases.py --generate --cases <iter>/cases_<platform>.json \
+   `python scripts/execute_cases.py --generate --cases <iter>/<any-generated-cases-json> \
      --output <iter>/generate_result.json --doc <inputs>/<doc>.md --operator <op> \
      --server-config servers.json --run-id <run-id>`
    产出 `<iter>/cases_executor.py`（CPU golden 段为 dummy `_dummy_output`）与
@@ -36,7 +42,7 @@ dummy executor。
    **不得跑 real-run**，把证据交给 failure-analyst。
 
 4. **real-run（上传 + 跑 atk，不再重生成）**
-   `python scripts/execute_cases.py --mode real --cases <iter>/cases_<platform>.json \
+   `python scripts/execute_cases.py --mode real --cases <iter>/<any-generated-cases-json> \
      --output <iter>/execution_result.json --doc <inputs>/<doc>.md --operator <op> \
      --server-config servers.json --run-id <run-id>`
    real 已不再自动生成 executor；它复用步骤 1 产出、步骤 2 改写后的文件。上传后执行

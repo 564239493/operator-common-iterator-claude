@@ -7,13 +7,17 @@ description: 以 mock 或 real 模式执行 cases.json，并输出标准 executi
 real 模式已拆为 **generate → 推导 → real-run** 三步：生成、CPU golden 推导、上传执行
 三者分离，避免 real 重生成覆盖推导结果。禁止在 dummy 块未清除时跑 real-run。
 
+平台选择：生成阶段可能已有多个 `cases_<platform>.json`，但执行阶段只跑一个平台。
+默认不要传 `--platform`，执行器会按 `servers.json` 里服务器 `platforms` 数组顺序，
+选择第一个与算子 `product_support` 匹配的产品用例。`--platform` 只作为人工覆盖项。
+
 ## real 模式三步
 
 ### 1. generate（生成 executor + expanded）
 
 ```text
 python scripts/execute_cases.py --generate \
-  --cases <iter>/cases_<platform>.json \
+  --cases <iter>/<any-generated-cases-json> \
   --output <iter>/generate_result.json \
   --doc <run>/inputs/<doc>.md --operator <op> \
   --server-config servers.json --run-id <run-id>
@@ -39,7 +43,7 @@ python scripts/validate_artifacts.py executor <iter>/cases_executor.py
 
 ```text
 python scripts/execute_cases.py --mode real \
-  --cases <iter>/cases_<platform>.json \
+  --cases <iter>/<any-generated-cases-json> \
   --output <iter>/execution_result.json \
   --doc <run>/inputs/<doc>.md --operator <op> \
   --server-config servers.json --run-id <run-id>
