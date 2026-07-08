@@ -16,6 +16,7 @@ from runtime_config import (
     resolve_input_path,
     validate_server_config,
 )
+from select_prompt import assemble
 
 
 def main() -> int:
@@ -63,11 +64,12 @@ def main() -> int:
         )
 
     doc = resolve_input_path(args.doc)
-    prompt = (
-        resolve_input_path(args.prompt)
-        if args.prompt
-        else find_latest_operator_prompt()
-    )
+    if args.prompt:
+        prompt = resolve_input_path(args.prompt)
+        explicit_prompt = True
+    else:
+        prompt = find_latest_operator_prompt()
+        explicit_prompt = False
     if not doc.is_file():
         print(json.dumps(
             {
@@ -120,7 +122,13 @@ def main() -> int:
     doc_snapshot = input_dir / doc.name
     prompt_snapshot = input_dir / "prompt_v1.md"
     shutil.copy2(doc, doc_snapshot)
-    shutil.copy2(prompt, prompt_snapshot)
+    if explicit_prompt:
+        # --prompt 逃生口：原样复制指定文件，不装配模块（用于固定版本/外部提示词）
+        shutil.copy2(prompt, prompt_snapshot)
+        loaded_modules = []
+    else:
+        # 默认：按算子特征装配 base + 命中模块 -> prompt_snapshot
+        loaded_modules = assemble(prompt, doc_snapshot, prompt_snapshot)
 
     now = datetime.now(timezone.utc).isoformat()
     state = {
@@ -129,6 +137,7 @@ def main() -> int:
         "operator_doc": str(doc_snapshot),
         "current_prompt_source": str(prompt),
         "current_prompt": str(prompt_snapshot),
+        "current_prompt_modules": loaded_modules,
         "mode": args.mode,
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
@@ -150,6 +159,7 @@ def main() -> int:
             "operator_doc_source": str(doc),
             "operator_doc_snapshot": str(doc_snapshot),
             "prompt_snapshot": str(prompt_snapshot),
+            "prompt_modules": loaded_modules,
             "mode": args.mode,
             "server_config": str(server_config) if server_config else "",
         },

@@ -22,12 +22,19 @@ runs/<operator>-<timestamp>/
 ## run_state.json
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`current_prompt_source`、
-`current_prompt`、`mode`、`server_config`、`max_iterations`、
+`current_prompt`、`current_prompt_modules`、`mode`、`server_config`、`max_iterations`、
 `case_count`、`current_iteration`、`state`、`history` 和时间戳。state 只能取
 WORKFLOW.md 定义的状态。
 
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
 目录内的快照，后续 Agent 只使用快照。
+
+`current_prompt_source` 指向项目内 `prompts/operator_constraints_extract_vN.md` 基线
+（v4 起为模块化基线）；`current_prompt` 指向 run 内 `inputs/prompt_v1.md` 快照。
+默认（未传 `--prompt`）由 `scripts/select_prompt.py` 按算子文档特征装配基线 + 命中的
+`prompts/modules/*.md` 模块写入该快照，`current_prompt_modules` 记录命中的模块名清单
+（可为空）；显式 `--prompt` 为逃生口，原样复制指定文件、`current_prompt_modules=[]`。
+constraint-extractor 始终只读 `current_prompt` 快照，不感知装配过程。
 
 ## constraints.json
 
