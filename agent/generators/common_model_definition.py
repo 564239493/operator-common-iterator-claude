@@ -57,6 +57,7 @@ class InterParamConstraint(BaseModel):
     expr: str = Field(..., description="约束表达式")
     relation_params: List[str] = Field(..., description="涉及的参数列表")
     src_text: str = Field(default="", description="来源文本")
+    origin: str = Field(default="doc", description="约束来源:doc(文档提取)/source_analysis(源码校验 patch)")
 
     model_config = {"extra": "forbid"}
 

@@ -14,6 +14,9 @@ description: 对单轮 constraints、cases、execution 和 analysis 产物执行
 - execution records 中 case id 可回溯到 cases；
 - analysis 的根因属于固定枚举；
 - 下一状态与根因/通过统计一致。
+- 若 `source_evidence.json` 存在（本轮启用源码校验），读 `cross_check`：
+  `mismatch_overbroad` 残留 → `blocking_issues`；`mismatch_overnarrow` → warning。
+  源码校验未启用时跳过此项。不读 `case_constraint_check.json`（不产）。
 - 一段式算子（`function_signature` 不含 `GetWorkspaceSize`）合法；其 `outputs` 可含标量指针输出（`type` 为 `uint64_t`/`int64_t` 等、`format=N/A`、`dimensions=[]`），不得判为“缺失 GetWorkspaceSize”或误标框架参数。`is_single_function_mode` 字段已废弃，命中即阻断。
 
 real 模式额外追加 CPU golden 推导门禁：对 `iter_dir/cases_executor.py` 运行

@@ -19,6 +19,34 @@ from runtime_config import (
 from select_prompt import assemble
 
 
+def _snapshot_operator_source(src_root: Path, dest: Path) -> int:
+    """只读复制算子源码关键文件到快照目录,保持相对路径结构。
+
+    覆盖: op_host/ 下的 .cpp/.h/.hpp/.json(含 _def/_infershape/_tiling*、
+    op_api/aclnn_*、config/<platform>/binary.json 及 arch32/arch35 子目录),
+    以及 docs/aclnn*.md。source-analyst 只读此快照,不触外部源码树,
+    与"项目内快照为唯一真相源"原则一致。
+    """
+    patterns = (
+        "op_host/**/*.cpp",
+        "op_host/**/*.h",
+        "op_host/**/*.hpp",
+        "op_host/**/*.json",
+        "docs/aclnn*.md",
+    )
+    count = 0
+    for pat in patterns:
+        for src in src_root.glob(pat):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(src_root)
+            dst = dest / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            count += 1
+    return count
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -54,6 +82,17 @@ def main() -> int:
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
+    parser.add_argument(
+        "--source-root",
+        dest="source_root",
+        default=None,
+        help=(
+            "算子源码目录绝对路径(可选)。提供时把关键源码只读复制到 run/inputs/src_snapshot/,"
+            "供 source-analyst 在每轮 EXTRACT 后校验约束类型/范围/表达式。不提供或为空则跳过"
+            "源码分析,退回纯文档驱动。算子源码典型结构: op_host/<op>_def.cpp|_tiling*.cpp|"
+            "op_api/aclnn_<op>.cpp|config/<platform>/<op>_binary.json 与 docs/aclnn<OpName>.md。"
+        ),
+    )
     args = parser.parse_args()
 
     if args.doc is None:
@@ -130,11 +169,42 @@ def main() -> int:
         # 默认：按算子特征装配 base + 命中模块 -> prompt_snapshot
         loaded_modules = assemble(prompt, doc_snapshot, prompt_snapshot)
 
+    # Optional read-only snapshot of operator source code. Empty when
+    # --source-root is not provided or empty; in that case downstream
+    # source-analyst is skipped and the flow falls back to pure document-driven
+    # mode (EXTRACT->GENERATE->EXECUTE->GATE, no source artifacts).
+    operator_src_source = ""
+    operator_src_snapshot = ""
+    if args.source_root:
+        src_root = resolve_input_path(args.source_root)
+        if not src_root.is_dir():
+            print(json.dumps(
+                {
+                    "ok": False,
+                    "requires_user_action": True,
+                    "code": "OPERATOR_SRC_NOT_FOUND",
+                    "message": (
+                        "算子源码目录不存在。请提供有效的 --source-root 绝对路径,"
+                        "或省略以跳过源码分析退回纯文档驱动。"
+                    ),
+                    "operator_src_source": str(args.source_root),
+                },
+                ensure_ascii=False,
+            ))
+            return 2
+        src_snapshot = input_dir / "src_snapshot"
+        src_snapshot.mkdir(parents=True, exist_ok=False)
+        _snapshot_operator_source(src_root, src_snapshot)
+        operator_src_source = str(src_root)
+        operator_src_snapshot = str(src_snapshot)
+
     now = datetime.now(timezone.utc).isoformat()
     state = {
         "run_id": run_id,
         "operator_doc_source": str(doc),
         "operator_doc": str(doc_snapshot),
+        "operator_src_source": operator_src_source,
+        "operator_src_snapshot": operator_src_snapshot,
         "current_prompt_source": str(prompt),
         "current_prompt": str(prompt_snapshot),
         "current_prompt_modules": loaded_modules,
@@ -158,6 +228,8 @@ def main() -> int:
             "run_dir": str(run_dir),
             "operator_doc_source": str(doc),
             "operator_doc_snapshot": str(doc_snapshot),
+            "operator_src_source": operator_src_source,
+            "operator_src_snapshot": operator_src_snapshot,
             "prompt_snapshot": str(prompt_snapshot),
             "prompt_modules": loaded_modules,
             "mode": args.mode,
