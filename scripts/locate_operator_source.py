@@ -21,7 +21,9 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_SRC_TREE = r"D:\project\operators-src\ops-transformer"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# 默认指向项目内 operators-src(含多个 ops-* 子树的大根); 也可传单 ops-* 子树。
+DEFAULT_SRC_TREE = str(_PROJECT_ROOT / "operators-src")
 
 # op_api_list.md 表格行: |[aclnnXxx](../../<class>/<op_dir>/docs/aclnnXxx.md)|...
 ROW_RE = re.compile(r"\[(aclnn\w+)\]\(\.\./\.\./([\w/]+)/docs/aclnn\w+\.md\)")
@@ -79,7 +81,9 @@ def locate(aclnn: str, src_tree: Path) -> dict:
     if not dirs:
         source = "naming_glob"
         for name in candidate_dir_names(aclnn):
-            for d in src_tree.glob(f"*/{name}"):
+            # rglob 兼容不同分类深度: ops-transformer 算子在 <src_tree>/<class>/<op>,
+            # ops-math 在 <src_tree>/<class>/<sub>/<op>。仅作候选, 最终以 op_api_list 为准。
+            for d in src_tree.rglob(name):
                 if d.is_dir() and str(d) not in dirs:
                     dirs.append(str(d))
     return {
@@ -88,6 +92,37 @@ def locate(aclnn: str, src_tree: Path) -> dict:
         "operator_dirs": dirs,
         "source": source,
         "src_tree": str(src_tree),
+    }
+
+
+def locate_in_tree(aclnn: str, tree_root: Path) -> dict:
+    """跨 tree_root 下 ops-* 子树定位算子目录。
+
+    项目内 operators-src 是含多个 ops-* 子树(ops-transformer/ops-math/ops-nn ...)的大根,
+    每个子树有自己的 docs/zh/op_api_list.md 与算子目录。本函数遍历名字以 ops- 开头的
+    子目录(排序保确定序), 对每个复用 locate(aclnn, ops_subdir), 首个命中即返回
+    (result 增补 subtree 字段标明命中子树); 全未命中返回 ok=False + 已搜索子树清单。
+    命名规则歧义与一对多仍由 locate 内部处理, 本函数只做子树编排。
+    """
+    if not aclnn.startswith("aclnn"):
+        aclnn = "aclnn" + aclnn
+    subtrees: list[Path] = []
+    if tree_root.is_dir():
+        subtrees = sorted(
+            p for p in tree_root.iterdir() if p.is_dir() and p.name.startswith("ops-")
+        )
+    for sub in subtrees:
+        r = locate(aclnn, sub)
+        if r["ok"]:
+            r["subtree"] = sub.name
+            return r
+    return {
+        "ok": False,
+        "aclnn": aclnn,
+        "operator_dirs": [],
+        "source": "in_tree_miss",
+        "src_tree": str(tree_root),
+        "subtrees_searched": [s.name for s in subtrees],
     }
 
 
@@ -103,7 +138,12 @@ def main() -> int:
     parser.add_argument(
         "--src-tree",
         default=DEFAULT_SRC_TREE,
-        help=f"ops-transformer 源码树根目录(默认 {DEFAULT_SRC_TREE})。",
+        help=(
+            f"算子源码树根目录(默认项目内 {DEFAULT_SRC_TREE}, 含多个 ops-* 子树)。"
+            "指向单 ops-* 子树(如 ops-transformer)时只在该子树内定位; 指向含多个 "
+            "ops-* 的根(如 operators-src)时跨子树搜索。init_run --src-tree 内部调用 "
+            "本函数, 独立运行时用本 CLI。"
+        ),
     )
     args = parser.parse_args()
     src_tree = Path(args.src_tree)
@@ -120,7 +160,12 @@ def main() -> int:
             indent=2,
         ))
         return 2
-    result = locate(args.aclnn_name, src_tree)
+    if src_tree.name.startswith("ops-"):
+        # 单 ops-* 子树: 直接在该子树内定位
+        result = locate(args.aclnn_name, src_tree)
+    else:
+        # 含多个 ops-* 子树的根(如项目内 operators-src): 跨子树搜索
+        result = locate_in_tree(args.aclnn_name, src_tree)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["ok"] else 1
 

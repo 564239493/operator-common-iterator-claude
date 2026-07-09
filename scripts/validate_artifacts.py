@@ -110,9 +110,24 @@ def validate_constraint_semantics(value) -> list[str]:
 
     for section, param, platform, attributes in _iter_param_attributes(value):
         allowed = attributes.get("allowed_range_value")
-        if not isinstance(allowed, dict) or allowed.get("type") != "range":
+        if not isinstance(allowed, dict):
             continue
         range_value = allowed.get("value", [])
+        # value 非空时 type 必须显式标注 enum/range: 离散枚举码不标 enum 会被
+        # 生成器当浮点范围填充(如 bool 填出 1.23e-40), 区间不标 range 则语义不明。
+        # 提示词 v4 §4.6.3 映射表与 format_cast §4.6.11 C 示例均要求带 type,
+        # 此处是 LLM 漏填时的确定性兜底: 缺失/非法即报错, 由 GATE 拦回 re-EXTRACT。
+        if isinstance(range_value, list) and range_value:
+            range_type = allowed.get("type")
+            if range_type not in ("enum", "range"):
+                errors.append(
+                    f"{section}.{param}[{platform}].allowed_range_value: "
+                    f"value is non-empty (len={len(range_value)}) but type is "
+                    f"{range_type!r}; type must be 'enum' or 'range' when "
+                    "value is non-empty (离散枚举码用 enum, 区间用 range)"
+                )
+        if allowed.get("type") != "range":
+            continue
         if any(item is None for item in _walk_values(range_value)):
             errors.append(
                 f"{section}.{param}[{platform}].allowed_range_value: "
@@ -558,7 +573,7 @@ def validate_executor(path: str) -> list[str]:
     return errors
 
 
-def validate_source_evidence(value) -> list[str]:
+def validate_source_evidence(value) -> tuple[list[str], list[str]]:
     """校验 source-analyst 产出的 source_evidence.json 结构。
 
     定位为每轮 EXTRACT 后的交叉校验证据,不参与根因枚举。必含 operator_name、
@@ -566,10 +581,16 @@ def validate_source_evidence(value) -> list[str]:
     六字段(不含 log_match)。hard_constraints.expr_type 必须属
     InterConstraintsRuleType 枚举,expr 必须是合法 Python 表达式。
     cross_check 必须含 mismatch_overbroad/mismatch_overnarrow(quality-reviewer 读)。
+
+    返回 (errors, warnings):errors 阻断(exit 1),warnings 非阻断(不影响 exit code,
+    source-analyst 自校看 exit code, warnings 绝不致非 0)。warnings 含 when-vs-expr
+    启发式——error_string/src_text 的 "when" 子句提到的参数若不在 expr/relation_params,
+    提示 expr 可能漏了分支前提(安全网,有误报可能,作 warning 不阻断)。
     """
     if not isinstance(value, dict):
-        return ["source_evidence must be an object"]
+        return ["source_evidence must be an object"], []
     errors: list[str] = []
+    warnings: list[str] = []
     if not isinstance(value.get("operator_name"), str) or not value.get("operator_name"):
         errors.append("operator_name must be a non-empty string")
     if not isinstance(value.get("aclnn_interfaces"), list) or not value.get("aclnn_interfaces"):
@@ -587,6 +608,21 @@ def validate_source_evidence(value) -> list[str]:
                 errors.append(f"cross_check.{key} must be an array")
     if not isinstance(value.get("doc_error"), list):
         errors.append("doc_error must be an array")
+    # unknown_socnames(可选, 平台维度): 源码 SoC 分支 token 不在产品-芯片映射表时,
+    # source-analyst 记录供用户补表。存在则须为 list, 每项含 soc_token/source_location。
+    # 存在本身不阻断(是补表提示, 非错误); 仅格式错(非 list/缺字段)阻断。
+    usoc = value.get("unknown_socnames")
+    if usoc is not None:
+        if not isinstance(usoc, list):
+            errors.append("unknown_socnames must be an array if present")
+        else:
+            for index, u in enumerate(usoc):
+                if not isinstance(u, dict):
+                    errors.append(f"unknown_socnames[{index}] must be an object")
+                    continue
+                for key in ("soc_token", "source_location"):
+                    if key not in u:
+                        errors.append(f"unknown_socnames[{index}] missing field: {key}")
     hc = value.get("hard_constraints")
     if not isinstance(hc, list):
         errors.append("hard_constraints must be an array")
@@ -598,6 +634,11 @@ def validate_source_evidence(value) -> list[str]:
             allowed_expr_types = set()
         required_hc = ("constraint_id", "expr_type", "expr", "relation_params",
                        "source_location", "error_string", "src_text")
+        # 参数名字典: 所有 hc 的 relation_params 并集(自洽, 不依赖外部 constraints.json)
+        param_dict: set[str] = set()
+        for c in hc:
+            if isinstance(c, dict) and isinstance(c.get("relation_params"), list):
+                param_dict.update(p for p in c["relation_params"] if isinstance(p, str))
         for index, c in enumerate(hc):
             if not isinstance(c, dict):
                 errors.append(f"hard_constraints[{index}] must be an object")
@@ -614,17 +655,41 @@ def validate_source_evidence(value) -> list[str]:
                     ast.parse(expr, mode="eval")
                 except SyntaxError:
                     errors.append(f"hard_constraints[{index}] expr is not valid Python: {expr}")
-    return errors
+            # when-vs-expr 启发式(非阻断): error_string/src_text 的 when 子句提到的参数
+            # 若不在 expr/relation_params, 提示 expr 可能漏了分支前提。词边界匹配允许
+            # 尾部复数 s(如 srcTensors 命中 srcTensor)。
+            text = f"{c.get('error_string') or ''} {c.get('src_text') or ''}"
+            if re.search(r"\bwhen\b|仅当", text, re.IGNORECASE):
+                mentioned: set[str] = set()
+                for p in param_dict:
+                    if re.search(rf"\b{re.escape(p)}s?\b", text):
+                        mentioned.add(p)
+                present: set[str] = set()
+                rp = c.get("relation_params")
+                if isinstance(rp, list):
+                    present.update(p for p in rp if isinstance(p, str))
+                expr_text = c.get("expr") or ""
+                if isinstance(expr_text, str):
+                    for p in param_dict:
+                        if re.search(rf"\b{re.escape(p)}s?\b", expr_text):
+                            present.add(p)
+                missing = mentioned - present
+                if missing:
+                    warnings.append(
+                        f"hard_constraints[{index}] expr 可能漏前提参数 {sorted(missing)}: "
+                        f"error_string/src_text 含 when 子句但 expr/relation_params 未涉及"
+                    )
+    return errors, warnings
 
 
 def validate_constraints_patch(value) -> list[str]:
     """校验 source-analyst 产出的 constraints_patch.json 结构。
-    op 仅允许 add_constraint / narrow_param_range；origin/basis_type 取值受控。
+    op 允许 add_constraint / narrow_param_range / replace_constraint；origin/basis_type 取值受控。
     """
     if not isinstance(value, list):
         return ["constraints_patch must be an array"]
     errors: list[str] = []
-    allowed_op = {"add_constraint", "narrow_param_range"}
+    allowed_op = {"add_constraint", "narrow_param_range", "replace_constraint"}
     allowed_basis = {"doc_quote", "source_authoritative"}
     allowed_origin = {"doc", "source_analysis"}
     for index, item in enumerate(value):
@@ -650,6 +715,12 @@ def validate_constraints_patch(value) -> list[str]:
                 errors.append(f"patch[{index}].proposed missing field: allowed_range_value")
             if not item.get("target_param"):
                 errors.append(f"patch[{index}] missing field: target_param")
+        elif op == "replace_constraint":
+            if not item.get("match_expr"):
+                errors.append(f"patch[{index}] missing field: match_expr")
+            for key in ("expr_type", "expr", "relation_params"):
+                if key not in proposed:
+                    errors.append(f"patch[{index}].proposed missing field: {key}")
     return errors
 
 
@@ -673,12 +744,18 @@ def main() -> int:
         # executor 校验对象是 Python 源文件, 直接传路径; 其余校验对象是
         # JSON 产物, 先解析再传结构.
         if args.kind == "executor":
-            errors = VALIDATORS[args.kind](args.path)
+            result = VALIDATORS[args.kind](args.path)
         else:
-            errors = VALIDATORS[args.kind](load(args.path))
+            result = VALIDATORS[args.kind](load(args.path))
     except Exception as exc:
-        errors = [str(exc)]
-    print(json.dumps({"valid": not errors, "errors": errors}, ensure_ascii=False, indent=2))
+        result = [str(exc)]
+    # 兼容二元组 (errors, warnings) 与旧式 list[str]; warnings 非阻断, 不计入 exit code
+    if isinstance(result, tuple):
+        errors, warnings = result
+    else:
+        errors, warnings = result, []
+    print(json.dumps({"valid": not errors, "errors": errors, "warnings": warnings},
+                     ensure_ascii=False, indent=2))
     return 0 if not errors else 1
 
 

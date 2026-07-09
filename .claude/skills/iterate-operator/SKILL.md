@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--source-root path] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--source-root path] [--src-tree path] [--aclnn-name name] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -13,18 +13,19 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
    未传 `--prompt` 时，由 `init_run.py` 自动选择
    `prompts/operator_constraints_extract_vN.md` 中数值版本 N 最大的文件；
    max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
-   `--source-root` 可选：提供算子源码目录时启用源码校验（见步骤 2、5）；
-   未提供或为空则跳过源码分析，按纯文档驱动迭代。
+   `--source-root`/`--src-tree` 可选（二选一）：`--source-root` 直传算子目录，
+   `--src-tree` 传 operators-src 根由 init_run 自动定位（见步骤 2）；未提供或定位
+   未命中则跳过源码分析，按纯文档驱动迭代。
 2. 调用 `python scripts/init_run.py` 创建 run。`--batch-dir` 是目录批次内部参数，
    不传给 `init_run.py`。该命令会把外部文档只读复制到 run 的 `inputs/` 目录，
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。
-   若用户提供 `--source-root`，先调
-   `python scripts/locate_operator_source.py --aclnn-name <算子名>` 自动定位源码目录；
-   locate 失败或返回 `ok=false` 时退回无源码场景（不阻断）。定位成功后把返回的
-   `operator_dirs[0]` 作为 `--source-root` 透传给 `init_run.py`，由其只读复制到
-   `inputs/src_snapshot/`，run_state 记 `operator_src_snapshot` 非空。用户直接给
-   `--source-root` 目录时跳过 locate 直接透传。`--source-root` 未提供或为空时
-   `operator_src_snapshot` 为空，源码校验全程跳过。
+   源码分析两种启用方式（均由 `init_run.py` 内部完成，主协调器只透传参数）：
+   `--source-root <算子目录>` 直传目录，init_run 只读复制到 `inputs/src_snapshot/`；
+   `--src-tree <operators-src 根>` 时 init_run 调 `locate_operator_source.locate_in_tree`
+   跨 ops-* 子树按 aclnn 名（doc 文件名派生，可 `--aclnn-name` 覆盖）自动定位算子
+   目录后快照。定位未命中或两者均未给时不阻断，`operator_src_snapshot` 为空，
+   源码校验全程跳过。命中时 run_state 记 `operator_src_snapshot` 非空、
+   `operator_src_tree` 记 `--src-tree` 值。
    如果提供了 `--batch-dir`，创建成功后必须立刻调用
    `python scripts/batch_state.py --batch-dir <batch-dir> attach-run --run-dir <run-dir>`，
    再进入 EXTRACT；这样会话中断时目录批次可以定位并恢复该 run。

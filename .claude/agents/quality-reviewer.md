@@ -15,5 +15,5 @@ color: cyan
 
 若 iter 目录存在 `source_evidence.json`（即本轮启用了源码校验），读其 `cross_check`：
 `mismatch_overbroad` 残留（constraints 允许源码不支持的 dtype/format，patch 未启用/
-失败/回滚所致）记入 `blocking_issues`；`mismatch_overnarrow` 记为 warning。源码校验
+失败/回滚所致）记入 `blocking_issues`；`mismatch_overnarrow` 记为 warning。另运行 `validate_artifacts.py source_evidence` 的 stdout `warnings` 数组（when-vs-expr 启发式等）也并入 `quality_gate.json` 的 `warnings[]`，非阻断。源码校验
 未启用（`source_evidence.json` 不存在）时跳过此项，不影响门禁。
