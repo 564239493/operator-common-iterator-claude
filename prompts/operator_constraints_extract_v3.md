@@ -1,5 +1,5 @@
-# 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束)
-# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters)
+# 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达)
+# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters / joint cross dtype/format combo table expressed as OR-of-ANDs disjunction)
 
 > **用途**：从昇腾 CANN（Compute Architecture for Neural Networks）算子官方说明文档（Markdown / HTML）中，**人工 + LLM 协同** 提取结构化的算子约束信息，并以**纯 JSON** 形式输出，可直接喂给下游的测试用例生成引擎。
 >
@@ -29,7 +29,7 @@
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 26 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识） |
+| 9 | 自检清单 | 提取完成后必须执行 30 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 A | 典型算子示例 | 10 个算子的关键提取点对照 |
 | 附录 B | v1→v2→v3 升级注意事项 | 升级路径与扩展占位 |
@@ -1052,42 +1052,67 @@ src_text: "dstTensor 的 storage shape 维度不在[4, 8]的范围；actualForma
    等子接口入参；`D.shape` / `D.format` 在用例构造期留空或标记为 `DERIVED`，
    由执行器调用子接口回填。
 
-##### C. 必须产出的 `constraints_in_parameters` 条目
+##### C. 必须产出可求解的 `derived_value` 约束（v3 增补修正）
 
-对每个派生输出张量 `D`，在 `constraints_in_parameters[平台]` 中追加**一条**
-`derived_value` 约束（新约束种类，登记于 §7.1 与 §6.3 模式 9）：
+> 早期版本要求为派生输出张量 `D` 追加一条 `expr=""` 的 `derived_value`
+> `constraints_in_parameters` 条目作为派生语义标记。但空 `expr` 条目无法在生成期
+> `eval()`，对生成器无用——生成器无法从空 `expr` 读出派生规则，转而对 `[DERIVED]`
+> 输出参数独立随机赋值，导致 86/100 条用例 dstTensor.format/actualFormat 与期望不一致。
+> `[DERIVED]` description 文本标记亦不足以单独约束生成器（生成器未识别该标记）。
+> 正确做法：当文档存在确定映射（如 dtype/format 组合表 → actualFormat）时，
+> `derived_value.expr` **必须**编码为可求解的查找/派生表达式（不得为空串）；
+> 若映射确实无法表达为可求解 expr，则**不**产出该条目（派生语义退由 `[DERIVED]`
+> description 承载），**禁止**产出 `expr=""` 的空壳条目。
 
-```text
-expr_type: derived_value
-expr: ""
-relation_params: ["D", "srcTensor", "dstFormat", "additionalDtype"]
-src_text: "必须先调用 aclnnNpuFormatCastCalculateSizeAndFormat 计算出 dstTensor
-的 shape 和实际数据格式，再调用两段式接口。"
-```
+对派生输出张量 `D`，分两种情况：
 
-> `expr` 留空字符串是合法的（§4.7.2 已允许 `expr=""`），因为派生关系不是可在
-> 生成期 `eval()` 的布尔谓词，而是"由执行器调用子接口填充"的语义标记；机器可
-> 判定性由 `relation_params` + `expr_type=derived_value` + `src_text` 共同承载。
-> 派生张量仍须满足 §4.6.7 的 `format_rank_consistency` 守卫（针对子接口回填
-> 后的实际 shape/format），二者不冲突：§4.6.7 守卫 rank↔format 一致性，
-> §4.6.8 声明 shape/format 来源。
+1. **文档存在确定映射**（`dtype_support_description` / `format_support_description`
+   或文档正文存在从子接口入参到 `D` 取值的确定对应表，如 srcTensor.dtype × dstFormat
+   × additionalDtype → actualFormat）时，**必须**为 `D` 在
+   `constraints_in_parameters[每个支持平台]` 中产出**一条** `derived_value` 约束，
+   其 `expr` 编码该映射为可 `eval()` 的 Python 布尔表达式（参见 §6.3 模式 9）：
+   - **恒等映射**（`D` 取值恒等于某子接口入参，如 actualFormat == dstFormat）→
+     直接等式：`D.range_value == keyParam.range_value`；
+   - **查找表映射**（多行 combo 表）→ 析取所有合法行，每行合取键值与目标值：
+     `(key1 == v1 and key2 == v2 and ... and D.range_value == w) or (key1 == v1' and ...) or ...`；
+     亦可等价写为 if/elif/else 链；
+   - **格式派生**（`D.format` 由 actualFormat 查表得出）→ 同样用析取或 if/elif/else
+     把 actualFormat → format 的逐行对应编码为可求解 expr；
+   - `relation_params` 必须包含 `D` 及全部键参数；`src_text` 摘录映射表原文。
+2. **文档无确定映射**（派生关系依赖 NPU 运行期计算，文档未给出可枚举的对应表）时，
+   **不**产出 `constraints_in_parameters` 派生条目；派生语义由 §4.6.8 B 的 `[DERIVED]`
+   description 标记承载。**不得**产出 `expr=""` 的空壳条目（违 §4.7.2 "expr 不得为
+   空字符串"）。
+3. **`format_rank_consistency` 仍须落库**：无论是否产出 `derived_value`，派生张量
+   仍须满足 §4.6.7 的 `format_rank_consistency` 守卫（针对子接口回填后的实际
+   shape/format）；§4.6.7 守卫 rank↔format 一致性，§4.6.8 B 声明 shape/format 来源，
+   二者职责不同，不得互相替代，也不得因 B 已标记 `[DERIVED]` 就省略 §4.6.7 守卫。
 
 ##### D. 平台差异
 
 - 若不同平台的派生子接口或 `dstFormat` 候选不同（如 Atlas 350 dstFormat 固定
   为 `FRACTAL_NZ(29)`，A2/A3 dstFormat 为 `ND/NZ/NCDHW/NDC1HWC0/FRACTAL_Z_3D`），
-  逐平台分别落库 `derived_value` 条目，`src_text` 摘录对应平台原文；
+  逐平台在 `D.description` 中分别写明 `[DERIVED]` 标记与对应子接口/`dstFormat`
+  原文；存在确定映射时逐平台落库可求解 `derived_value` 条目（见 C.1），各平台
+  `expr` 按该平台映射表分别编码；
 - `dstFormat` 作为独立输入参数（非派生）正常提取 `allowed_range_value`（`type=enum`），
   不标记 `[DERIVED]`。
 
 ##### E. 反例（禁止）
 
-- `dstTensor` 的 `description` 无 `[DERIVED]` 标记，`constraints_in_parameters`
-  无 `derived_value` 条目 → 生成器把 `dstTensor.shape`/`format` 当独立字段随机
-  采样，违规则 B.1 + C。
+- `dstTensor` 的 `description` 无 `[DERIVED]` 标记 → 生成器把 `dstTensor.shape`/
+  `format` 当独立字段随机采样，违规则 B.1。
+- 为 `dstTensor` 在 `constraints_in_parameters` 中产出 `expr=""` 的 `derived_value`
+  条目而文档实际存在确定映射（如 `dtype_support_description` 含 actualFormat 对应表）→
+  空 `expr` 无法 `eval()`，生成器无法读出派生规则、独立随机赋值，违 §4.7.2
+  "expr 不得为空字符串"与 §4.6.8 C.1；必须把映射编码为可求解 expr。
+- 文档无确定映射却仍产出 `expr=""` 的 `derived_value` 空壳条目 → 违 §4.6.8 C.2；
+  应不产出该条目，派生语义由 `[DERIVED]` description 承载。
+- 仅靠 `[DERIVED]` description 文本标记而不产出可求解 `derived_value` 条目（当文档
+  存在确定映射时）→ 生成器未识别文本标记、独立随机赋值，违 §4.6.8 C.1。
 - 把 `dstTensor.shape == aclnnNpuFormatCastCalculateSizeAndFormat(...).dstShape`
   写进 `expr` 当布尔表达式 → 该签名无法在生成期 `eval()`（子接口是 NPU 侧运行期
-  调用），违 §6.1 合法 Python 布尔表达式要求；正确做法是 `expr=""` + `derived_value`。
+  调用），违 §6.1 合法 Python 布尔表达式要求。
 - 因 `dstTensor` 是派生量就省略 §4.6.7 的 `format_rank_consistency` 守卫 →
   派生量仍须满足 format↔rank 一致性，二者职责不同，不得互相替代。
 
@@ -1234,8 +1259,180 @@ src_text: "out 的 b 要与 self 的 b 和 mat2 的 b 经过 broadcast 推导后
 
 4. **特殊 dtype 限制**：若参与 broadcast 的输入 dtype 或互推导后的 dtype 属于
    `COMPLEX64`、`COMPLEX128`、`DOUBLE`、`INT16`、`UINT16`、`UINT64`，还需参考
-   `knowledge/common/broadcast.md` 的轴合并维度 `< 6` 限制；无法可靠形式化时至少以
-   `src_text` 明确摘录并留空 `expr`，不得忽略。
+   `knowledge/common/broadcast.md` 的轴合并维度 `< 6` 限制；能形式化时落为
+   `shape_broadcast` / `shape_value_dependency` 的 `expr`；**无法可靠形式化时把
+   语义记入相关参数 `description`/`src_text`，不得产出空 `expr` 的
+   `constraints_in_parameters` 条目**（违 §4.7.2），不得忽略。
+
+#### 4.6.11 产品相关参数取值范围差异（per-platform 候选值分歧，v3 增补）
+
+> 本节来自 `aclnnNpuFormatCast` 闭环：`additionalDtype` 参数在"参数说明"总表中
+> 统一列出候选 `ACL_FLOAT16(1)、ACL_BF16(27)、INT8(2)、ACL_FLOAT8_E4M3FN(36)`
+> （即 `1/27/2/36`），但在"约束说明"按产品分节的 `<details>` 块与调用示例中，
+> `<term>Atlas A3 训练系列产品/Atlas A3 推理系列产品</term>`、
+> `<term>Atlas A2 训练系列产品/Atlas A2 推理系列产品</term>` 下 `additionalDtype`
+> 实际固定为 `-1`（C0 改由 `srcTensor` 的基础类型计算，见原文"C0计算方法：
+> 32B / size of srcTensor的基础类型"与示例代码 `int additionalDtype = -1;`）。
+> v3 提示词无规则要求按产品分别识别这种"同一参数在不同产品下候选值不同"的
+> 分歧，导致提取器把总表候选 `{1,27,2,36}` 直接套用到所有平台，A3/A2 平台
+> 生成器会采样出文档示例不支持的 `additionalDtype` 值。该规则按"参数候选值随
+> 产品分歧"的语义触发，**不**按算子名硬编码。
+
+##### A. 适用判定
+
+满足下列**任一**条件时，**必须**执行本节规则：
+
+1. 某非张量标量/枚举参数 `P` 的候选值在"参数说明"总表中列出，但在文档"约束
+   说明"章节按产品分节（`<details>` / `<term>` 块）给出**不同**的候选值或
+   **固定单一值**；
+2. 文档按产品分节的调用示例代码中，`P` 的赋值与总表候选不一致（如某产品示例
+   写 `P = -1` 而总表无 `-1` 候选），且该产品分节的"C0 计算方法 / 推导方法"
+   明确 `P` 不参与计算（改由其它参数推导）；
+3. 文档对 `P` 显式标注"仅在 X 产品下生效 / X 产品下忽略 / X 产品下固定为 Y"
+   等产品相关取值差异短语。
+
+##### B. 必须产出的 per-platform `allowed_range_value`
+
+满足适用判定时，对参数 `P` 在 `product_support` 中**每个**平台分别产出
+`allowed_range_value` 条目，各平台 `value` 取该平台分节/示例中的**实际候选**，
+**不**把总表候选统一套用到所有平台：
+
+1. **逐平台候选**：`allowed_range_value.type="enum"`，`value` 为该平台实际候选
+   列表（数值候选用裸数字，如 `[1, 27, 2, 36]`、`[-1]`；字符串候选用 §5.2
+   受控字典标签）；各平台 `value` **可以不同**，这正是本节要捕获的产品差异；
+2. **占位/未用值**：若某产品分节表明 `P` 不参与计算（改由其它参数推导）且
+   示例固定写 `P = -1`（或文档指定的其它占位值），该平台 `value` 必须为**仅含
+   该占位值的单元素列表**（如 `[-1]`），**不得**追加总表候选，也**不得**留空
+   `[]`——留空会被生成器当作无约束自由采样，反而产出非法值；
+3. **src_text 逐平台溯源**：各平台 `allowed_range_value.src_text` 必须摘录**该
+   产品分节**的候选原文或示例代码行（如 A3/A2 摘录 `int additionalDtype = -1;`
+   与"C0 = 32B / size of srcTensor的基础类型"），**不得**只抄总表"参数说明"行；
+4. **`type` / `dtype` / `format` 逐平台一致**：`type.value`（如 `"int"`）、
+   `dtype.value`（如 `["int"]`，按 §4.6.3 标量回填）、`format.value`（`"N/A"`）
+   各平台保持一致；只有 `allowed_range_value.value` 随产品分歧。
+
+##### C. aclnnNpuFormatCast `additionalDtype` 落库示例
+
+```json
+{
+  "additionalDtype": {
+    "Atlas 350 加速卡": {
+      "description": "推断 FRACTAL_NZ 的 C0 大小所用的基本数据类型；C0 = 32B / size of additionalDtype",
+      "type": {"value": "int", "src_text": "int additionalDtype"},
+      "format": {"value": "N/A", "src_text": ""},
+      "dtype": {"value": ["int"], "src_text": ""},
+      "dimensions": {"value": [], "src_text": ""},
+      "allowed_range_value": {
+        "value": [1, 27, 2, 36],
+        "type": "enum",
+        "src_text": "ACL_FLOAT16(1)、ACL_BF16(27)、INT8(2)、ACL_FLOAT8_E4M3FN(36)"
+      },
+      "is_optional": {"value": true, "src_text": "可选输入"},
+      "is_support_discontinuous": {"value": false, "src_text": ""},
+      "is_operator_param": {"value": true, "src_text": ""}
+    },
+    "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+      "description": "A3/A2 下 C0 由 srcTensor 基础类型计算，additionalDtype 不参与，固定为 -1；见 §4.6.8 派生子接口",
+      "type": {"value": "int", "src_text": "int additionalDtype"},
+      "format": {"value": "N/A", "src_text": ""},
+      "dtype": {"value": ["int"], "src_text": ""},
+      "dimensions": {"value": [], "src_text": ""},
+      "allowed_range_value": {
+        "value": [-1],
+        "type": "enum",
+        "src_text": "示例代码 int additionalDtype = -1; C0 = 32B / size of srcTensor的基础类型"
+      },
+      "is_optional": {"value": true, "src_text": "可选输入"},
+      "is_support_discontinuous": {"value": false, "src_text": ""},
+      "is_operator_param": {"value": true, "src_text": ""}
+    },
+    "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+      "description": "A3/A2 下 C0 由 srcTensor 基础类型计算，additionalDtype 不参与，固定为 -1；见 §4.6.8 派生子接口",
+      "type": {"value": "int", "src_text": "int additionalDtype"},
+      "format": {"value": "N/A", "src_text": ""},
+      "dtype": {"value": ["int"], "src_text": ""},
+      "dimensions": {"value": [], "src_text": ""},
+      "allowed_range_value": {
+        "value": [-1],
+        "type": "enum",
+        "src_text": "示例代码 int additionalDtype = -1; C0 = 32B / size of srcTensor的基础类型"
+      },
+      "is_optional": {"value": true, "src_text": "可选输入"},
+      "is_support_discontinuous": {"value": false, "src_text": ""},
+      "is_operator_param": {"value": true, "src_text": ""}
+    }
+  }
+}
+```
+
+##### D. 反例（禁止）
+
+- `additionalDtype` 在所有平台都用 `value=[1,27,2,36]` → A3/A2 平台采样出
+  `additionalDtype=1` 等文档示例不支持的值，违规则 B.1/B.2；
+- A3/A2 平台 `allowed_range_value.value=[]`（留空）→ 生成器当作无约束自由采样，
+  同样产出非法值，违规则 B.2；
+- A3/A2 平台 `allowed_range_value.src_text` 抄总表"ACL_FLOAT16(1)、ACL_BF16(27)..."
+  → 溯源错误，违规则 B.3；
+- 因 `additionalDtype` 在 A3/A2 固定为 `-1` 就把它从 `inputs` 删除 → 它仍是
+  `aclnnNpuFormatCastCalculateSizeAndFormat` 子接口的入参，§4.6.8 B.3 要求生成器
+  采样 `srcTensor + dstFormat + additionalDtype`；删除会使生成器丢失该子接口入参、
+  并破坏 `dstTensor` 的 `[DERIVED]` 派生语义与 `derived_value` 约束的
+  `relation_params` 一致性（违 §4.6.8 B/C.1）；正确做法是保留参数
+  卡片、仅收紧 `allowed_range_value.value`。
+
+#### 4.6.12 格式转换算子的 dtype 等式约束（v3 增补，通用规则）
+
+> 本节来自 `aclnnNpuFormatCast` 闭环：iter_001 `constraints_in_parameters` 三平台均
+> 未提取 `srcTensor.dtype == dstTensor.dtype` 跨参等式，300/300 条用例 src.dtype !=
+> dst.dtype（350: int32→int8；A3: uint8→int8；A2: uint8→int8），且 dstTensor.range_values
+> 按 int8 负值域生成。文档 GetWorkspaceSize 表每行 src dtype == dst dtype，功能说明为
+> 纯格式转换（数据值不变），示例代码用 srcDtype 构造 dstTensor，cases_executor.py 注释
+> "data values are preserved"。该规则按算子语义与文档 dtype 表触发，**不**按算子名硬编码。
+
+##### A. 适用判定
+
+满足下列**全部**条件时，**必须**执行本节规则：
+
+1. 算子功能为**格式转换 / 布局变换**类（`function_explanation` 或正文含"格式转换"、
+   "数据值不变"、"纯格式转换"、"data values are preserved"、"only the memory layout
+   changes"等语义短语，表明算子只改变内存排布、不改变数据数值）；
+2. 文档 dtype/format 组合表（GetWorkspaceSize 接口表或 `dtype_support_description`）
+   **每一行** srcTensor 数据类型 == dstTensor 数据类型（如 INT8→INT8、UINT8→UINT8）；
+3. 或文档示例代码用同一 srcDtype 同时构造 srcTensor 与 dstTensor。
+
+##### B. 不适用场景（禁止套用）
+
+以下场景**不得**套用本规则：
+
+1. 算子语义涉及**数据类型转换**（如 cast / convert dtype 类算子，src.dtype !=
+   dst.dtype 是预期行为）；
+2. 算子同时做格式转换与 dtype 转换，且文档 dtype 表存在 src.dtype != dst.dtype 的行；
+3. 非格式转换类算子（如 MatMul、Conv 等，dtype 一致性由其它规则承载）。
+
+##### C. 必须产出的 `constraints_in_parameters` 条目
+
+满足适用判定时，必须在 `constraints_in_parameters[每个支持平台]` 中追加**一条**
+`type_equality` 约束：
+
+```text
+expr_type: type_equality
+expr: srcTensor.dtype == dstTensor.dtype
+relation_params: ["srcTensor", "dstTensor"]
+src_text: "<摘录文档 dtype 组合表或功能说明中 src dtype == dst dtype 的原文>；
+           格式转换算子数据值不变，src 与 dst dtype 必须一致"
+```
+
+**规则要点**：
+
+1. **dstTensor 值域沿用 src**：dstTensor 的取值范围（若生成器按 dtype 推导值域）
+   必须与 srcTensor 一致；不得按不同 dtype 的负值域生成（如 src=uint8 而 dst 按
+   int8 负值域 [-255,-1] 生成）。
+2. **逐平台落库**：与其它约束一致，`product_support` 中每个平台都必须有对应条目，
+   即使各平台 expr 完全相同。
+3. **src_text 可溯源**：必须摘录文档中表明 src dtype == dst dtype 的原文（dtype 表
+   行、功能说明"数据值不变"或示例代码用 srcDtype 构造 dstTensor 的行）。
+4. **不替代互推导规则**：若算子同时引用 `互推导关系.md`，互推导约束（§4.6.10 A）
+   仍须落库；本规则仅补充"格式转换场景下 src == dst"的等式约束。
 
 ### 4.7 `constraints_in_parameters`（跨参数 / 单参数约束）
 
@@ -1248,7 +1445,7 @@ src_text: "out 的 b 要与 self 的 b 和 mat2 的 b 经过 broadcast 推导后
 | 字段 | 必填 | 说明 |
 | ---- | ---- | ---- |
 | `expr_type` | 是 | **自由字符串**。优先从 §7 字典中选用；若字典无法覆盖，允许使用实际语义值（如 `cross_param_constraint`、`parameter_representation`、`self_value_enum`、`self_string_length`、`self_value_dependency`、`shape_choice`） |
-| `expr` | 是 | 规范化后合法的 Python 布尔表达式（第 6 章）；允许裸 `null`，执行前转换为 `None`；无法写出时填 `""` |
+| `expr` | 是 | 规范化后合法的 Python 布尔表达式（第 6 章）；允许裸 `null`，执行前转换为 `None`；**不得为空字符串**——无法形式化的约束改记入相关参数 `description`/`src_text`，不产出 `constraints_in_parameters` 条目（见 §4.6.8 C、§4.6.10 B.4、§8、§6.1 第 10 条） |
 | `relation_params` | 是 | 表达式中**所有**被引用的参数名（按出现顺序，去重） |
 | `src_text` | 是 | 原文摘录，**可为空字符串** |
 
@@ -1334,6 +1531,19 @@ src_text: "out 的 b 要与 self 的 b 和 mat2 的 b 经过 broadcast 推导后
    `((K + 15) // 16 == k1)`；但必须保证生成用例时真实 NPU 校验的 Reduce 维度一致，
    不得让 `self.shape[-1]=2034` 而 `mat2` 还按 `k1*16=2048` 通过 CPU golden。
 
+13. **派生值可求解约束必须落库（v3 增补）**：当 §4.6.8 适用（存在派生子接口）且
+    文档存在从子接口入参到派生输出 `D` 取值的**确定映射**（`dtype_support_description` /
+    `format_support_description` 或正文 combo 表）时，必须在 `constraints_in_parameters`
+    中产出 `derived_value` 条目，其 `expr` 编码该映射为可 `eval()` 的布尔表达式
+    （恒等映射用等式、查找表用析取、格式派生用 actualFormat→format 析取，见 §6.3 模式 9）；
+    `expr` **不得为空串**；`relation_params` 包含 `D` 及全部键参数。文档无确定映射时
+    不产出该条目，派生语义由 `[DERIVED]` description 承载（§4.6.8 C.2）。
+
+14. **格式转换算子 dtype 等式必须落库（v3 增补）**：当 §4.6.12 适用（算子为格式转换 /
+    布局变换类，文档 dtype 表每行 src.dtype == dst.dtype）时，必须在
+    `constraints_in_parameters[每个支持平台]` 中追加 `srcTensor.dtype == dstTensor.dtype`
+    的 `type_equality` 约束；dstTensor 值域沿用 src，不得按不同 dtype 负值域生成。
+
 ### 4.8 `return_info`（错误返回码）
 
 - 来自 `## 返回码` / `## 错误码` 章节。
@@ -1348,12 +1558,37 @@ src_text: "out 的 b 要与 self 的 b 和 mat2 的 b 经过 broadcast 推导后
 - 仅当文档存在**显式 dtype 组合表格**（如"各产品下 x1/x2/out 的 dtype 组合"）时填写；
 - key 为平台名，value 为该平台下的 combo 对象列表（每个 combo 为 `{param_name: dtype_str}` 字典）；
 - 无组合表时填 `{}`。
+- **dtype×format 交叉联合表禁用（v3 增补）**：当组合表**同一行同时含 dtype 列与
+  format 列，且 dtype 与 format 存在行内依赖**（不同 dtype 对应不同 format 候选；
+  判据：若把表按列拆成「纯 dtype 表 + 纯 format 表」会丢失信息、产生原本非法的
+  dtype×format 组合）——如 `srcTensor.dtype × dstTensor.dtype × dstTensor.format`
+  中 INT8→FRACTAL_NZ、INT32→FRACTAL_NZ_C0_16——**不得**填入本字段；拆解会丢失行内
+  dtype↔format 对应，并产生数值枚举码与 dtype 名混用（如 `additionalDtype="2"` 来自
+  `ACL_INT8(2)`）。此类**交叉**表必须落库为 `constraints_in_parameters` 的一条
+  OR-of-ANDs `derived_value`/`cross_param_constraint` expr（见 §6.3 模式 9「主接口
+  联合组合表」），本字段与 `format_support_description` 对该算子留 `{}`。
+- **以下两类仍填本字段，不属交叉表**：① **纯 dtype 组合表**——只有 dtype 列（哪怕
+  跨多个参数，如 `x1.dtype × x2.dtype × out.dtype`，"各产品下 x1/x2/out 的 dtype
+  组合"即此形态）；② **同表但独立的 dtype+format 表**——dtype 列与 format 列共存但
+  互不影响（任意 dtype 都可配任意 format，拆开不丢失信息），此时按"单独 dtype 约束 +
+  单独 format 约束"处理：dtype 部分填 `dtype_support_description`、format 部分填
+  `format_support_description`（或用 `type_equality` + format 枚举），不强求 OR-of-ANDs。
 
 ### 4.10 `format_support_description`（format 组合支持表）
 
 - 结构与 `dtype_support_description` 对称：key 为平台名，value 为格式组合列表；
 - 仅当文档存在**显式 format 组合表格**时填写；
 - 无此表时填 `{}`。
+- **dtype×format 交叉联合表禁用（v3 增补）**：与 §4.9 同理，**同一行同时含 dtype 列
+  与 format 列且 dtype 与 format 存在行内依赖**的交叉表**不得**填入本字段；禁止用
+  「`srcTensor` format 列表 × `dstFormat` 笛卡尔积、`actualFormat=dstFormat`」之类
+  凭空捏造的格式组合凑数（典型反例：aclnnNpuFormatCast A3/A2 `format_support_description`
+  出现 `srcTensor=ND × dstFormat∈{2,29,30,32,33}` 的 25 行捏造组合）。交叉表必须落库
+  为 OR-of-ANDs expr（§6.3 模式 9），本字段留 `{}`。
+- **以下两类仍填本字段，不属交叉表**：① **纯 format 组合表**——只有 format 列（哪怕
+  跨多个参数，如 `x1.format × x2.format × out.format`）；② **同表但独立的 dtype+format
+  表**（任意 dtype 配任意 format、拆开不丢失信息）的 format 部分——按 §4.9 同类情形
+  处理，不强求 OR-of-ANDs。
 
 ## 5. 平台与 dtype 命名规范
 
@@ -1452,8 +1687,10 @@ NDC1HWC0, FRACTAL_NZ_C0_16, NDHWC, NCHW_VECT_C0_16, NC1HWC0
 10. **`null` / `None`**：表达式允许使用 JSON 风格裸值 `null`，执行前会规范化为
     Python `None`；也可直接写 `None`。它只用于空值、可选值和存在性判断，例如
     `bias is null` 或 `bias is not None`，
-    不得作为数值区间端点参与 `<`、`<=`、`>`、`>=`。无法表达时统一使用空字符串
-    `""`，不要用整个 JSON 值 `null` 代替 `expr` 字符串。
+    不得作为数值区间端点参与 `<`、`<=`、`>`、`>=`。**整条约束无法形式化为
+    Python 布尔表达式时，不得产出空 `expr` 的 `constraints_in_parameters` 条目**
+    （违 §4.7.2）；改把语义记入相关参数 `description`/`src_text`。不要用整个
+    JSON 值 `null` 代替 `expr` 字符串。
 11. **参数名冲突**：当参数名为 `max`/`min`/`sum` 等内置函数名时，表达式中**不要再调用**同名内置函数；`relation_params` 仍写原名。
 12. **Partial-Shape 切片**：当文档明确表明只有最后一维是派生轴时，
     `gradOutput.shape[:-1] == self.shape[:-1]` 是合法的 `shape_equality`
@@ -1726,6 +1963,87 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 三条约束语义独立。尤其禁止用 `gradInput.shape == self.shape` 替代第一条，或认为
 末维公式成立便会自动保证 batch 维和 rank 一致。
 
+#### 模式 9：派生值可求解查找表达式（v3 增补）
+
+**适用场景**：派生输出参数 `D`（标记 `[DERIVED]`，见 §4.6.8）的取值由文档中的
+确定映射表（正文 combo 表）从子接口入参推导。生成器必须能从 `expr` 读出派生规则，
+不得独立随机赋值。**dtype×format 交叉联合组合表（同一行同时含 dtype 列与 format 列、
+且 dtype 与 format 存在行内依赖——不同 dtype 对应不同 format 候选、拆开会丢失信息）
+必须按本模式落库为 OR-of-ANDs expr，不得拆进 `dtype_support_description`/
+`format_support_description`（见 §4.9/§4.10）。纯 dtype 组合表（只有 dtype 列）仍填
+`dtype_support_description`，纯 format 组合表（只有 format 列）仍填
+`format_support_description`；同表但独立的 dtype+format 表（任意 dtype 配任意 format）
+按"单独 dtype 约束 + 单独 format 约束"拆开处理，不属本模式**。
+
+**恒等映射**（`D` 取值恒等于某入参）：
+
+```text
+expr_type: derived_value
+expr: D.range_value == keyParam.range_value
+relation_params: ["D", "keyParam"]
+src_text: "<摘录映射表原文，如 dtype_support_description 中 actualFormat == dstFormat 的行>"
+```
+
+**查找表映射**（多行 combo 表，析取所有合法行）：
+
+```text
+expr_type: derived_value
+expr: (srcTensor.dtype == "INT8" and dstFormat.range_value == 29 and additionalDtype.range_value == 2 and actualFormat.range_value == 29)
+      or (srcTensor.dtype == "INT32" and dstFormat.range_value == 29 and additionalDtype.range_value == 1 and actualFormat.range_value == 50)
+      or (...)
+relation_params: ["actualFormat", "srcTensor", "dstFormat", "additionalDtype"]
+src_text: "<摘录 dtype_support_description 映射表原文>"
+```
+
+**格式派生**（`D.format` 由 actualFormat 查表得出，析取所有合法对应）：
+
+```text
+expr_type: derived_value
+expr: (actualFormat.range_value == 2 and dstTensor.format == "ND")
+      or (actualFormat.range_value == 29 and dstTensor.format in ("NZ", "FRACTAL_NZ"))
+      or (actualFormat.range_value == 30 and dstTensor.format == "NCDHW")
+      or (...)
+relation_params: ["dstTensor", "actualFormat"]
+src_text: "<摘录 actualFormat → format 对应原文>"
+```
+
+**主接口联合组合表**（`GetWorkspaceSize` 类主接口的 dtype×format 联合 combo 表；
+同一行同时锁定 `srcTensor.dtype`、`dstTensor.dtype`、`dstTensor.format`，行间互斥）：
+**不得**把这类联合表拆进 `dtype_support_description` / `format_support_description`
+（见 §4.9/§4.10），必须落库为**一条** `derived_value`（或 `cross_param_constraint`）
+expr，析取所有合法行、每行合取键值与目标值。以 `aclnnNpuFormatCast` Atlas 350
+`GetWorkspaceSize` 表为例（format 用 §5.3 受控字典短名，`FLOAT`→`FLOAT32`）：
+
+```text
+expr_type: derived_value
+expr: (srcTensor.dtype == "INT8"          and dstTensor.dtype == "INT8"          and dstTensor.format == "FRACTAL_NZ")
+   or (srcTensor.dtype == "INT32"         and dstTensor.dtype == "INT32"         and dstTensor.format == "FRACTAL_NZ_C0_16")
+   or (srcTensor.dtype == "FLOAT32"       and dstTensor.dtype == "FLOAT32"       and (dstTensor.format == "FRACTAL_NZ_C0_16" or dstTensor.format == "FRACTAL_NZ_C0_32"))
+   or (srcTensor.dtype == "FLOAT16"       and dstTensor.dtype == "FLOAT16"       and dstTensor.format == "FRACTAL_NZ")
+   or (srcTensor.dtype == "BFLOAT16"      and dstTensor.dtype == "BFLOAT16"      and dstTensor.format == "FRACTAL_NZ")
+   or (srcTensor.dtype == "FLOAT8_E4M3FN" and dstTensor.dtype == "FLOAT8_E4M3FN" and dstTensor.format == "FRACTAL_NZ")
+   or (srcTensor.dtype == "FLOAT4_E2M1"   and dstTensor.dtype == "FLOAT4_E2M1"   and dstTensor.format == "FRACTAL_NZ_C0_32")
+relation_params: ["srcTensor", "dstTensor"]
+src_text: "<摘录 GetWorkspaceSize 接口 srcTensor/dstTensor数据类型/dstTensor数据格式 组合表原文>"
+```
+
+该 expr 同时编码「`srcTensor.dtype == dstTensor.dtype`」与「dtype→`dstTensor.format`
+映射」;`dstTensor` 标记 `[DERIVED]`（§4.6.8），此 expr 即其派生规则，生成器不得
+独立随机赋 `dstTensor.format`。§4.6.12 的 `type_equality`（`srcTensor.dtype ==
+dstTensor.dtype`）与本条并行落库不冲突（本条更严，生成器两条都满足即可）。A3/A2
+平台的联合表同理逐平台落库一条，`dtype_support_description` /
+`format_support_description` 对该算子留 `{}`。
+
+**规则要点**：
+
+1. **expr 不得为空**：存在确定映射时 `expr` 必须编码该映射为可 `eval()` 的布尔
+   表达式；空 `expr` 对生成器无用（违 §4.7.2、§4.6.8 C.1）。
+2. **析取须覆盖全部合法行**：映射表的每一行都必须在析取中出现；遗漏一行会使
+   该组合下 `D` 取值无约束、生成器随机赋值。
+3. **无确定映射时不产出**：若派生依赖 NPU 运行期计算且文档无可枚举对应表，
+   不产出 `derived_value` 条目，派生语义由 `[DERIVED]` description 承载（§4.6.8 C.2）。
+4. **逐平台落库**：各平台映射表不同时 `expr` 按该平台表分别编码。
+
 ---
 
 ## 7. `expr_type` 取值字典
@@ -1747,6 +2065,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | `value_dependency` | 取值依赖/取值范围 | `BS.range_value % rankSize.range_value == 0` |
 | `format_equality` | 数据格式必须一致 | `x1.format == x2.format` |
 | `presence_dependency` | 共存规则（None/非None） | `(scale is None) == (zeroPoint is None)` |
+| `derived_value` | 派生输出取值由子接口确定映射推导（须可求解，见 §4.6.8 C.1、§6.3 模式 9） | `actualFormat.range_value == dstFormat.range_value`（恒等）；查找表用析取 |
 
 ### 7.2 单参数约束（扩展值，不在 `InterConstraintsRuleType` 枚举中但实际广泛使用）
 
@@ -1784,7 +2103,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | 文档**完全没有** `返回码` 章节 | `return_info=[]` |
 | `allowed_range_value` 只有单边界或开区间 | `allowed_range_value.value=[]`；在 `constraints_in_parameters` 中用 `value_dependency` 不等式表达，禁止为 `type=range` 写 `null` 端点 |
 | **文档写 bool 参数（无固定值约束）** | `allowed_range_value.type="enum"`、`value=[false, true]`；强行 bool 枚举，不允许填 `[]` 配 `type="range"`（否则下游生成器按浮点填充，会产生 1.0/1.23e-40 等非法值） |
-| 表达式无法用 Python 表达（自然语言公式） | `expr=""`，`src_text` 摘录原文，待人工校对 |
+| 表达式无法用 Python 表达（自然语言公式） | **不**产出 `constraints_in_parameters` 条目（空 `expr` 违 §4.7.2）；把语义记入相关参数 `description`/`src_text` 摘录原文，待人工校对 |
 | 文档出现矛盾（A段dtype=X，B段dtype=Y） | 优先**保守**取值（取并集），`src_text` 摘录矛盾原文，等待人工确认 |
 | 文档写"1维，最大长度256" | `dimensions.value=[1, 1]`，**长度256 不得放入 `dimensions`**；须在 `constraints_in_parameters` 中加 `self_shape_axis_value` 约束 |
 | 文档写"shape 与 weight1 一致" / "与输入相同" | `dimensions.value=[]`；**跨参数引用留给 `constraints_in_parameters`** 的 `shape_equality` 约束 |
@@ -1812,10 +2131,17 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | **aclTensorList 参数 P 写“长度与 Q 相同”** | P 为 Optional 时生成 `(P is None) or (len(P) == len(Q))`，否则生成 `len(P) == len(Q)`；禁止 `.array_length` 和 `len(P.shape)`；相同文案出现在多个参数行时逐参数生成，不能去重 |
 | **backward / grad 文档写“gradOutput 与 self/input 维度一致”，同时末尾轴由 padding 等参数派生** | 按 §4.6.6 / §6.3 模式 7 拆分：①前缀切片相等；②rank 相等；③文档明确的派生轴公式。禁止只提取末维公式，也禁止用 `gradInput.shape == self.shape` 替代 gradOutput 跟随关系 |
 | **文档写参数描述含“空间大小/数据量/元素个数/数量”等大小/数量语义短语（v3 增补）** | 按 §4.6.9 处理：在 `constraints_in_parameters` 中追加 `P.range_value > 0`（`expr_type=value_dependency`），`allowed_range_value.value=[]`；`src_text` 摘录 description 原文 + 补注“大小/数量语义隐含 >0”；不适用于 shape/dtype/format/枚举/bool 参数 |
+| **文档按产品分节给出同一参数的不同候选值 / 固定占位值（v3 增补）** | 按 §4.6.11 处理：逐平台产出 `allowed_range_value`（`type="enum"`），各平台 `value` 取该产品分节/示例的实际候选；占位产品 `value` 为单元素列表（如 `[-1]`），不得追加总表候选、不得留空 `[]`；`src_text` 逐平台摘录该分节原文/示例代码；`type`/`dtype`/`format` 逐平台一致，仅 `allowed_range_value.value` 随产品分歧 |
+| **派生输出参数标记 [DERIVED] 且文档存在确定映射（如 dtype/format 组合表 → actualFormat）（v3 增补）** | 按 §4.6.8 C.1 与 §6.3 模式 9 处理：产出 `derived_value` 条目，`expr` 编码映射为可 `eval()` 的布尔表达式（恒等映射用等式、查找表用析取）；`expr` 不得为空串；`relation_params` 含 `D` 及全部键参数。文档无确定映射时不产出该条目，由 `[DERIVED]` description 承载。典型反例：aclnnNpuFormatCast dstTensor.format/actualFormat 的 `derived_value` expr 留空，生成器随机赋值致 86/100 A3 用例不一致 |
+| **格式转换算子文档 dtype 表每行 src.dtype == dst.dtype（v3 增补）** | 按 §4.6.12 处理：产出 `type_equality` 约束 `srcTensor.dtype == dstTensor.dtype`；dstTensor 值域沿用 src，不得按不同 dtype 负值域生成。典型反例：aclnnNpuFormatCast 300/300 条用例 src.dtype != dst.dtype（uint8→int8），dstTensor.range_values 按 int8 负值域 [-255,-1] 生成 |
+| **文档组合表是 dtype×format 交叉联合表（同一行同时含 dtype 列与 format 列，且 dtype 与 format 存在行内依赖——不同 dtype 对应不同 format 候选，拆成纯 dtype 表+纯 format 表会丢失信息/产生非法组合；如 srcTensor.dtype×dstTensor.dtype×dstTensor.format 中 INT8→FRACTAL_NZ、INT32→FRACTAL_NZ_C0_16）（v3 增补）** | **不得**拆进 `dtype_support_description`/`format_support_description`（拆解会丢失行内 dtype↔format 对应，并产生数值枚举码与名字混用）；按 §6.3 模式 9「主接口联合组合表」落库为**一条** `derived_value`（或 `cross_param_constraint`）OR-of-ANDs expr，析取所有合法行；`dtype_support_description`/`format_support_description` 对该算子留 `{}`。典型反例：aclnnNpuFormatCast iter_001 把联合表拆成 `dtype_support_description`（`additionalDtype` 抄成 `"2"` 而非 INT8、`dstFormat`/`actualFormat` 抄数值枚举码）与 `format_support_description`（`srcTensor=ND × dstFormat` 笛卡尔积、`actualFormat=dstFormat` 凭空捏造 25 行），`derived_value.expr` 留空 |
+| **文档组合表只有 dtype 列（纯 dtype 表，跨多参数也行），或只有 format 列（纯 format 表）（v3 增补）** | 纯 dtype 表填 `dtype_support_description`、纯 format 表填 `format_support_description`，**不**落 OR-of-ANDs expr；不属 §6.3 模式 9 适用范围 |
+| **文档组合表同表含 dtype 列与 format 列但二者独立（任意 dtype 配任意 format，拆开不丢失信息）（v3 增补）** | 按"单独 dtype 约束 + 单独 format 约束"处理：dtype 部分填 `dtype_support_description`、format 部分填 `format_support_description`（或用 `type_equality` + format 枚举 + `format_rank_consistency`）；**不**强制 OR-of-ANDs。判据：拆成纯 dtype 表+纯 format 表后是否产生原本非法的 dtype×format 组合——不产生即为独立 |
+| **`constraints_in_parameters` 出现 `expr=""` 空壳条目（`derived_value`/`cross_param_constraint` 等）（v3 增补）** | 违 §4.7.2/§4.6.8 C.1：`derived_value` 在文档存在确定映射时 `expr` 必须编码为可求解 OR-of-ANDs/等式 expr（§6.3 模式 9），不得为空；不可形式化的约束（如「转 NZ 后不许 contiguous/transpose」）**不**产出条目，改记入 `description`/`src_text`。典型反例：aclnnNpuFormatCast iter_001 三平台 `derived_value.expr=""` 与 `cross_param_constraint.expr=""` 空壳 |
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 26 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 30 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1955,6 +2281,76 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
     e. 若出现 "Reduce 维度需要与 ... 相等"，必须存在真实 Reduce 轴相等约束；对于
        `aclnnBatchMatMulWeightNz`，该约束必须按 `self_transposed` / `mat2_transposed`
        分支并引用两者。
+27. **产品相关参数取值范围差异自检（v3 增补）**：逐平台遍历全部 `inputs`/`outputs`
+    中 `is_operator_param.value=true` 的非张量标量/枚举参数 `P`；若文档"约束说明"
+    按产品分节或调用示例表明 `P` 的候选值随产品分歧（某产品固定为占位值如 `-1`，
+    另一产品为总表候选子集/全集），必须满足**全部**：
+    a. `P` 在 `product_support` 每个平台都有 `allowed_range_value` 条目（与 §9
+       第 3 项逐平台覆盖要求一致）；
+    b. 各平台 `allowed_range_value.value` 反映**该产品**实际候选，而非统一套用
+       总表候选；占位产品为单元素列表（如 `[-1]`），不得为 `[]`；
+    c. 各平台 `allowed_range_value.src_text` 摘录该产品分节原文或示例代码行，
+       不得只抄总表"参数说明"行；
+    d. 对 `aclnnNpuFormatCast`，`additionalDtype` 在
+       `Atlas A3 训练系列产品/Atlas A3 推理系列产品` 与
+       `Atlas A2 训练系列产品/Atlas A2 推理系列产品` 必须为
+       `allowed_range_value.value=[-1]`，`Atlas 350 加速卡` 为 `[1,27,2,36]`；
+       不得三平台统一为 `[1,27,2,36]`，也不得留空 `[]`。
+28. **空 `expr` 禁令与 `derived_value` 可求解性（v3 增补）**：遍历
+    `constraints_in_parameters` 各平台全部条目，必须满足**全部**：
+    a. 每条 `expr` 为**非空**字符串，规范化后是可 `eval()` 的合法 Python 布尔
+       表达式（违 §4.7.2、§6.1）；
+    b. **不得**出现 `expr=""` 的空壳条目；`expr_type="derived_value"` 条目**允许**
+       存在，但其 `expr` **必须**是可求解的查找/派生表达式（§4.6.8 C.1），不得为空；
+       若文档无确定映射，则不应产出 `derived_value` 条目（§4.6.8 C.2），派生语义由
+       `[DERIVED]` description 承载；
+    c. 文档约束无法形式化为 Python 布尔表达式（自然语言公式、broadcast 特殊
+       dtype 不可靠形式化等）时，**不**产出 `constraints_in_parameters` 条目，
+       改把语义记入相关参数 `description`/`src_text`（§4.6.10 B.4、§8、§6.1 第 10 条）；
+    d. 对 `aclnnNpuFormatCast`，当 `dtype_support_description` 含 actualFormat 确定映射时，
+       `constraints_in_parameters` 中**必须**含可求解 `derived_value` 条目（如 A3/A2
+       `actualFormat.range_value == dstFormat.range_value`），**不得**为 `expr=""` 空壳；
+       dstTensor.format 亦须由映射派生（不得独立随机赋值）。
+29. **格式转换算子 dtype 等式自检（v3 增补）**：当算子 `function_explanation` 或正文
+    含"格式转换"/"数据值不变"/"纯格式转换"/"data values are preserved"等语义，且
+    文档 dtype 表（GetWorkspaceSize 表或 `dtype_support_description`）每行 src.dtype ==
+    dst.dtype 时，必须满足**全部**：
+    a. `constraints_in_parameters[每个支持平台]` 中存在 `srcTensor.dtype == dstTensor.dtype`
+       的 `type_equality` 约束（`relation_params=["srcTensor","dstTensor"]`）；
+    b. dstTensor 的值域生成不得按与 src 不同的 dtype 负值域（如 src=uint8 而 dst
+       按 int8 的 [-255,-1] 生成）；
+    c. `src_text` 摘录文档 dtype 表行或功能说明"数据值不变"原文；
+    d. 对 `aclnnNpuFormatCast`，三平台均须有 `srcTensor.dtype == dstTensor.dtype`
+       等式约束，不得遗漏。
+30. **dtype×format 交叉联合组合表自检（v3 增补）**：当文档组合表（GetWorkspaceSize
+    主接口表或 `<details>` 分节 combo 表）是**交叉联合表**——**同一行同时含 dtype 列
+    与 format 列，且 dtype 与 format 存在行内依赖**（不同 dtype 对应不同 format 候选；
+    判据：拆成纯 dtype 表+纯 format 表会丢失信息/产生原本非法的 dtype×format 组合；
+    如 `srcTensor.dtype × dstTensor.dtype × dstTensor.format` 中 INT8→FRACTAL_NZ、
+    INT32→FRACTAL_NZ_C0_16），行间互斥——必须满足**全部**。**纯 dtype 表**（只有 dtype
+    列）填 `dtype_support_description`、**纯 format 表**（只有 format 列）填
+    `format_support_description`、**同表但独立**（任意 dtype 配任意 format）按"单独
+    dtype + 单独 format"拆开——三者均**不**属本项：
+    a. **不得**把交叉表拆进 `dtype_support_description` / `format_support_description`
+       （拆解会丢失行内 dtype↔format 对应，并产生数值枚举码与 dtype/format 名字混用）；
+       这两个字段对该算子留 `{}`（纯 dtype 表/纯 format 表/独立表不受此限，仍按字段本义填写）；
+    b. `constraints_in_parameters[每个支持平台]` 中**必须**存在**一条** `derived_value`
+       （或 `cross_param_constraint`）expr，析取表中所有合法行、每行合取键值与目标值
+       （§6.3 模式 9「主接口联合组合表」）；`expr` 不得为空（违 §9.28）；
+    c. 析取**必须覆盖全部合法行**：遗漏一行会使该组合下 dst 取值无约束、生成器随机
+       赋值；多值映射（如某 dtype 对应两种 format）在该行用 `or` 表达；
+    d. dtype 引用用 §5.2 受控字典名（`FLOAT`→`FLOAT32`）、format 引用用 §5.3 受控
+       字典短名（`ACL_FORMAT_FRACTAL_NZ(29)`→`"FRACTAL_NZ"`）；**禁止**抄括号里的
+       数值枚举码作为 dtype/format 值；
+    e. `relation_params` 包含 expr 中全部被引用参数（如 `["srcTensor","dstTensor"]`）；
+       `src_text` 摘录该平台 combo 表原文；
+    f. 对 `aclnnNpuFormatCast`：**Atlas 350** 的 GetWorkspaceSize 表 dtype 决定 format
+       （INT8→FRACTAL_NZ、INT32→FRACTAL_NZ_C0_16、FLOAT→C0_16/C0_32…），属交叉表，**必须**
+       落库该联合 OR-of-ANDs expr；**A3/A2** 的 GetWorkspaceSize 表 dtype 与 format 独立
+       （7 dtype 各可配 5 format、拆开不丢失信息），**不**属交叉表，用 `type_equality`
+       （`srcTensor.dtype == dstTensor.dtype`）+ `dstTensor.format` 枚举 + `format_rank_consistency`
+       表达即可，不强求 OR-of-ANDs；三平台均不得出现 `additionalDtype="2"`/`dstFormat="29"`
+       这类数值枚举码混入 dtype/format 字段。
 
 ## 10. 调用模板
 
@@ -1975,11 +2371,15 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 - 处理 aclTensorList 容器长度关系时参考 §4.6.3 TensorList 长度规则与 §6.3 模式 0
 - 处理 backward / grad 的 gradOutput partial-shape 跟随时参考 §4.6.6 与 §6.3 模式 7
 - 处理大小/数量语义参数的隐式 >0 约束时参考 §4.6.9
+- 处理派生输出张量（CalculateSizeAndFormat 类子接口）时参考 §4.6.8；当文档存在
+  确定映射时 `derived_value.expr` 必须编码为可求解表达式（§6.3 模式 9），不得为空串
+- 处理格式转换算子时参考 §4.6.12；当 dtype 表每行 src.dtype == dst.dtype 时必须
+  产出 `type_equality` 等式约束
 - 文档引用 `互推导关系.md` 或 `broadcast关系.md` 时参考 §4.6.10 以及
   `knowledge/common/type_promotion.md`、`knowledge/common/broadcast.md`
 - 写 expr 表达式时参考 §6.3 模式库（按关系特征匹配模板；NZ 块尺寸使用模式 5；
   条件 Shape 使用模式 6；shape_value_dependency 隐式 bool 门控使用模式 6.1；
-  Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0）
+  Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0；派生值查找使用模式 9）
 - 写 allowed_range_value 时参考 §4.6.3 allowed_range 文本→结构化映射
 
 输出必须是**纯 JSON 字符串**，无任何前后缀。
@@ -2001,8 +2401,9 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 26 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
-   §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0、§9.26 公共互推导/broadcast 知识展开）；
+3. 内部执行第 9 章 30 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
+   §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0、§9.26 公共互推导/broadcast 知识展开、
+   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
@@ -2021,7 +2422,7 @@ gradOutput.shape[-1] == self.shape[-1] + padding.range_value[0] + padding.range_
 | `aclnnSwinTransformerLnQkvQuant` | Transformer | LN + QKV 拆分；`headNum`/`seqLength`/`epsilon` 等标量属性 |
 | `aclnnAlltoAllMatmul` | 通信 + MatMul | `alltoAllAxesOptional` 取值 JSON `null`（原文"空"）或 `[-2,-1]`；**条件 Shape**：`x2.shape` 由 `transposeX2` 门控（`§6.3` 模式 6）——False 时 `(H*rankSize, N)`，True 时 `(N, H*rankSize)`；隐式变量 `BS`/`H`/`N` + 外部常量 `rankSize` |
 | `aclnnFFNV3` | NN / MoE FFN | `activation` 为枚举字符串；`innerPrecise` 标量属性 |
-| `aclnnNpuFormatCast` | 格式转换 | `srcTensor`、`dstTensor` 必须逐平台生成 `format_rank_consistency`：NCDHW=5D、NDC1HWC0=6D、FRACTAL_Z_3D=8D、NZ/FRACTAL_NZ=5D，ND 使用文档 rank 区间；专项反例 `NCDHW + 8D` 必须被排除；dtype 与 format 强耦合 |
+| `aclnnNpuFormatCast` | 格式转换 | `srcTensor`、`dstTensor` 必须逐平台生成 `format_rank_consistency`：NCDHW=5D、NDC1HWC0=6D、FRACTAL_Z_3D=8D、NZ/FRACTAL_NZ=5D，ND 使用文档 rank 区间；专项反例 `NCDHW + 8D` 必须被排除；dtype 与 format 强耦合；`dstTensor` 标记 `[DERIVED]` 且 `dtype_support_description` 含 actualFormat 确定映射时必须产出可求解 `derived_value`（A3/A2 为 `actualFormat.range_value == dstFormat.range_value`，不得 `expr=""`）；格式转换语义 + dtype 表每行 src==dst 须产出 `srcTensor.dtype == dstTensor.dtype` 的 `type_equality` 约束（§4.6.12） |
 | `aclnnCalculateMatmulWeightSize` | 辅助计算 / 一段式 | 仅计算输出，无 Tensor 真正计算；`workspaceSize`/`executor` 是唯一输出 | `tensorShape` 为 `aclIntArray` 输入（2-6 维，`dtype.value=["int"]` 固定；文档列 `FLOAT16`/`BFLOAT16` 描述关联权重张量 dtype，不写入 `tensorShape.dtype`）；`weightTensorSize` 为 `uint64_t*` 标量输出（公式 result）；一段式 `function_signature` 无 `GetWorkspaceSize`，不写入 `is_single_function_mode` 字段 |
 | `aclnnCalculateMatmulWeightSizeV2` | 辅助计算 | 同上 V2，差异在 weight 排布 / NZ 转换 |
 
@@ -2179,6 +2580,135 @@ relation_params = ["self", "mat2", "mat2_transposed"]
 5. **§8 边缘场景新增三行**：互推导、broadcast、MatMul Reduce 维度相等。
 6. **§9 自检新增第 26 项**：公共互推导 / broadcast 知识展开自检。
 7. **§10 调用模板更新**：知识库引用追加 §4.6.10 与 `knowledge/common/*`。
+
+---
+
+### B++++++：v3 增补记录（产品相关参数取值范围差异）
+
+下列变更新增"同一参数在不同产品下候选值不同"的逐平台 `allowed_range_value`
+提取要求，来自 `aclnnNpuFormatCast` 闭环：
+
+- `additionalDtype` 在"参数说明"总表统一列出 `ACL_FLOAT16(1)、ACL_BF16(27)、
+  INT8(2)、ACL_FLOAT8_E4M3FN(36)`（即 `1/27/2/36`），但在
+  `Atlas A3 训练系列产品/Atlas A3 推理系列产品`、
+  `Atlas A2 训练系列产品/Atlas A2 推理系列产品` 的"约束说明"分节与调用示例中
+  固定为 `-1`（C0 改由 `srcTensor` 基础类型计算，示例代码 `int additionalDtype = -1;`）；
+- v3 无规则要求按产品分别识别这种候选值分歧，提取器把总表 `{1,27,2,36}` 套用
+  到所有平台，A3/A2 生成器采样出文档示例不支持的 `additionalDtype` 值。
+
+**变更清单**：
+
+1. **§4.6.11 新增**：产品相关参数取值范围差异规则，按"参数候选值随产品分歧"
+   语义触发（总表候选 vs 产品分节/示例候选不一致、或文档显式标注产品相关差异），
+   不按算子名硬编码；逐平台产出 `allowed_range_value`，占位产品为单元素列表
+   （如 `[-1]`），不得追加总表候选、不得留空 `[]`。
+2. **§8 边缘场景新增一行**：产品分节给出同一参数不同候选值 / 固定占位值的处理。
+3. **§9 自检新增第 27 项**：产品相关参数取值范围差异自检，含
+   `aclnnNpuFormatCast` `additionalDtype` 的逐平台期望值（A3/A2=`[-1]`，
+   Atlas 350=`[1,27,2,36]`）。
+
+---
+
+### B+++++++：v3 增补记录（空 `expr` 禁令；`derived_value` 须可求解）
+
+下列变更来自 `aclnnNpuFormatCast` 闭环复盘，贯彻"表达式为空就不提取"原则，同时
+纠正早期"空 `expr` 的 `derived_value` 条目"与后续"完全废止 `derived_value`"两种
+极端：
+
+- iter_001 提取产物中有一条 `expr_type=derived_value`、`expr=""`、
+  `relation_params=["dstTensor","srcTensor","dstFormat","additionalDtype"]` 的记录；
+  空 `expr` 无法在生成期 `eval()`，生成器无法读出派生规则，对 `[DERIVED]` 输出参数
+  独立随机赋值，导致 86/100 条 A3 用例 dstTensor.format/actualFormat 与期望不一致；
+- `[DERIVED]` description 文本标记亦不足以单独约束生成器（生成器未识别该标记）；
+- 文档 `dtype_support_description` 实际含 (srcTensor.dtype × dstFormat × additionalDtype
+  → actualFormat) 的确定映射，可编码为可求解 expr（A3/A2 为恒等映射
+  `actualFormat == dstFormat`），不应留空。
+
+**变更清单**（"存在确定映射时必须产出可求解 expr；无映射时不产出空壳"）：
+
+1. **§4.6.8 C/D/E 改写**：派生张量在文档存在确定映射时**必须**产出 `derived_value`
+   条目，`expr` 编码映射为可 `eval()` 的布尔表达式（恒等映射用等式、查找表用析取、
+   格式派生用 actualFormat→format 析取）；无确定映射时不产出条目，由 `[DERIVED]`
+   description 承载；`format_rank_consistency` 守卫仍须落库。
+2. **§4.7.2 字段表**：`expr` 字段"不得为空字符串"；无法形式化时不产出条目，
+   改记入 `description`/`src_text`。
+3. **§4.6.10 B.4**：broadcast 特殊 dtype 无法形式化时改记入
+   `description`/`src_text`，不得产出空 `expr` 条目。
+4. **§6.1 第 10 条**：整条约束无法形式化时不产出空 `expr` 条目，改记入
+   `description`/`src_text`。
+5. **§8 边缘场景**：自然语言公式行由"`expr=""`"改为"不产出条目，记入
+   `description`/`src_text`"；新增派生值可求解与格式转换 dtype 等式两行。
+6. **§9 自检第 28 项**：空 `expr` 禁令与 `derived_value` 可求解性自检
+   （`derived_value` 允许存在但 `expr` 必须可求解、不得为空）；§9 开头计数 27→28→29。
+7. **§4.6.11 D 反例**：引用 §4.6.8 B/C.1（`derived_value` 的 `relation_params`
+   含 `additionalDtype`），删除参数会破坏派生约束一致性。
+8. **§6.3 新增模式 9**：派生值可求解查找表达式模板（恒等/查找表/格式派生）。
+9. **§7.1 登记 `derived_value`**：参数间约束字典补登 `derived_value` 行。
+
+---
+
+### B++++++++：v3 增补记录（格式转换算子 dtype 等式约束）
+
+下列变更新增对**格式转换 / 布局变换**类算子的 `srcTensor.dtype == dstTensor.dtype`
+跨参等式约束提取要求，来自 `aclnnNpuFormatCast` 闭环：
+
+- iter_001 `constraints_in_parameters` 三平台均未提取 `srcTensor.dtype == dstTensor.dtype`
+  跨参等式，300/300 条用例 src.dtype != dst.dtype（350: int32→int8；A3: uint8→int8；
+  A2: uint8→int8），且 dstTensor.range_values 按 int8 负值域 [-255,-1] 生成；
+- 文档 GetWorkspaceSize 表（doc:444-450）每行 src dtype == dst dtype；功能说明
+  （doc:23-25）为纯格式转换（数据值不变）；示例代码用 srcDtype 构造 dstTensor；
+  cases_executor.py 注释 "data values are preserved"。
+
+**变更清单**（按算子语义与文档 dtype 表触发，不按算子名硬编码）：
+
+1. **§4.6.12 新增**：格式转换算子 dtype 等式约束——适用判定（格式转换语义 +
+   dtype 表每行 src==dst）、不适用场景（dtype 转换类算子）、必须产出的
+   `type_equality` 条目（`srcTensor.dtype == dstTensor.dtype`）+ 4 条规则要点
+   （dstTensor 值域沿用 src、逐平台落库、src_text 可溯源、不替代互推导规则）。
+2. **§4.7.3 新增第 14 项**：格式转换算子 dtype 等式必须落库。
+3. **§8 边缘场景新增一行**：格式转换算子 dtype 表每行 src.dtype == dst.dtype 的处理。
+4. **§9 自检新增第 29 项**：格式转换算子 dtype 等式自检（4 个子项 a-d）；
+   §9 开头计数 28→29。
+5. **§10 调用模板更新**：知识库引用追加 §4.6.12。
+
+---
+
+### B+++++++++：v3 增补记录（联合交叉 dtype/format 组合表用 OR-of-ANDs 表达）
+
+下列变更把「dtype 与 format 交叉联合的组合表」从 `dtype_support_description` /
+`format_support_description` 迁移到 `constraints_in_parameters` 的 OR-of-ANDs expr，
+来自 `aclnnNpuFormatCast` 闭环：
+
+- iter_001 `dtype_support_description`（Atlas 350）把联合表拆成
+  `{srcTensor:"INT8", dstFormat:"29", additionalDtype:"2", actualFormat:"29"}`——
+  `additionalDtype` 抄了 `ACL_INT8(2)` 的括号码 `2` 而非 dtype 名，`dstFormat`/`actualFormat`
+  同样抄数值枚举码，srcTensor 却抄 dtype 名，同行语义不一致；
+- `format_support_description`（A3/A2）把 `srcTensor.format × dstFormat` 笛卡尔积、
+  令 `actualFormat=dstFormat` 凭空捏造 25 行，与文档联合表无关；
+- `constraints_in_parameters` 的 `derived_value.expr=""` 与 `cross_param_constraint.expr=""`
+  均为空壳，违反 §4.7.2/§4.6.8 C.1，生成器无法读出派生规则，转而独立随机赋
+  `dstTensor.format`/`actualFormat`。
+
+**变更清单**（按组合表形态触发，不按算子名硬编码）：
+
+1. **§4.9 / §4.10 加禁令**：dtype×format 交叉联合组合表（同一行同时含 dtype 列与
+   format 列、且 dtype 与 format 存在行内依赖——不同 dtype 对应不同 format 候选、
+   拆开会丢失信息）**不得**拆进 `dtype_support_description`/`format_support_description`；
+   必须落库为 OR-of-ANDs expr；这两个字段对该算子留 `{}`。**纯 dtype 表**（只有 dtype
+   列）仍填 `dtype_support_description`、**纯 format 表**（只有 format 列）仍填
+   `format_support_description`、**同表但独立**的 dtype+format 表（任意 dtype 配任意
+   format）按"单独 dtype + 单独 format"拆开——三者不属交叉表，不强求 OR-of-ANDs。
+2. **§6.3 模式 9 新增「主接口联合组合表」示例**：`GetWorkspaceSize` 类主接口的
+   dtype×format 联合表映射到 `dstTensor.dtype`/`dstTensor.format`（而非子接口的
+   `actualFormat.range_value`），析取所有合法行；明确该 expr 同时是 `[DERIVED]`
+   dstTensor 的派生规则，并与 §4.6.12 `type_equality` 并行不冲突。
+3. **§8 边缘场景新增两行**：联合交叉表禁拆解、空 `expr` 空壳条目处置。
+4. **§9 自检新增第 30 项**：联合交叉 dtype/format 组合表自检（6 个子项 a-f）；
+   §9 开头计数 29→30。
+5. **§0/§10 计数同步**：目录与调用模板「29 项」→「30 项」。
+
+**范围说明**：本次增补不改变 `OperatorRule` schema 字段；规则按算子语义与文档 dtype
+表触发，通用适用于所有格式转换/布局变换类算子，不限于特定算子系列。
 
 ---
 
