@@ -47,7 +47,7 @@ from .ssh import (
     run,
     sftp_download_file,
     sftp_list_dir,
-    sftp_upload,
+    upload_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,17 +178,40 @@ def _remote_executor_path(operator_name: str) -> str:
     return f"{_REMOTE_EXECUTOR_DIR}/{operator_name}_executor.py"
 
 
+def _server_supports_npu(server_info: dict[str, Any]) -> bool:
+    """Return whether a ``servers.json`` row declares NPU support."""
+    value = server_info.get("supports_npu")
+    if value is None:
+        value = server_info.get("support_npu")
+    if value is None:
+        value = server_info.get("npu")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
 def _build_atk_command(
     operator_name: str,
     task_type: str,
     env_init: str,
+    *,
+    supports_npu: bool = False,
 ) -> str:
-    """Compose ``atk node --backend cpu task ...`` for the remote host."""
+    """Compose the ATK command for the remote host."""
     cases_remote = _remote_cases_path(operator_name)
     executor_remote = _remote_executor_path(operator_name)
+    node_prefix = (
+        "atk node --backend pyaclnn --devices 0 node --backend cpu task "
+        if supports_npu
+        else "atk node --backend cpu task "
+    )
     return (
         f"{env_init} && "
-        f"atk node --backend cpu task "
+        f"{node_prefix}"
         f"-c {cases_remote} "
         f"-p {executor_remote} "
         f"--task {task_type} "
@@ -336,7 +359,7 @@ async def _resolve_iter_cases_for_server(
 
     # Fallback: legacy layout — single combined ``cases.json`` in iter_dir.
     legacy = iter_dir / "cases.json"
-    if legacy.is_file() and legacy != req.cases_path:
+    if legacy.is_file():
         logger.info(
             "platform_select: no per-platform file, using legacy %s",
             legacy,
@@ -591,7 +614,10 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
         expanded_cases = generated["expanded_cases"]
 
         atk_command = _build_atk_command(
-            operator_name, req.task_type, _resolve_env_init(req.env_init)
+            operator_name,
+            req.task_type,
+            _resolve_env_init(req.env_init),
+            supports_npu=_server_supports_npu(req.server_info),
         )
         remote_paths = {
             "cases_expanded.json": _remote_cases_path(operator_name),
@@ -763,32 +789,37 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         return result
 
     try:
-        # ── 4. SFTP upload cases + executors ───────────────────────────
+        # ── 4. Upload cases + executors ────────────────────────────────
         try:
-            await sftp_upload(
+            await upload_file(
                 conn,
                 str(generated["expanded_cases"]),
                 _remote_cases_path(operator_name),
             )
             # Generator may emit multiple files (multi-op); ATK only
             # consumes the operator_name-prefixed one — use the first.
-            await sftp_upload(
+            await upload_file(
                 conn,
                 str(generated["executor_files"][0]),
                 _remote_executor_path(operator_name),
             )
         except SSHEngineError as exc:
             logger.exception(
-                "execute_cases: SFTP upload failed for %s", operator_name
+                "execute_cases: upload failed for %s", operator_name
             )
             result.status = "error"
-            result.error_message = f"SFTP 上传失败: {exc}"
+            result.error_message = f"上传失败: {exc}"
             result.duration = time.monotonic() - overall_start
             _cleanup_log_handler(log_handler)
             return result
 
         # ── 5. Run atk command ─────────────────────────────────────────
-        cmd = _build_atk_command(operator_name, req.task_type, env_init)
+        cmd = _build_atk_command(
+            operator_name,
+            req.task_type,
+            env_init,
+            supports_npu=_server_supports_npu(req.server_info),
+        )
         logger.info("execute_cases: running %s", cmd)
 
         timed_out = False
