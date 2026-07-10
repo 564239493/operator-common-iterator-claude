@@ -178,6 +178,65 @@ async def sftp_upload(
 # ── Shell execution ─────────────────────────────────────────────────────────
 
 
+async def scp_upload(
+    conn: asyncssh.SSHClientConnection,
+    local_path: str | Path,
+    remote_path: str,
+) -> None:
+    """Upload ``local_path`` to ``remote_path`` via SCP."""
+    local = Path(local_path)
+    if not local.exists():
+        raise SSHEngineError(f"Local file does not exist: {local_path}")
+
+    parent = remote_path.rsplit("/", 1)[0] or "."
+    try:
+        await conn.run(f"mkdir -p '{parent}'", check=False)
+    except Exception as exc:  # pragma: no cover - mkdir rarely fails
+        logger.warning(
+            "ssh.scp_upload: mkdir -p %s failed (continuing): %s",
+            parent,
+            exc,
+        )
+
+    try:
+        await asyncssh.scp(str(local), (conn, remote_path))
+    except Exception as exc:
+        raise SSHEngineError(
+            f"SCP upload failed: {local_path} -> {remote_path}: {exc}"
+        ) from exc
+
+    logger.info(
+        "ssh.scp_upload: uploaded %s -> %s (%d bytes)",
+        local_path,
+        remote_path,
+        local.stat().st_size,
+    )
+
+
+async def upload_file(
+    conn: asyncssh.SSHClientConnection,
+    local_path: str | Path,
+    remote_path: str,
+) -> None:
+    """Upload a file with SFTP first, then SCP if SFTP is unavailable."""
+    try:
+        await sftp_upload(conn, local_path, remote_path)
+    except SSHEngineError as sftp_exc:
+        logger.warning(
+            "ssh.upload_file: SFTP failed for %s -> %s; trying SCP: %s",
+            local_path,
+            remote_path,
+            sftp_exc,
+        )
+        try:
+            await scp_upload(conn, local_path, remote_path)
+        except SSHEngineError as scp_exc:
+            raise SSHEngineError(
+                "SFTP/SCP upload failed: "
+                f"SFTP=({sftp_exc}); SCP=({scp_exc})"
+            ) from scp_exc
+
+
 async def run(
     conn: asyncssh.SSHClientConnection,
     command: str,
@@ -283,8 +342,10 @@ __all__ = [
     "connect",
     "find_latest_output_dir",
     "run",
+    "scp_upload",
     "sftp_download_file",
     "sftp_list_dir",
     "sftp_upload",
     "tcp_probe",
+    "upload_file",
 ]
