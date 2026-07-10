@@ -37,18 +37,6 @@ def main() -> int:
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
-    parser.add_argument(
-        "--src-tree",
-        dest="src_tree",
-        default=None,
-        help=(
-            "算子源码树根目录(可选, 整批共享)。指向含 ops-* 子树的根(如项目内 "
-            "operators-src)时, 每个算子由 init_run 调 locate_in_tree 按 aclnn 名"
-            "(从 doc 文件名派生)自动定位子目录并只读快照, 供 source-analyst 每轮"
-            "EXTRACT 后校验约束。定位未命中不阻断, 该算子退回纯文档驱动, 批次继续。"
-            "未提供则整批纯文档驱动。"
-        ),
-    )
     policy = parser.add_mutually_exclusive_group()
     policy.add_argument(
         "--continue-on-error",
@@ -105,16 +93,6 @@ def main() -> int:
             ))
             return 2
 
-    src_tree: Path | None = None
-    if args.src_tree:
-        src_tree = resolve_input_path(args.src_tree)
-        if not src_tree.is_dir():
-            return print_error(
-                "OPERATOR_SRC_TREE_NOT_FOUND",
-                "算子源码树根目录不存在。",
-                src_tree=str(src_tree),
-            )
-
     try:
         iterator = (
             directory.rglob(args.glob)
@@ -151,7 +129,6 @@ def main() -> int:
         "case_count": args.case_count,
         "mode": args.mode,
         "server_config": str(server_config) if server_config else "",
-        "src_tree": str(src_tree) if src_tree else "",
         "continue_on_error": args.continue_on_error,
         "state": "RUNNING",
         "current_index": None,
@@ -187,7 +164,6 @@ def main() -> int:
             "batch_summary": str(batch_dir / "batch_summary.json"),
             "total": len(documents),
             "continue_on_error": args.continue_on_error,
-            "src_tree": str(src_tree) if src_tree else "",
             "documents": [str(path) for path in documents],
         },
         ensure_ascii=False,

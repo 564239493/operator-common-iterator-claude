@@ -25,7 +25,6 @@
 | case-count | 10/平台 | 控制生成与执行规模 |
 | mode | real | 缺配置则停止提示；仅显式 `--mode mock` 使用 Mock |
 | server-config | servers.json | 真实执行机、平台和环境初始化配置 |
-| source-root | 空（可选） | 提供时启用源码校验：定位+只读复制源码到 src_snapshot，EXTRACT 后校验约束；为空则纯文档驱动 |
 
 `init_run.py` 先校验外部文档和真实执行配置。配置不完整时返回结构化提示且不创建
 run；校验通过后将外部文档复制为项目内快照并创建 run_state。主协调器必须展示调度
@@ -63,14 +62,6 @@ flowchart TD
 执行者：constraint-extractor。  
 完成条件：constraints.json 通过 Pydantic/结构校验。  
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。
-
-**源码校验（可选子步骤，每轮一次）**：仅当 `run_state.operator_src_snapshot` 非空时，
-在 EXTRACT 完成、GENERATE 之前委派 `source-analyst`：调
-`scripts/extract_source_constraints.py` 抽 `source_raw.json`，再判读产
-`source_evidence.json`（cross_check + hard_constraints + doc_error）与
-`constraints_patch.json`；主协调器调 `scripts/apply_constraints_patch.py` 单次应用并
-重校验，失败回滚不重试，残留 `cross_check.overbroad` 交 GATE 阻断。首轮与 re-EXTRACT
-后都跑；`operator_src_snapshot` 为空时跳过，状态机主线不变。
 
 ### GENERATE
 
