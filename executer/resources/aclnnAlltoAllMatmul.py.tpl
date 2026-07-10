@@ -1,11 +1,11 @@
 import ctypes
 import torch
+import torch.distributed as dist
 import atk.tasks.backends.lib_interface.acl_wrapper as acl_wrapper
 import torch.nn.functional as F
 import re
-import math
 from atk.common.log import Logger
-from atk.tasks.backends.lib_interface.acl_wrapper import Int64, Uint64, AclTensorStruct, TORCH_TO_ACLTYPE, nnopbase, AclFormat, aclnn, AclnnStatus, TensorPtr ,AclTensorlistStruct, pointer, AclIntArray
+from atk.tasks.backends.lib_interface.acl_wrapper import Int64, Uint64, AclTensorStruct, TORCH_TO_ACLTYPE, nnopbase, AclFormat, aclnn, AclnnStatus, TensorPtr ,AclTensorlistStruct, pointer, AclIntArray, AclTensor, AclTensorList
 from atk.configs.dataset_config import InputDataset
 from atk.tasks.api_execute import register
 from atk.tasks.api_execute.base_api import BaseApi
@@ -15,31 +15,117 @@ from atk.tasks.backends.lib_interface.acl_wrapper import *
 logging = Logger().get_logger()
 
 @register("function")
-class Function(BaseApi):
+class AllToAllMatmul(BaseApi):
+    """Auto-generated CPU reference class for aclnnBatchMatMulWeightNz."""
+
+    def __init__(self, task_result):
+        super(AllToAllMatmul, self).__init__(task_result)
+        self.dist_task_info = task_result.dist_task_info
+        self.rank = self.dist_task_info.rank
+        self.world_size = self.dist_task_info.world_size
+
+    def manual_all_to_all(self, x_splits_from_ranks, x_splits_to_ranks):
+        for target_rank in range(self.world_size):
+            if target_rank == self.rank:
+                # 发给自己
+                x_splits_from_ranks[self.rank].copy_(x_splits_to_ranks[target_rank])
+                # 从别的进程获取我要的张量
+                for src_rank in range(self.world_size):
+                    if src_rank != self.rank:
+                        dist.recv(
+                            tensor=x_splits_from_ranks[src_rank],  # 接收数据的空张量（对应第src_rank个rank）
+                            src=src_rank,  # 源rank
+                            tag=src_rank * 1000 + self.rank  # 匹配发送方的标签（源rank*1000+当前rank）
+                        )
+            else:
+                # 发给其他rank
+                dist.send(
+                    tensor=x_splits_to_ranks[target_rank],  # 要发送的张量（给第target_rank个rank）
+                    dst=target_rank,  # 目标rank
+                    tag=self.rank * 1000 + target_rank  # 通信标签（避免数据混淆）
+                )
+
 
     def __call__(self, input_data: InputDataset, with_output: bool = False):
-        output = None
-
-        found = self.get_config_by_name(self.task_result.case_config.inputs, "tensorShape")
-        dataType = self.get_config_by_name(self.task_result.case_config.inputs, "dataType").range_values
-
-        if isinstance(found[-2].range_values, list):
-            n = found[-2].range_values[0]
+        world_size = self.dist_task_info.world_size
+        x = input_data.kwargs['x1']
+        if input_data.kwargs['transposeX2']:
+            input_data.kwargs['x2'] = input_data.kwargs['x2'].T.clone().contiguous()
+        weight = input_data.kwargs['x2']
+        M = x.shape[0]
+        m = int(M / world_size)
+        k = x.shape[1]
+        biasOptional = self.get_config_by_name(self.task_result.case_config.inputs, "biasOptional")
+        if biasOptional is not None:
+            bias = input_data.kwargs['biasOptional']
+            hasBias = True
         else:
-            n = found[-2].range_values
+            hasBias = False
+        hasAlltoall = True
 
-        if isinstance(found[-1].range_values, list):
-            k = found[-1].range_values[0]
+        if self.name == "cpu":
+            '''
+            ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓ CPU  真值 ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
+            '''
+            logging.info(f"==========================cpu============================")
+            # ========================= alltoall =========================
+            x = x.cpu().to(torch.float32)
+            weight = weight.cpu().to(torch.float32)
+
+            x_splits_from_ranks = [torch.empty((m, k), dtype=x.dtype, device=x.device)
+                                   for _ in range(world_size)]
+            self.manual_all_to_all(x_splits_from_ranks, [x[m * i: m * (i + 1)] for i in range(world_size)])
+            A = torch.cat(x_splits_from_ranks, dim=1)
+
+            # ========================= matmul =========================
+            output = torch.matmul(A, weight)
+            if hasBias:
+                bias = bias.cpu().to(torch.float32)
+                output = output + bias.to(A.dtype)
+            if hasAlltoall:
+                return output, A
+            else:
+                return output
+            '''
+            ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑ CPU  真值 ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+            '''
+
+        if self.dist_task_info.is_bm:
+            '''
+            ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓ NPU 小算子级联标杆 ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
+            '''
+
+            logging.info(f"==========================is_bm============================")
+            # ========================= alltoall =========================
+            split_sizes = [m * k] * world_size
+            x_splits_from_ranks = torch.zeros(sum(split_sizes), dtype=x.dtype, device=x.device)
+            dist.all_to_all_single(
+                x_splits_from_ranks,
+                x.flatten()  # 原始[M,k]展平为一维
+            )
+            A = x_splits_from_ranks.reshape(world_size, m, k).permute(1, 0, 2).reshape(m, k * world_size).contiguous()
+
+            # ========================= matmul =========================
+            output = torch.matmul(A, weight)
+            if hasBias:
+                output = output + bias.to(A.dtype)
+            if hasAlltoall:
+                return output, A
+            else:
+                return output
+            '''
+            ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑ NPU 小算子级联标杆 ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+            '''
         else:
-            k = found[-1].range_values
+            logging.info(f"==========================pass============================")
+            pass
 
-        if dataType not in ["fp16", "bf16", "int8"]:
-            output = math.ceil(n / 16) * 16 * math.ceil(k / 16) * 16
-        else:
-            output = math.ceil(n / 16) * 16 * math.ceil(k / 32) * 32
-        output = torch.tensor(output, dtype=torch.long)
-
-        return output
+    def init_by_input_data(self, input_data: InputDataset):
+        # 通信域配置
+        if self.device == 'pyaclnn' and dist.is_available():
+            from torch.distributed.distributed_c10d import _get_default_group
+            default_pg = _get_default_group()
+            input_data.kwargs['group'] = default_pg
 
     def get_config_by_name(self, configs, target_name: str):
         """
@@ -65,34 +151,9 @@ class Function(BaseApi):
 
 @register("aclnn_function")
 class AclnnNpuFormatCast(AclnnBaseApi):
-
-    def __call__(self):
-
-        weightShape = self.backend.input_args[0]
-        weightTensorSize = self.backend.input_args[1]
-
-        dataType = self.get_config_by_name(self.task_result.case_config.inputs, "dataType").range_values
-
-        acl_wrapper.aclnn.bind_function("aclnnCalculateMatmulWeightSizeV2", [pointer(AclIntArray), AclDataType, pointer(Uint64)],
-                                        AclnnStatus
-
-        if dataType == "int8":  # ["FLOAT16", "BFLOAT16", "INT8"]
-            acl_wrapper.aclnn.aclnnCalculateMatmulWeightSizeV2(weightShape, AclDataType.ACL_INT8, ctypes.byref(weightTensorSize))
-        elif dataType == "bf16":
-            acl_wrapper.aclnn.aclnnCalculateMatmulWeightSizeV2(weightShape, AclDataType.ACL_BF16, ctypes.byref(weightTensorSize))
-        elif dataType == "fp16":
-            acl_wrapper.aclnn.aclnnCalculateMatmulWeightSizeV2(weightShape, AclDataType.ACL_FLOAT16, ctypes.byref(weightTensorSize))# 异常用例分支
-        else:
-            acl_wrapper.aclnn.aclnnCalculateMatmulWeightSizeV2(weightShape, AclDataType.ACL_INT16, ctypes.byref(weightTensorSize))
-
-
-        found = self.get_config_by_name(self.task_result.case_config.inputs, "weightTensorSize")
-
-        self.output = torch.tensor(found.range_values, dtype=torch.long)
-
-    def after_call(self, output_packages):
-
-        return self.output
+    def __init__(self, task_result, backend):
+        super(AclnnNpuFormatCast, self).__init__(task_result, backend)
+        self.dist_task_info = task_result.dist_task_info
 
     def init_by_input_data(self, input_data: InputDataset):
         """
@@ -113,19 +174,25 @@ class AclnnNpuFormatCast(AclnnBaseApi):
                 shape: List[int]      # 张量形状
                 dtype: AclDataType    # 数据类型
         """
+        rank_id = self.dist_task_info.rank
+        self.group = input_data.kwargs['group']
+        input_data.kwargs['group'] = self.group._get_backend(torch.device("npu")).get_hccl_comm_name(rank_id)
         input_tmp={}
         input_args = []  # 算子的入参列表
         output_packages = []  # 算子的出参数据包列表
 
         # 获取到算子参数的入参
-        param_list = self.get_param_names_excluding_last_two(self.get_cpp_func_signature_type_one_stage())
+        param_list = self.get_param_names_excluding_last_two(self.get_cpp_func_signature_type())
         # 获取到算子参数的类型
-        param_type = self.parse_operator_params(self.get_cpp_func_signature_type_one_stage())
+        param_type = self.parse_operator_params(self.get_cpp_func_signature_type())
 
-        self.handle_special_param(self.get_cpp_func_signature_type_one_stage(), input_data)
+        if self.is_comm_op(self.get_cpp_func_signature_type()):
+            self.handle_comm_param(input_data)
+
+        self.handle_special_param(self.get_cpp_func_signature_type(), input_data)
 
         self.handle_attr_param(input_tmp, param_list)
-        # input_data.kwargs['mat2'] = nnopbase.create_acl_tensor(input_data.kwargs['mat2'], AclFormat.ACL_FORMAT_FRACTAL_NZ)
+
         # === 处理输入参数 ===
         # 将输入数据转换为aclnn所需的c++格式
         for i, arg in enumerate(input_data.args):
@@ -134,7 +201,8 @@ class AclnnNpuFormatCast(AclnnBaseApi):
         for name, kwarg in input_data.kwargs.items():
             if name in input_tmp:
                 continue
-            data = self.backend.convert_input_data(kwarg, name=name)
+            dtype = self.get_dtype_of_json(name)
+            data = self.backend.convert_input_data(kwarg, name=name, dtype=dtype)
             if name in param_list:
                 input_tmp[name] = data
         # === 处理标杆输出 ===
@@ -165,6 +233,8 @@ class AclnnNpuFormatCast(AclnnBaseApi):
                     input_args.append(null_tensorlist_ptr)
                 else:
                     input_args.append(ctypes.c_void_p(None))
+
+
         return input_args, output_packages
 
     def after_call(self, output_packages):
@@ -192,15 +262,19 @@ class AclnnNpuFormatCast(AclnnBaseApi):
             return self.get_acl_format(format)
         return AclFormat.ACL_FORMAT_ND
 
-    def get_cpp_func_signature_type_one_stage(self):
-        return "aclnnStatus aclnnCalculateMatmulWeightSize(const aclIntArray *tensorShape, uint64_t *weightTensorSize)"
+    def get_dtype_of_json(self, name=None):
+        found = None
+        if name is not None:
+            found = self.get_config_by_name(self.task_result.case_config.inputs, name)
+        if not isinstance(found, list):
+            return found.dtype
+        return found[0].dtype
+
+    def get_cpp_func_signature_type(self):
+        return "aclnnStatus aclnnAlltoAllMatmulGetWorkspaceSize( const aclTensor* x1, const aclTensor* x2, const aclTensor* biasOptional, const aclIntArray* alltoAllAxesOptional, const char* group, bool transposeX1, bool transposeX2, const aclTensor* output, const aclTensor* alltoAllOutOptional, uint64_t* workspaceSize, aclOpExecutor** executor)"
 
     def get_param_names_excluding_last_two(self, func_str):
-        """
-        返回参数名称列表。
-        如果函数签名包含 "GetWorkspaceSize"（二段式算子），则排除最后两个参数（workspaceSize 和 executor）；
-        否则返回全部参数名。
-        """
+        """只返回参数名称列表，排除最后两个"""
         # 提取参数列表
         match = re.search(r'\(([^)]*)\)', func_str)
         if not match:
@@ -212,24 +286,20 @@ class AclnnNpuFormatCast(AclnnBaseApi):
         param_names = []
         for param in params_str.split(','):
             param = param.strip()
-            # 提取最后的标识符作为参数名（忽略 const、* 等修饰）
+            # 提取最后的标识符作为参数名
             name_match = re.search(r'\*?\s*(\w+)\s*$', param)
             if name_match:
                 param_names.append(name_match.group(1))
-
-        # 判断是否为二段式调用（包含 GetWorkspaceSize）
-        if "GetWorkspaceSize" in func_str:
-            # 排除最后两个（workspaceSize 和 executor）
-            return param_names[:-2] if len(param_names) >= 2 else param_names
-        else:
-            # 非二段式，返回全部参数名
-            return param_names
+        # 排除最后两个
+        return param_names[:-2] if len(param_names) >= 2 else param_names
 
 
     def handle_attr_param(self, input_tmp, param_list):
         for config in self.task_result.case_config.inputs:
             if not isinstance(config, list):
                 if config.name not in param_list:
+                    continue
+                if config.name == "group":
                     continue
                 if config.type == "attr":
                     range_val = config.range_values[0] if isinstance(config.range_values, list) else config.range_values
@@ -245,6 +315,12 @@ class AclnnNpuFormatCast(AclnnBaseApi):
                 for config_item in config:
                     if config_item.type == "attrs" or config_item.type == "attr_tuple":
                         range_val = config_item.range_values[0] if isinstance(config_item.range_values, list) else config_item.range_values
+                        if range_val is None:
+                            AclIntArrayPtr = ctypes.POINTER(AclIntArray)
+                            null_void_ptr = ctypes.c_void_p(None)
+                            null_array_ptr = ctypes.cast(null_void_ptr, AclIntArrayPtr)
+                            input_tmp[data_name] = null_array_ptr
+                            return
                         data.append(self.get_ctype(config_item.dtype)(range_val))
                         input_tmp[data_name] = nnopbase.create_x_list(data)
 
@@ -267,6 +343,18 @@ class AclnnNpuFormatCast(AclnnBaseApi):
                 input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3],  # c*d
                 input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4]  # b*e
             )
+
+    def handle_comm_param(self, input_data):
+        # 处理group
+        rank_id = self.dist_task_info.rank
+        self.group = input_data.kwargs['group']
+        input_data.kwargs['group'] = self.group._get_backend(torch.device("npu")).get_hccl_comm_name(rank_id)
+
+    def is_comm_op(self, operator_name):
+        op_name = ["AlltoAll"]
+        if operator_name in op_name:
+            return True
+        return False
 
     def parse_operator_params(self, func_signature: str):
         """
@@ -359,17 +447,14 @@ class AclnnNpuFormatCast(AclnnBaseApi):
             'HWCN': AclFormat.ACL_FORMAT_HWCN,
             'NHWC': AclFormat.ACL_FORMAT_NHWC,
             'NC1HWC0': AclFormat.ACL_FORMAT_NC1HWC0,
-            'NDC1HWC0': AclFormat.ACL_FORMAT_NDC1HWC0,
             'NCL': AclFormat.ACL_FORMAT_NCL,
             'NCDHW': AclFormat.ACL_FORMAT_NCDHW,
             'NDHWC': AclFormat.ACL_FORMAT_NDHWC,
-            'FRACTAL_Z_3D': AclFormat.ACL_FRACTAL_Z_3D,
         }
 
         if format_str in FORMAT_MAPPING:
             return FORMAT_MAPPING[format_str]
         else:
-            logging.error(f"not found format: {format_str}")
             return AclFormat.ACL_FORMAT_ND
 
     def get_ctype(self, type_str):
@@ -378,6 +463,7 @@ class AclnnNpuFormatCast(AclnnBaseApi):
             "float32": ctypes.c_float,
             "double": ctypes.c_double,
             "int": ctypes.c_int64,
+            "int4": ctypes.c_int8,
             "int8_t": ctypes.c_int8,
             "int8": ctypes.c_int8,
             "int32_t": ctypes.c_int32,
