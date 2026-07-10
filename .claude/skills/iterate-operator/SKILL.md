@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -15,7 +15,9 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
    max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
 2. 调用 `python scripts/init_run.py` 创建 run。`--batch-dir` 是目录批次内部参数，
    不传给 `init_run.py`。该命令会把外部文档只读复制到 run 的 `inputs/` 目录，
-   后续 Agent 必须使用返回的 `operator_doc_snapshot`。
+   后续 Agent 必须使用返回的 `operator_doc_snapshot`。若传入
+   `--supplement-constraints`，它会被只读复制到 `inputs/supplement_constraints.md`，
+   写入 `run_state.supplement_constraints`（为空则在第 5 步跳过约束补充）。
    如果提供了 `--batch-dir`，创建成功后必须立刻调用
    `python scripts/batch_state.py --batch-dir <batch-dir> attach-run --run-dir <run-dir>`，
    再进入 EXTRACT；这样会话中断时目录批次可以定位并恢复该 run。
@@ -25,6 +27,12 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
 5. 每轮按顺序委派：
    - `constraint-extractor`（产 `constraints.json`）
+   - （条件）约束补充：仅当 `run_state.supplement_constraints` 非空时，委派
+     `constraint-supplementer`（读 `inputs/supplement_constraints.md` 与
+     `constraints.json`，产 `constraints_patch.json`），随后运行
+     `python scripts/apply_supplement_constraints.py <iter>/constraints.json <iter>/constraints_patch.json`
+     （内部重跑 normalize + validate，失败则阻断，不得进 `case-generator`）；
+     为空则跳过本步，直接进 `case-generator`。每轮 EXTRACT 后都重新触发补充。
    - `case-generator`
    - `case-executor`（real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
      三子步骤；推导须清除 `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run）

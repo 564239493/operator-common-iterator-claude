@@ -33,6 +33,15 @@ def main() -> int:
             "prompts/operator_constraints_extract_vN.md 中数值版本最大的文件"
         ),
     )
+    parser.add_argument(
+        "--supplement-constraints",
+        dest="supplement_constraints",
+        default=None,
+        help=(
+            "整批共享的补充约束 Markdown 路径（可选）；省略则各算子跳过补充阶段。"
+            "内层 /iterate-operator 会将其透传给 init_run.py 复制为各 run 快照。"
+        ),
+    )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
@@ -75,6 +84,20 @@ def main() -> int:
                 "目录提供 operator_constraints_extract_vN.md。"
             ),
             prompt=str(prompt) if prompt else "",
+        )
+    supplement_path = (
+        resolve_input_path(args.supplement_constraints)
+        if args.supplement_constraints
+        else None
+    )
+    if supplement_path is not None and not supplement_path.is_file():
+        return print_error(
+            "SUPPLEMENT_NOT_FOUND",
+            (
+                "补充约束文件不存在。请提供绝对路径、项目相对路径或包含 .. 的"
+                "相对路径，或省略 --supplement-constraints 以跳过约束补充阶段。"
+            ),
+            supplement_constraints=str(supplement_path),
         )
     if args.max_iterations < 1 or args.case_count < 1:
         return print_error(
@@ -129,6 +152,7 @@ def main() -> int:
         "case_count": args.case_count,
         "mode": args.mode,
         "server_config": str(server_config) if server_config else "",
+        "supplement_constraints": str(supplement_path) if supplement_path else "",
         "continue_on_error": args.continue_on_error,
         "state": "RUNNING",
         "current_index": None,

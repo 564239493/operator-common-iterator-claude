@@ -25,6 +25,7 @@
 | case-count | 10/平台 | 控制生成与执行规模 |
 | mode | real | 缺配置则停止提示；仅显式 `--mode mock` 使用 Mock |
 | server-config | servers.json | 真实执行机、平台和环境初始化配置 |
+| supplement-constraints | 可选；支持项目外路径 | EXTRACT 后据此做关系补充，为空则跳过补充阶段 |
 
 `init_run.py` 先校验外部文档和真实执行配置。配置不完整时返回结构化提示且不创建
 run；校验通过后将外部文档复制为项目内快照并创建 run_state。主协调器必须展示调度
@@ -62,6 +63,18 @@ flowchart TD
 执行者：constraint-extractor。  
 完成条件：constraints.json 通过 Pydantic/结构校验。  
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。
+
+### SUPPLEMENT（条件触发，非独立状态）
+
+输入：`inputs/supplement_constraints.md`（`--supplement-constraints` 快照）+ 已提取
+`constraints.json`。仅当 `run_state.supplement_constraints` 非空时执行，否则跳过。  
+执行者：constraint-supplementer（产出 `constraints_patch.json`）。  
+合并：`scripts/apply_supplement_constraints.py` 确定性合并 patch 进 `constraints.json`
+（标 `origin="supplement"`、剥离 patch 层字段），重跑 normalize + validate。  
+完成条件：合并后 `constraints.json` 通过 normalize + validate。  
+失败策略：合并器或 revalidate 失败则阻断，不进 GENERATE；patch schema/精确匹配
+失败由 constraint-supplementer 自修正最多三次。不引入新状态机状态，与原 source-analyst
+同位置（EXTRACT 后、GENERATE 前、空即跳过）。
 
 ### GENERATE
 

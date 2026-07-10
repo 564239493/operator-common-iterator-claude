@@ -1,6 +1,6 @@
 ---
 description: 串行扫描并迭代目录中的全部算子文档，支持失败后继续、批次汇总和中断恢复。
-argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--continue-on-error|--fail-fast] [--batch-dir path]
+argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--continue-on-error|--fail-fast] [--batch-dir path]
 ---
 
 # 目录级算子迭代
@@ -33,7 +33,8 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt pat
    ```
 
    - `action=start`：使用 Skill 工具调用 `iterate-operator`，参数为返回的
-     `operator_doc_source` 与 `--batch-dir <batch-dir>`。
+     `operator_doc_source` 与 `--batch-dir <batch-dir>`；若返回的
+     `supplement_constraints` 非空，一并透传 `--supplement-constraints <path>`。
    - `action=resume`：若已有 `run_dir`，读取其 `run_state.json`，按
      `/iterate-operator` 的恢复协议从最后完成状态继续；若尚无 `run_dir`，按 start 处理。
    - `action=complete`：停止循环并展示 `batch_summary.json`。

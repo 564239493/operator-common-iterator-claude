@@ -50,6 +50,15 @@ def main() -> int:
             "prompts/operator_constraints_extract_vN.md 中数值版本最大的文件"
         ),
     )
+    parser.add_argument(
+        "--supplement-constraints",
+        dest="supplement_constraints",
+        default=None,
+        help=(
+            "补充约束 Markdown 路径（项目内或外部）；省略则跳过约束补充阶段。"
+            "EXTRACT 产出 constraints.json 后据此做关系补充（add/replace）。"
+        ),
+    )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
@@ -97,6 +106,26 @@ def main() -> int:
             ensure_ascii=False,
         ))
         return 2
+    supplement_path = (
+        resolve_input_path(args.supplement_constraints)
+        if args.supplement_constraints
+        else None
+    )
+    if supplement_path is not None and not supplement_path.is_file():
+        print(json.dumps(
+            {
+                "ok": False,
+                "requires_user_action": True,
+                "code": "SUPPLEMENT_NOT_FOUND",
+                "message": (
+                    "补充约束文件不存在。请提供绝对路径、项目相对路径或包含 .. 的"
+                    "相对路径，或省略 --supplement-constraints 以跳过约束补充阶段。"
+                ),
+                "supplement_constraints": str(supplement_path),
+            },
+            ensure_ascii=False,
+        ))
+        return 2
     if args.max_iterations < 1 or args.case_count < 1:
         raise SystemExit("max-iterations and case-count must be positive")
 
@@ -121,7 +150,12 @@ def main() -> int:
     # inside this project so they never edit the user's original document.
     doc_snapshot = input_dir / doc.name
     prompt_snapshot = input_dir / "prompt_v1.md"
+    supplement_snapshot = input_dir / "supplement_constraints.md"
     shutil.copy2(doc, doc_snapshot)
+    if supplement_path is not None:
+        # --supplement-constraints：外部补充约束文件只读复制到 inputs/，
+        # EXTRACT 后据此对 constraints.json 做关系补充（add/replace）。
+        shutil.copy2(supplement_path, supplement_snapshot)
     if explicit_prompt:
         # --prompt 逃生口：原样复制指定文件，不装配模块（用于固定版本/外部提示词）
         shutil.copy2(prompt, prompt_snapshot)
@@ -138,6 +172,8 @@ def main() -> int:
         "current_prompt_source": str(prompt),
         "current_prompt": str(prompt_snapshot),
         "current_prompt_modules": loaded_modules,
+        "supplement_constraints_source": str(supplement_path) if supplement_path else "",
+        "supplement_constraints": str(supplement_snapshot) if supplement_path else "",
         "mode": args.mode,
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
@@ -160,6 +196,8 @@ def main() -> int:
             "operator_doc_snapshot": str(doc_snapshot),
             "prompt_snapshot": str(prompt_snapshot),
             "prompt_modules": loaded_modules,
+            "supplement_constraints_source": str(supplement_path) if supplement_path else "",
+            "supplement_constraints_snapshot": str(supplement_snapshot) if supplement_path else "",
             "mode": args.mode,
             "server_config": str(server_config) if server_config else "",
         },
