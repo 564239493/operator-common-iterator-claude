@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--toolchain atk|ttk] [--server-config path] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -18,6 +18,10 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--supplem
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。若传入
    `--supplement-constraints`，它会被只读复制到 `inputs/supplement_constraints.md`，
    写入 `run_state.supplement_constraints`（为空则在第 5 步跳过约束补充）。
+   `--toolchain`（默认 `atk`）透传给 `init_run.py`，写入 `run_state.toolchain`，
+   作用于 EXTRACT 与 GENERATE：`atk` 走 aclnn C 提取 + Z3 生成；`ttk` 走 torch_npu
+   Python 原型提取 + `constraints_to_ttk_csv.py` 生成（见 `current_prompt` ttk 章节与
+   `generate-cases` skill ttk 路线）。**ttk 闭环止于 GENERATE**，不进 EXECUTE/GATE/DIAGNOSE。
    如果提供了 `--batch-dir`，创建成功后必须立刻调用
    `python scripts/batch_state.py --batch-dir <batch-dir> attach-run --run-dir <run-dir>`，
    再进入 EXTRACT；这样会话中断时目录批次可以定位并恢复该 run。
@@ -26,19 +30,27 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--supplem
    只有用户显式传入 `--mode mock` 才能执行 Mock。
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
 5. 每轮按顺序委派：
-   - `constraint-extractor`（产 `constraints.json`）
+   - `constraint-extractor`（产 `constraints.json`）：委派前读 `run_state.toolchain`
+     并在调度消息中告知；`atk` 走现有 aclnn C 提取，`ttk` 走 torch_npu Python 原型
+     提取（见 `current_prompt` 中的 ttk 章节）。
    - （条件）约束补充：仅当 `run_state.supplement_constraints` 非空时，委派
      `constraint-supplementer`（读 `inputs/supplement_constraints.md` 与
      `constraints.json`，产 `constraints_patch.json`），随后运行
      `python scripts/apply_supplement_constraints.py <iter>/constraints.json <iter>/constraints_patch.json`
      （内部重跑 normalize + validate，失败则阻断，不得进 `case-generator`）；
      为空则跳过本步，直接进 `case-generator`。每轮 EXTRACT 后都重新触发补充。
-   - `case-generator`
-   - `case-executor`（real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
+   - `case-generator`：委派前读 `run_state.toolchain` 并在调度消息中告知。`atk` 调
+     `scripts/generate_cases.py` 产每平台 `cases_<platform>.json`；`ttk` 调
+     `scripts/constraints_to_ttk_csv.py` 产每平台 `cases_<platform>.csv`。
+   - **ttk 终止**：`run_state.toolchain == "ttk"` 时，case-generator 成功产 CSV 后即本轮终结，
+     更新 run_state 为 SUCCESS（**跳过** `case-executor` / `quality-reviewer`，不进
+     DIAGNOSE/OPTIMIZE，不消耗 iteration 配额的下游阶段）；case-generator 失败置
+     STOP_GENERATOR_BUG。CSV 交付外部 TTK harness，项目内不再执行。
+   - `case-executor`（**仅 atk**；real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
      三子步骤；推导须清除 `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run）
-   - `quality-reviewer`
-6. 若门禁确认全部通过，更新 run_state 为 SUCCESS 并结束。
-7. 若有用例失败，委派 `failure-analyst`：
+   - `quality-reviewer`（**仅 atk**）
+6. 若门禁确认全部通过（atk），更新 run_state 为 SUCCESS 并结束。
+7. 若有用例失败（**仅 atk；ttk 不走此步**），委派 `failure-analyst`：
    - constraint_extraction：委派 `prompt-optimizer`，将新 prompt 送入下一轮。
    - generator_bug：状态设为 STOP_GENERATOR_BUG，停止。
    - executor_bug：状态设为 STOP_EXECUTOR_BUG，停止。

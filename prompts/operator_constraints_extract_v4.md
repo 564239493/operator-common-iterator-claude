@@ -264,6 +264,38 @@ class OperatorRule(BaseModel):
   - 完整参数列表（一段式无 `workspaceSize` / `executor` / `stream`）
 - 单行字符串，不做换行 / 注释 / 类型省略。
 
+### ttk / torch_npu Python 原型提取规则（toolchain=ttk）
+
+> 仅当 `toolchain=ttk` 时适用（由 `extract-constraints` SKILL 步骤 2 分支进入）。`atk` 走 §4.4 既有的 aclnn C 两段/一段规则，本节不生效。ttk 产出的 `constraints.json` 与 atk **同 schema**（11 字段 `extra:forbid`），本节只规定 Python 原型相关的 delta；通用规则（空值/枚举/range/维度/跨参关系等）一律沿用既有章节。
+
+**A. function_signature 与 operator_name**
+- 取文档“函数原型”段整行 Python 签名**逐字**（如 `torch_npu.npu_fused_infer_attention_score(query, key, value, *, pse_shift=None, ...) -> (Tensor, Tensor)`），不含 `GetWorkspaceSize`/`workspaceSize`/`executor`/`stream`/`aclnnStatus`。
+- `operator_name` 取**完整点分名**（与文档标题一致，如 `torch_npu.npu_fused_infer_attention_score`）。
+- **不得**写 `is_single_function_mode` / `toolchain` 字段进 JSON。
+
+**B. 参数分类**（按 Python 语法，非 C regex）
+- `*` **之前** = 位置参数（如 query/key/value）：`inputs`，`type=aclTensor`，`required=true`。
+- `*` **之后** = keyword-only 参数：均 `required=false`，按注解映射 type：
+  - `Tensor` → `aclTensor`（如 pse_shift/atten_mask/block_table/key_shared_prefix/value_shared_prefix/query_rope/key_rope 等）；
+  - `List[int]` → `aclIntArray`（如 actual_seq_lengths/actual_seq_lengths_kv/actual_shared_prefix_len）；
+  - `int` → `aclInt`（如 num_heads/pre_tokens/next_tokens/sparse_mode/inner_precise/block_size/antiquant_mode/key_antiquant_mode/value_antiquant_mode/num_key_value_heads）；
+  - `float` → `aclFloat`（如 scale）；
+  - `bool` → `aclBool`（如 softmax_lse_flag）；
+  - `str`（带枚举）→ attr + `allowed_range_value` enum（`input_layout` 候选 [BSH,BSND,BNSD,BNSD_BSND,BSH_NBSD,BSND_NBSD,BNSD_NBSD,TND,TND_NTD,NTD_TND]）。
+- 默认值写进对应 input 的 `default`；`=None` → 空值候选 `null`（沿用既有空值规则）。
+
+**C. outputs**（从返回标注，非指针输出参数）
+- `-> (Tensor, Tensor)` → `outputs=["attention_out","softmax_lse"]`（名取自文档“返回值说明”段）；attention_out dtype 候选 [FLOAT16,BFLOAT16,INT8]、format=ND；softmax_lse dtype=FLOAT32、format=ND。
+- 返回 tuple 有 N 个 `Tensor` → `outputs` 列 N 个名，按文档“返回值说明”段顺序对齐。
+
+**D. dtype 规范化**（文档小写 → 规范大写）
+- float16→FLOAT16，bfloat16→BFLOAT16，int8→INT8，int64→INT64，float32→FLOAT32，bool→BOOL，uint8→UINT8，uint64→UINT64；`int4`(int32) 记 `INT32` 并在 `src_text` 注明“int4 打包成 int32”。
+
+**E. constraints_in_parameters**（照常从文档“约束说明”段提取，按 platform 分桶）
+- schema 与 atk 同——约束面是算子语义（张量 shape/dtype/跨参关系），与调用语言无关。FIA 约束面极大（Q_S=1 vs >1、MLA rope、page attention、quant/antiquant、prefix、padding、NZ、TND），首轮提取不全由后续 OPTIMIZE/SUPPLEMENT 轮补，不阻断。
+
+**F. 其余字段照既有规则**（`function_explanation`/`return_info`/`dtype_support_description`/`format_support_description`/`product_support`/`deterministic_computing`）从文档对应段提取；本节只规定 Python 原型 delta（A–E），不重述通用规则。
+
 ### 4.5 `deterministic_computing`（确定性计算）
 
 - **key**：`product_support` 中已确认支持的标准平台名。

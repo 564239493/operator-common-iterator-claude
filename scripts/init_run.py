@@ -63,6 +63,16 @@ def main() -> int:
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
+    parser.add_argument(
+        "--toolchain",
+        choices=("atk", "ttk"),
+        default="atk",
+        help=(
+            "约束提取工具链: atk=aclnn C 算子提取(默认, GetWorkspaceSize 两段/一段); "
+            "ttk=torch_npu Python 原型提取(无 GetWorkspaceSize)。仅作用于 EXTRACT, "
+            "GENERATE/EXECUTE/GATE 维持 ATK。"
+        ),
+    )
     args = parser.parse_args()
 
     if args.doc is None:
@@ -175,6 +185,7 @@ def main() -> int:
         "supplement_constraints_source": str(supplement_path) if supplement_path else "",
         "supplement_constraints": str(supplement_snapshot) if supplement_path else "",
         "mode": args.mode,
+        "toolchain": args.toolchain,
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
         "case_count": args.case_count,
@@ -199,6 +210,7 @@ def main() -> int:
             "supplement_constraints_source": str(supplement_path) if supplement_path else "",
             "supplement_constraints_snapshot": str(supplement_snapshot) if supplement_path else "",
             "mode": args.mode,
+            "toolchain": args.toolchain,
             "server_config": str(server_config) if server_config else "",
         },
         ensure_ascii=False,

@@ -14,9 +14,11 @@ runs/<operator>-<timestamp>/
     constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份
     constraints_patch.json             # 可选：约束补充阶段产出的 add/replace patch
     generation_summary.json
-    cases.json
-    execution_result.json
-    quality_gate.json
+    cases.json                          # atk：generate_cases.py 产出（EXECUTE 前紧凑表示）
+    cases_<platform>.json               # atk：每平台一份
+    cases_<platform>.csv                # ttk：constraints_to_ttk_csv.py 每平台一份（CSV 用例）
+    execution_result.json               # 仅 atk；ttk 止于 GENERATE 不产
+    quality_gate.json                  # 仅 atk
     analysis.json
     prompt_v2.md
     prompt_changes_v2.md
@@ -26,8 +28,16 @@ runs/<operator>-<timestamp>/
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
-`server_config`、`max_iterations`、`case_count`、`current_iteration`、`state`、`history` 和时间戳。
+`toolchain`、`server_config`、`max_iterations`、`case_count`、`current_iteration`、`state`、`history` 和时间戳。
 state 只能取 WORKFLOW.md 定义的状态。
+
+`toolchain` 取 `atk`（默认，aclnn C 算子提取，GetWorkspaceSize 两段/一段）或 `ttk`（torch_npu
+Python 原型提取，无 GetWorkspaceSize）。作用于 EXTRACT 与 GENERATE：两路线 `constraints.json`
+同 schema；GENERATE 阶段 `atk` 调 `scripts/generate_cases.py` 产 `cases_<platform>.json`，
+`ttk` 调 `scripts/constraints_to_ttk_csv.py` 产每平台 `cases_<platform>.csv` + `generation_summary.json`
+（`case_format=csv`、`toolchain=ttk`，无 Z3，确定性枚举 + eval）。**ttk 闭环止于 GENERATE**：
+CSV 产出成功→SUCCESS、失败→STOP_GENERATOR_BUG，跳过 EXECUTE/GATE/DIAGNOSE；CSV 交付外部
+TTK harness，项目内不再执行。`toolchain` 只进 `run_state.json`，不进 `constraints.json`。
 
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
 目录内的快照，后续 Agent 只使用快照。
