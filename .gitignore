@@ -15,4 +15,5 @@ runs/
 logs/
 execution_results/
 tests/
+dist/
 

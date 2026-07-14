@@ -1,0 +1,99 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "disableBypassPermissionsMode": "disable",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash",
+      "PowerShell",
+      "Edit(/**)",
+      "Write(/**)",
+      "NotebookEdit(/**)",
+      "Agent",
+      "Skill",
+      "WebFetch",
+      "WebSearch",
+      "mcp__opci__init_run",
+      "mcp__opci__update_run_state",
+      "mcp__opci__find_latest_operator_prompt",
+      "mcp__opci__validate_server_config",
+      "mcp__opci__read_operator_prompt",
+      "mcp__opci__write_operator_prompt",
+      "mcp__opci__init_batch",
+      "mcp__opci__batch_claim",
+      "mcp__opci__batch_attach_run",
+      "mcp__opci__batch_complete",
+      "mcp__opci__batch_show",
+      "mcp__opci__normalize_constraints",
+      "mcp__opci__validate_constraints",
+      "mcp__opci__generate_cases",
+      "mcp__opci__validate_cases",
+      "mcp__opci__execute_cases_generate",
+      "mcp__opci__execute_cases_real",
+      "mcp__opci__execute_cases_mock",
+      "mcp__opci__validate_execution",
+      "mcp__opci__validate_executor",
+      "mcp__opci__validate_analysis",
+      "mcp__opci__show_workforce"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./servers.json)",
+      "Edit(../**)",
+      "Write(../**)",
+      "NotebookEdit(../**)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": false,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_project_writes.py\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+          }
+        ]
+      }
+    ]
+  }
+}
