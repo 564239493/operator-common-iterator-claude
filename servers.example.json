@@ -1,5 +1,5 @@
 {
-  "_comment": "ATK 远程执行服务器配置。支持多台服务器，按平台名匹配。密码是明文（内网环境）。",
+  "_comment": "ATK/TTK 远程执行服务器配置。支持多台服务器，按平台名匹配。密码是明文（内网环境）。",
   "servers": [
     {
       "name": "Atlas A3 development host",
@@ -18,7 +18,14 @@
         "output_root": "/home/operator_atk/atk_output"
       },
       "env_init": "cd /home/operator_atk && source /usr/local/Ascend/ascend-toolkit/set_env.sh",
-      "env_init_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+      "env_init_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh",
+      "ttk": {
+        "remote_root": "/home/operator_ttk/runs",
+        "repo_path": "/home/operator_ttk/ops-test-kit",
+        "python": "python3",
+        "allow_internal_format": true,
+        "env_init_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+      }
     }
   ],
   "_fields": {
@@ -35,6 +42,12 @@
     "remote_paths.executor_dir": "执行器脚本远程目录（必填）",
     "remote_paths.output_root": "ATK 输出根目录（必填）",
     "env_init": "完整环境初始化命令（可选，优先级: --env-init > env_init > env_init_script > 内置默认）",
-    "env_init_script": "CANN 环境初始化脚本路径或命令（可选，向后兼容字段）"
+    "env_init_script": "CANN 环境初始化脚本路径或命令（可选，向后兼容字段）",
+    "ttk": "TTK 执行配置；显式选择 TTK 时使用",
+    "ttk.remote_root": "TTK 远程运行目录",
+    "ttk.repo_path": "远程 ops-test-kit 仓库路径",
+    "ttk.python": "远程 Python 命令",
+    "ttk.allow_internal_format": "是否允许内部格式用例",
+    "ttk.env_init_script": "TTK 环境初始化脚本"
   }
 }

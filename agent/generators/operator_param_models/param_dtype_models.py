@@ -28,11 +28,20 @@ class ParamDtypeModel:
         """
         self.logger.debug("Start generate param dtype, operator name: %s, param name: %s", self.operator_name,
                           self.param_name)
-        result_dtype = self.dtype_transfer_map.get(data_type, ParamModelConfig.DEFAULT_PARAM_DTYPE)
+        # 大小写不敏感查找：资料 dtype 常为小写 (int32/float16)，而转换表键以大写为主 (INT32)。
+        # 直接命中优先，其次按大写归一命中。
+        result_dtype = self.dtype_transfer_map.get(data_type)
+        if result_dtype is None and isinstance(data_type, str):
+            result_dtype = self.dtype_transfer_map.get(data_type.upper())
         if result_dtype is None:
-            self.logger.warning("Generate param dtype, input data dtype is invalid, operator name: %s, param name: %s",
-                                self.operator_name, self.param_name)
-            result_dtype = self.default_dtype
+            # 未识别 dtype：透传原始值，禁止静默回退到 DEFAULT_PARAM_DTYPE(fp16)。
+            # 旧逻辑对缺键的小写 dtype (如 int32/int64/uint32) 一律回退 fp16，
+            # 会把整型张量错误改写成浮点，导致 executor 侧 dtype 不合契约。
+            self.logger.warning(
+                "Generate param dtype, unrecognized dtype '%s', pass through unchanged. "
+                "operator name: %s, param name: %s",
+                data_type, self.operator_name, self.param_name)
+            result_dtype = data_type
         self.logger.debug(
             f"End generate param dtype, operator name: {self.operator_name}, "
             f"param name: {self.param_name}, dtype: {result_dtype}")

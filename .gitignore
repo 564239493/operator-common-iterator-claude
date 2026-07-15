@@ -17,3 +17,10 @@ execution_results/
 tests/
 
 /operators-src/
+/op-plugin-7.3.0/
+/.claude/settings.local.json
+/.claude/worktrees/
+/.ttk-deps/
+/.ttk-reference/
+/cli_report_*.html
+/cli_report_*.zip

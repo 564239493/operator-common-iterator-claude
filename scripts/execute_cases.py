@@ -31,6 +31,7 @@ This rewrite keeps everything inside this project:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -161,13 +162,6 @@ def _select_server_for_execution(
 
 
 def main() -> int:
-    from executer import run_cases  # noqa: WPS433  (lazy: needs asyncssh)
-    from executer.runner import (  # noqa: WPS433
-        RunRequest,
-        load_cases_payload,
-        validate_server_info,
-    )
-
     parser = argparse.ArgumentParser(
         description=(
             "执行已生成的测试用例并写出 execution_result.json。"
@@ -182,6 +176,10 @@ def main() -> int:
         choices=("mock", "real"),
         default="real",
         help="执行模式 (默认 real)。real 仅上传+跑 atk，不再生成 executor。",
+    )
+    parser.add_argument(
+        "--test-framework", choices=("atk", "ttk"), default="atk",
+        help="执行框架；默认 atk 保持原 ACLNN 流程，torch_npu 海思算子使用 ttk。",
     )
     parser.add_argument(
         "--cases", required=True, help="cases.json 路径 (项目内或外部)。"
@@ -254,6 +252,101 @@ def main() -> int:
 
     cases_path = resolve_input_path(args.cases)
     output_path = resolve_input_path(args.output)
+    if args.test_framework == "ttk":
+        if cases_path.suffix.lower() != ".csv":
+            _emit({"ok": False, "code": "TTK_CSV_REQUIRED", "message": "TTK E2E 输入必须是 CSV。"})
+            return 2
+        manifest_path = cases_path.parent / "golden_manifest.json"
+        manifest = _read_json_object(manifest_path)
+        # Resolve the golden plugin to upload. Prefer the operator's registered
+        # golden under agent/hs/ttk_plugins/ (it carries the __golden__ e2e
+        # function AND the allow_internal_format bootstrap). The per-iter
+        # ttk_plugin.py is only a runtime bootstrap placeholder when the
+        # manifest was pre-verified, so uploading it alone makes TTK report
+        # "Scanned 0 custom golden.e2e functions" and skip precision comparison.
+        plugin_path = cases_path.parent / "ttk_golden_fia.py"
+        if not plugin_path.is_file():
+            manifest_plugin = (manifest or {}).get("plugin")
+            repo_golden = (
+                ROOT / "agent" / "hs" / "ttk_plugins" / manifest_plugin
+                if manifest_plugin else None
+            )
+            if repo_golden is not None and repo_golden.is_file():
+                plugin_path = repo_golden
+            else:
+                plugin_path = cases_path.parent / "ttk_plugin.py"
+        if not manifest or manifest.get("status") != "verified":
+            result = {
+                "status": "error", "mode": "ttk_e2e", "test_framework": "ttk",
+                "passed": 0, "failed": 0, "total": 0, "records": [],
+                "engine_error": "TTK CPU Golden 尚未推导或未通过真实验证",
+                "requires_golden_derivation": True,
+                "golden_manifest": str(manifest_path),
+                "next_skill": "derive-ttk-golden",
+            }
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            _emit(result)
+            return 2
+        plugin_arg = f" --plugin {plugin_path.name}" if plugin_path.is_file() else ""
+        command = f"python3 -m ttk e2e -i {cases_path.name} --backend npu{plugin_arg}"
+        if args.generate:
+            result = {
+            "status": "generate",
+            "mode": "ttk_e2e",
+            "test_framework": "ttk",
+            "cases": str(cases_path),
+            "ttk_command": command,
+            "plugin": str(plugin_path) if plugin_path.is_file() else None,
+            "validation_command": f"python3 -m ttk e2e -i {cases_path.name} --validate",
+            "engine_error": None,
+            }
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            _emit(result)
+            return 0
+
+        config_path, config_errors = validate_server_config(args.server_config)
+        if config_errors:
+            _emit(config_error_payload(config_path, config_errors))
+            return 2
+        servers = _load_server_config(config_path)
+        iter_dir = cases_path.parent
+        operator_platforms = _load_operator_supported_platforms(iter_dir)
+        server, selected_platform, select_error = _select_server_for_execution(
+            servers, args.platform, operator_platforms
+        )
+        if server is None:
+            _emit({"ok": False, "code": "NO_SERVER_FOR_PLATFORM", "message": select_error})
+            return 2
+        with cases_path.open(encoding="utf-8", newline="") as handle:
+            first = next(csv.DictReader(handle), {})
+        operator_name = args.operator or first.get("api_name") or cases_path.stem
+        artifact_dir = (
+            resolve_input_path(args.artifact_dir) if args.artifact_dir
+            else iter_dir / "ttk_artifacts"
+        )
+        from executer.ttk_runner import run_ttk_remote
+        result = run_ttk_remote(
+            cases_path=cases_path,
+            plugin_path=plugin_path if plugin_path.is_file() else None,
+            operator_name=operator_name,
+            server=server,
+            artifact_dir=artifact_dir,
+            timeout=1800.0,
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _emit({key: result.get(key) for key in (
+            "status", "passed", "failed", "total", "engine_error",
+            "remote_output_dir", "results_csv")})
+        return 0 if result.get("status") == "success" else 2
+    from executer import run_cases  # noqa: WPS433  (ATK path needs asyncssh)
+    from executer.runner import (  # noqa: WPS433
+        RunRequest,
+        load_cases_payload,
+        validate_server_info,
+    )
     cases = load_cases_payload(cases_path)
 
     # --generate 隐式选择 generate 模式, 除非显式 --mode mock。

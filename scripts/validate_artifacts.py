@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import csv
 import io
 import json
 import re
@@ -505,6 +506,10 @@ def validate_constraints(value) -> list[str]:
             + _validate_tensor_list_length_constraints(value)
             + _validate_dynamic_allowed_ranges(value)
         )
+        if str(value.get("operator_name", "")).startswith("torch_npu."):
+            from agent.hs.constraint_validation import validate_hs_constraints
+
+            errors += validate_hs_constraints(value)
     except Exception as exc:
         return [f"OperatorRule validation failed: {exc}"]
     return errors
@@ -516,6 +521,48 @@ def validate_cases(value) -> list[str]:
     if not value:
         return ["cases must not be empty"]
     return [f"cases[{index}] must be an object" for index, item in enumerate(value) if not isinstance(item, dict)]
+
+
+def validate_ttk_cases(path: str) -> list[str]:
+    """Validate the portable structure of a TTK E2E CSV without CANN/NPU."""
+    file_path = Path(path)
+    if not file_path.is_file():
+        return [f"TTK cases file not found: {path}"]
+    required = {"testcase_name", "api_name", "tensor_view_shapes", "tensor_dtypes"}
+    errors: list[str] = []
+    try:
+        with file_path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            headers = set(reader.fieldnames or [])
+            missing = sorted(required - headers)
+            if missing:
+                errors.append("missing TTK E2E headers: " + ", ".join(missing))
+            rows = list(reader)
+    except (OSError, csv.Error) as exc:
+        return [f"cannot parse TTK CSV: {exc}"]
+    if not rows:
+        errors.append("TTK cases CSV must not be empty")
+    for index, row in enumerate(rows):
+        api = (row.get("api_name") or "").strip()
+        if not api or api.lower().startswith("aclnn"):
+            errors.append(f"row {index}: TTK E2E api_name must be a non-aclnn API")
+        try:
+            shapes = ast.literal_eval(row.get("tensor_view_shapes") or "")
+            dtypes = ast.literal_eval(row.get("tensor_dtypes") or "")
+            if not isinstance(shapes, tuple) or not isinstance(dtypes, tuple):
+                errors.append(f"row {index}: shapes and dtypes must be tuples")
+            elif len(shapes) != len(dtypes):
+                errors.append(f"row {index}: shape/dtype count mismatch")
+        except (ValueError, SyntaxError) as exc:
+            errors.append(f"row {index}: invalid Python-literal TTK field: {exc}")
+        attrs = row.get("attributes")
+        if attrs:
+            try:
+                if not isinstance(ast.literal_eval(attrs), dict):
+                    errors.append(f"row {index}: attributes must be a dict")
+            except (ValueError, SyntaxError) as exc:
+                errors.append(f"row {index}: invalid attributes: {exc}")
+    return errors
 
 
 def validate_execution(value) -> list[str]:
@@ -535,7 +582,10 @@ def validate_execution(value) -> list[str]:
 def validate_analysis(value) -> list[str]:
     if not isinstance(value, dict):
         return ["analysis must be an object"]
-    allowed = {"constraint_extraction", "generator_bug", "executor_bug"}
+    allowed = {
+        "constraint_extraction", "generator_bug", "executor_bug",
+        "ttk_adapter", "golden_derivation", "execution_environment",
+    }
     return [] if value.get("root_cause") in allowed else ["invalid root_cause"]
 
 
@@ -609,6 +659,7 @@ def validate_source_raw(value) -> list[str]:
 VALIDATORS = {
     "constraints": validate_constraints,
     "cases": validate_cases,
+    "ttk_cases": validate_ttk_cases,
     "execution": validate_execution,
     "analysis": validate_analysis,
     "executor": validate_executor,
@@ -625,9 +676,12 @@ def main() -> int:
     parser.add_argument("path")
     args = parser.parse_args()
     try:
-        # executor / *_doc 校验对象是文件路径(Python 源/markdown), 直接传路径;
+        # executor / TTK CSV / *_doc 校验对象是文件路径, 直接传路径;
         # 其余校验对象是 JSON 产物, 先解析再传结构.
-        path_kinds = {"executor", "supplementary_doc", "uncertain_doc", "conflict_doc"}
+        path_kinds = {
+            "executor", "ttk_cases", "supplementary_doc", "uncertain_doc",
+            "conflict_doc",
+        }
         if args.kind in path_kinds:
             result = VALIDATORS[args.kind](args.path)
         else:

@@ -10,6 +10,27 @@ from pathlib import Path
 from typing import Any
 
 TENSOR_TYPES = {"aclTensor", "aclTensorList"}
+HS_TYPE_ALIASES = {
+    "Tensor": "aclTensor",
+    "torch.Tensor": "aclTensor",
+    "Optional[Tensor]": "aclTensor",
+    "Optional[torch.Tensor]": "aclTensor",
+    "List[Tensor]": "aclTensorList",
+    "list[Tensor]": "aclTensorList",
+    "Sequence[Tensor]": "aclTensorList",
+    "Tensor[]": "aclTensorList",
+    "List[int]": "aclIntArray",
+    "list[int]": "aclIntArray",
+    "Sequence[int]": "aclIntArray",
+    "int[]": "aclIntArray",
+    "List[float]": "aclFloatArray",
+    "list[float]": "aclFloatArray",
+    "float[]": "aclFloatArray",
+    "List[bool]": "aclBoolArray",
+    "list[bool]": "aclBoolArray",
+    "bool[]": "aclBoolArray",
+    "str": "string",
+}
 ARRAY_TYPE_DTYPE_FALLBACK = {
     "aclIntArray": "int",
     "aclFloatArray": "float",
@@ -42,6 +63,22 @@ def _type_name(attributes: dict[str, Any]) -> str:
     if not isinstance(raw_type, str):
         return ""
     return re.sub(r"\b(?:const|struct)\b|[*&]", "", raw_type).strip()
+
+
+def _normalize_type(attributes: dict[str, Any]) -> bool:
+    """Translate torch_npu documentation types to the generator's IR types."""
+    field = attributes.get("type")
+    raw = field.get("value") if isinstance(field, dict) else field
+    if not isinstance(raw, str):
+        return False
+    normalized = HS_TYPE_ALIASES.get(raw.strip())
+    if not normalized or normalized == raw:
+        return False
+    if isinstance(field, dict):
+        field["value"] = normalized
+    else:
+        attributes["type"] = {"value": normalized, "src_text": raw}
+    return True
 
 
 def _is_null_pointer_only(attributes: dict[str, Any]) -> bool:
@@ -93,6 +130,8 @@ def normalize_constraints(value: dict[str, Any]) -> int:
     normalized_count = 0
     for section_name in ("inputs", "outputs"):
         for attributes in _attribute_groups(value.get(section_name, {})):
+            if _normalize_type(attributes):
+                normalized_count += 1
             type_name = _type_name(attributes)
             if type_name in TENSOR_TYPES:
                 if _normalize_tensor_format(attributes):

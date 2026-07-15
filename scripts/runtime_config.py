@@ -12,6 +12,7 @@ PROMPT_DIRECTORY = ROOT / "prompts"
 OPERATOR_PROMPT_PATTERN = re.compile(
     r"^operator_constraints_extract_v(?P<version>\d+)\.md$"
 )
+HS_PROMPT_PATTERN = re.compile(r"^hs_constraints_extract_v(?P<version>\d+)\.md$")
 
 
 def resolve_input_path(value: str | Path) -> Path:
@@ -32,6 +33,19 @@ def find_latest_operator_prompt(directory: Path | None = None) -> Path | None:
         if not path.is_file():
             continue
         match = OPERATOR_PROMPT_PATTERN.fullmatch(path.name)
+        if match:
+            candidates.append((int(match.group("version")), path.resolve()))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def find_latest_hs_prompt(directory: Path | None = None) -> Path | None:
+    """Return the latest prompt specialized for torch_npu HiSilicon docs."""
+    prompt_dir = (directory or PROMPT_DIRECTORY).resolve()
+    candidates: list[tuple[int, Path]] = []
+    if not prompt_dir.is_dir():
+        return None
+    for path in prompt_dir.iterdir():
+        match = HS_PROMPT_PATTERN.fullmatch(path.name) if path.is_file() else None
         if match:
             candidates.append((int(match.group("version")), path.resolve()))
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
@@ -75,6 +89,14 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
         rp = server.get("remote_paths")
         if rp is not None and not isinstance(rp, dict):
             errors.append(f"servers[{index}].remote_paths 必须是 object")
+        ttk = server.get("ttk")
+        if ttk is not None:
+            if not isinstance(ttk, dict):
+                errors.append(f"servers[{index}].ttk 必须是 object")
+            else:
+                for key in ("remote_root", "repo_path", "python"):
+                    if not str(ttk.get(key) or "").strip():
+                        errors.append(f"servers[{index}].ttk.{key} 不能为空")
     return path, errors
 
 

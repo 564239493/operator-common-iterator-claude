@@ -15,6 +15,10 @@ Skills 与 Subagents，Python 只承担确定性业务工具。
 
 ## 快速开始
 
+海思 `torch_npu.*` + TTK 兼容流程见
+[docs/HS_TTK_WORKFLOW.md](docs/HS_TTK_WORKFLOW.md)。原 ACLNN/ATK 流程仍是默认；
+显式选择 `--test-framework ttk` 或自动识别到海思文档时才启用 TTK。
+
 要求 Python 3.10+，Claude Code 建议 2.1.172+。
 
 ```powershell

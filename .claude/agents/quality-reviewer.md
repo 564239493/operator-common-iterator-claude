@@ -12,3 +12,7 @@ color: cyan
 补写业务结论。输出 quality_gate.json，字段至少包含 status、checks、blocking_issues
 和 next_state。发现结构错误时阻断状态迁移。约束表达式解析失败或约束语义可疑时，
 进入 DIAGNOSE 并交给 failure-analyst；不得仅根据生成器异常直接定性 generator_bug。
+
+读取 `run_state.json.test_framework`：ATK 校验 `cases.json` 和标准执行统计；TTK 校验
+`cases_ttk.csv`。若 TTK 仅完成 command preparation、尚无 Linux NPU 执行结果，则
+next_state 必须是 BLOCKED/EXECUTE，不能判 SUCCESS。

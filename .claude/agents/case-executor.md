@@ -10,6 +10,8 @@ color: orange
 ---
 
 你是执行专员。严格使用调度指定的 mock 或 real 模式；未明确 real 时禁止连接远端。
+首先读取 `run_state.json.test_framework`。若为 `ttk`，不得进入下面的 ATK 三子步骤，
+也不得调用 `atc-cpu-golden-derivation`；按本文件 TTK 小节执行。
 real 模式下必须按 **generate → 推导 → real-run** 三子步骤执行，不得跳过推导直接上传
 dummy executor。
 
@@ -52,6 +54,20 @@ dummy executor。
 
 不涉及 generate/推导，直接：
 `python scripts/execute_cases.py --mode mock --cases <cases.json> --output <execution_result.json>`
+
+## TTK 模式
+
+输入必须为 `<iter>/cases_ttk.csv`：
+
+先读取 `golden_manifest.json`。若状态不是 `verified`，调用 `derive-ttk-golden`，完成
+插件推导、TTK validate 和真实单场景验证；未验证通过不得批量执行。
+
+`python scripts/execute_cases.py --test-framework ttk --generate --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json`
+
+`--generate` 只产生 Linux NPU 节点命令；`--mode real` 从 `servers.json.ttk` 读取
+`remote_root/repo_path/python/env_init_script`，创建算子名_时间点目录，上传 CSV/plugin，
+执行 E2E，并把 `results.csv`、`log/` 下载到 iter 的 `ttk_artifacts/`。不得调用 ATK
+golden 推导或上传 `/home/operator_atk`。
 
 ## 通用纪律
 

@@ -25,6 +25,7 @@ runs/<operator>-<timestamp>/
     supplement_additions.md            # 可选：failure-analyst 推的补充增量
     generation_summary.json
     cases.json
+    cases_ttk.csv
     execution_result.json
     quality_gate.json
     analysis.json
@@ -36,8 +37,10 @@ runs/<operator>-<timestamp>/
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
-`server_config`、`max_iterations`、`case_count`、`current_iteration`、`state`、`history` 和时间戳。
-state 只能取 WORKFLOW.md 定义的状态。
+`server_config`、`max_iterations`、`case_count`、`operator_family`、`test_framework`、
+`current_iteration`、`state`、
+`history` 和时间戳。state 只能取
+WORKFLOW.md 定义的状态。
 
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
 目录内的快照，后续 Agent 只使用快照。
@@ -129,7 +132,11 @@ error_string 模糊匹配命中）/`conflict_pending`（未裁决冲突提示）
 
 JSON 数组，每项为生成器 CaseConfig 的 model_dump 结果。禁止 Agent 手工伪造。
 
-`cases.json` 是执行前的紧凑表示。对于带 `length` 的列表类输入，只保留一个输入
+`cases.json` 是 ATK/TTK 共用的统一具体场景中间模型，也是执行前的紧凑表示。TTK
+必须先生成该文件，再由 adapter 产生 `cases_ttk.csv`；禁止直接跳过中间模型硬编码 CSV。
+adapter 按 case id 将标量属性的 `range_values` 确定性选择为具体值；Tensor 的
+`range_values` 映射为 `input_data_ranges`，具体 Tensor 数据由 TTK 执行期生成。
+对于带 `length` 的列表类输入，只保留一个输入
 描述，由执行阶段生成 `cases_expanded.json`：
 
 - `range_values` 为标量时，表示列表中每个元素共用该取值规格；
@@ -139,6 +146,18 @@ JSON 数组，每项为生成器 CaseConfig 的 model_dump 结果。禁止 Agent
 诊断用例格式问题时必须同时检查 `cases.json` 和 `cases_expanded.json`。如果紧凑
 表示已被正确展开，不能把标量 `range_values` 判为 generator_bug；如果展开过程
 本身有误，应归入执行适配层的 executor_bug。
+
+## cases_ttk.csv
+
+仅当 `run_state.test_framework == "ttk"` 时使用。必须具有 `testcase_name`、
+`api_name`、`tensor_view_shapes`、`tensor_dtypes`；`api_name` 为非 aclnn 的
+`torch_npu.*` E2E API。使用：
+
+`python scripts/validate_artifacts.py ttk_cases <iter>/cases_ttk.csv`
+
+TTK 路径消费统一 `cases.json`，但不得生成或消费 ATK `cases_executor.py/cases_expanded.json`。
+同时生成 `ttk_conversion_audit.json`、`golden_manifest.json` 和算子独立 Golden plugin。
+manifest 未标记 `verified` 时不得进入远程精度执行，应先调用 `derive-ttk-golden`。
 
 ## execution_result.json
 
@@ -160,7 +179,8 @@ JSON 数组，每项为生成器 CaseConfig 的 model_dump 结果。禁止 Agent
 
 ## analysis.json
 
-root_cause 只能为 constraint_extraction、generator_bug、executor_bug。每项
+root_cause 只能为 constraint_extraction、generator_bug、executor_bug、ttk_adapter、
+golden_derivation、execution_environment。每项
 specific_issues 应关联 case id、日志或文档证据。
 
 ## quality_gate.json

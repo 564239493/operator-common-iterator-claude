@@ -13,6 +13,7 @@ from runtime_config import (
     ROOT,
     config_error_payload,
     find_latest_operator_prompt,
+    find_latest_hs_prompt,
     resolve_input_path,
     validate_server_config,
 )
@@ -249,6 +250,14 @@ def main() -> int:
     )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
+    parser.add_argument(
+        "--operator-family", choices=("auto", "aclnn", "hs"), default="auto",
+        help="算子文档类型；auto 根据文档名/首行识别 torch_npu 海思算子。",
+    )
+    parser.add_argument(
+        "--test-framework", choices=("auto", "atk", "ttk"), default="auto",
+        help="测试框架；auto 对海思算子选 ttk，其他算子选 atk。",
+    )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
     args = parser.parse_args()
@@ -261,12 +270,6 @@ def main() -> int:
         )
 
     doc = resolve_input_path(args.doc)
-    if args.prompt:
-        prompt = resolve_input_path(args.prompt)
-        explicit_prompt = True
-    else:
-        prompt = find_latest_operator_prompt()
-        explicit_prompt = False
     if not doc.is_file():
         print(json.dumps(
             {
@@ -279,6 +282,22 @@ def main() -> int:
             ensure_ascii=False,
         ))
         return 2
+    doc_head = doc.read_text(encoding="utf-8", errors="ignore")[:4096]
+    is_hs = args.operator_family == "hs" or (
+        args.operator_family == "auto"
+        and ("torch_npu" in doc_head or doc.name.startswith("torch_npu-"))
+    )
+    operator_family = "hs" if is_hs else "aclnn"
+    test_framework = (
+        ("ttk" if is_hs else "atk")
+        if args.test_framework == "auto" else args.test_framework
+    )
+    prompt = (
+        resolve_input_path(args.prompt)
+        if args.prompt
+        else (find_latest_hs_prompt() if is_hs else find_latest_operator_prompt())
+    )
+    explicit_prompt = bool(args.prompt)
     if prompt is None or not prompt.is_file():
         print(json.dumps(
             {
@@ -290,6 +309,7 @@ def main() -> int:
                     "目录提供 operator_constraints_extract_vN.md。"
                 ),
                 "prompt": str(prompt) if prompt else "",
+                "operator_family": operator_family,
             },
             ensure_ascii=False,
         ))
@@ -374,8 +394,9 @@ def main() -> int:
         )
         operator_src_source = str(src_path)
         operator_src_snapshot = str(src_snapshot)
-    if explicit_prompt:
-        # --prompt 逃生口：原样复制指定文件，不装配模块（用于固定版本/外部提示词）
+    if explicit_prompt or is_hs:
+        # --prompt 逃生口和 HS 专用 prompt 均原样复制；ACLNN 模块只装配到
+        # 通用 operator_constraints_extract_vN.md，避免污染 HS 提取规则。
         shutil.copy2(prompt, prompt_snapshot)
         loaded_modules = []
     else:
@@ -398,9 +419,17 @@ def main() -> int:
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
         "case_count": args.case_count,
+        "operator_family": operator_family,
+        "test_framework": test_framework,
         "current_iteration": 1,
-        "state": "PLAN",
-        "history": [{"state": "PLAN", "at": now}],
+        # Initialization freezes the plan synchronously; the first actionable
+        # state is EXTRACT.  Persisting PLAN here caused Claude Code runs to
+        # create an empty iter_001 and stop before delegating the extractor.
+        "state": "EXTRACT",
+        "history": [
+            {"state": "PLAN", "at": now},
+            {"state": "EXTRACT", "at": now},
+        ],
         "created_at": now,
         "updated_at": now,
     }
@@ -429,6 +458,8 @@ def main() -> int:
                 else ""
             ),
             "mode": args.mode,
+            "operator_family": operator_family,
+            "test_framework": test_framework,
             "server_config": str(server_config) if server_config else "",
         },
         ensure_ascii=False,

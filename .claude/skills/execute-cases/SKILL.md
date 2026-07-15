@@ -1,5 +1,5 @@
 ---
-description: 以 mock 或 real 模式执行 cases.json，并输出标准 execution_result.json。
+description: 以 ATK 或 TTK 模式准备/执行用例，并输出 execution_result.json。
 ---
 
 # 用例执行规范
@@ -64,3 +64,28 @@ python scripts/execute_cases.py --mode mock --cases <cases.json> --output <execu
 
 执行结束后运行 `python scripts/validate_artifacts.py execution <execution_result.json>`。
 网络、认证、环境和框架故障写入 `engine_error`，不要伪装成普通 case fail。
+
+## TTK 分支
+
+当 `run_state.json.test_framework == "ttk"` 时，不执行上面的 ATK generate/golden 流程：
+
+先确认 `<iter>/cases.json`、`cases_ttk.csv`、`ttk_conversion_audit.json` 和
+`golden_manifest.json` 同时存在。manifest 非 `verified` 时先调用 `derive-ttk-golden`；
+未通过真实单场景验证不得执行批量精度测试。
+
+```text
+python scripts/validate_artifacts.py ttk_cases <iter>/cases_ttk.csv
+python scripts/execute_cases.py --test-framework ttk --generate \
+  --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json
+```
+
+真实执行使用：
+
+```text
+python scripts/execute_cases.py --test-framework ttk --mode real \
+  --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json \
+  --server-config servers.json
+```
+
+远端目录由 `servers.json.ttk.remote_root` 控制，单次目录名为算子名_时间点；结果与日志
+下载到 `<iter>/ttk_artifacts/`。不得回退 ATK 或 mock。

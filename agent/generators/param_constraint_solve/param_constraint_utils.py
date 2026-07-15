@@ -279,7 +279,14 @@ class ParamConstraintUtils(CommonDispatcher):
         static_value_exprs = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
-            static_value_exprs.append(f"{param}.dtype == '{self.case_input_map.get(param).dtype}'")
+            param_dtype = self.case_input_map.get(param).dtype
+            # 仅对可识别的张量 dtype 生成静态约束。None/NoneType 等占位(例如仅支持 None
+            # 的预留 tensor 参数)不是可求解 dtype，若原样注入 `param.dtype == 'NoneType'`
+            # 会让 convert_operand 抛 "Unknown dtype string"。DTYPE_SPECS 的键与 Z3 层
+            # DTYPE_MAP 一致，据此过滤即可精确跳过不可识别项。
+            if param_dtype is None or str(param_dtype) not in DataMatchMap.DTYPE_SPECS:
+                continue
+            static_value_exprs.append(f"{param}.dtype == '{param_dtype}'")
         if check:
             self.choice_no_conflicts_expr(builder=builder, param_union_expr=constraint_exprs,
                                           param_static_expr_list=static_value_exprs)
@@ -323,9 +330,17 @@ class ParamConstraintUtils(CommonDispatcher):
                     else:
                         param_range_value_expr_list.append(f"{param_name}.range_value == {value_rule}")
                 else:
-                    if len(value_rule) >= 2:
+                    if isinstance(value_rule, (list, tuple)) and len(value_rule) >= 2:
                         param_range_value_expr_list.append(
                             f"({param_name}.range_value > {value_rule[0]} and {param_name}.range_value < {value_rule[1]})")
+                    elif isinstance(value_rule, (int, float, bool)):
+                        # Some extracted torch_npu defaults are represented as
+                        # an exact scalar even when the outer rule is tagged
+                        # as range. Treat that as a singleton domain instead
+                        # of calling len() on the scalar.
+                        param_range_value_expr_list.append(
+                            f"{param_name}.range_value == {value_rule}"
+                        )
                     else:
                         logger.error(
                             f"Param name : {param_name}, allowed range value is invalid, type : 'range', value : '{value_rule}'")

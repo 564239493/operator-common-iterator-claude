@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs] [--test-framework auto|atk|ttk] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -10,14 +10,15 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
 先读 `docs/WORKFLOW.md` 与 `docs/ARTIFACT_CONTRACTS.md`，然后严格执行：
 
 1. 解析参数。算子文档支持绝对路径、项目相对路径和包含 `..` 的外部相对路径。
-   未传 `--prompt` 时，由 `init_run.py` 自动选择
-   `prompts/operator_constraints_extract_vN.md` 中数值版本 N 最大的文件；
+   `operator-family=auto`、`test-framework=auto`；未传 `--prompt` 时由
+   `init_run.py` 按文档类型选择最新通用 ACLNN prompt 或海思 prompt。
    max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
-2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src` 等参数，`--batch-dir`
-   是目录批次内部参数不传）。该命令把外部文档只读复制到 run 的 `inputs/` 目录，
+2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
+   `--supplement-constraints`、`--operator-family`、`--test-framework` 等参数，
+   `--batch-dir` 是目录批次内部参数不传）。该命令把外部文档只读复制到 run 的 `inputs/` 目录，
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。若传入 `--src`，把算子
    源码关键文件浅快照到 `inputs/src_snapshot/`，写入 `run_state.operator_src_snapshot`
    （为空则第 5 步跳过 source-analyst，退回纯文档驱动）。若传入
@@ -30,7 +31,8 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    `message`、`server_config` 和 `errors` 提示给用户。不得自动切换到 mock。
    只有用户显式传入 `--mode mock` 才能执行 Mock。
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
-5. 每轮按顺序委派：
+5. `init_run.py` 成功后 state 已是 EXTRACT；必须立即委派，不能仅创建 run 后结束。
+   每轮按顺序委派：
    - **EXTRACT（fork-join）**：当 `run_state.operator_src_snapshot` 非空时，
      **并行**委派 `constraint-extractor`（产 `constraints.json`）与 `source-analyst`
      （extract 域：产 `<iter>/source_raw.json` + `inputs/supplementary-doc.md` +
@@ -52,7 +54,7 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
      `python scripts/apply_conflict_resolution.py <iter>/constraints.json --candidates <inputs>/conflict_candidates.json --resolution <inputs>/conflict_resolution.json`
      把 source-wins 并入（replace patch + revalidate）。
    - `case-generator`
-   - `case-executor`（real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
+   - `case-executor`（ATK real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
      三子步骤；推导须清除 `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run）
    - `quality-reviewer`
 6. 若门禁确认全部通过，更新 run_state 为 SUCCESS 并结束。
@@ -76,5 +78,16 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
     `python scripts/batch_state.py --batch-dir <batch-dir> complete`。如果 run 创建前即因
     文档消失等算子级问题阻断，则调用 `complete --terminal-state BLOCKED --message <原因>`。
     不得把真实执行配置缺失静默记为算子失败；目录批次初始化时应先统一校验该配置。
+
+## 框架分流（强制）
+
+- 每个 Agent 委派前读取 `run_state.json` 的 `operator_family` 与 `test_framework`。
+- `atk`：产物为每平台 compact JSON，沿用原 ACLNN 生成和 ATK executor。
+- `ttk`：先产出统一 `cases.json`，再适配为 `cases_ttk.csv`；generator 命令必须带
+  `--test-framework ttk`。executor 先检查 Golden manifest，必要时调用
+  `derive-ttk-golden`，再执行真实 E2E；不得调用 ATK golden 推导。
+- EXTRACT 阶段与测试框架无关，任何 framework 都必须先产生非空且校验通过的
+  `constraints.json`。如果 state 仍为 PLAN 或文件不存在，说明未委派提取器，不能报告
+  “约束为空”。
 
 不要在主协调器中亲自完成专职 Agent 的工作，不要并行运行存在数据依赖的阶段。

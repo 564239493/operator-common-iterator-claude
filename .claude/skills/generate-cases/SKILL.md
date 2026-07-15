@@ -1,5 +1,5 @@
 ---
-description: 使用确定性 Python 生成器从 constraints.json 生成 cases.json。
+description: 从 constraints.json 生成 ATK JSON 或海思 TTK E2E CSV。
 ---
 
 # 用例生成规范
@@ -7,7 +7,7 @@ description: 使用确定性 Python 生成器从 constraints.json 生成 cases.j
 先校验约束，再执行：
 
 ```text
-python scripts/generate_cases.py --constraints <constraints.json> --output <cases.json> --count <N>
+python scripts/generate_cases.py --constraints <constraints.json> --output <cases.json> --count <N> --test-framework atk
 ```
 
 生成过程中默认把每个成功用例立即写入
@@ -21,3 +21,15 @@ python scripts/generate_cases.py --constraints <constraints.json> --output <case
 
 随后执行 `python scripts/validate_artifacts.py cases <cases.json>`。禁止手工补造生成失败
 的 case。保留 `<iter-dir>/generation_summary.json` 作为数量和平台摘要。
+
+若 `run_state.json.test_framework == "ttk"`，改为：
+
+```text
+python scripts/generate_cases.py --constraints <constraints.json> --output <iter>/cases_ttk.csv --count <N> --test-framework ttk
+python scripts/validate_artifacts.py ttk_cases <iter>/cases_ttk.csv
+```
+
+TTK 与 ATK 一样，`count` 表示每个平台请求生成的统一中间用例数；实际数量以
+`generation_summary.json` 为准，禁止复制相同 baseline 凑数。TTK 必须先由正式约束生成器产生 `<iter>/cases.json`；
+CSV 只是该统一中间模型的框架 adapter 产物。同时检查 `ttk_conversion_audit.json`、
+`golden_manifest.json`，禁止手写 CSV 绕过 Z3 生成结果。

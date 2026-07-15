@@ -1,0 +1,1 @@
+{"operator":"torch_npu.npu_sparse_flash_attention","status":"pending","plugin":null,"verified_modes":{},"unsupported":["all modes until real Golden verification"]}
