@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from opci.config import (
     resolve_input_path,
     validate_server_config,
 )
+from opci.mcp._logging import log, log_elapsed
 
 
 SUCCESS_STATES = {"SUCCESS"}
@@ -112,6 +114,8 @@ def init_batch(
     continue_on_error: bool = True,
 ) -> dict[str, Any]:
     """Scan operator doc directory and create a resumable batch."""
+    t0 = time.monotonic()
+    log("init_batch", "start", directory=directory, glob=glob, mode=mode)
     project_root = get_project_root()
     directory_path = resolve_input_path(directory, project_root)
     prompt_path = (
@@ -121,14 +125,18 @@ def init_batch(
     )
 
     if not directory_path.is_dir():
+        log("init_batch", "dir_not_found", directory=str(directory_path))
         return _error("OPERATOR_DIRECTORY_NOT_FOUND", "算子文档目录不存在。", directory=str(directory_path))
 
     server_config_path: Path | None = None
     if mode == "real":
+        log("init_batch", "validate_server_config")
         server_config_path, config_errors = validate_server_config(server_config, project_root)
         if config_errors:
+            log("init_batch", "config_error", errors=config_errors)
             return config_error_payload(server_config_path, config_errors)
 
+    log("init_batch", "scan_directory", directory=str(directory_path), glob=glob)
     try:
         iterator = directory_path.rglob(glob) if recursive else directory_path.glob(glob)
         documents = sorted(
@@ -136,15 +144,18 @@ def init_batch(
             key=lambda p: str(p.relative_to(directory_path)).casefold(),
         )
     except (OSError, ValueError) as exc:
+        log("init_batch", "scan_error", error=str(exc))
         return _error("INVALID_GLOB", f"无法使用该 glob 扫描目录: {exc}")
 
     if not documents:
+        log("init_batch", "no_docs", directory=str(directory_path), glob=glob)
         return _error("NO_OPERATOR_DOCUMENTS", "目录中没有匹配的算子文档。",
                        directory=str(directory_path), glob=glob)
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     batch_id = f"{directory_path.name or 'operators'}-{stamp}"
     batch_dir = project_root / "runs" / "batches" / batch_id
+    log("init_batch", "create_batch", batch_id=batch_id, total=len(documents))
     batch_dir.mkdir(parents=True, exist_ok=False)
 
     now = utc_now()
@@ -184,6 +195,7 @@ def init_batch(
         "completed_at": None,
     }
     _save_batch(batch_dir, batch)
+    log_elapsed("init_batch", "done", t0, batch_id=batch_id, total=len(documents))
     return {
         "ok": True,
         "batch_id": batch_id,
@@ -195,8 +207,11 @@ def init_batch(
 
 def batch_claim(batch_dir: str) -> dict[str, Any]:
     """Claim the next operator in the batch."""
+    t0 = time.monotonic()
+    log("batch_claim", "start", batch_dir=batch_dir)
     batch_dir_path = resolve_input_path(batch_dir)
     if not (batch_dir_path / "batch_state.json").is_file():
+        log("batch_claim", "batch_not_found")
         return _error("BATCH_NOT_FOUND", "批次目录缺少 batch_state.json", batch_dir=str(batch_dir_path))
     batch = _load_batch(batch_dir_path)
     current = next(
@@ -204,8 +219,10 @@ def batch_claim(batch_dir: str) -> dict[str, Any]:
         None,
     )
     if current is not None:
+        log_elapsed("batch_claim", "resume", t0, index=current["index"])
         return {"ok": True, "action": "resume", "batch_dir": str(batch_dir_path), "operator": current}
     if batch["state"] == "STOPPED":
+        log("batch_claim", "batch_stopped")
         return {"ok": False, "code": "BATCH_STOPPED", "message": "批次已按 fail-fast 策略停止。", "batch_dir": str(batch_dir_path)}
     pending = next(
         (item for item in batch["operators"] if item["status"] == "PENDING"),
@@ -213,25 +230,31 @@ def batch_claim(batch_dir: str) -> dict[str, Any]:
     )
     if pending is None:
         _save_batch(batch_dir_path, batch)
+        log_elapsed("batch_claim", "complete", t0)
         return {"ok": True, "action": "complete", "batch_dir": str(batch_dir_path), "counts": batch["counts"]}
     now = utc_now()
     pending["status"] = "RUNNING"
     pending["started_at"] = now
     batch["history"].append({"event": "OPERATOR_CLAIMED", "index": pending["index"], "at": now})
     _save_batch(batch_dir_path, batch)
+    log_elapsed("batch_claim", "start", t0, index=pending["index"])
     return {"ok": True, "action": "start", "batch_dir": str(batch_dir_path), "operator": pending}
 
 
 def batch_attach_run(batch_dir: str, run_dir: str) -> dict[str, Any]:
     """Attach a run to the current batch operator."""
+    t0 = time.monotonic()
+    log("batch_attach_run", "start", batch_dir=batch_dir, run_dir=run_dir)
     batch_dir_path = resolve_input_path(batch_dir)
     run_dir_path = resolve_input_path(run_dir)
     batch = _load_batch(batch_dir_path)
     current = next((item for item in batch["operators"] if item["status"] == "RUNNING"), None)
     if current is None:
+        log("batch_attach_run", "no_running_operator")
         raise ValueError("当前没有 RUNNING 算子，不能关联 run")
     run_state_path = run_dir_path / "run_state.json"
     if not run_state_path.is_file():
+        log("batch_attach_run", "no_run_state", path=str(run_state_path))
         raise ValueError(f"run 目录缺少 run_state.json: {run_state_path}")
     run_state = json.loads(run_state_path.read_text(encoding="utf-8"))
     current["run_id"] = run_state["run_id"]
@@ -239,15 +262,19 @@ def batch_attach_run(batch_dir: str, run_dir: str) -> dict[str, Any]:
     current["run_state"] = run_state.get("state")
     current["updated_at"] = utc_now()
     _save_batch(batch_dir_path, batch)
+    log_elapsed("batch_attach_run", "done", t0, run_id=run_state["run_id"])
     return {"ok": True, "batch_dir": str(batch_dir_path), "operator": current}
 
 
 def batch_complete(batch_dir: str, terminal_state: str | None = None, message: str = "") -> dict[str, Any]:
     """Complete the current batch operator."""
+    t0 = time.monotonic()
+    log("batch_complete", "start", batch_dir=batch_dir, terminal_state=terminal_state)
     batch_dir_path = resolve_input_path(batch_dir)
     batch = _load_batch(batch_dir_path)
     current = next((item for item in batch["operators"] if item["status"] == "RUNNING"), None)
     if current is None:
+        log("batch_complete", "no_running_operator")
         raise ValueError("当前没有 RUNNING 算子，不能完成")
 
     state = terminal_state
@@ -258,6 +285,7 @@ def batch_complete(batch_dir: str, terminal_state: str | None = None, message: s
             state = run_state.get("state")
 
     if state not in TERMINAL_STATES:
+        log("batch_complete", "not_terminal_state", state=state)
         raise ValueError(f"算子尚未进入可记录终态: {state!r}")
 
     now = utc_now()
@@ -270,16 +298,21 @@ def batch_complete(batch_dir: str, terminal_state: str | None = None, message: s
     if state in FAILURE_STATES and not batch["continue_on_error"]:
         batch["state"] = "STOPPED"
     _save_batch(batch_dir_path, batch)
+    log_elapsed("batch_complete", "done", t0, index=current["index"], terminal_state=state)
     return {"ok": True, "batch_dir": str(batch_dir_path), "operator": current, "batch_state": batch["state"], "counts": batch["counts"]}
 
 
 def batch_show(batch_dir: str) -> dict[str, Any]:
     """Show current batch state."""
+    t0 = time.monotonic()
+    log("batch_show", "start", batch_dir=batch_dir)
     batch_dir_path = resolve_input_path(batch_dir)
     if not (batch_dir_path / "batch_state.json").is_file():
+        log("batch_show", "batch_not_found")
         return _error("BATCH_NOT_FOUND", "批次目录缺少 batch_state.json", batch_dir=str(batch_dir_path))
     batch = _load_batch(batch_dir_path)
     _refresh_batch(batch)
+    log_elapsed("batch_show", "done", t0, state=batch["state"])
     return {"ok": True, "batch_dir": str(batch_dir_path), "batch": batch}
 
 

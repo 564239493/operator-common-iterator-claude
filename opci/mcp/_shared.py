@@ -10,6 +10,7 @@ import ast
 import io
 import json
 import re
+import time
 import tokenize
 from pathlib import Path
 from typing import Any
@@ -199,26 +200,63 @@ def _walk_values(value):
         yield value
 
 
-def validate_constraints(value) -> list[str]:
-    """Validate constraints.json structure and semantics."""
+def validate_constraints(value, _log_step: bool = False) -> list[str]:
+    """Validate constraints.json structure and semantics.
+
+    Args:
+        value: parsed constraints dict
+        _log_step: if True, write step-level debug logs via opci.mcp._logging
+    """
+    from opci.mcp._logging import log, log_elapsed
+
+    t0 = time.monotonic()
+    if _log_step:
+        log("validate_constraints_internal", "start")
+
     if not isinstance(value, dict):
+        if _log_step:
+            log("validate_constraints_internal", "not_dict")
         return ["constraints must be an object"]
+
     if "is_single_function_mode" in value:
+        if _log_step:
+            log("validate_constraints_internal", "deprecated_field")
         return [
             "is_single_function_mode 已废弃，不得出现在 constraints.json；"
             "一段式判定由 function_signature 是否含 GetWorkspaceSize 隐式表达。"
         ]
+
+    if _log_step:
+        log("validate_constraints_internal", "step1_operator_rule_import")
     try:
         from opci.agent.generators.common_model_definition import OperatorRule
+        if _log_step:
+            log("validate_constraints_internal", "step2_operator_rule_validate")
         OperatorRule(**value)
+        if _log_step:
+            log_elapsed("validate_constraints_internal", "step2_done", t0)
     except Exception as exc:
+        if _log_step:
+            log("validate_constraints_internal", "operator_rule_failed", error=str(exc)[:200])
         return [f"OperatorRule validation failed: {exc}"]
 
     errors: list[str] = []
+
+    if _log_step:
+        log("validate_constraints_internal", "step3_semantic_checks")
     errors.extend(validate_constraint_semantics(value))
+
+    if _log_step:
+        log("validate_constraints_internal", "step4_array_lengths")
     errors.extend(_validate_array_lengths(value))
+
+    if _log_step:
+        log("validate_constraints_internal", "step5_tensor_formats")
     errors.extend(_validate_tensor_format_values(value))
+
     # Additional semantic checks would be added here
+    if _log_step:
+        log_elapsed("validate_constraints_internal", "done", t0, error_count=len(errors))
     return errors
 
 
