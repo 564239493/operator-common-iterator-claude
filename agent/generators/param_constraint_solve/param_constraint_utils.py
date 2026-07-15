@@ -17,6 +17,7 @@ from agent.generators.atk_common_utils.case_config import CaseConfig
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ExpressionPreprocessor, ASTtoZ3Converter
+from agent.generators.param_constraint_solve.param_var_definition import DTYPE_MAP
 from agent.generators.common_model_definition import InterParamConstraint, InterConstraintsRuleType, OperatorRule
 from agent.generators.common_utils.common_dispatcher import CommonDispatcher
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
@@ -456,8 +457,15 @@ class ParamConstraintUtils(CommonDispatcher):
                                     length=param_length if z3_param_type == "tensor_list" else None,
                                     is_print_log=is_print_log)
             else:
+                # 标量参数：把 operator rule 的 allowed_range_value(type=enum) 在声明期硬锚定进
+                # 求解域。接驳缺口：此前 declare_param_in_z3 只传 case.range_values（当前值），
+                # 从不传 operator rule 的 allowed_range_value，致 enum 域未进 ScalarVar。
+                allowed_range_enum = None
+                if z3_param_type == "scalar":
+                    allowed_range_enum = self._get_param_allowed_range_enum(param_name)
                 builder.declare_var(param_name, z3_param_type, dtype=param_dtype, range_value=range_values,
-                                    length=param_length, is_print_log=is_print_log)
+                                    length=param_length, is_print_log=is_print_log,
+                                    allowed_range_enum=allowed_range_enum)
 
         standalone_none_params = set()
         for constraint in self.inter_param_constraints:
@@ -475,6 +483,25 @@ class ParamConstraintUtils(CommonDispatcher):
             if is_optional:
                 continue
             builder.solver.add(builder.var_map[param_name].is_present)
+
+    def _get_param_allowed_range_enum(self, param_name) -> list | None:
+        """读取 operator rule 中该参数的 allowed_range_value，仅当 type==enum 时返回候选值列表，
+        供 ScalarVar 声明期硬锚定入参枚举域（Point2-方案1）。range 类型不在此锚定（区间由
+        constraints_in_parameters 的不等式 expr 表达）。"""
+        param_attr = self.operator_rule_data.inputs.get(param_name)
+        if param_attr is None:
+            param_attr = self.operator_rule_data.outputs.get(param_name)
+        if param_attr is None:
+            return None
+        try:
+            value, value_type = DataHandleUtil.get_relevant_attribute_value(
+                param_name, param_attr.allowed_range_value, "allowed_range_value")
+        except Exception as e:
+            logger.warning(f"[EnumAnchor] Failed to read allowed_range_value for '{param_name}': {e}")
+            return None
+        if value_type == ParamRangeValueType.ENUM.value and isinstance(value, list):
+            return value
+        return None
 
     def solve_z3_constraints(self, z3_constraints: List[InterParamConstraint]):
         """
@@ -527,4 +554,89 @@ class ParamConstraintUtils(CommonDispatcher):
                 attr_value = property_dict.get(field_name, None)
                 if param_attr_ori_status and attr_value is not None:
                     self.case_input_map[param_name].__setattr__(field_name, attr_value)
+        # Post-check (Point2-方案3): 把 writeback 后 case 的最终值钉进同一个 builder 复核全约束，
+        # 捕获 spurious SAT——Z3 返回 sat 但 resolve_model 因异常静默保留 pairwise 预置值
+        # (典型: shape SeqSort eval 抛异常后保留越界 rank)，或 Z3 对 SeqSort/ForAll 组合不完备
+        # 致 model 与约束语义偏离。值取自 case_input_map (含被丢弃/未入 model 的预置值)，而非
+        # solver_result。违例返回 False，接入 handle_single_operator 的 solve_time 重试/早停。
+        if not self._post_check_resolved_case(builder):
+            return False
         return True
+
+    def _post_check_resolved_case(self, builder: Z3ConstraintBuilder) -> bool:
+        """push 后把每个参数 case 最终值钉为等式约束，check；UNSAT 即 spurious SAT。
+        post-check 自身异常 fail-open (不阻断主流程)，仅在确认 UNSAT 时返回 False。
+        同时汇总暴露本轮 dropped_constraints (Point3-方案3) 供门禁观测。"""
+        try:
+            builder.solver.push()
+            for param_name, var_obj in builder.var_map.items():
+                case_input = self.case_input_map.get(param_name)
+                if case_input is None:
+                    continue
+                self._pin_case_value(builder, var_obj, case_input)
+            check_res = builder.solver.check()
+        except Exception as e:
+            logger.warning(f"[PostCheck] post-check skipped (internal error, fail-open): {e}")
+            try:
+                builder.solver.pop()
+            except Exception:
+                pass
+            return True
+        builder.solver.pop()
+        if check_res != z3.sat:
+            logger.error(
+                f"[PostCheck] resolved case violates constraints (spurious SAT), "
+                f"check={check_res}, operator={self.operator_name}")
+            return False
+        if builder.dropped_constraints:
+            logger.warning(
+                f"[PostCheck] {len(builder.dropped_constraints)} constraint(s) dropped during solve "
+                f"(sort mismatch/parse error), operator={self.operator_name}: "
+                f"{[d.get('expr', '')[:60] for d in builder.dropped_constraints]}")
+        return True
+
+    def _pin_case_value(self, builder: Z3ConstraintBuilder, var_obj, case_input) -> None:
+        """把单参数 case 最终值钉为其 z3 变量的等式约束。每个 pin 独立 try/except，
+        失败仅跳过该 pin 不阻断复核。scalar 钉 range_values；tensor/tensor_list 钉
+        dtype/format/shape (elem_* for tensor_list)。"""
+        var_type = getattr(var_obj, 'type', None)
+        try:
+            if var_type == 'scalar':
+                rv = getattr(case_input, 'range_values', None)
+                z3_var = getattr(var_obj, 'z3_var', None)
+                if z3_var is None or rv is None or isinstance(rv, (list, tuple)):
+                    return
+                if isinstance(rv, bool):
+                    builder.solver.add(z3_var == z3.BoolVal(rv))
+                elif isinstance(rv, (int, float)):
+                    builder.solver.add(z3_var == rv)
+                elif isinstance(rv, str):
+                    builder.solver.add(z3_var == z3.StringVal(rv))
+            elif var_type in ('tensor', 'tensor_list'):
+                is_list = var_type == 'tensor_list'
+                dt_attr = 'elem_dtype' if is_list else 'dtype'
+                fmt_attr = 'elem_format' if is_list else 'format'
+                shape_attr = 'elem_shape' if is_list else 'shape'
+                dt = getattr(case_input, 'dtype', None)
+                if dt and dt in DTYPE_MAP:
+                    try:
+                        builder.solver.add(getattr(var_obj, dt_attr) == DTYPE_MAP[dt])
+                    except Exception as e:
+                        logger.debug(f"[PostCheck] skip pin dtype {getattr(var_obj, 'name', '')}={dt}: {e}")
+                fmt = getattr(case_input, 'format', None)
+                if fmt:
+                    try:
+                        builder.solver.add(getattr(var_obj, fmt_attr) == z3.StringVal(fmt))
+                    except Exception as e:
+                        logger.debug(f"[PostCheck] skip pin format {getattr(var_obj, 'name', '')}={fmt}: {e}")
+                shape = getattr(case_input, 'shape', None)
+                if isinstance(shape, list) and shape:
+                    try:
+                        sh = getattr(var_obj, shape_attr)
+                        builder.solver.add(z3.Length(sh) == len(shape))
+                        for i, v in enumerate(shape):
+                            builder.solver.add(sh[i] == v)
+                    except Exception as e:
+                        logger.debug(f"[PostCheck] skip pin shape {getattr(var_obj, 'name', '')}: {e}")
+        except Exception as e:
+            logger.debug(f"[PostCheck] skip pin {getattr(var_obj, 'name', '')}: {e}")

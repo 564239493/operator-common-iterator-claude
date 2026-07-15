@@ -4,8 +4,16 @@ description: 从补充约束 Markdown 与已提取 constraints.json 产出结构
 
 # 约束补充规范
 
-输入必须包含：补充约束 Markdown 快照（`run_state.supplement_constraints`）、
-当前轮已提取的 `constraints.json`、当前轮目录。
+输入必须包含：补充约束 Markdown、当前轮已提取的 `constraints.json`、当前轮目录。
+
+补充约束 Markdown 有两个来源，**都读**（合并消费）：
+1. `inputs/supplementary-doc.md`（**主源**，source-analyst 从源码分析自动产出）。
+   仅当 `run_state.operator_src_snapshot` 非空时存在。
+2. `inputs/supplement_constraints.md`（用户 `--supplement-constraints` 手写快照，
+   可选）。仅当 `run_state.supplement_constraints` 非空时存在。
+
+两者都为空时跳过补充阶段。条目去重：若同一 `expr` 在两个文件都出现，以
+supplementary-doc.md（源码分析）为准。
 
 > 本阶段**不重新提取约束**，只对 EXTRACT 已产出的 `constraints.json` 做关系
 > 补充：追加（add）补充文件描述的新关系约束、替换（replace）文档提取过宽/过窄
@@ -19,6 +27,33 @@ description: 从补充约束 Markdown 与已提取 constraints.json 产出结构
    `aclDataType` 参数 dtype 固定 `["string"]` 等），以及
    `prompts/modules/broadcast.md` 的关系展开规范（broadcast 右对齐表达、dtype
    互推导），保证生成器可消费。
+   **【跨 sort 比较必展开析取】** 凡涉及「int 枚举码 attr 与 `tensor.dtype`
+   比较」的约束，**必须**展开成显式析取，**禁止**直接写
+   `attr == tensor.dtype` / `attr != tensor.dtype`。
+   - 原因：constraints.json 里 scalar attr（如 `additionalDtype`）的
+     `allowed_range_value.value` 是 **int 枚举码**（ACL dtype 码），而
+     `tensor.dtype` 在 Z3 求解器里是 **DType EnumSort**（规范化名）。直接
+     `additionalDtype == srcTensor.dtype` 会触发 Z3 sort mismatch（IntSort vs
+     DType），整条 `or` 守卫被 `add_constraint` 丢弃（见
+     `agent/generators/param_constraint_solve/z3_expression_solver_utils.py`
+     `add_constraint` 的 dropped_constraints），致 WeightQuant 条件守卫全部失效。
+   - 正确写法：把相等/不等关系展开为 `(attr==<int码> and tensor.dtype=="<DType名>")`
+     的析取，每个析取项是同 sort 的字面量比较，用 `or`/`and` 串联。DType 名用大写
+     规范名（预处理自动映成 Z3 DType enum 常量）。
+   - ACL dtype 码表（attr int 码 ↔ DType 名）：
+     `0=FLOAT, 1=FLOAT16, 2=INT8, 3=INT32, 4=UINT8, 6=INT16, 7=UINT16, 8=UINT32,
+     9=INT64, 10=UINT64, 12=BOOL, 27=BFLOAT16, 35=FLOAT8_E5M2, 36=FLOAT8_E4M3FN,
+     40=FLOAT4_E2M1, -1=UNDEFINED`。只展开补充文件实际声明的码集。
+   - 示例（`additionalDtype == srcTensor.dtype` 表示非 WeightQuant 路径，码集
+     `[1,27,2,36]`）：
+     - 禁止：`(additionalDtype == srcTensor.dtype) or (len(srcTensor.shape) in {2,3})`
+     - 正确：`((additionalDtype == 1 and srcTensor.dtype == "FLOAT16") or
+       (additionalDtype == 27 and srcTensor.dtype == "BFLOAT16") or
+       (additionalDtype == 2 and srcTensor.dtype == "INT8") or
+       (additionalDtype == 36 and srcTensor.dtype == "FLOAT8_E4M3FN")) or
+       (len(srcTensor.shape) in {2,3})`
+   - 同理适用于 `format` 码 attr（`acl_format` int 码 ↔ format 名字符串）等其他
+     int 枚举码 attr 与 tensor 属性的跨 sort 比较：一律展开成同 sort 字面量析取。
 3. 对每条关系区分操作：
    - **add_constraint**：补充文件描述了 `constraints.json` 中没有的新关系。
      `target_platform` 为该关系生效的平台（中文产品名，须与 `constraints.json`
@@ -42,7 +77,9 @@ description: 从补充约束 Markdown 与已提取 constraints.json 产出结构
    - `proposed` **只含** `expr_type`/`expr`/`relation_params` 三字段；
      `src_text`/`origin` 由合并器填（`src_text=basis`、`origin="supplement"`），
      **不要**塞进 `proposed`（`InterParamConstraint` 为 `extra:forbid`）。
-   - `basis` 是补充文件依据，不是源码依据（源码分析已删除）。
+   - `basis` 是补充文件依据：supplementary-doc.md 的 basis 来自源码分析
+     （`source_location` + `error_string`）；supplement_constraints.md 的 basis
+     来自手写说明。写入 patch 时取条目内给出的依据文本。
 5. 写入 `<iter-dir>/constraints_patch.json`。
 6. schema 自检（逐项核对或 Python 脚本）：
    - `op ∈ {add_constraint, replace_constraint}`

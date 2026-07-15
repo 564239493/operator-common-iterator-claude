@@ -210,10 +210,10 @@ def main() -> int:
                           "constraints": str(constraints_path)}, ensure_ascii=False))
         return 0
 
-    # 备份留痕:保留 EXTRACT 原始产物,已存在则不覆盖
+    # 备份留痕:保留 EXTRACT 原始产物。每轮覆盖(第 2 轮 re-EXTRACT 后干净底,
+    # 备份本轮 EXTRACT 产物供回溯;跨轮不叠加,保证 re-supplement 幂等)。
     backup = constraints_path.with_name(constraints_path.stem + ".json.pre_supplement")
-    if not backup.exists():
-        shutil.copy2(constraints_path, backup)
+    shutil.copy2(constraints_path, backup)
 
     try:
         constraints, log = apply_patch(constraints, patch_items, origin=args.origin)

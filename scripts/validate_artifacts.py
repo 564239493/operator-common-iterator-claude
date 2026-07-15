@@ -573,12 +573,49 @@ def validate_executor(path: str) -> list[str]:
     return errors
 
 
+def _validate_md_file(path: str) -> tuple[list[str], list[str]]:
+    """校验 markdown 文件存在；空文件返回 warning 不阻断（uncertain/conflict
+    可为空，supplementary 空则由补充逻辑跳过）。自由格式，不做 schema。"""
+    p = Path(path)
+    if not p.is_file():
+        return [f"doc file not found: {path}"], []
+    if not p.read_text(encoding="utf-8").strip():
+        return [], [f"doc file is empty (allowed): {path}"]
+    return [], []
+
+
+def validate_supplementary_doc(path: str) -> tuple[list[str], list[str]]:
+    return _validate_md_file(path)
+
+
+def validate_uncertain_doc(path: str) -> tuple[list[str], list[str]]:
+    return _validate_md_file(path)
+
+
+def validate_conflict_doc(path: str) -> tuple[list[str], list[str]]:
+    return _validate_md_file(path)
+
+
+def validate_source_raw(value) -> list[str]:
+    if not isinstance(value, dict):
+        return ["source_raw must be an object"]
+    errors = []
+    for key in ("aclnn_interfaces", "platform_matrix", "raw_checks"):
+        if key not in value:
+            errors.append(f"missing field: {key}")
+    return errors
+
+
 VALIDATORS = {
     "constraints": validate_constraints,
     "cases": validate_cases,
     "execution": validate_execution,
     "analysis": validate_analysis,
     "executor": validate_executor,
+    "supplementary_doc": validate_supplementary_doc,
+    "uncertain_doc": validate_uncertain_doc,
+    "conflict_doc": validate_conflict_doc,
+    "source_raw": validate_source_raw,
 }
 
 
@@ -588,9 +625,10 @@ def main() -> int:
     parser.add_argument("path")
     args = parser.parse_args()
     try:
-        # executor 校验对象是 Python 源文件, 直接传路径; 其余校验对象是
-        # JSON 产物, 先解析再传结构.
-        if args.kind == "executor":
+        # executor / *_doc 校验对象是文件路径(Python 源/markdown), 直接传路径;
+        # 其余校验对象是 JSON 产物, 先解析再传结构.
+        path_kinds = {"executor", "supplementary_doc", "uncertain_doc", "conflict_doc"}
+        if args.kind in path_kinds:
             result = VALIDATORS[args.kind](args.path)
         else:
             result = VALIDATORS[args.kind](load(args.path))

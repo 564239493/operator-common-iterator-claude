@@ -123,7 +123,8 @@ class Z3ConstraintBuilder:
                         lambda self, kwargs: (self.solver, kwargs.get("dtype"), kwargs.get('allowed_dtypes'),
                                               kwargs.get('allowed_formats'), kwargs.get('range_value'),
                                               kwargs.get("length"))),
-        'scalar': (ScalarVar, lambda self, kwargs: (self.solver, kwargs.get('dtype'), kwargs.get('range_value'))),
+        'scalar': (ScalarVar, lambda self, kwargs: (self.solver, kwargs.get('dtype'), kwargs.get('range_value'),
+                                                     kwargs.get('allowed_range_enum'))),
         'list': (ListVar, lambda self, kwargs: (self.solver, kwargs.get('dtype'), kwargs.get('range_value'),
                                                 kwargs.get("length"))),
     }
@@ -135,13 +136,16 @@ class Z3ConstraintBuilder:
             self.solver.set('timeout', timeout_ms)
         self.var_map = {}
         self._slice_counter = 0
+        # 因 sort mismatch / 解析异常等被丢弃的约束（expr + 原因），供 solve_z3_constraints
+        # post-check 与 generation_summary 暴露给质量门禁，避免约束被静默蒸发后无人知晓。
+        self.dropped_constraints = []
 
     def get_next_slice_id(self):
         self._slice_counter += 1
         return self._slice_counter
 
     def declare_var(self, var_name, type_hint="scalar", dtype=None, allowed_dtypes=None, allowed_formats=None,
-                    range_value=None, length=None, is_print_log=False):
+                    range_value=None, length=None, is_print_log=False, allowed_range_enum=None):
         if var_name in self.var_map:
             logger.warning(f"[Warn] var {var_name} already declared")
             return
@@ -153,7 +157,7 @@ class Z3ConstraintBuilder:
         kwargs = {
             'dtype': dtype, 'allowed_dtypes': allowed_dtypes,
             'allowed_formats': allowed_formats, 'range_value': range_value,
-            'length': length
+            'length': length, 'allowed_range_enum': allowed_range_enum
         }
         cls, param_fn = self._VAR_FACTORY[type_hint]
 
@@ -195,7 +199,12 @@ class Z3ConstraintBuilder:
                 if is_print_log:
                     logger.debug(f"[SKIP] {expr_str}: converter returned None, ignored")
         except Exception as e:
-            logger.error(f"[FAIL] {expr_str}: {e}")
+            # 不再静默丢弃：记录到 dropped_constraints 供 solve_z3_constraints post-check 与
+            # generation_summary 暴露给质量门禁。典型场景：`additionalDtype == srcTensor.dtype`
+            # 左 IntSort 右 DType EnumSort 触发 Z3Exception sort mismatch，致整条 or 守卫蒸发。
+            dropped = {"name": expr_name, "expr": expr_str, "error": f"{type(e).__name__}: {e}"}
+            self.dropped_constraints.append(dropped)
+            logger.error(f"[FAIL-DROPPED] {expr_str}: {e}")
 
     def solve(self):
         if self._timeout_ms:

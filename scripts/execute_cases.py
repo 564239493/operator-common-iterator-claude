@@ -237,8 +237,9 @@ def main() -> int:
         "--env-init",
         default=None,
         help=(
-            "可选: 覆盖 servers.json 中的 env_init_script, "
-            "用于 source CANN 环境。"
+            "可选: 覆盖 servers.json 中的 env_init / env_init_script, "
+            "用于 source CANN 环境等。优先级: --env-init > "
+            "server.env_init > server.env_init_script > 内置默认。"
         ),
     )
     parser.add_argument(
@@ -363,7 +364,7 @@ def main() -> int:
             run_id=args.run_id,
             artifact_dir=artifact_dir,
             project_root=ROOT,
-            env_init=args.env_init or selected_server.get("env_init_script"),
+            env_init=args.env_init,  # CLI override only; runner resolves full chain
             iter_dir=iter_dir,
         )
 
@@ -413,3 +414,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    
