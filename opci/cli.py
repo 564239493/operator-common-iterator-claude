@@ -90,7 +90,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if servers_src.is_file():
         shutil.copy2(servers_src, servers_dst)
 
-    # 8. Create empty directories
+    # 8. Create .opci_project_root marker (pins project root for MCP tools)
+    from opci.config import PROJECT_ROOT_MARKER
+    marker_path = target / PROJECT_ROOT_MARKER
+    marker_path.write_text(str(target) + "\n", encoding="utf-8")
+
+    # 9. Create empty directories
     (target / "runs").mkdir(exist_ok=True)
     (target / "operator_docs").mkdir(exist_ok=True)
     (target / "prompts").mkdir(exist_ok=True)  # ensure it exists even if no bundled prompts

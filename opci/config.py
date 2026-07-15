@@ -4,7 +4,8 @@ Two distinct path domains:
 - PACKAGE_ROOT: the installed package location (pip site-packages or editable install)
   Used for finding bundled resources (prompts, configs, templates)
 - PROJECT_ROOT: the user's working directory (where runs/, servers.json, operator_docs/ live)
-  Derived from CLAUDE_PROJECT_DIR env var or cwd
+  Determined by .opci_project_root marker file (created by opci setup), with
+  CLAUDE_PROJECT_DIR fallback. Walking up from cwd/env prevents subagent drift.
 """
 
 from __future__ import annotations
@@ -17,17 +18,41 @@ from typing import Any
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 
+PROJECT_ROOT_MARKER = ".opci_project_root"
+
 
 def get_project_root() -> Path:
     """Return the user's project directory.
 
-    In MCP mode: derived from CLAUDE_PROJECT_DIR env var (set by Claude Code).
-    In CLI mode: current working directory.
+    Resolution strategy:
+    1. Walk up from CLAUDE_PROJECT_DIR (or cwd) looking for .opci_project_root marker.
+       The marker file is created by `opci setup` and contains the absolute path
+       of the project root. This prevents subagent cwd drift and supports multiple
+       projects on the same machine — each project has its own marker.
+    2. If a marker is found, read and return the stored absolute path.
+    3. Fallback: return CLAUDE_PROJECT_DIR or cwd.
+
+    This approach correctly handles:
+    - Multiple opci projects on one machine (each has its own marker)
+    - Subagent cwd drift (CLAUDE_PROJECT_DIR pointing to a subdirectory)
+    - Different users with different project directories
     """
     env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if env_dir:
-        return Path(env_dir).resolve()
-    return Path.cwd().resolve()
+    start = Path(env_dir).resolve() if env_dir else Path.cwd().resolve()
+
+    # Walk up from start looking for the marker file
+    for candidate in [start] + list(start.parents):
+        marker = candidate / PROJECT_ROOT_MARKER
+        if marker.is_file():
+            stored_root = marker.read_text(encoding="utf-8").strip()
+            stored_path = Path(stored_root)
+            if stored_path.is_absolute() and stored_path.is_dir():
+                return stored_path.resolve()
+            # Marker contains invalid path — use the directory containing the marker
+            return candidate
+
+    # Fallback: no marker found, use env var or cwd
+    return start
 
 
 def resolve_input_path(value: str | Path, project_root: Path | None = None) -> Path:
