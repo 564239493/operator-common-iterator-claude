@@ -35,12 +35,18 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
 - OPTIMIZE：调用 `mcp__opci__update_run_state(run_dir, "OPTIMIZE")`
 - 终态：STOP_GENERATOR_BUG / STOP_EXECUTOR_BUG / MAX_ITERATIONS
 
-5. 每轮按顺序委派：
-   - `constraint-extractor`
-   - `case-generator`
+5. 每轮严格串行委派（禁止并行）：
+   - `constraint-extractor` → **必须等它返回并落盘后**
+   - `case-generator` → **必须等它返回并落盘后**
    - `case-executor`（real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→自检→real-run
      四子步骤；推导须清除 `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run）
+     → **必须等它返回并落盘后**
    - `quality-reviewer`
+
+**串行执行规则**：每个 Agent 必须在前一个 Agent 完全完成（产物落盘、校验通过）之后才能开始。
+EXTRACT 依赖 init_run 的产物；GENERATE 依赖 constraints.json；EXECUTE 依赖 cases.json；
+GATE 依赖全部产物。不得同时委派多个 Agent，不得在上一阶段产物未落盘时就开始下一阶段。
+每次委派只启动一个 Agent，等待其完成后再启动下一个。
 6. 若门禁确认全部通过，更新 run_state 为 SUCCESS 并结束。
 7. 若有用例失败，委派 `failure-analyst`：
    - constraint_extraction：委派 `prompt-optimizer`，将新 prompt 送入下一轮。
@@ -55,4 +61,6 @@ argument-hint: <项目内或外部算子文档路径> [--prompt path] [--max-ite
     文档消失等算子级问题阻断，则调用 `mcp__opci__batch_complete(batch_dir, terminal_state="BLOCKED", message=<原因>)`。
     不得把真实执行配置缺失静默记为算子失败；目录批次初始化时应先统一校验该配置。
 
-不要在主协调器中亲自完成专职 Agent 的工作，不要并行运行存在数据依赖的阶段。
+**绝对禁止**：不要在主协调器中亲自完成专职 Agent 的工作。不要并行运行任何阶段——
+每个阶段依赖上一阶段的落盘产物，必须等前一个 Agent 完全完成后再委派下一个。
+同时委派 constraint-extractor + case-generator 或任何其他并行组合都是严重错误。

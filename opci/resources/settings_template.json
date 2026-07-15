@@ -9,8 +9,6 @@
       "Bash",
       "PowerShell",
       "Edit(/**)",
-      "Write(/**)",
-      "NotebookEdit(/**)",
       "Agent",
       "Skill",
       "WebFetch",
@@ -42,9 +40,7 @@
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./servers.json)",
-      "Edit(../**)",
-      "Write(../**)",
-      "NotebookEdit(../**)"
+      "Edit(../**)"
     ]
   },
   "sandbox": {
