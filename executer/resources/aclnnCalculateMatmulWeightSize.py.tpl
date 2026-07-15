@@ -121,12 +121,7 @@ class AclnnNpuFormatCast(AclnnBaseApi):
             data = self.backend.convert_input_data(kwarg, name=name)
             if name in param_list:
                 input_tmp[name] = data
-        # === 处理标杆输出 ===
-        # 收集算子输出，并储存根据输出中的shape和dtype信息生成的AclTensorStruct数据结构
-        # 输出数据结构说明：
-        for index, output_data in enumerate(self.task_result.output_info_list):
-            output = self.backend.convert_output_data(output_data, index)
-            output_packages.extend(output)  # 保存完整AclTensorStruct结构
+
         # 构造算子调用的入参顺序
         for i, arg_name in enumerate(param_list):
             data = input_tmp.get(arg_name)
@@ -149,6 +144,18 @@ class AclnnNpuFormatCast(AclnnBaseApi):
                     input_args.append(null_tensorlist_ptr)
                 else:
                     input_args.append(ctypes.c_void_p(None))
+
+        # === 处理标杆输出 ===
+        # 收集算子输出，并储存根据输出中的shape和dtype信息生成的AclTensorStruct数据结构
+        # 输出数据结构说明：
+        output_list = self.output.split(',')
+        for index, output in enumerate(output_list):
+            data = input_tmp.get(output)
+            if isinstance(data, list):
+                output_packages.append(data[0])
+            else:
+                output_packages.append(data)
+
         return input_args, output_packages
 
     def after_call(self, output_packages):
@@ -343,14 +350,17 @@ class AclnnNpuFormatCast(AclnnBaseApi):
             'HWCN': AclFormat.ACL_FORMAT_HWCN,
             'NHWC': AclFormat.ACL_FORMAT_NHWC,
             'NC1HWC0': AclFormat.ACL_FORMAT_NC1HWC0,
+            'NDC1HWC0': AclFormat.ACL_FORMAT_NDC1HWC0,
             'NCL': AclFormat.ACL_FORMAT_NCL,
             'NCDHW': AclFormat.ACL_FORMAT_NCDHW,
             'NDHWC': AclFormat.ACL_FORMAT_NDHWC,
+            'FRACTAL_Z_3D': AclFormat.ACL_FRACTAL_Z_3D,
         }
 
         if format_str in FORMAT_MAPPING:
             return FORMAT_MAPPING[format_str]
         else:
+            logging.error(f"not found format: {format_str}")
             return AclFormat.ACL_FORMAT_ND
 
     def get_ctype(self, type_str):

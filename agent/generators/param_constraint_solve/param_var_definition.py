@@ -954,7 +954,7 @@ class ListVar(BaseVar):
 
 
 class ScalarVar(BaseVar):
-    def __init__(self, name, solver, dtype, range_value=None):
+    def __init__(self, name, solver, dtype, range_value=None, allowed_range_enum=None):
         super().__init__(name, solver)
         if dtype not in TYPE_CONFIG:
             logger.error(f"Unsupported dtype '{dtype}' for var '{name}', fallback to 'int'")
@@ -967,6 +967,43 @@ class ScalarVar(BaseVar):
         self.z3_var = z3.Const(name, self.config['sort_fn']())
         self._range_spec = range_value
         self._element_sort = self.config['sort_fn']()
+        # 声明期硬锚定 allowed_range_value(type=enum) 入参枚举域，镜像 dtype/format 的
+        # 声明期锚定（_add_dtype_constraints/_add_format_constraints）。此前 enum 取值仅经
+        # build_param_range_value_constraint 生成 `<var>.range_value == <v>` 后走
+        # choice_no_conflicts_expr 的可丢弃通道，一旦被丢则该 z3 变量不被任何约束引用、不在
+        # model 中、resolve_model 返回空 range_values、writeback 跳过，pairwise 预置的越界值
+        # 原样透传（H1: Atlas 350 dstFormat enum=[29] 未锚定，产出 dstFormat=2/30 越界）。
+        self._add_range_value_enum_constraints(allowed_range_enum)
+
+    def _add_range_value_enum_constraints(self, allowed_enum_values):
+        """把 allowed_range_value(type=enum) 的候选值在声明期硬锚定为 z3 变量的取值域。
+
+        与 _add_dtype_constraints/_add_format_constraints 同构：声明期 solver.add(Or([...]))，
+        永不进 choice_no_conflicts_expr 的可丢弃通道，从而保证变量必在 model 中、resolve_model
+        必返回合法 enum 值。候选值按 z3 变量 sort 匹配：int/float→数值比较，str→StringVal，
+        bool→BoolVal；sort 不匹配的候选跳过并告警（不阻断）。
+        """
+        if not allowed_enum_values:
+            return
+        ors = []
+        for v in allowed_enum_values:
+            if v is None:
+                continue
+            try:
+                if isinstance(v, bool):
+                    ors.append(self.z3_var == z3.BoolVal(v))
+                elif isinstance(v, (int, float)):
+                    ors.append(self.z3_var == v)
+                elif isinstance(v, str):
+                    ors.append(self.z3_var == z3.StringVal(v))
+                else:
+                    logger.warning(
+                        f"[EnumAnchor] Unsupported enum value type {type(v).__name__} for var '{self.name}', skipped: {v}")
+            except Exception as e:
+                logger.warning(f"[EnumAnchor] Failed to anchor enum value {v!r} for var '{self.name}': {e}")
+        if ors:
+            self.solver.add(z3.Or(ors))
+            logger.debug(f"[EnumAnchor] {self.name} anchored to enum domain: {allowed_enum_values}")
 
     def get_z3_expr(self):
         return self.z3_var

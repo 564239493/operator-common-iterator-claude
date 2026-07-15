@@ -129,6 +129,7 @@ def command_claim(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
             "action": "resume",
             "batch_dir": str(batch_dir),
             "operator": current,
+            "supplement_constraints": batch.get("supplement_constraints", ""),
         }
     if batch["state"] == "STOPPED":
         return {
@@ -162,6 +163,7 @@ def command_claim(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
         "action": "start",
         "batch_dir": str(batch_dir),
         "operator": pending,
+        "supplement_constraints": batch.get("supplement_constraints", ""),
     }
 
 

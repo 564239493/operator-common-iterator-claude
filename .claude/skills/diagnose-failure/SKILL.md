@@ -46,4 +46,17 @@ cases_expanded.json、execution_result.json。先检查 engine_error，再检查
 }
 ```
 
+**源码证据与两级补救**（当 `run_state.operator_src_snapshot` 非空）：
+- 读 `<iter-dir>/source_evidence.json`（source-analyst diagnose 域产）。它已把
+  error_string 命中的 uncertain 关系追加到 `inputs/supplementary-doc.md`，并给出
+  `suggested_root_cause`（仅供参考，最终根因仍由本 agent 下）。
+- root_cause=constraint_extraction 时两级补救：
+  1. `source_evidence.log_match` 非空（补充已扩充）→ analysis 标注
+     "补充已扩充，re-EXTRACT + re-SUPPLEMENT"，**不走 prompt-optimizer**。
+  2. `log_match` 为空 → 自己根据错误日志 + 原算子文档尽力推约束关系，写入
+     `<iter-dir>/supplement_additions.md`（标 `origin=diagnose_inferred`）；推不出
+     → analysis 标注回退 prompt-optimizer。
+- 读 `inputs/conflict-doc.md` + `inputs/conflict_resolution.json`：失败命中未裁决
+  conflict → `specific_issues` 提示用户先裁决（冲突永远走人工通道）。
+
 证据不足时不得猜测；列出缺失证据并保守归入 executor_bug。

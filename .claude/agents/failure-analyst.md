@@ -22,3 +22,16 @@ color: purple
 错误应归为 executor_bug。
 
 只写 analysis.json，不修改提示词或业务代码。
+
+**源码证据与两级补救**（当 `run_state.operator_src_snapshot` 非空）：
+- 读 `<iter-dir>/source_evidence.json`（source-analyst diagnose 域产，含
+  `log_match`/`suggested_root_cause`/`conflict_pending`）作为证据。source-analyst
+  已把 error_string 命中的 uncertain 关系追加到 `inputs/supplementary-doc.md`。
+- 当 root_cause=constraint_extraction：
+  - 若 `source_evidence.log_match` 非空（补充已扩充）→ analysis 标注"补充已扩充，
+    re-EXTRACT + re-SUPPLEMENT + re-GENERATE + re-EXECUTE"，**不走 prompt-optimizer**。
+  - 若 `log_match` 为空 → 自己根据错误日志 + 原算子文档尽力推可能的约束关系，
+    写入 `<iter-dir>/supplement_additions.md`（追加到 supplementary-doc.md 的增量，
+    标 `origin=diagnose_inferred`）。推不出 → analysis 标注回退 prompt-optimizer。
+- 读 `inputs/conflict-doc.md` + `inputs/conflict_resolution.json`：若失败命中
+  **未裁决** conflict，在 `specific_issues` 提示用户先裁决（冲突不自动转约束）。

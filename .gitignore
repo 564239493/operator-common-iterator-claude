@@ -16,3 +16,4 @@ logs/
 execution_results/
 tests/
 
+/operators-src/
