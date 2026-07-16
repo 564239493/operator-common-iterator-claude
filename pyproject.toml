@@ -33,3 +33,6 @@ packages = ["opci"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "opci/resources/.mcp.json" = "opci/resources/.mcp.json"
+
+[tool.hatch.build.targets.sdist.force-include]
+"opci/resources/.mcp.json" = "opci/resources/.mcp.json"

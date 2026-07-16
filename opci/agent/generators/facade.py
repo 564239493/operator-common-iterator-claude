@@ -68,14 +68,20 @@ def _ensure_formal_logger_initialized(operator_name: str = "") -> None:
     日志文件命名为 ``generate_case_{operator_name}.log``；当 ``operator_name``
     为空时回退到 ``operator_generator.log``。同一算子名只会初始化一次，
     重复调用直接返回。
+
+    日志目录基于项目根（从 ``.opci_project_root`` 标记解析），写入统一的
+    ``logs/tools/`` 目录下，确保无论进程 cwd 在哪里，开发人员都能在项目目录
+    的 ``logs/tools/`` 下找到生成器日志。
     """
     key = operator_name.strip() if isinstance(operator_name, str) else ""
     if key in _logger_initialized_operators:
         return
     log_name = f"generate_case_{key}" if key else _FALLBACK_LOG_NAME
     try:
+        from opci.config import get_project_root
+        log_dir = str(get_project_root() / "logs" / "tools")
         from opci.agent.generators.common_utils.logger_util import init_logger
-        init_logger(log_name=log_name, log_dir="./logs")
+        init_logger(log_name=log_name, log_dir=log_dir)
         _logger_initialized_operators.add(key)
     except Exception as init_err:  # pragma: no cover - 防呆
         # 不要因为 logger 初始化失败就阻塞用例生成；保留 traceback 供排查。

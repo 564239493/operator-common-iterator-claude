@@ -2,6 +2,9 @@
 
 Contains validation logic extracted from scripts/validate_artifacts.py
 and normalize logic from scripts/normalize_constraints.py.
+
+Strictly aligned with scripts/validate_artifacts.py — no logic changes.
+Only adaptation: logging calls for MCP observability.
 """
 
 from __future__ import annotations
@@ -14,6 +17,9 @@ import time
 import tokenize
 from pathlib import Path
 from typing import Any
+
+from opci.agent.generators.common_model_definition import OperatorRule
+from opci.mcp._logging import log, log_elapsed
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +40,7 @@ def save_json(path: str | Path, data: Any, indent: int = 2) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Expression normalization (from validate_artifacts.py)
+# Expression normalization (original: validate_artifacts.py L32-45)
 # ---------------------------------------------------------------------------
 
 def normalize_expr_null(expr: str) -> str:
@@ -50,7 +56,7 @@ def normalize_expr_null(expr: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Constraint normalization (from normalize_constraints.py)
+# Constraint normalization (original: normalize_constraints.py)
 # ---------------------------------------------------------------------------
 
 TENSOR_TYPES = {"aclTensor", "aclTensorList"}
@@ -159,7 +165,7 @@ def normalize_constraints(value: dict[str, Any]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Validation functions (from validate_artifacts.py)
+# Iteration helpers (original: validate_artifacts.py L48-76, L178-183)
 # ---------------------------------------------------------------------------
 
 def _iter_param_attributes(value):
@@ -200,15 +206,36 @@ def _walk_values(value):
         yield value
 
 
+# ---------------------------------------------------------------------------
+# Validation functions — strictly aligned with validate_artifacts.py
+# ---------------------------------------------------------------------------
+
+# Regex constants (original: L20-25, L246-248, L376-382)
+_CONDITIONAL_SHAPE_SIGNAL_RE = re.compile(
+    r"(?:配置|设置|设为|为|等于)\s*(?:true|false|0|1|[-+]?\d+)\s*时"
+    r"[^。；;\n]*shape"
+    r"|when\b[^\n.]*\b(?:true|false|0|1)\b[^\n.]*\bshape\b",
+    re.IGNORECASE,
+)
+
+_EXACT_LENGTH_EQUALITY_RE = re.compile(
+    r"^\s*长度与\s*([A-Za-z_]\w*)\s*相同[。.]?\s*$"
+)
+
+_DYNAMIC_VALUE_RELATION_RE = re.compile(
+    r"(?:小于|大于|不超过|不小于|等于|相同|一致|依赖|根据)"
+)
+_EXPLICIT_NULL_RE = re.compile(
+    r"(?:空指针|nullptr|未传|缺省|支持空|可为空|配置空)",
+    re.IGNORECASE,
+)
+
+
 def validate_constraints(value, _log_step: bool = False) -> list[str]:
     """Validate constraints.json structure and semantics.
 
-    Args:
-        value: parsed constraints dict
-        _log_step: if True, write step-level debug logs via opci.mcp._logging
+    Aligned with scripts/validate_artifacts.py validate_constraints (L472-495).
     """
-    from opci.mcp._logging import log, log_elapsed
-
     t0 = time.monotonic()
     if _log_step:
         log("validate_constraints_internal", "start")
@@ -226,46 +253,61 @@ def validate_constraints(value, _log_step: bool = False) -> list[str]:
             "一段式判定由 function_signature 是否含 GetWorkspaceSize 隐式表达。"
         ]
 
+    # original: L480 — compute array_length_errors before OperatorRule
+    array_length_errors = _validate_array_lengths(value)
+
     if _log_step:
-        log("validate_constraints_internal", "step1_operator_rule_import")
+        log("validate_constraints_internal", "step1_operator_rule_validate")
     try:
-        from opci.agent.generators.common_model_definition import OperatorRule
-        if _log_step:
-            log("validate_constraints_internal", "step2_operator_rule_validate")
         OperatorRule(**value)
         if _log_step:
-            log_elapsed("validate_constraints_internal", "step2_done", t0)
+            log_elapsed("validate_constraints_internal", "step1_done", t0)
+        errors = (
+            validate_constraint_semantics(value)
+            + array_length_errors
+            + _validate_tensor_format_values(value)
+            + _validate_conditional_shape_constraints(value)
+            + _validate_tensor_list_length_constraints(value)
+            + _validate_dynamic_allowed_ranges(value)
+        )
     except Exception as exc:
         if _log_step:
             log("validate_constraints_internal", "operator_rule_failed", error=str(exc)[:200])
         return [f"OperatorRule validation failed: {exc}"]
 
-    errors: list[str] = []
-
-    if _log_step:
-        log("validate_constraints_internal", "step3_semantic_checks")
-    errors.extend(validate_constraint_semantics(value))
-
-    if _log_step:
-        log("validate_constraints_internal", "step4_array_lengths")
-    errors.extend(_validate_array_lengths(value))
-
-    if _log_step:
-        log("validate_constraints_internal", "step5_tensor_formats")
-    errors.extend(_validate_tensor_format_values(value))
-
-    # Additional semantic checks would be added here
     if _log_step:
         log_elapsed("validate_constraints_internal", "done", t0, error_count=len(errors))
     return errors
 
 
 def validate_constraint_semantics(value) -> list[str]:
-    """Check constraint expressions for semantic issues."""
+    """Check constraint expressions for semantic issues (original: L108-175)."""
     errors: list[str] = []
+
+    # original: L111-121 — allowed_range_value null boundary check
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        allowed = attributes.get("allowed_range_value")
+        if not isinstance(allowed, dict) or allowed.get("type") != "range":
+            continue
+        range_value = allowed.get("value", [])
+        if any(item is None for item in _walk_values(range_value)):
+            errors.append(
+                f"{section}.{param}[{platform}].allowed_range_value: "
+                "type=range does not allow null boundaries; use an inequality "
+                "in constraints_in_parameters. type=enum may contain null"
+            )
+
+    # original: L123-173 — constraint expression checks
     for platform, index, constraint in _iter_constraints(value):
         expr = constraint.get("expr", "")
-        if not expr or not isinstance(expr, str):
+        if not expr:
+            continue
+        # original: L127-131 — non-string expr must be reported as error
+        if not isinstance(expr, str):
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}].expr "
+                "must be a string"
+            )
             continue
         try:
             normalized = normalize_expr_null(expr)
@@ -276,16 +318,47 @@ def validate_constraint_semantics(value) -> list[str]:
                 f"is not valid after null->None normalization: {exc}"
             )
             continue
+        # original: L142-147 — nested numeric interval membership
         if _is_nested_numeric_interval_membership(tree):
             errors.append(
                 f"constraints_in_parameters[{platform}][{index}].expr uses "
                 "'in [[min, max]]' as a numeric range; use chained "
                 "inequalities such as 'min <= value <= max'"
             )
+        # original: L148-156 — .array_length AST attribute detection
+        if any(
+            isinstance(item, ast.Attribute) and item.attr == "array_length"
+            for item in ast.walk(tree)
+        ):
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}].expr uses "
+                "'.array_length', which is JSON metadata rather than a "
+                "runtime expression attribute; use len(container)"
+            )
+        # original: L157-173 — null/None as numeric comparison boundary
+        for item in ast.walk(tree):
+            if not isinstance(item, ast.Compare):
+                continue
+            operands = [item.left, *item.comparators]
+            has_none = any(
+                isinstance(operand, ast.Constant) and operand.value is None
+                for operand in operands
+            )
+            if has_none and any(
+                isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE))
+                for op in item.ops
+            ):
+                errors.append(
+                    f"constraints_in_parameters[{platform}][{index}].expr "
+                    "uses null/None as a numeric comparison boundary"
+                )
+                break
+
     return errors
 
 
 def _is_nested_numeric_interval_membership(node: ast.AST) -> bool:
+    """Original: validate_artifacts.py L78-105 — bool excluded from numeric check."""
     for item in ast.walk(node):
         if not isinstance(item, ast.Compare):
             continue
@@ -300,18 +373,30 @@ def _is_nested_numeric_interval_membership(node: ast.AST) -> bool:
                 values = candidate.elts
                 if len(values) != 2:
                     continue
+                # original: L93-103 — bool explicitly excluded
                 if all(
-                    isinstance(v, ast.Constant)
-                    and (v.value is None or isinstance(v.value, (int, float)))
-                    for v in values
+                    isinstance(value, ast.Constant)
+                    and (
+                        value.value is None
+                        or (
+                            isinstance(value.value, (int, float))
+                            and not isinstance(value.value, bool)
+                        )
+                    )
+                    for value in values
                 ):
                     return True
     return False
 
 
 def _validate_array_lengths(value) -> list[str]:
-    """Reject null lengths and lossy representations."""
+    """Reject null lengths and lossy representations of alternative ranges (original: L319-373)."""
     errors: list[str] = []
+    alternative_range_re = re.compile(
+        r"\[\s*-?\d+\s*,\s*-?\d+\s*\].*"
+        r"(?:或者|或是|或).*"
+        r"\[\s*-?\d+\s*,\s*-?\d+\s*\]"
+    )
     for section, param, platform, attributes in _iter_param_attributes(value):
         array_length = attributes.get("array_length")
         if not isinstance(array_length, dict):
@@ -320,11 +405,51 @@ def _validate_array_lengths(value) -> list[str]:
         path = f"{section}.{param}[{platform}].array_length.value"
         if length_value is None:
             errors.append(f"{path} must not be null; use [] when unconstrained")
+            continue
+        # original: L336-355 — shape validation
+        is_single_interval = (
+            isinstance(length_value, list)
+            and len(length_value) == 2
+            and all(isinstance(item, int) for item in length_value)
+        )
+        is_interval_list = (
+            isinstance(length_value, list)
+            and all(
+                isinstance(item, list)
+                and len(item) == 2
+                and all(isinstance(boundary, int) for boundary in item)
+                for item in length_value
+            )
+        )
+        if not (is_single_interval or is_interval_list):
+            errors.append(
+                f"{path} must be [], [min,max], or "
+                "[[min1,max1],[min2,max2],...]"
+            )
+            continue
+        # original: L356-373 — alternative range detection
+        src_text = array_length.get("src_text", "")
+        if (
+            isinstance(src_text, str)
+            and alternative_range_re.search(src_text)
+            and not (
+                isinstance(length_value, list)
+                and len(length_value) >= 2
+                and all(
+                    isinstance(item, list) and len(item) == 2
+                    for item in length_value
+                )
+            )
+        ):
+            errors.append(
+                f"{path} must preserve every alternative interval from "
+                "src_text as [[min1,max1],[min2,max2],...]"
+            )
     return errors
 
 
 def _validate_tensor_format_values(value) -> list[str]:
-    """Require Tensor format domains to use a list."""
+    """Require Tensor format domains to use a list (original: L186-209)."""
     errors: list[str] = []
     for section, param, platform, attributes in _iter_param_attributes(value):
         raw_type = attributes.get("type")
@@ -339,36 +464,227 @@ def _validate_tensor_format_values(value) -> list[str]:
         if not isinstance(format_value, list) or not all(
             isinstance(item, str) for item in format_value
         ):
+            # original: L205-209 — includes ['ND'] hint
             errors.append(
                 f"{section}.{param}[{platform}].format.value must be a "
-                "list[str] for Tensor parameters"
+                "list[str] for Tensor parameters; use ['ND'] for a single format"
             )
     return errors
 
 
+def _validate_conditional_shape_constraints(value) -> list[str]:
+    """Require a gated shape expression when an enum/bool description says so (original: L212-243)."""
+    errors: list[str] = []
+    constraints_by_platform: dict[str, list[dict]] = {}
+    for platform, _, constraint in _iter_constraints(value):
+        constraints_by_platform.setdefault(platform, []).append(constraint)
+
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        description = attributes.get("description", "")
+        if not isinstance(description, str):
+            continue
+        if not _CONDITIONAL_SHAPE_SIGNAL_RE.search(description):
+            continue
+
+        platform_constraints = list(constraints_by_platform.get(platform, []))
+        if platform != "common":
+            platform_constraints.extend(constraints_by_platform.get("common", []))
+        gate_ref = f"{param}.range_value"
+        has_gated_shape = any(
+            isinstance(constraint.get("expr"), str)
+            and gate_ref in constraint["expr"]
+            and ".shape" in constraint["expr"]
+            and param in constraint.get("relation_params", [])
+            for constraint in platform_constraints
+        )
+        if not has_gated_shape:
+            errors.append(
+                f"{section}.{param}[{platform}].description contains a "
+                "conditional Shape rule, but constraints_in_parameters has "
+                f"no shape expression gated by {gate_ref}"
+            )
+    return errors
+
+
+def _validate_tensor_list_length_constraints(value) -> list[str]:
+    """Ensure every explicit TensorList length-equality statement is modeled (original: L251-316)."""
+    errors: list[str] = []
+    constraints_by_platform: dict[str, list[dict]] = {}
+    for platform, _, constraint in _iter_constraints(value):
+        constraints_by_platform.setdefault(platform, []).append(constraint)
+
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        raw_type = attributes.get("type")
+        type_name = raw_type.get("value") if isinstance(raw_type, dict) else raw_type
+        if type_name != "aclTensorList":
+            continue
+        array_length = attributes.get("array_length")
+        if not isinstance(array_length, dict):
+            continue
+        src_text = array_length.get("src_text", "")
+        if not isinstance(src_text, str):
+            continue
+        match = _EXACT_LENGTH_EQUALITY_RE.fullmatch(src_text)
+        if not match:
+            continue
+
+        reference = match.group(1)
+        platform_constraints = list(constraints_by_platform.get(platform, []))
+        if platform != "common":
+            platform_constraints.extend(constraints_by_platform.get("common", []))
+        param_len_re = re.compile(rf"\blen\(\s*{re.escape(param)}\s*\)")
+        reference_len_re = re.compile(
+            rf"\blen\(\s*{re.escape(reference)}\s*\)"
+        )
+        none_guard_re = re.compile(rf"\b{re.escape(param)}\s+is\s+None\b")
+        is_optional = attributes.get("is_optional")
+        optional_value = (
+            is_optional.get("value")
+            if isinstance(is_optional, dict)
+            else is_optional
+        )
+        has_length_constraint = False
+        for constraint in platform_constraints:
+            expr = constraint.get("expr")
+            relation_params = constraint.get("relation_params", [])
+            if not isinstance(expr, str):
+                continue
+            if not (
+                param_len_re.search(expr)
+                and reference_len_re.search(expr)
+                and param in relation_params
+                and reference in relation_params
+            ):
+                continue
+            if optional_value is True and not none_guard_re.search(expr):
+                continue
+            has_length_constraint = True
+            break
+
+        if not has_length_constraint:
+            guard_hint = (
+                f"({param} is None) or " if optional_value is True else ""
+            )
+            errors.append(
+                f"{section}.{param}[{platform}].array_length says "
+                f"'长度与{reference}相同', but no matching expression was "
+                f"found; expected {guard_hint}"
+                f"(len({param}) == len({reference}))"
+            )
+    return errors
+
+
+def _validate_dynamic_allowed_ranges(value) -> list[str]:
+    """Keep cross-parameter value bounds out of allowed_range_value (original: L385-469)."""
+    errors: list[str] = []
+    parameter_names = set()
+    for section_name in ("inputs", "outputs"):
+        section = value.get(section_name, {})
+        if isinstance(section, dict):
+            parameter_names.update(section)
+
+    constraints_by_platform: dict[str, list[dict]] = {}
+    for platform, _, constraint in _iter_constraints(value):
+        constraints_by_platform.setdefault(platform, []).append(constraint)
+
+    for section, param, platform, attributes in _iter_param_attributes(value):
+        allowed = attributes.get("allowed_range_value")
+        if not isinstance(allowed, dict):
+            continue
+        allowed_value = allowed.get("value", [])
+        src_text = allowed.get("src_text", "")
+        src_text = src_text if isinstance(src_text, str) else ""
+        is_optional = attributes.get("is_optional")
+        optional_value = (
+            is_optional.get("value")
+            if isinstance(is_optional, dict)
+            else is_optional
+        )
+        description = attributes.get("description", "")
+        null_context = " ".join(
+            text
+            for text in (
+                src_text,
+                description if isinstance(description, str) else "",
+                is_optional.get("src_text", "")
+                if isinstance(is_optional, dict)
+                else "",
+            )
+            if isinstance(text, str)
+        )
+        # original: L423-433 — null in enum without null context
+        if (
+            allowed.get("type") == "enum"
+            and any(item is None for item in _walk_values(allowed_value))
+            and optional_value is not True
+            and not _EXPLICIT_NULL_RE.search(null_context)
+        ):
+            errors.append(
+                f"{section}.{param}[{platform}].allowed_range_value contains "
+                "null, but the parameter is required and its source text "
+                "does not permit an unset/null value"
+            )
+
+        # original: L435-451 — cross-parameter dynamic bounds
+        references = [
+            name
+            for name in parameter_names
+            if name != param
+            and re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+                src_text,
+            )
+        ]
+        if not references or not _DYNAMIC_VALUE_RELATION_RE.search(src_text):
+            continue
+        if allowed_value != []:
+            errors.append(
+                f"{section}.{param}[{platform}].allowed_range_value derives "
+                f"a dynamic bound from {references}; keep value=[] and "
+                "express the relationship in constraints_in_parameters"
+            )
+
+        # original: L453-469 — missing constraint expression
+        platform_constraints = list(constraints_by_platform.get(platform, []))
+        if platform != "common":
+            platform_constraints.extend(constraints_by_platform.get("common", []))
+        for reference in references:
+            has_relation = any(
+                isinstance(constraint.get("expr"), str)
+                and param in constraint.get("relation_params", [])
+                and reference in constraint.get("relation_params", [])
+                for constraint in platform_constraints
+            )
+            if not has_relation:
+                errors.append(
+                    f"{section}.{param}[{platform}].allowed_range_value source "
+                    f"references {reference}, but no corresponding "
+                    "constraints_in_parameters expression was found"
+                )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Other validation functions — unchanged from original
+# ---------------------------------------------------------------------------
+
 def validate_cases(value) -> list[str]:
-    """Validate cases.json."""
+    """Validate cases.json (original: L498-503)."""
     if not isinstance(value, list):
         return ["cases must be an array"]
     if not value:
         return ["cases must not be empty"]
-    return [
-        f"cases[{index}] must be an object"
-        for index, item in enumerate(value)
-        if not isinstance(item, dict)
-    ]
+    return [f"cases[{index}] must be an object" for index, item in enumerate(value) if not isinstance(item, dict)]
 
 
 def validate_execution(value) -> list[str]:
-    """Validate execution_result.json."""
+    """Validate execution_result.json (original: L506-517)."""
     if not isinstance(value, dict):
         return ["execution result must be an object"]
     errors: list[str] = []
     required = ("status", "mode", "passed", "failed", "total", "records", "engine_error")
     errors.extend(f"missing field: {key}" for key in required if key not in value)
-    passed = value.get("passed", 0)
-    failed = value.get("failed", 0)
-    total = value.get("total", 0)
+    passed, failed, total = value.get("passed", 0), value.get("failed", 0), value.get("total", 0)
     if all(isinstance(item, int) for item in (passed, failed, total)) and passed + failed != total:
         errors.append("passed + failed must equal total")
     if not isinstance(value.get("records", []), list):
@@ -377,7 +693,7 @@ def validate_execution(value) -> list[str]:
 
 
 def validate_analysis(value) -> list[str]:
-    """Validate analysis.json."""
+    """Validate analysis.json (original: L520-524)."""
     if not isinstance(value, dict):
         return ["analysis must be an object"]
     allowed = {"constraint_extraction", "generator_bug", "executor_bug"}
@@ -392,7 +708,7 @@ _EXECUTOR_DUMMY_MARKERS = (
 
 
 def validate_executor(path: str) -> list[str]:
-    """Validate cases_executor.py - check for dummy markers and syntax errors."""
+    """Validate cases_executor.py - check for dummy markers and syntax errors (original: L538-558)."""
     file_path = Path(path)
     if not file_path.is_file():
         return [f"executor file not found: {path}"]
