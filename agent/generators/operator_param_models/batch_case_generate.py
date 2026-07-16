@@ -9,6 +9,7 @@ import json
 import os.path
 import time
 from typing import Dict, List
+from pathlib import Path
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
@@ -120,8 +121,28 @@ class OperatorCaseGenerator:
             f"case num : {case_num}, target platform : {target_platform}, actual case num : {len(final_case_list)}")
         return final_case_list
 
-    def correct_case(self, case: CaseConfig, operator_rule_instance: OperatorRule,
+    def dump_case_param(self, case: CaseConfig, operator_rule_instance: OperatorRule,
                      param_combinations: Dict[str, ParameterPropertyData] = None):
+        base_path = Path("cases") / f"{case.name}-{int(time.time())}"
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        case_path = base_path / "case.json"
+        operator_rule_instance_path = base_path / "operator_rule_instance.json"
+        param_combinations_path = base_path / "param_combinations.json"
+
+        with open(case_path, 'w', encoding='utf-8') as f:
+            json.dump(case.model_dump(), f, ensure_ascii=False, indent=4)
+
+        with open(operator_rule_instance_path, 'w', encoding='utf-8') as f:
+            json.dump(operator_rule_instance.model_dump(), f, ensure_ascii=False, indent=4)
+
+        if param_combinations:
+            combos_dict = {k: v.model_dump() for k, v in param_combinations.items()}
+            with open(param_combinations_path, 'w', encoding='utf-8') as f:
+                json.dump(combos_dict, f, ensure_ascii=False, indent=4)
+
+    def correct_case(self, case: CaseConfig, operator_rule_instance: OperatorRule,
+                     param_combinations: Dict[str, ParameterPropertyData] = None, dump_case: bool = False):
         """
         根据算子参数的约束条件修正参数取值
         self, case: CaseConfig, case_generate_instance: CaseGenerate,
@@ -132,6 +153,9 @@ class OperatorCaseGenerator:
         :param operator_rule_instance: 算子结构化数据，由模型辅助生成的结构化数据,，已转换为数据的实例
         :return: 修正后的算子用例
         """
+        if dump_case:
+            self.dump_case_param(case, operator_rule_instance, param_combinations)
+
         operator_name = case.name
         params_role = self.get_params_roles(operator_name)
         inter_param_constraints = operator_rule_instance.constraints_in_parameters

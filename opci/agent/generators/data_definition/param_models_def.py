@@ -163,7 +163,7 @@ class ParameterShapeProperty(BaseModel):
 class ParameterPropertyData(BaseModel):
     param_name: str
     param_type: str
-    shape_property: ParameterShapeProperty = None
+    shape_property: Optional[ParameterShapeProperty] = None
     dtype: str = ParamModelConfig.DEFAULT_PARAM_DTYPE
     format: str | None = None
     range_value_profile: Any
