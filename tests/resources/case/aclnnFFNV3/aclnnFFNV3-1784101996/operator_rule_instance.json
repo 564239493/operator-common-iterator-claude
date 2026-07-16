@@ -1,0 +1,1925 @@
+{
+    "operator_name": "aclnnFFNV3",
+    "function_explanation": "该FFN算子提供MoeFFN和FFN的计算功能。在没有专家分组（expertTokens为空）时是FFN，有专家分组时是MoeFFN，统称为FFN，属于Moe结构。",
+    "product_support": [
+        "Atlas A2 训练系列产品/Atlas A2 推理系列产品",
+        "Atlas 推理系列加速卡产品"
+    ],
+    "function_signature": "aclnnStatus aclnnFFNV3GetWorkspaceSize(const aclTensor* x, const aclTensor* weight1, const aclTensor* weight2, const aclTensor* expertTokensOptional, const aclTensor* bias1Optional, const aclTensor* bias2Optional, const aclTensor* scaleOptional, const aclTensor* offsetOptional, const aclTensor* deqScale1Optional, const aclTensor* deqScale2Optional, const aclTensor* antiquantScale1Optional, const aclTensor* antiquantScale2Optional, const aclTensor* antiquantOffset1Optional, const aclTensor* antiquantOffset2Optional, const char* activation, int64_t innerPrecise, bool tokensIndexFlag, const aclTensor* y, uint64_t* workspaceSize, aclOpExecutor** executor)",
+    "deterministic_computing": {},
+    "inputs": {
+        "x": {
+            "description": "计算输入，公式中的输入x。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16",
+                    "INT8"
+                ],
+                "src_text": "FLOAT16、BFLOAT16、INT8",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    2,
+                    8
+                ],
+                "src_text": "支持输入的维度最少是2维，最多是8维。",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "weight1": {
+            "description": "专家的权重数据，公式中的W1。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16",
+                    "INT8",
+                    "INT4"
+                ],
+                "src_text": "FLOAT16、BFLOAT16、INT8、INT4",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    2,
+                    3
+                ],
+                "src_text": "有专家[E, K1, N1]；无专家[K1, N1]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "weight2": {
+            "description": "专家的权重数据，公式中的W2。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16",
+                    "INT8",
+                    "INT4"
+                ],
+                "src_text": "FLOAT16、BFLOAT16、INT8、INT4",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    2,
+                    3
+                ],
+                "src_text": "有专家[E, K2, N2]；无专家[K2, N2]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "expertTokensOptional": {
+            "description": "各专家的token数。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": false,
+                "src_text": "-",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "INT64"
+                ],
+                "src_text": "INT64",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    1
+                ],
+                "src_text": "1维，最大长度256",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "bias1Optional": {
+            "description": "权重数据修正值，公式中的b1。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": false,
+                "src_text": "-",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "FLOAT32",
+                    "INT32"
+                ],
+                "src_text": "FLOAT16、FLOAT32、INT32",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    2
+                ],
+                "src_text": "有专家[E, N1]；无专家[N1]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "bias2Optional": {
+            "description": "权重数据修正值，公式中的b2。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": false,
+                "src_text": "-",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "FLOAT32",
+                    "INT32"
+                ],
+                "src_text": "FLOAT16、FLOAT32、INT32",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    2
+                ],
+                "src_text": "有专家[E, N2]；无专家[N2]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "scaleOptional": {
+            "description": "量化参数，量化缩放系数。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT32"
+                ],
+                "src_text": "FLOAT32",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    2
+                ],
+                "src_text": "per-tensor下输入在有/无专家时均为一维向量，输入元素个数在有/无专家时分别为[E]/[1]；per-channel下输入在有/无专家时为二维向量/一维向量，输入元素个数在有/无专家时分别为[E, N1]/[N1]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "offsetOptional": {
+            "description": "量化参数，量化偏移量。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": false,
+                "src_text": "-",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT32"
+                ],
+                "src_text": "FLOAT32",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    1
+                ],
+                "src_text": "一维向量，输入元素个数在有/无专家时分别为[E]/[1]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "deqScale1Optional": {
+            "description": "量化参数，第一个matmul的反量化缩放系数。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": false,
+                "src_text": "-",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "UINT64",
+                    "INT64",
+                    "FLOAT32",
+                    "BFLOAT16"
+                ],
+                "src_text": "UINT64、INT64、FLOAT32、BFLOAT16",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    2
+                ],
+                "src_text": "输入在有/无专家时分别为[E, N1]/[N1]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "deqScale2Optional": {
+            "description": "量化参数，第二个matmul的反量化缩放系数。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": false,
+                "src_text": "-",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "UINT64",
+                    "INT64",
+                    "FLOAT32",
+                    "BFLOAT16"
+                ],
+                "src_text": "UINT64、INT64、FLOAT32、BFLOAT16",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    2
+                ],
+                "src_text": "输入在有/无专家时分别为[E, N2]/[N2]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "antiquantScale1Optional": {
+            "description": "伪量化参数，第一个matmul的缩放系数。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16"
+                ],
+                "src_text": "FLOAT16、BFLOAT16",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    3
+                ],
+                "src_text": "per-channel下输入在有/无专家时分别为[E, N1]/[N1]；per-group下输入在有/无专家时分别为[E, G, N1]/[G, N1]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "antiquantScale2Optional": {
+            "description": "伪量化参数，第二个matmul的缩放系数。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16"
+                ],
+                "src_text": "FLOAT16、BFLOAT16",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    3
+                ],
+                "src_text": "per-channel下输入在有/无专家时分别为[E, N2]/[N2]；per-group下输入在有/无专家时分别为[E, G, N2]/[G, N2]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "antiquantOffset1Optional": {
+            "description": "伪量化参数，第一个matmul的偏移量。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16"
+                ],
+                "src_text": "FLOAT16、BFLOAT16",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    3
+                ],
+                "src_text": "per-channel下输入在有/无专家时分别为[E, N1]/[N1]；per-group下输入在有/无专家时分别为[E, G, N1]/[G, N1]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "antiquantOffset2Optional": {
+            "description": "伪量化参数，第二个matmul的偏移量。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16"
+                ],
+                "src_text": "FLOAT16、BFLOAT16",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    1,
+                    3
+                ],
+                "src_text": "per-channel下输入在有/无专家时分别为[E, N2]/[N2]；per-group下输入在有/无专家时分别为[E, G, N2]/[G, N2]",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "activation": {
+            "description": "代表使用的激活函数，公式中的activation。",
+            "type": {
+                "value": "char",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "char"
+                ],
+                "src_text": "",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [
+                    "fastgelu",
+                    "gelu",
+                    "relu",
+                    "silu",
+                    "geglu",
+                    "swiglu",
+                    "reglu"
+                ],
+                "src_text": "当前支持fastgelu/gelu/relu/silu以及geglu/swiglu/reglu。",
+                "type": "enum"
+            }
+        },
+        "innerPrecise": {
+            "description": "表示高精度或者高性能选择。",
+            "type": {
+                "value": "int64_t",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "int"
+                ],
+                "src_text": "INT64",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [
+                    0,
+                    1
+                ],
+                "src_text": "innerPrecise为0时，代表开启高精度模式；innerPrecise为1时，代表高性能模式。",
+                "type": "enum"
+            }
+        },
+        "tokensIndexFlag": {
+            "description": "指示expertTokens是否为索引值。",
+            "type": {
+                "value": "bool",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": true,
+                "src_text": "可选输入",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "bool"
+                ],
+                "src_text": "bool",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [
+                    false,
+                    true
+                ],
+                "src_text": "tokensIndexFlag为bool类型参数。",
+                "type": "enum"
+            }
+        },
+        "M": {
+            "description": "token个数，对应transform中的BS（B：Batch，表示输入样本批量大小。S：Seq-Length，表示输入样本序列长度）。",
+            "type": {
+                "value": "int",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "int"
+                ],
+                "src_text": "",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "K1": {
+            "description": "第一个matmul的输入通道数，对应transform中的H（Head-Size，表示隐藏层的大小）。",
+            "type": {
+                "value": "int",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "int"
+                ],
+                "src_text": "",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "N1": {
+            "description": "第一个matmul的输出通道数。",
+            "type": {
+                "value": "int",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "int"
+                ],
+                "src_text": "",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "K2": {
+            "description": "第二个matmul的输入通道数。",
+            "type": {
+                "value": "int",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "int"
+                ],
+                "src_text": "",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "N2": {
+            "description": "第二个matmul的输出通道数，对应transform中的H。",
+            "type": {
+                "value": "int",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "int"
+                ],
+                "src_text": "",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "E": {
+            "description": "有专家场景的专家数。",
+            "type": {
+                "value": "int",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "int"
+                ],
+                "src_text": "",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "G": {
+            "description": "伪量化per-group场景下，antiquantOffset、antiquantScale的组数。",
+            "type": {
+                "value": "int",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": "N/A",
+                "src_text": "",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": false,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "int"
+                ],
+                "src_text": "",
+                "type": null
+            },
+            "dimensions": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        },
+        "y": {
+            "description": "公式中的输出y。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "输出",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16"
+                ],
+                "src_text": "FLOAT16、BFLOAT16",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    2,
+                    2
+                ],
+                "src_text": "与x一致",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        }
+    },
+    "outputs": {
+        "y": {
+            "description": "公式中的输出y。",
+            "type": {
+                "value": "aclTensor",
+                "src_text": "",
+                "type": null
+            },
+            "format": {
+                "value": [
+                    "ND"
+                ],
+                "src_text": "ND",
+                "type": null
+            },
+            "is_optional": {
+                "value": false,
+                "src_text": "输出",
+                "type": null
+            },
+            "is_support_discontinuous": {
+                "value": true,
+                "src_text": "√",
+                "type": null
+            },
+            "is_operator_param": {
+                "value": true,
+                "src_text": "",
+                "type": null
+            },
+            "array_length": {
+                "value": [],
+                "src_text": "",
+                "type": null
+            },
+            "dtype": {
+                "value": [
+                    "FLOAT16",
+                    "BFLOAT16"
+                ],
+                "src_text": "FLOAT16、BFLOAT16",
+                "type": null
+            },
+            "dimensions": {
+                "value": [
+                    2,
+                    2
+                ],
+                "src_text": "与x一致",
+                "type": null
+            },
+            "allowed_range_value": {
+                "value": [],
+                "src_text": "",
+                "type": "range"
+            }
+        }
+    },
+    "constraints_in_parameters": [
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "K1.range_value == N2.range_value",
+            "relation_params": [
+                "K1",
+                "N2"
+            ],
+            "src_text": "所有场景下需满足K1=N2"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "K1.range_value < 65536",
+            "relation_params": [
+                "K1"
+            ],
+            "src_text": "K1<65536"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "K2.range_value < 65536",
+            "relation_params": [
+                "K2"
+            ],
+            "src_text": "K2<65536"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "x.shape[0] < 2147483647",
+            "relation_params": [
+                "x"
+            ],
+            "src_text": "M轴在32Byte对齐后小于INT32的最大值"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "x.shape[0] == M.range_value",
+            "relation_params": [
+                "x",
+                "M"
+            ],
+            "src_text": "x的shape为[M, K1]，M对应shape第0维"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "x.shape[-1] == K1.range_value",
+            "relation_params": [
+                "x",
+                "K1"
+            ],
+            "src_text": "x的shape为[M, K1]，最后一维对应K1"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "y.shape == [M.range_value, N2.range_value]",
+            "relation_params": [
+                "y",
+                "M",
+                "N2"
+            ],
+            "src_text": "输出维度与x一致，y的shape为[M, N2]"
+        },
+        {
+            "expr_type": "shape_equality",
+            "expr": "len(y.shape) == 2",
+            "relation_params": [
+                "y"
+            ],
+            "src_text": "输出维度与x一致，y为2维"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(weight1.shape == [E.range_value, K1.range_value, N1.range_value]) if (len(weight1.shape) == 3) else (weight1.shape == [K1.range_value, N1.range_value])",
+            "relation_params": [
+                "weight1",
+                "E",
+                "K1",
+                "N1"
+            ],
+            "src_text": "有专家[E, K1, N1]；无专家[K1, N1]"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(weight2.shape == [E.range_value, K2.range_value, N2.range_value]) if (len(weight2.shape) == 3) else (weight2.shape == [K2.range_value, N2.range_value])",
+            "relation_params": [
+                "weight2",
+                "E",
+                "K2",
+                "N2"
+            ],
+            "src_text": "有专家[E, K2, N2]；无专家[K2, N2]"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "len(weight1.shape) == len(weight2.shape)",
+            "relation_params": [
+                "weight1",
+                "weight2"
+            ],
+            "src_text": "weight1和weight2必须同为有专家或同为无专家模式"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(bias1Optional is None) or ((bias1Optional.shape == [N1.range_value]) if (len(weight1.shape) == 2) else (bias1Optional.shape == [E.range_value, N1.range_value]))",
+            "relation_params": [
+                "bias1Optional",
+                "weight1",
+                "E",
+                "N1"
+            ],
+            "src_text": "bias1有专家[E, N1]；无专家[N1]"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(bias2Optional is None) or ((bias2Optional.shape == [N2.range_value]) if (len(weight2.shape) == 2) else (bias2Optional.shape == [E.range_value, N2.range_value]))",
+            "relation_params": [
+                "bias2Optional",
+                "weight2",
+                "E",
+                "N2"
+            ],
+            "src_text": "bias2有专家[E, N2]；无专家[N2]"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(deqScale1Optional is None) or ((deqScale1Optional.shape == [N1.range_value]) if (len(weight1.shape) == 2) else (deqScale1Optional.shape == [E.range_value, N1.range_value]))",
+            "relation_params": [
+                "deqScale1Optional",
+                "weight1",
+                "E",
+                "N1"
+            ],
+            "src_text": "deqScale1输入在有/无专家时分别为[E, N1]/[N1]"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(deqScale2Optional is None) or ((deqScale2Optional.shape == [N2.range_value]) if (len(weight2.shape) == 2) else (deqScale2Optional.shape == [E.range_value, N2.range_value]))",
+            "relation_params": [
+                "deqScale2Optional",
+                "weight2",
+                "E",
+                "N2"
+            ],
+            "src_text": "deqScale2输入在有/无专家时分别为[E, N2]/[N2]"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(scaleOptional is None) or (scaleOptional.shape == [1])",
+            "relation_params": [
+                "scaleOptional"
+            ],
+            "src_text": "per-tensor下scale为[1]，per-channel下scale按专家模式变化"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(offsetOptional is None) or (offsetOptional.shape == [1])",
+            "relation_params": [
+                "offsetOptional"
+            ],
+            "src_text": "offset一维向量，per-tensor无专家时为[1]"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "not(activation.range_value in [\"gelu\",\"fastgelu\",\"relu\",\"silu\"]) or (N1.range_value == K2.range_value)",
+            "relation_params": [
+                "activation",
+                "N1",
+                "K2"
+            ],
+            "src_text": "激活层为gelu/fastgelu/relu/silu时，支持有专家或无专家分组，且N1=K2"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "not(activation.range_value in [\"geglu\",\"swiglu\",\"reglu\"]) or (N1.range_value == 2 * K2.range_value)",
+            "relation_params": [
+                "activation",
+                "N1",
+                "K2"
+            ],
+            "src_text": "激活层为geglu/swiglu/reglu时，N1=2*K2"
+        },
+        {
+            "expr_type": "presence_dependency",
+            "expr": "not(activation.range_value in [\"geglu\",\"swiglu\",\"reglu\"]) or (expertTokensOptional is None)",
+            "relation_params": [
+                "activation",
+                "expertTokensOptional"
+            ],
+            "src_text": "激活层为geglu/swiglu/reglu时，仅支持无专家分组时的FLOAT16高性能场景"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "not(activation.range_value in [\"geglu\",\"swiglu\",\"reglu\"]) or (innerPrecise.range_value == 1)",
+            "relation_params": [
+                "activation",
+                "innerPrecise"
+            ],
+            "src_text": "激活层为geglu/swiglu/reglu时，仅支持高性能场景"
+        },
+        {
+            "expr_type": "type_dependency",
+            "expr": "not(activation.range_value in [\"geglu\",\"swiglu\",\"reglu\"]) or (x.dtype == \"FLOAT16\" and weight1.dtype == \"FLOAT16\" and weight2.dtype == \"FLOAT16\" and y.dtype == \"FLOAT16\")",
+            "relation_params": [
+                "activation",
+                "x",
+                "weight1",
+                "weight2",
+                "y"
+            ],
+            "src_text": "激活层为geglu/swiglu/reglu时，仅支持FLOAT16场景"
+        },
+        {
+            "expr_type": "type_equality",
+            "expr": "(deqScale1Optional is None) or (deqScale2Optional is None) or (deqScale1Optional.dtype == deqScale2Optional.dtype)",
+            "relation_params": [
+                "deqScale1Optional",
+                "deqScale2Optional"
+            ],
+            "src_text": "要求deqScale1Optional与deqScale2Optional的数据类型保持一致"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "not(weight1.dtype == \"INT4\") or (N1.range_value % 2 == 0)",
+            "relation_params": [
+                "weight1",
+                "N1"
+            ],
+            "src_text": "当weight1的数据类型为INT4时，其shape最后一维必须为偶数"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "not(weight2.dtype == \"INT4\") or (N2.range_value % 2 == 0)",
+            "relation_params": [
+                "weight2",
+                "N2"
+            ],
+            "src_text": "当weight2的数据类型为INT4时，其shape最后一维必须为偶数"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "not(x.dtype == \"BFLOAT16\" and scaleOptional is None and antiquantScale1Optional is None) or (innerPrecise.range_value == 0)",
+            "relation_params": [
+                "x",
+                "scaleOptional",
+                "antiquantScale1Optional",
+                "innerPrecise"
+            ],
+            "src_text": "innerPrecise参数在BFLOAT16非量化场景，只能配置为0"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "innerPrecise.range_value in [0, 1]",
+            "relation_params": [
+                "innerPrecise"
+            ],
+            "src_text": "innerPrecise取值为0（高精度）或1（高性能）"
+        },
+        {
+            "expr_type": "self_value_enum",
+            "expr": "activation.range_value in [\"fastgelu\",\"gelu\",\"relu\",\"silu\",\"geglu\",\"swiglu\",\"reglu\"]",
+            "relation_params": [
+                "activation"
+            ],
+            "src_text": "当前支持fastgelu/gelu/relu/silu以及geglu/swiglu/reglu"
+        },
+        {
+            "expr_type": "presence_dependency",
+            "expr": "(expertTokensOptional is None) or (expertTokensOptional.shape[0] == E.range_value and expertTokensOptional.shape[0] <= 256)",
+            "relation_params": [
+                "expertTokensOptional",
+                "E"
+            ],
+            "src_text": "expertTokens为1维，最大长度256，元素个数为E"
+        },
+        {
+            "expr_type": "presence_dependency",
+            "expr": "(expertTokensOptional is None) or (x.shape[0] == M.range_value)",
+            "relation_params": [
+                "expertTokensOptional",
+                "x",
+                "M"
+            ],
+            "src_text": "有专家时，专家数据的总数需要与x的M保持一致"
+        },
+        {
+            "expr_type": "presence_dependency",
+            "expr": "not((scaleOptional is not None or offsetOptional is not None or deqScale1Optional is not None or deqScale2Optional is not None) and (antiquantScale1Optional is not None or antiquantScale2Optional is not None or antiquantOffset1Optional is not None or antiquantOffset2Optional is not None))",
+            "relation_params": [
+                "scaleOptional",
+                "offsetOptional",
+                "deqScale1Optional",
+                "deqScale2Optional",
+                "antiquantScale1Optional",
+                "antiquantScale2Optional",
+                "antiquantOffset1Optional",
+                "antiquantOffset2Optional"
+            ],
+            "src_text": "非量化场景不能输入量化参数和伪量化参数，量化场景不能输入伪量化参数，伪量化场景不能输入量化参数"
+        },
+        {
+            "expr_type": "type_dependency",
+            "expr": "not(scaleOptional is not None and offsetOptional is not None) or (x.dtype == \"INT8\" and weight1.dtype == \"INT8\" and (bias1Optional is None or bias1Optional.dtype == \"INT32\") and (bias2Optional is None or bias2Optional.dtype == \"INT32\") and scaleOptional.dtype == \"FLOAT32\" and offsetOptional.dtype == \"FLOAT32\")",
+            "relation_params": [
+                "scaleOptional",
+                "offsetOptional",
+                "x",
+                "weight1",
+                "bias1Optional",
+                "bias2Optional"
+            ],
+            "src_text": "量化场景参数类型：x为INT8、weight为INT8、biasOptional为INT32、scaleOptional为FLOAT32、offsetOptional为FLOAT32"
+        },
+        {
+            "expr_type": "type_dependency",
+            "expr": "not(antiquantScale1Optional is not None and antiquantScale2Optional is not None) or ((y.dtype == \"FLOAT16\" and x.dtype == \"FLOAT16\" and (bias1Optional is None or bias1Optional.dtype == \"FLOAT16\") and (bias2Optional is None or bias2Optional.dtype == \"FLOAT16\") and antiquantScale1Optional.dtype == \"FLOAT16\" and antiquantOffset1Optional.dtype == \"FLOAT16\" and antiquantScale2Optional.dtype == \"FLOAT16\" and antiquantOffset2Optional.dtype == \"FLOAT16\" and weight1.dtype in [\"INT8\",\"INT4\"]) or (y.dtype == \"BFLOAT16\" and x.dtype == \"BFLOAT16\" and (bias1Optional is None or bias1Optional.dtype == \"FLOAT32\") and (bias2Optional is None or bias2Optional.dtype == \"FLOAT32\") and antiquantScale1Optional.dtype == \"BFLOAT16\" and antiquantOffset1Optional.dtype == \"BFLOAT16\" and antiquantScale2Optional.dtype == \"BFLOAT16\" and antiquantOffset2Optional.dtype == \"BFLOAT16\" and weight1.dtype in [\"INT8\",\"INT4\"]))",
+            "relation_params": [
+                "antiquantScale1Optional",
+                "antiquantScale2Optional",
+                "y",
+                "x",
+                "bias1Optional",
+                "bias2Optional",
+                "antiquantOffset1Optional",
+                "antiquantOffset2Optional",
+                "weight1"
+            ],
+            "src_text": "伪量化场景参数类型：y为FLOAT16时x/bias/antiquantScale/antiquantOffset均为FLOAT16，weight为INT8/INT4；y为BFLOAT16时x为BFLOAT16、bias为FLOAT32、antiquantScale/antiquantOffset为BFLOAT16，weight为INT8/INT4"
+        },
+        {
+            "expr_type": "type_dependency",
+            "expr": "not(scaleOptional is None and offsetOptional is None and deqScale1Optional is None and deqScale2Optional is None and antiquantScale1Optional is None and antiquantScale2Optional is None and antiquantOffset1Optional is None and antiquantOffset2Optional is None) or (x.dtype in [\"FLOAT16\",\"BFLOAT16\"] and weight1.dtype in [\"FLOAT16\",\"BFLOAT16\"] and weight2.dtype in [\"FLOAT16\",\"BFLOAT16\"] and y.dtype in [\"FLOAT16\",\"BFLOAT16\"])",
+            "relation_params": [
+                "scaleOptional",
+                "offsetOptional",
+                "deqScale1Optional",
+                "deqScale2Optional",
+                "antiquantScale1Optional",
+                "antiquantScale2Optional",
+                "antiquantOffset1Optional",
+                "antiquantOffset2Optional",
+                "x",
+                "weight1",
+                "weight2",
+                "y"
+            ],
+            "src_text": "非量化场景不能输入量化参数和伪量化参数，x/weight/y均为FLOAT16/BFLOAT16"
+        },
+        {
+            "expr_type": "presence_dependency",
+            "expr": "(antiquantScale1Optional is None and antiquantScale2Optional is None and antiquantOffset1Optional is None and antiquantOffset2Optional is None) or (antiquantScale1Optional is not None and antiquantScale2Optional is not None and antiquantOffset1Optional is not None and antiquantOffset2Optional is not None)",
+            "relation_params": [
+                "antiquantScale1Optional",
+                "antiquantScale2Optional",
+                "antiquantOffset1Optional",
+                "antiquantOffset2Optional"
+            ],
+            "src_text": "伪量化场景要求antiquant参数成组提供"
+        },
+        {
+            "expr_type": "presence_dependency",
+            "expr": "(weight1.dtype not in [\"INT8\",\"INT4\"]) or ((scaleOptional is not None and offsetOptional is not None and deqScale1Optional is not None and deqScale2Optional is not None) or (antiquantScale1Optional is not None and antiquantScale2Optional is not None))",
+            "relation_params": [
+                "weight1",
+                "scaleOptional",
+                "offsetOptional",
+                "deqScale1Optional",
+                "deqScale2Optional",
+                "antiquantScale1Optional",
+                "antiquantScale2Optional"
+            ],
+            "src_text": "量化/伪量化场景需要相应的量化/伪量化参数"
+        },
+        {
+            "expr_type": "type_equality",
+            "expr": "weight1.dtype == weight2.dtype",
+            "relation_params": [
+                "weight1",
+                "weight2"
+            ],
+            "src_text": "NPU feedback: weight1和weight2数据类型必须一致"
+        },
+        {
+            "expr_type": "type_dependency",
+            "expr": "(weight1.dtype in [\"INT8\",\"INT4\"]) or (y.dtype == x.dtype)",
+            "relation_params": [
+                "weight1",
+                "x",
+                "y"
+            ],
+            "src_text": "NPU feedback: 浮点权重模式下y.dtype需与x.dtype一致"
+        },
+        {
+            "expr_type": "type_dependency",
+            "expr": "(weight1.dtype in [\"INT8\",\"INT4\"]) or ((bias1Optional is None or bias1Optional.dtype == \"INT32\") and (bias2Optional is None or bias2Optional.dtype == \"INT32\"))",
+            "relation_params": [
+                "weight1",
+                "bias1Optional",
+                "bias2Optional"
+            ],
+            "src_text": "量化场景bias数据类型为INT32"
+        },
+        {
+            "expr_type": "type_dependency",
+            "expr": "(deqScale1Optional is None and deqScale2Optional is None) or ((y.dtype == \"FLOAT16\" and deqScale1Optional.dtype in [\"UINT64\",\"INT64\",\"FLOAT32\"] and deqScale2Optional.dtype == deqScale1Optional.dtype) or (y.dtype == \"BFLOAT16\" and deqScale1Optional.dtype == \"BFLOAT16\" and deqScale2Optional.dtype == \"BFLOAT16\"))",
+            "relation_params": [
+                "deqScale1Optional",
+                "deqScale2Optional",
+                "y"
+            ],
+            "src_text": "量化场景deqScale数据类型：y为FLOAT16时支持UINT64/INT64/FLOAT32；y为BFLOAT16时支持BFLOAT16"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "(antiquantScale1Optional is None and antiquantOffset1Optional is None) or (G.range_value > 0 and K1.range_value % G.range_value == 0)",
+            "relation_params": [
+                "antiquantScale1Optional",
+                "antiquantOffset1Optional",
+                "G",
+                "K1"
+            ],
+            "src_text": "伪量化场景per-group下，antiquantScale1和antiquantOffset1的组数G要能被K1整除"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "(antiquantScale2Optional is None and antiquantOffset2Optional is None) or (G.range_value > 0 and K2.range_value % G.range_value == 0)",
+            "relation_params": [
+                "antiquantScale2Optional",
+                "antiquantOffset2Optional",
+                "G",
+                "K2"
+            ],
+            "src_text": "伪量化场景per-group下，antiquantScale2和antiquantOffset2的组数G要能被K2整除"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "M.range_value > 0 and K1.range_value > 0 and N1.range_value > 0 and K2.range_value > 0 and N2.range_value > 0 and E.range_value >= 0 and G.range_value >= 0",
+            "relation_params": [
+                "M",
+                "K1",
+                "N1",
+                "K2",
+                "N2",
+                "E",
+                "G"
+            ],
+            "src_text": "维度变量M/K1/N1/K2/N2为正整数，E/G为非负整数"
+        },
+        {
+            "expr_type": "shape_value_dependency",
+            "expr": "(len(weight1.shape) == 2 and E.range_value == 0) or (len(weight1.shape) == 3 and E.range_value == weight1.shape[0])",
+            "relation_params": [
+                "weight1",
+                "E"
+            ],
+            "src_text": "weight1为2维时无专家(E=0)，3维时E=weight1.shape[0]"
+        },
+        {
+            "expr_type": "value_dependency",
+            "expr": "not(tokensIndexFlag.range_value == True) or (expertTokensOptional is not None)",
+            "relation_params": [
+                "tokensIndexFlag",
+                "expertTokensOptional"
+            ],
+            "src_text": "tokensIndexFlag为true时需要传入expertTokensOptional"
+        },
+        {
+            "expr_type": "presence_dependency",
+            "expr": "(tokensIndexFlag.range_value == False) or (expertTokensOptional is None)",
+            "relation_params": [
+                "tokensIndexFlag",
+                "expertTokensOptional"
+            ],
+            "src_text": "tokensIndexFlag为false时expertTokensOptional表示各专家token数"
+        }
+    ],
+    "return_info": [
+        {
+            "return_value": "ACLNN_ERR_PARAM_NULLPTR",
+            "error_code": 161001,
+            "description": [
+                "如果传入参数是必选输入，输出或者必选属性，且是空指针，则返回161001。"
+            ]
+        },
+        {
+            "return_value": "ACLNN_ERR_PARAM_INVALID",
+            "error_code": 161002,
+            "description": [
+                "x、weight1、weight2、activation、expertTokensOptional、bias1Optional、bias2Optional、y的数据类型和数据格式不在支持的范围内。"
+            ]
+        }
+    ],
+    "dtype_support_description": [],
+    "format_support_description": []
+}
