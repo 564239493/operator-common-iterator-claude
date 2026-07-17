@@ -16,7 +16,8 @@ from pydantic import BaseModel
 from agent.generators.atk_common_utils.case_config import CaseConfig
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
-from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ExpressionPreprocessor, ASTtoZ3Converter
+from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, \
+    ExpressionPreprocessor, ASTtoZ3Converter
 from agent.generators.common_model_definition import InterParamConstraint, InterConstraintsRuleType, OperatorRule
 from agent.generators.common_utils.common_dispatcher import CommonDispatcher
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
@@ -211,61 +212,74 @@ class ParamConstraintUtils(CommonDispatcher):
         """
         if not param_static_expr_list:
             return
-
-        # 快速路径：一次添加全部，若 SAT 直接返回
-        builder.solver.push()
-        for static_expr in param_static_expr_list:
-            replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
-            if ExpressionPreprocessor.validate_expression(replace_expr):
-                tree = ast.parse(replace_expr, mode='eval')
-                converter = ASTtoZ3Converter(builder)
-                z3_constraint = converter.visit(tree.body)
-                if z3_constraint is not None:
-                    builder.solver.assert_and_track(z3_constraint, f"batch_chk:{static_expr[:50]}")
-        if builder.solver.check() == z3.sat:
-            builder.solver.pop()
-            # 永久添加所有静态表达式
+        try:
+            # 快速路径：一次添加全部，若 SAT 直接返回
+            builder.solver.push()
             for static_expr in param_static_expr_list:
-                param_union_expr.append(static_expr)
                 replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
                 if ExpressionPreprocessor.validate_expression(replace_expr):
                     tree = ast.parse(replace_expr, mode='eval')
                     converter = ASTtoZ3Converter(builder)
                     z3_constraint = converter.visit(tree.body)
                     if z3_constraint is not None:
-                        builder.solver.assert_and_track(z3_constraint, f"perm:{static_expr[:50]}")
-            logger.debug(f"Batch check SAT, all {len(param_static_expr_list)} exprs kept")
+                        builder.solver.assert_and_track(z3_constraint, f"batch_chk:{static_expr[:50]}")
+                        logger.debug(
+                            f"Operator name : '{self.operator_name}', add static expr success : '{static_expr}'")
+        except Exception as e:
+            logger.error(f"Operator name : {self.operator_name}, add static expr failed : '{str(e)}'")
             return
-        builder.solver.pop()
+        try:
+            if builder.solver.check() == z3.sat:
+                builder.solver.pop()
+                # 永久添加所有静态表达式
+                for static_expr in param_static_expr_list:
+                    param_union_expr.append(static_expr)
+                    replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
+                    if ExpressionPreprocessor.validate_expression(replace_expr):
+                        tree = ast.parse(replace_expr, mode='eval')
+                        converter = ASTtoZ3Converter(builder)
+                        z3_constraint = converter.visit(tree.body)
+                        if z3_constraint is not None:
+                            builder.solver.assert_and_track(z3_constraint, f"perm:{static_expr}")
+                logger.debug(f"Batch check SAT, all {len(param_static_expr_list)} exprs kept")
+                return
+            builder.solver.pop()
+        except Exception as e:
+            logger.error(f"Operator name : {self.operator_name}, check conflict expr failed : '{str(e)}'")
+            return
 
         # 回退路径：逐个 push/pop 增量检测
-        for static_expr in param_static_expr_list:
-            builder.solver.push()
-            try:
-                replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
-                is_sat = False
-                if ExpressionPreprocessor.validate_expression(replace_expr):
-                    tree = ast.parse(replace_expr, mode='eval')
-                    converter = ASTtoZ3Converter(builder)
-                    z3_constraint = converter.visit(tree.body)
-                    if z3_constraint is not None:
-                        builder.solver.assert_and_track(z3_constraint, f"chk:{static_expr[:50]}")
-                        if builder.solver.check() == z3.sat:
-                            is_sat = True
-            finally:
-                builder.solver.pop()
+        try:
+            for static_expr in param_static_expr_list:
+                builder.solver.push()
+                try:
+                    replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
+                    is_sat = False
+                    if ExpressionPreprocessor.validate_expression(replace_expr):
+                        tree = ast.parse(replace_expr, mode='eval')
+                        converter = ASTtoZ3Converter(builder)
+                        z3_constraint = converter.visit(tree.body)
+                        if z3_constraint is not None:
+                            builder.solver.assert_and_track(z3_constraint, f"chk:{static_expr}")
+                            if builder.solver.check() == z3.sat:
+                                is_sat = True
+                finally:
+                    builder.solver.pop()
 
-            if is_sat:
-                logger.debug(f"Check param value expr, result : no conflicts, expr : {static_expr}")
-                param_union_expr.append(static_expr)
-                # 永久添加
-                replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
-                if ExpressionPreprocessor.validate_expression(replace_expr):
-                    tree = ast.parse(replace_expr, mode='eval')
-                    converter = ASTtoZ3Converter(builder)
-                    z3_constraint = converter.visit(tree.body)
-                    if z3_constraint is not None:
-                        builder.solver.assert_and_track(z3_constraint, f"perm:{static_expr[:50]}")
+                if is_sat:
+                    logger.debug(f"Check param value expr, result : no conflicts, expr : {static_expr}")
+                    param_union_expr.append(static_expr)
+                    # 永久添加
+                    replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
+                    if ExpressionPreprocessor.validate_expression(replace_expr):
+                        tree = ast.parse(replace_expr, mode='eval')
+                        converter = ASTtoZ3Converter(builder)
+                        z3_constraint = converter.visit(tree.body)
+                        if z3_constraint is not None:
+                            builder.solver.assert_and_track(z3_constraint, f"perm:{static_expr}")
+        except Exception as e:
+            logger.error(f"Operator name : {self.operator_name}, feedback conflict expr failed : '{str(e)}'")
+            return
 
     def build_param_dtype_constraint(self, constraint_exprs: List[str],
                                      builder: Z3ConstraintBuilder, check: bool = True) -> None:
@@ -305,6 +319,7 @@ class ParamConstraintUtils(CommonDispatcher):
                 param_name, param_attr.allowed_range_value, "allowed_range_value")
             if param_range_value_constraint is None:
                 continue
+            param_type = self.case_input_map.get(param_name).type
             param_range_value_expr_list = []
             for value_rule in param_range_value_constraint:
                 if value_type == ParamRangeValueType.ENUM.value:
@@ -431,6 +446,50 @@ class ParamConstraintUtils(CommonDispatcher):
         else:
             constraint_exprs.extend(length_static_value_expr_list)
 
+    def analysis_param_is_present(self, builder: Z3ConstraintBuilder):
+        """
+        遍历所有表达式，收集每个参数的存在情况，如果某个参数只出现过 xxx is None的条件，则认为其is_present属性只能设置为False，如果既出现过is None, 也出现过 is not None, 则认为其iS_present属性为True, 另外，如果参数的allowed_range_value中只有null,则认为其is_present也只能取False
+        """
+        force_false_params = set()
+
+        for param_name in self.case_input_map:
+            # 1. allowed_range_value 只能取 None（如 [null]）
+            param_ori_data = (
+                self.operator_rule_data.inputs.get(param_name)
+                if param_name in self.operator_rule_data.inputs
+                else self.operator_rule_data.outputs.get(param_name)
+            )
+            if param_ori_data is not None:
+                rv, rv_type = DataHandleUtil.get_relevant_attribute_value(
+                    param_name, param_ori_data.allowed_range_value, "allowed_range_value"
+                )
+                if (rv is not None and rv_type == ParamRangeValueType.ENUM.value
+                        and isinstance(rv, list) and all(v is None for v in rv)):
+                    force_false_params.add(param_name)
+                    continue
+            has_is_none = False
+            has_is_not_none = False
+            for constraint in self.inter_param_constraints:
+                expr_text = constraint.expr
+                if re.search(rf'\b{re.escape(param_name)}\s+is\s+None\b', expr_text):
+                    has_is_none = True
+                if re.search(rf'\b{re.escape(param_name)}\s+is\s+not\s+None\b', expr_text):
+                    has_is_not_none = True
+
+            if has_is_none and not has_is_not_none:
+                force_false_params.add(param_name)
+
+        for param_name in self.case_input_map:
+            if param_name in force_false_params:
+                builder.solver.add(z3.Not(builder.var_map[param_name].is_present))
+                continue
+            param_combination_data = self.param_combinations.get(param_name)
+            if param_combination_data is None:
+                continue
+            if param_combination_data.is_optional:
+                continue
+            builder.solver.add(builder.var_map[param_name].is_present)
+
     def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False):
         """
         声明每个变量，指定变量的type(Tensor, scalar，list)，以及数据类型(float, int, string, bool)
@@ -459,22 +518,7 @@ class ParamConstraintUtils(CommonDispatcher):
                 builder.declare_var(param_name, z3_param_type, dtype=param_dtype, range_value=range_values,
                                     length=param_length, is_print_log=is_print_log)
 
-        standalone_none_params = set()
-        for constraint in self.inter_param_constraints:
-            expr_text = constraint.expr
-            for param_name in self.case_input_map:
-                # 检测参数名是否出现在任何 is None / is not None 上下文中
-                if re.search(rf'\b{re.escape(param_name)}\s+is\s+(?:not\s+)?None\b', expr_text):
-                    standalone_none_params.add(param_name)
-
-        for param_name in self.case_input_map:
-            param_combination_data = self.param_combinations.get(param_name)
-            if param_combination_data is None:
-                continue
-            is_optional = param_combination_data.is_optional
-            if is_optional:
-                continue
-            builder.solver.add(builder.var_map[param_name].is_present)
+        self.analysis_param_is_present(builder)
 
     def solve_z3_constraints(self, z3_constraints: List[InterParamConstraint]):
         """
@@ -488,7 +532,7 @@ class ParamConstraintUtils(CommonDispatcher):
         self.declare_param_in_z3(builder=builder, is_print_log=True)
 
         # 先添加 JSON 约束到求解器
-        json_expr_dict = {f"json:{expr[:50]}": expr for expr in expr_list}
+        json_expr_dict = {f"json:{expr}": expr for expr in expr_list}
         builder.add_constraints(expr_str_dict=json_expr_dict)
 
         # 收集所有静态表达式，一次性批量冲突检测（5 次 choice_no_conflicts_expr → 1 次）
@@ -505,7 +549,11 @@ class ParamConstraintUtils(CommonDispatcher):
                                           param_static_expr_list=all_static)
 
         logger.info("Start whole expr solve")
-        solver_result = builder.solve()
+        try:
+            solver_result = builder.solve()
+        except Exception as e:
+            logger.error(f"operator name : '{self.operator_name}',Constraint set solve failed, err msg : '{str(e)}'")
+            return False
         if not solver_result:
             logger.error(
                 f"Z3 solver error, no solution can satisfy constraints, operator name : {self.operator_name}")
