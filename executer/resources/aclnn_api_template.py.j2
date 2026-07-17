@@ -4,7 +4,9 @@
 import copy
 import ctypes
 import re
-
+{% if prerequisite_api %}
+import atk.tasks.backends.lib_interface.acl_wrapper as acl_wrapper
+{% endif %}
 import torch
 from atk.common.log import Logger
 from atk.configs.dataset_config import InputDataset
@@ -19,6 +21,11 @@ logging = Logger().get_logger()
 
 @register("{{ aclnn_api_type }}")
 class {{ class_name }}(AclnnBaseApi):
+    # per-case per-tensor format 查表(generator 从 cases.json 原始数据提取嵌入)。
+    # ATK 用 model_validate 加载 cases 时 InputCaseConfig.format 被丢弃, found.format 取不到;
+    # get_format 按 case_config.id + name 查此表取真实 format(绕过 ATK 丢 format)。
+    _TENSOR_FORMATS = {{ tensor_formats_repr }}
+
     def init_by_input_data(self, input_data: InputDataset):
         """
         初始化输入参数并整合算子输出到输入参数列表
@@ -85,6 +92,53 @@ class {{ class_name }}(AclnnBaseApi):
                     input_args.append(null_tensorlist_ptr)
                 else:
                     input_args.append(ctypes.c_void_p(None))
+{% if prerequisite_api %}
+        # === 前置算子 {{ prerequisite_api.name }} 派生 {{ prerequisite_api.derived_tensor_output }} 真实 shape ===
+        # 两段式+前置 CalculateSizeAndFormat: 先调前置 API 推导 dstTensor shape+actualFormat,
+        # 再创建 dstTensor 传给主 GetWorkspaceSize。跳过则 dstTensor 沿用占位 shape(垃圾)→崩溃。
+        # 自动注入(generator.py)。MEMORY: calculate-size-and-format-prerequisite-executor-bug 缺陷 A1
+        # acl_wrapper.aclnn 必须用 module-attr 访问(不可 from-import aclnn,那是占位 object 无 bind_function)
+        acl_wrapper.aclnn.bind_function(
+            "{{ prerequisite_api.name }}",
+            {{ prerequisite_api.argtypes_str }},
+            AclnnStatus,
+        )
+{% for si in prerequisite_api.scalar_inputs %}
+        _{{ si.name }}_cfg = self.get_config_by_name(self.task_result.case_config.inputs, "{{ si.name }}")
+        _{{ si.name }}_rv = _{{ si.name }}_cfg.range_values[0] if isinstance(_{{ si.name }}_cfg.range_values, list) else _{{ si.name }}_cfg.range_values
+        {{ si.var }} = _{{ si.name }}_rv
+{% endfor %}
+        src_struct_list = input_tmp.get('srcTensor')
+        if not src_struct_list:
+            raise RuntimeError("{{ op_name }}: srcTensor 未在 input_data 中找到")
+        srcTensorStruct = src_struct_list[0] if isinstance(src_struct_list, list) else src_struct_list
+
+        dst_shape_p = ctypes.POINTER(ctypes.c_int64)()
+        dst_shape_size = ctypes.c_uint64(0)
+        actual_format = ctypes.c_int(0)
+
+        acl_wrapper.aclnn.{{ prerequisite_api.name }}(
+            {{ prerequisite_api.call_args_str }}
+        )
+
+        shape_len = int(dst_shape_size.value)
+        if shape_len <= 0 or not bool(dst_shape_p):
+            raise RuntimeError("{{ prerequisite_api.name }} 返回空 dstShape")
+
+        dst_shape = tuple(int(dst_shape_p[i]) for i in range(shape_len))
+        logging.info(f"{{ op_name }} derived dst_shape={dst_shape}, actualFormat={actual_format.value}")
+
+        src_torch = input_data.kwargs.get("srcTensor")
+        dst_torch_dtype = src_torch.dtype if isinstance(src_torch, torch.Tensor) else torch.float32
+
+        dst_storage = torch.empty(dst_shape, dtype=dst_torch_dtype, device="npu")
+        dstTensorStruct: AclTensorStruct = nnopbase.create_acl_tensor(
+            dst_storage, AclFormat(actual_format.value)
+        )
+
+        input_args = [srcTensorStruct, dstTensorStruct]
+        input_tmp['{{ prerequisite_api.derived_tensor_output }}'] = [dstTensorStruct]
+{% endif %}
 
         # === 处理标杆输出 ===
         # 收集算子输出，并储存根据输出中的shape和dtype信息生成的AclTensorStruct数据结构
@@ -92,10 +146,21 @@ class {{ class_name }}(AclnnBaseApi):
         output_list = self.output.split(',')
         for index, output in enumerate(output_list):
             data = input_tmp.get(output)
+{% if prerequisite_api %}
+            if data is None:
+                continue  # skip [DERIVED] attr outputs (prerequisite-API out-params)
+            if isinstance(data, list):
+                if data and hasattr(data[0], 'shape'):
+                    output_packages.append(data[0])
+                # else: attr value, skip
+            else:
+                output_packages.append(data)
+{% else %}
             if isinstance(data, list):
                 output_packages.append(data[0])
             else:
                 output_packages.append(data)
+{% endif %}
 
         return input_args, output_packages
 
@@ -107,12 +172,33 @@ class {{ class_name }}(AclnnBaseApi):
         return None
 
     def get_format(self, input_data: InputDataset, index=None, name=None):
+        # ATK 用 model_validate 加载 cases → InputCaseConfig.format 被丢(probe 证
+        # MV_FORMAT_DICT='ABSENT' 而 model_construct='NZ'), found.format 取不到(曾 100/100
+        # AttributeError; 防崩后返 ND 致 src=ND→ACLRuntimeError 80/100)。先从 generate 嵌入的
+        # _TENSOR_FORMATS 按 case_config.id + name 查表取真实 format(来自 cases.json 原始数据),
+        # 查表未命中再回退 found 多源(防崩)→ND。MEMORY: cpu-golden-derivation-inputcaseconfig-attr L1'
+        if name is not None:
+            _cfg = getattr(getattr(self, 'task_result', None), 'case_config', None)
+            _cid = getattr(_cfg, 'id', None) if _cfg is not None else None
+            if _cid is not None:
+                _fmap = self._TENSOR_FORMATS.get(_cid) or self._TENSOR_FORMATS.get(str(_cid))
+                if isinstance(_fmap, dict) and name in _fmap:
+                    return self.get_acl_format(_fmap[name])
         found = None
         if name is not None:
             found = self.get_config_by_name(self.task_result.case_config.inputs, name)
         if found is not None and not isinstance(found, list):
-            format = found.format
-            return self.get_acl_format(format)
+            fmt = getattr(found, 'format', None)
+            if fmt is None:
+                _d = getattr(found, '__dict__', None)
+                if isinstance(_d, dict):
+                    fmt = _d.get('format')
+            if fmt is None:
+                _extra = getattr(found, '__pydantic_extra__', None)  # pydantic v2 extra=allow
+                if isinstance(_extra, dict):
+                    fmt = _extra.get('format')
+            if fmt is not None:
+                return self.get_acl_format(fmt)
         return AclFormat.ACL_FORMAT_ND
 
     def get_cpp_func_signature_type(self):
