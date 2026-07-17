@@ -27,6 +27,15 @@ supplementary-doc.md（源码分析）为准。
    `aclDataType` 参数 dtype 固定 `["string"]` 等），以及
    `prompts/modules/broadcast.md` 的关系展开规范（broadcast 右对齐表达、dtype
    互推导），保证生成器可消费。
+   **【int 标量参数取值必用 `.range_value`】** int 型标量参数（如 `dstFormat`、
+   `additionalDtype`、`actualFormat`）在跨参 expr 里引用其取值时**必须**用
+   `<param>.range_value`（如 `dstFormat.range_value == 29`、
+   `additionalDtype.range_value in [1,27,2,36]`、`additionalDtype.range_value == -1`），
+   对齐 `prompts/modules/acl_format_enum.md` §C.4 与 extractor 产出；**禁止**裸名
+   （`dstFormat in [...]` / `additionalDtype == -1`）。裸名虽对 `ScalarVar` 在 Z3 编码
+   上等价（都解析到同一 `z3_var`），但违反规范、与 extractor 不一致，且 post_check 把
+   int 标量映射成对象后裸名会 `AttributeError`（见 generate-cases 的 post_check 命名空间
+   约定）。
    **【跨 sort 比较必展开析取】** 凡涉及「int 枚举码 attr 与 `tensor.dtype`
    比较」的约束，**必须**展开成显式析取，**禁止**直接写
    `attr == tensor.dtype` / `attr != tensor.dtype`。
@@ -47,10 +56,10 @@ supplementary-doc.md（源码分析）为准。
    - 示例（`additionalDtype == srcTensor.dtype` 表示非 WeightQuant 路径，码集
      `[1,27,2,36]`）：
      - 禁止：`(additionalDtype == srcTensor.dtype) or (len(srcTensor.shape) in {2,3})`
-     - 正确：`((additionalDtype == 1 and srcTensor.dtype == "FLOAT16") or
-       (additionalDtype == 27 and srcTensor.dtype == "BFLOAT16") or
-       (additionalDtype == 2 and srcTensor.dtype == "INT8") or
-       (additionalDtype == 36 and srcTensor.dtype == "FLOAT8_E4M3FN")) or
+     - 正确：`((additionalDtype.range_value == 1 and srcTensor.dtype == "FLOAT16") or
+       (additionalDtype.range_value == 27 and srcTensor.dtype == "BFLOAT16") or
+       (additionalDtype.range_value == 2 and srcTensor.dtype == "INT8") or
+       (additionalDtype.range_value == 36 and srcTensor.dtype == "FLOAT8_E4M3FN")) or
        (len(srcTensor.shape) in {2,3})`
    - 同理适用于 `format` 码 attr（`acl_format` int 码 ↔ format 名字符串）等其他
      int 枚举码 attr 与 tensor 属性的跨 sort 比较：一律展开成同 sort 字面量析取。
@@ -90,5 +99,6 @@ supplementary-doc.md（源码分析）为准。
      `target_platform="all"` 时须在**每个**平台桶中都能找到，否则合并器精确匹配
      失败阻断
    - `expr` 可被 `ast.parse` 解析
+   - 引用 int 标量参数取值的 expr 必用 `<param>.range_value`，不得裸名（见 §2 int 标量规则）
 7. 自检不通过时修正，最多三次；仍失败则明确返回阻断原因。
 8. 返回：add/replace 计数、涉及平台、产物绝对路径。不修改 `constraints.json`。
