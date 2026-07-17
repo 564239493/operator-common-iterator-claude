@@ -222,7 +222,8 @@ class ParamConstraintUtils(CommonDispatcher):
                 z3_constraint = converter.visit(tree.body)
                 if z3_constraint is not None:
                     builder.solver.assert_and_track(z3_constraint, f"batch_chk:{static_expr[:50]}")
-        if builder.solver.check() == z3.sat:
+        check_status = builder.solver.check()
+        if check_status == z3.sat:
             builder.solver.pop()
             # 永久添加所有静态表达式
             for static_expr in param_static_expr_list:
@@ -236,6 +237,11 @@ class ParamConstraintUtils(CommonDispatcher):
                         builder.solver.assert_and_track(z3_constraint, f"perm:{static_expr[:50]}")
             logger.debug(f"Batch check SAT, all {len(param_static_expr_list)} exprs kept")
             return
+        elif check_status == z3.unknown:
+            logger.error(f"Batch check SAT, unknown reason : {builder.solver.reason_unknown()}")
+        else:
+            unsat_core = builder.solver.unsat_core()
+            logger.warning(f"Batch check SAT, unsat_core is {unsat_core}")
         builder.solver.pop()
 
         # 回退路径：逐个 push/pop 增量检测
@@ -250,8 +256,14 @@ class ParamConstraintUtils(CommonDispatcher):
                     z3_constraint = converter.visit(tree.body)
                     if z3_constraint is not None:
                         builder.solver.assert_and_track(z3_constraint, f"chk:{static_expr[:50]}")
-                        if builder.solver.check() == z3.sat:
+                        check_status = builder.solver.check()
+                        if check_status == z3.sat:
                             is_sat = True
+                        elif check_status == z3.unknown:
+                            logger.error(f"chk:{static_expr[:50]}, unknown reason : {builder.solver.reason_unknown()}")
+                        else:
+                            unsat_core = builder.solver.unsat_core()
+                            logger.warning(f"chk:{static_expr[:50]}, unsat_core is {unsat_core}")
             finally:
                 builder.solver.pop()
 
