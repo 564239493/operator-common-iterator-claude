@@ -4,9 +4,7 @@
 import copy
 import ctypes
 import re
-{% if prerequisite_api %}
-import atk.tasks.backends.lib_interface.acl_wrapper as acl_wrapper
-{% endif %}
+
 import torch
 from atk.common.log import Logger
 from atk.configs.dataset_config import InputDataset
@@ -14,18 +12,13 @@ from atk.configs.results_config import TaskResult
 from atk.tasks.api_execute import register
 from atk.tasks.api_execute.aclnn_base_api import AclnnBaseApi
 from atk.tasks.api_execute.base_api import BaseApi
-from atk.tasks.backends.lib_interface.acl_wrapper import Int64, Uint64, AclTensorStruct, TORCH_TO_ACLTYPE, nnopbase, AclFormat, aclnn, AclnnStatus, TensorPtr ,AclTensorlistStruct, pointer, AclIntArray, AclTensor, AclTensorList
+from atk.tasks.backends.lib_interface.acl_wrapper import AclTensorStruct, AclTensorlistStruct, AclFormat, nnopbase, AclTensor, AclTensorList
 
 logging = Logger().get_logger()
 
 
 @register("{{ aclnn_api_type }}")
 class {{ class_name }}(AclnnBaseApi):
-    # per-case per-tensor format 查表(generator 从 cases.json 原始数据提取嵌入)。
-    # ATK 用 model_validate 加载 cases 时 InputCaseConfig.format 被丢弃, found.format 取不到;
-    # get_format 按 case_config.id + name 查此表取真实 format(绕过 ATK 丢 format)。
-    _TENSOR_FORMATS = {{ tensor_formats_repr }}
-
     def init_by_input_data(self, input_data: InputDataset):
         """
         初始化输入参数并整合算子输出到输入参数列表
@@ -69,7 +62,12 @@ class {{ class_name }}(AclnnBaseApi):
             data = self.backend.convert_input_data(kwarg, name=name)
             if name in param_list:
                 input_tmp[name] = data
-
+        # === 处理标杆输出 ===
+        # 收集算子输出，并储存根据输出中的shape和dtype信息生成的AclTensorStruct数据结构
+        # 输出数据结构说明：
+        for index, output_data in enumerate(self.task_result.output_info_list):
+            output = self.backend.convert_output_data(output_data, index)
+            output_packages.extend(output)  # 保存完整AclTensorStruct结构
         # 构造算子调用的入参顺序
         for i, arg_name in enumerate(param_list):
             data = input_tmp.get(arg_name)
@@ -92,77 +90,18 @@ class {{ class_name }}(AclnnBaseApi):
                     input_args.append(null_tensorlist_ptr)
                 else:
                     input_args.append(ctypes.c_void_p(None))
-{% if prerequisite_api %}
-        # === 前置算子 {{ prerequisite_api.name }} 派生 {{ prerequisite_api.derived_tensor_output }} 真实 shape ===
-        # 两段式+前置 CalculateSizeAndFormat: 先调前置 API 推导 dstTensor shape+actualFormat,
-        # 再创建 dstTensor 传给主 GetWorkspaceSize。跳过则 dstTensor 沿用占位 shape(垃圾)→崩溃。
-        # 自动注入(generator.py)。MEMORY: calculate-size-and-format-prerequisite-executor-bug 缺陷 A1
-        # acl_wrapper.aclnn 必须用 module-attr 访问(不可 from-import aclnn,那是占位 object 无 bind_function)
-        acl_wrapper.aclnn.bind_function(
-            "{{ prerequisite_api.name }}",
-            {{ prerequisite_api.argtypes_str }},
-            AclnnStatus,
-        )
-{% for si in prerequisite_api.scalar_inputs %}
-        _{{ si.name }}_cfg = self.get_config_by_name(self.task_result.case_config.inputs, "{{ si.name }}")
-        _{{ si.name }}_rv = _{{ si.name }}_cfg.range_values[0] if isinstance(_{{ si.name }}_cfg.range_values, list) else _{{ si.name }}_cfg.range_values
-        {{ si.var }} = _{{ si.name }}_rv
-{% endfor %}
-        src_struct_list = input_tmp.get('srcTensor')
-        if not src_struct_list:
-            raise RuntimeError("{{ op_name }}: srcTensor 未在 input_data 中找到")
-        srcTensorStruct = src_struct_list[0] if isinstance(src_struct_list, list) else src_struct_list
 
-        dst_shape_p = ctypes.POINTER(ctypes.c_int64)()
-        dst_shape_size = ctypes.c_uint64(0)
-        actual_format = ctypes.c_int(0)
-
-        acl_wrapper.aclnn.{{ prerequisite_api.name }}(
-            {{ prerequisite_api.call_args_str }}
-        )
-
-        shape_len = int(dst_shape_size.value)
-        if shape_len <= 0 or not bool(dst_shape_p):
-            raise RuntimeError("{{ prerequisite_api.name }} 返回空 dstShape")
-
-        dst_shape = tuple(int(dst_shape_p[i]) for i in range(shape_len))
-        logging.info(f"{{ op_name }} derived dst_shape={dst_shape}, actualFormat={actual_format.value}")
-
-        src_torch = input_data.kwargs.get("srcTensor")
-        dst_torch_dtype = src_torch.dtype if isinstance(src_torch, torch.Tensor) else torch.float32
-
-        dst_storage = torch.empty(dst_shape, dtype=dst_torch_dtype, device="npu")
-        dstTensorStruct: AclTensorStruct = nnopbase.create_acl_tensor(
-            dst_storage, AclFormat(actual_format.value)
-        )
-
-        input_args = [srcTensorStruct, dstTensorStruct]
-        input_tmp['{{ prerequisite_api.derived_tensor_output }}'] = [dstTensorStruct]
-{% endif %}
-
-        # === 处理标杆输出 ===
-        # 收集算子输出，并储存根据输出中的shape和dtype信息生成的AclTensorStruct数据结构
-        # 输出数据结构说明：
-        output_list = self.output.split(',')
-        for index, output in enumerate(output_list):
-            data = input_tmp.get(output)
-{% if prerequisite_api %}
-            if data is None:
-                continue  # skip [DERIVED] attr outputs (prerequisite-API out-params)
-            if isinstance(data, list):
-                if data and hasattr(data[0], 'shape'):
-                    output_packages.append(data[0])
-                # else: attr value, skip
-            else:
-                output_packages.append(data)
-{% else %}
-            if isinstance(data, list):
-                output_packages.append(data[0])
-            else:
-                output_packages.append(data)
-{% endif %}
 
         return input_args, output_packages
+
+    def after_call(self, output_packages):
+        output = []
+        for output_pack in output_packages:
+            if isinstance(output_pack, AclTensorStruct):
+                output.append(self.acl_tensor_to_torch(output_pack))
+            elif isinstance(output_pack, AclTensorlistStruct):
+                output.append(self.acl_tensorlist_to_torch(output_pack))
+        return output
 
     def get_storage_shape(self, input_data: InputDataset, index=None, name=None):
         if name is not None:
@@ -172,33 +111,12 @@ class {{ class_name }}(AclnnBaseApi):
         return None
 
     def get_format(self, input_data: InputDataset, index=None, name=None):
-        # ATK 用 model_validate 加载 cases → InputCaseConfig.format 被丢(probe 证
-        # MV_FORMAT_DICT='ABSENT' 而 model_construct='NZ'), found.format 取不到(曾 100/100
-        # AttributeError; 防崩后返 ND 致 src=ND→ACLRuntimeError 80/100)。先从 generate 嵌入的
-        # _TENSOR_FORMATS 按 case_config.id + name 查表取真实 format(来自 cases.json 原始数据),
-        # 查表未命中再回退 found 多源(防崩)→ND。MEMORY: cpu-golden-derivation-inputcaseconfig-attr L1'
-        if name is not None:
-            _cfg = getattr(getattr(self, 'task_result', None), 'case_config', None)
-            _cid = getattr(_cfg, 'id', None) if _cfg is not None else None
-            if _cid is not None:
-                _fmap = self._TENSOR_FORMATS.get(_cid) or self._TENSOR_FORMATS.get(str(_cid))
-                if isinstance(_fmap, dict) and name in _fmap:
-                    return self.get_acl_format(_fmap[name])
         found = None
         if name is not None:
             found = self.get_config_by_name(self.task_result.case_config.inputs, name)
         if found is not None and not isinstance(found, list):
-            fmt = getattr(found, 'format', None)
-            if fmt is None:
-                _d = getattr(found, '__dict__', None)
-                if isinstance(_d, dict):
-                    fmt = _d.get('format')
-            if fmt is None:
-                _extra = getattr(found, '__pydantic_extra__', None)  # pydantic v2 extra=allow
-                if isinstance(_extra, dict):
-                    fmt = _extra.get('format')
-            if fmt is not None:
-                return self.get_acl_format(fmt)
+            format = found.format
+            return self.get_acl_format(format)
         return AclFormat.ACL_FORMAT_ND
 
     def get_cpp_func_signature_type(self):
@@ -253,12 +171,6 @@ class {{ class_name }}(AclnnBaseApi):
                 for config_item in config:
                     if config_item.type == "attrs" or config_item.type == "attr_tuple":
                         range_val = config_item.range_values[0] if isinstance(config_item.range_values, list) else config_item.range_values
-                        if range_val is None:
-                            AclIntArrayPtr = ctypes.POINTER(AclIntArray)
-                            null_void_ptr = ctypes.c_void_p(None)
-                            null_array_ptr = ctypes.cast(null_void_ptr, AclIntArrayPtr)
-                            input_tmp[data_name] = null_array_ptr
-                            return
                         data.append(self.get_ctype(config_item.dtype)(range_val))
                         input_tmp[data_name] = nnopbase.create_x_list(data)
 
@@ -377,17 +289,14 @@ class {{ class_name }}(AclnnBaseApi):
             'HWCN': AclFormat.ACL_FORMAT_HWCN,
             'NHWC': AclFormat.ACL_FORMAT_NHWC,
             'NC1HWC0': AclFormat.ACL_FORMAT_NC1HWC0,
-            'NDC1HWC0': AclFormat.ACL_FORMAT_NDC1HWC0,
             'NCL': AclFormat.ACL_FORMAT_NCL,
             'NCDHW': AclFormat.ACL_FORMAT_NCDHW,
             'NDHWC': AclFormat.ACL_FORMAT_NDHWC,
-            'FRACTAL_Z_3D': AclFormat.ACL_FRACTAL_Z_3D,
         }
 
         if format_str in FORMAT_MAPPING:
             return FORMAT_MAPPING[format_str]
         else:
-            logging.error(f"not found format: {format_str}")
             return AclFormat.ACL_FORMAT_ND
 
     def get_ctype(self, type_str):
@@ -430,68 +339,23 @@ class {{ cpu_class_name }}(BaseApi):
     _INPUT_PARAM_NAMES = {{ input_sig_names }}
 
     def __call__(self, input_data: InputDataset, with_output: bool = False):
-        # Build name->value mapping from input_data.args by TOP-LEVEL input position.
+        # Build name->value mapping from input_data.args using case_config.inputs names.
+        # ATK base_dataset.py appends each generated value to input_data.args in JSON inputs[] order.
+        # case_config.inputs[i].name gives the parameter name for args[i].
         _param_map = {}
-        # 按顶层 input 位置对齐:每个顶层 input 占 input_data.args 一个条目。
-        # 不能 flatten:grouped attrs(aclIntArray,如 padding/normalizedShape)在 args
-        # 里是单个 list 条目,flatten_list 会把它拆成 N 条与 args 逐位 zip,
-        # 导致其后所有 tensor/scalar/attr 错位(位移 = 组大小 - 1)。
-        if hasattr(self, 'task_result') and getattr(self.task_result.case_config, 'inputs', None) is not None:
-            _ai = 0
-            for _cfg in self.task_result.case_config.inputs:
-                if _ai >= len(input_data.args):
-                    break
-                _val = input_data.args[_ai]
-                _ai += 1
-                if isinstance(_cfg, list):
-                    # grouped input (attrs/attr_tuple/tensors): 一个 args 条目承载整个 list/tuple
-                    _name = _cfg[0].name if _cfg and getattr(_cfg[0], 'name', None) else None
-                else:
-                    _name = getattr(_cfg, 'name', None)
-                if _name:
-                    _param_map[_name] = _val
-                    # 同时用小写键索引,便于大小写不敏感查找
-                    _param_map[_name.lower()] = _val
+        if input_data.args and hasattr(self, 'task_result') and self.task_result.case_config.inputs:
+            flat_configs = self.task_result.case_config.flatten_list(self.task_result.case_config.inputs)
+            for idx, conf in enumerate(flat_configs):
+                if idx < len(input_data.args) and conf.name:
+                    _param_map[conf.name] = input_data.args[idx]
+                    # Also index by lowercase for case-insensitive lookup
+                    _param_map[conf.name.lower()] = input_data.args[idx]
         # Fallback: also index kwargs if present (for non-ACLNN paths)
         if input_data.kwargs:
             for k, v in input_data.kwargs.items():
                 if v is not None:
                     _param_map[k] = v
                     _param_map[k.lower()] = v
-
-        # CPU 侧 attr 兜底(镜像 NPU 侧 handle_attr_param):直接从 case_config.inputs
-        # 的 range_values 解析 attr 类参数,确保取值来自 JSON、不依赖 input_data.args
-        # 的对齐——避免 args 缺失 / range_values="default" / 错位时
-        # _get_param("xxx") 返回 None。标量 attr(int/double/bool)→ Python 标量;
-        # grouped attrs(aclIntArray 等)→ Python list,与 NPU create_x_list 对齐。
-        _cc_inputs = getattr(getattr(self, 'task_result', None), 'case_config', None)
-        _cc_inputs = getattr(_cc_inputs, 'inputs', None) if _cc_inputs is not None else None
-        if _cc_inputs is not None:
-            def _attr_scalar(rv):
-                # 与 NPU handle_attr_param 一致:list 取首元素,标量原样返回;
-                # "default"/None → None(交给 _get_param 的 default 兜底)
-                if rv == "default":
-                    return None
-                return rv[0] if isinstance(rv, list) and len(rv) > 0 else rv
-            for _cfg in _cc_inputs:
-                if isinstance(_cfg, list):
-                    # grouped attrs / attr_tuple(aclIntArray 等):收集每项 range_values 为 list
-                    _name = getattr(_cfg[0], 'name', None) if _cfg else None
-                    if not _name:
-                        continue
-                    _vals = [_attr_scalar(getattr(_ci, 'range_values', None)) for _ci in _cfg]
-                    # 全部为 None(如各项 range_values="default")→ 置 None,让 _get_param 的 default 兜底
-                    if all(_v is None for _v in _vals):
-                        _vals = None
-                    _param_map[_name] = _vals
-                    _param_map[_name.lower()] = _vals
-                else:
-                    _name = getattr(_cfg, 'name', None)
-                    _cfg_type = getattr(_cfg, 'type', None)
-                    if _name and _cfg_type in ('attr', 'attrs', 'attr_tuple'):
-                        _val = _attr_scalar(getattr(_cfg, 'range_values', None))
-                        _param_map[_name] = _val
-                        _param_map[_name.lower()] = _val
 
         def _get_param(name, default=None):
             v = _param_map.get(name)
@@ -515,12 +379,10 @@ class {{ cpu_class_name }}(BaseApi):
 {% for comment in param_comments %}
 {{ comment }}
 {% endfor %}
-        # TODO: CPU_GOLDEN - Replace ONLY the dummy computation below with
-        # the real PyTorch CPU equivalent. The parameter extraction above is pre-
-        # generated by generator.py and bound to local variables of the same
-        # names — keep it, do not rewrite it. Use the signature above to derive
-        # the correct torch.* call. attr params (int/float/bool/str/list) are
-        # already clean Python values via _get_param; tensors via _get_tensor.
+        # TODO: CPU_GOLDEN - Replace the dummy computation below with
+        # the real PyTorch CPU equivalent. Use the signature above to derive
+        # the correct torch.* call. Use _get_tensor(name) for tensors and
+        # _get_param(name, default) for scalars/attrs.
         # _get_tensor validates isinstance(v, torch.Tensor) to prevent
         # AttributeError when ATK generates wrong types for tensor params.
 
@@ -537,7 +399,7 @@ class {{ cpu_class_name }}(BaseApi):
 {% endfor %}
 {% endif %}
 {% if attr_lines %}
-        # Extract attrs (already clean Python literal/list/str from _get_param, use directly):
+        # Extract attrs:
 {% for line in attr_lines %}
 {{ line }}
 {% endfor %}

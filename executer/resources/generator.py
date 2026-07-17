@@ -178,39 +178,6 @@ def load_signatures(path: str) -> dict[str, str]:
     return sigs
 
 
-def load_acc_config(path: str) -> dict[str, object]:
-    """
-    加载 acc_config.txt，返回 {op_name: acc_value} 字典。
-
-    文件格式: 每行 '<算子名>："acc": <JSON 值>'
-      - 算子名与配置之间用全角冒号 '：'(U+FF1A) 分隔（兼容 ASCII ':'）。
-      - 冒号后是一个缺少外层花括号的 JSON 片段，形如 '"acc": "md5"'
-        或 '"acc": {"cv_fused_double_benchmark": {...}}'。
-    acc_value 已解析为 Python 对象（str / dict / list 等）；解析失败的行被跳过。
-    """
-    config: dict[str, object] = {}
-    # 算子名仅含 ASCII 字母/数字/下划线；分隔符为全角或 ASCII 冒号
-    sep_re = re.compile(r"^([A-Za-z0-9_]+)\s*[：:]\s*(.*)$")
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = sep_re.match(line)
-            if not m:
-                continue
-            op_name = m.group(1)
-            fragment = m.group(2).strip()
-            # 补上外层花括号后解析为完整 JSON 对象
-            try:
-                parsed = json.loads("{" + fragment + "}")
-            except json.JSONDecodeError:
-                continue
-            if "acc" in parsed:
-                config[op_name] = parsed["acc"]
-    return config
-
-
 # ---------------------------------------------------------------------------
 # 代码生成
 # ---------------------------------------------------------------------------
@@ -457,224 +424,7 @@ def _detect_comm_params(sig_params):
     return comm_params
 
 
-def _attr_default_repr(raw_type: str, name: str) -> str:
-    """attr 参数在 _get_param(name, default) 中的默认值(Python 字面量)。
-
-    仅作兜底——实际取值始终来自 input_data.args(由 ATK 按 case JSON 的
-    range_values/shape/dtype 生成),不会随机或硬编码。列表型 attr(aclIntArray
-    等)经 ATK 在 args 中作为单个 list 条目承载,CPU 侧直接得到 Python list。
-    """
-    rt = raw_type.strip()
-    # aclIntArray* / aclFloatArray* / aclBoolArray* —— grouped attrs,CPU 侧为 Python list
-    if "aclIntArray" in rt or "aclFloatArray" in rt or "aclBoolArray" in rt:
-        return "[]"
-    # 布尔
-    if rt in ("bool", "attr_bool", "_Bool"):
-        return "False"
-    # 浮点 —— eps/epsilon 取 1e-5(LayerNorm 类文档常用值),其余 0.0
-    if rt in ("double", "float", "float32", "float64"):
-        return "1e-5" if name.lower() in ("eps", "epsilon") else "0.0"
-    # 整数
-    if rt in ("int", "int8_t", "int16_t", "int32_t", "int64_t",
-              "uint8_t", "uint16_t", "uint32_t", "uint64_t", "long", "size_t"):
-        return "0"
-    # 字符串
-    if rt in ("str", "string", "const char*", "char*", "aclString*", "const aclString*"):
-        return "None"
-    # aclDataType / aclFormat / 其它未知 —— None 为安全兜底
-    return "None"
-
-
-def _split_params_simple(body: str) -> list[str]:
-    """简单按逗号分割参数(尊重括号嵌套),用于前置 API 签名解析。"""
-    params = []
-    depth = 0
-    current = []
-    for ch in body:
-        if ch in ("(", "<"):
-            depth += 1
-            current.append(ch)
-        elif ch in (")", ">"):
-            depth -= 1
-            current.append(ch)
-        elif ch == "," and depth == 0:
-            params.append("".join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-    if current:
-        params.append("".join(current).strip())
-    return params
-
-
-def _to_snake(name: str) -> str:
-    """CamelCase → snake_case (dstFormat → dst_format)。"""
-    out = []
-    for i, ch in enumerate(name):
-        if ch.isupper() and i > 0:
-            out.append("_")
-        out.append(ch.lower())
-    return "".join(out)
-
-
-def _build_fallback_prereq_sig(prereq_name, constraints, derived_outputs):
-    """无 source_evidence.json 时, 从 constraints.inputs 构造前置 API 回退签名。
-
-    与 _detect_prerequisite_api 末3 out 假设一致(NpuFormatCast 模式):
-    前置 API = (const aclTensor* srcTensor, <inputs 里 scalar attr 入参 按序>,
-               int64_t** dstShape, uint64_t* dstShapeSize, int* actualFormat)。
-    scalar attr = inputs 中 type 非 aclTensor 且非 [DERIVED] 输出 的参数。
-    constraints.inputs 为 per-platform 嵌套, type.value 需穿透 platform 层取。
-    无 prereq_name / 无 inputs / 无 scalar 入参 → 返回 None(放弃注入, 安全退回)。
-    """
-    if not prereq_name:
-        return None
-    inputs = constraints.get("inputs") if isinstance(constraints, dict) else None
-    if not isinstance(inputs, dict):
-        return None
-
-    def _input_type_value(in_def):
-        if not isinstance(in_def, dict):
-            return None
-        t = in_def.get("type")
-        if isinstance(t, dict):
-            return t.get("value")
-        for v in in_def.values():  # per-platform 嵌套: {平台: {type:{value:...}}}
-            if isinstance(v, dict):
-                vt = v.get("type")
-                if isinstance(vt, dict):
-                    return vt.get("value")
-        return None
-
-    scalar_names = []
-    for in_name, in_def in inputs.items():
-        if in_name in derived_outputs:
-            continue  # [DERIVED] 输出(如 dstTensor), 非前置 API 入参
-        tval = _input_type_value(in_def)
-        if tval and "aclTensor" in str(tval):
-            continue  # tensor(如 srcTensor), prelude 调用时用 srcTensorStruct.tensor
-        scalar_names.append(in_name)
-    if not scalar_names:
-        return None
-
-    params = ["const aclTensor* srcTensor"]
-    params += [f"int64_t {n}" for n in scalar_names]
-    params += ["int64_t** dstShape", "uint64_t* dstShapeSize", "int* actualFormat"]
-    return f"{prereq_name}(" + ", ".join(params) + ")"
-
-
-def _detect_prerequisite_api(constraints, source_evidence):
-    """检测前置 CalculateSizeAndFormat API + [DERIVED] 输出,生成 prelude 注入参数。
-
-    信号 B(主): constraints outputs.*.description 含 [DERIVED]+CalculateSizeAndFormat → 抽 API 名 + [DERIVED] 输出名。
-    信号 A(辅): source_evidence prerequisite_api_signature → 精确签名解析标量入参。
-    短期假设前置 API 末3 out = dstShape(int64_t**)/dstShapeSize(uint64_t*)/actualFormat(int*)。
-    不硬编码算子名(检测条件通用)。无前置 API 返回 None。
-    """
-    if not isinstance(constraints, dict):
-        return None
-
-    prereq_name = None
-    derived_outputs = set()
-    outputs = constraints.get("outputs", {})
-    if isinstance(outputs, dict):
-        for out_name, out_def in outputs.items():
-            if not isinstance(out_def, dict):
-                continue
-            descriptions = []
-            if "description" in out_def:
-                descriptions.append(out_def["description"])
-            for v in out_def.values():
-                if isinstance(v, dict) and "description" in v:
-                    descriptions.append(v["description"])
-            for desc in descriptions:
-                desc_s = str(desc)
-                if "[DERIVED]" in desc_s and "CalculateSizeAndFormat" in desc_s:
-                    derived_outputs.add(out_name)
-                    if not prereq_name:
-                        m = re.search(r'(aclnn\w+CalculateSizeAndFormat)', desc_s)
-                        if m:
-                            prereq_name = m.group(1)
-
-    prereq_sig = None
-    if source_evidence and isinstance(source_evidence, dict):
-        # prerequisite_api_name/signature 在 dst_shape_origin 子对象内(source-analyst diagnose 域产)
-        _dso = source_evidence.get("dst_shape_origin") or {}
-        if not prereq_name:
-            prereq_name = _dso.get("prerequisite_api_name") or source_evidence.get("prerequisite_api_name")
-        prereq_sig = _dso.get("prerequisite_api_signature") or source_evidence.get("prerequisite_api_signature")
-
-    if not prereq_name:
-        return None
-
-    # 短期只支持前置 API 末3 out = dstShape/dstShapeSize/actualFormat 模式(NpuFormatCast 模式)。
-    # 无 source_evidence.json(prerequisite_api_signature)时, 从 constraints.inputs 构造回退
-    # 签名(NpuFormatCast 模式), 让 prelude 仍可注入; 否则 dstTensor 占位 shape 致 507035
-    # vector core 崩(MEMORY: calculate-size-and-format-prerequisite-executor-bug A1)。
-    # 末3不匹配仍不注入(安全退回, 避免生成错误 prelude 影响别的算子)。
-    if not prereq_sig:
-        prereq_sig = _build_fallback_prereq_sig(prereq_name, constraints, derived_outputs)
-    if not prereq_sig:
-        return None
-    body_m = re.search(r"\((.+)\)\s*$", prereq_sig, re.DOTALL)
-    if not body_m:
-        return None
-    _all_params = _split_params_simple(body_m.group(1))
-    if len(_all_params) < 4:  # srcTensor + 至少1标量 + 末3 out
-        return None
-    _last3_names = []
-    for raw in _all_params[-3:]:
-        _nm = re.search(r'(\w+)\s*$', raw.strip())
-        _last3_names.append(_nm.group(1) if _nm else None)
-    if _last3_names != ["dstShape", "dstShapeSize", "actualFormat"]:
-        return None  # 不支持的模式, 不注入(避免生成错误 prelude 影响别的算子)
-
-    out_param_names = {"dstShape", "dstShapeSize", "actualFormat"}
-    scalar_inputs = []
-    for raw in _all_params:
-        raw = raw.strip()
-        name_m = re.search(r'(\w+)\s*$', raw)
-        if not name_m:
-            continue
-        pname = name_m.group(1)
-        if pname in out_param_names:
-            continue
-        type_part = raw[:name_m.start()].strip()
-        if 'aclTensor' in type_part:
-            continue  # srcTensor, 调用时用 srcTensorStruct.tensor
-        scalar_inputs.append({"name": pname, "var": _to_snake(pname)})
-
-    argtypes = ["TensorPtr"] + ["ctypes.c_int"] * len(scalar_inputs) + [
-        "ctypes.POINTER(ctypes.POINTER(ctypes.c_int64))",
-        "ctypes.POINTER(ctypes.c_uint64)",
-        "ctypes.POINTER(ctypes.c_int)",
-    ]
-    argtypes_str = "[" + ", ".join(argtypes) + "]"
-
-    call_args = ["srcTensorStruct.tensor"]
-    for si in scalar_inputs:
-        call_args.append(f"ctypes.c_int(int({si['var']}))")
-    call_args += ["ctypes.byref(dst_shape_p)", "ctypes.byref(dst_shape_size)", "ctypes.byref(actual_format)"]
-    call_args_str = (",\n            ").join(call_args)
-
-    derived_tensor = None
-    for dn in derived_outputs:
-        if dn not in out_param_names:
-            derived_tensor = dn
-            break
-    if not derived_tensor:
-        derived_tensor = "dstTensor"
-
-    return {
-        "name": prereq_name,
-        "scalar_inputs": scalar_inputs,
-        "argtypes_str": argtypes_str,
-        "call_args_str": call_args_str,
-        "derived_tensor_output": derived_tensor,
-    }
-
-
-def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str, constraints: dict | None = None, source_evidence: dict | None = None) -> str:
+def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str) -> str:
     """
     为同一个算子的所有用例生成一个通用的 ATK API py 文件。
 
@@ -688,17 +438,7 @@ def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str, c
     _SPECIAL_TEMPLATES = {
         "aclnnCalculateMatmulWeightSize": "aclnnCalculateMatmulWeightSize.py.tpl",
         "aclnnCalculateMatmulWeightSizeV2": "aclnnCalculateMatmulWeightSizeV2.py.tpl",
-        "aclnnAlltoAllMatmul": "aclnnAlltoAllMatmul.py.tpl",
-        "aclnnReflectionPad1dBackward": "aclnnReflectionPad1dBackward.py.tql",
-        "aclnnBatchMatMulWeightNz": "aclnnBatchMatMulWeightNz.py.tql",
     }
-    # NOTE: aclnnNpuFormatCast 已从 special_templates 移除。原 .tql 模板是
-    # aclnnBatchMatMulWeightNz 的残留(错误的 _OP_NAME / dummy CPU 输出 / 无
-    # CPU_GOLDEN 标记),且 generator.py 引用的扩展名 .tpl 与磁盘 .tql 不一致
-    # (FileNotFoundError)。改为走标准 j2 模板生成带 CPU_GOLDEN 标记的文件,
-    # 由 atc-cpu-golden-derivation skill 推导 CPU golden 并在 NPU 侧
-    # init_by_input_data 注入前置算子 aclnnNpuFormatCastCalculateSizeAndFormat
-    # 调用,使 dstTensor 用真实派生 shape 而非 JSON 占位 shape。
     if op_name in _SPECIAL_TEMPLATES:
         tpl_path = os.path.join(os.path.dirname(__file__), _SPECIAL_TEMPLATES[op_name])
         with open(tpl_path, "r", encoding="utf-8") as f:
@@ -763,46 +503,15 @@ def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str, c
         default = "1.0" if "alpha" in p["name"].lower() or "beta" in p["name"].lower() else "0"
         scalar_lines.append(f'        {p["name"]} = _get_param("{p["name"]}", {default})')
 
-    # attr 提取行 —— 与 tensor/scalar 一致,生成真实取值代码(非注释)。
-    # 取值经 _get_param 从 input_data.args 读取(由 ATK 按 case JSON 生成),
-    # default 仅在缺失时兜底。aclIntArray 等列表型 attr 已是 Python list,直接传给 torch。
+    # attr 提取行
     attr_lines = []
     for p in attr_params:
-        default = _attr_default_repr(p["raw_type"], p["name"])
-        attr_lines.append(f'        {p["name"]} = _get_param("{p["name"]}", {default})  # {p["raw_type"]}')
+        attr_lines.append(f'        # {p["name"]} ({p["raw_type"]}) = _get_param("{p["name"]}")')
 
     # output append 行
     output_append_lines = [f'        outputs.append(_dummy_output("{out_name}"))' for out_name in output_param_names]
 
     cpu_classes = [(api_type, _to_class_name(api_type)) for api_type in api_types]
-
-    # ---- 前置 CalculateSizeAndFormat API 检测 (prelude 注入) ----
-    prerequisite_api = _detect_prerequisite_api(constraints, source_evidence)
-
-    # ---- per-case per-tensor format 查表(L1' 修复) ----
-    # ATK 用 model_validate 加载 cases 时 InputCaseConfig.format 被丢弃(probe 证
-    # MV_FORMAT_DICT='ABSENT' vs model_construct='NZ'), 故 get_format 从 found 取不到
-    # (曾 100/100 AttributeError, 后防崩返 ND 致 src=ND→ACLRuntimeError 80/100)。
-    # 从 cases.json 原始数据提取 per-case per-tensor format 嵌入类属性查表,
-    # get_format 按 case_config.id + name 查表取真实 format, 绕过 ATK 丢 format。
-    # MEMORY: cpu-golden-derivation-inputcaseconfig-attr L1'
-    tensor_formats = {}
-    for _c in cases:
-        if not isinstance(_c, dict):
-            continue
-        _cid = _c.get("id")
-        if _cid is None:
-            continue
-        _fmap = {}
-        for _inp in _c.get("inputs", []) or []:
-            if isinstance(_inp, dict):
-                _fmt = _inp.get("format")
-                _nm = _inp.get("name")
-                if _fmt and _nm:
-                    _fmap[_nm] = _fmt
-        if _fmap:
-            tensor_formats[_cid] = _fmap
-    tensor_formats_repr = repr(tensor_formats)
 
     # ---- 渲染模板 ----
     template_path = os.path.join(os.path.dirname(__file__), "aclnn_api_template.py.j2")
@@ -823,8 +532,6 @@ def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str, c
         attr_lines=attr_lines,
         output_count=output_count,
         output_append_lines=output_append_lines,
-        prerequisite_api=prerequisite_api,
-        tensor_formats_repr=tensor_formats_repr,
     )
 
 def missing_params_repr(missing_params: list[dict]) -> str:
@@ -883,12 +590,6 @@ def main():
         default=os.path.join(os.path.dirname(__file__), "aclnn.txt"),
         help="aclnn.txt 签名表路径（默认: 脚本同目录下 aclnn.txt）",
     )
-    parser.add_argument(
-        "--acc-config",
-        default=os.path.join(os.path.dirname(__file__), "acc_config.txt"),
-        help="acc_config.txt 路径（默认: 脚本同目录下 acc_config.txt）；"
-             "按算子名替换用例 standard.acc 的 \"default\" 值",
-    )
     args = parser.parse_args()
 
     # 加载签名表
@@ -897,32 +598,9 @@ def main():
         print(f"错误: 签名表为空或格式不正确: {args.signatures}", file=sys.stderr)
         sys.exit(1)
 
-    # 加载 acc 配置表（可选；文件缺失时跳过 acc 替换，不影响主流程）
-    try:
-        acc_config = load_acc_config(args.acc_config)
-    except FileNotFoundError:
-        print(f"警告: acc 配置文件不存在: {args.acc_config}，跳过 acc 替换", file=sys.stderr)
-        acc_config = {}
-
     # 加载用例 JSON
     with open(args.case_json, "r", encoding="utf-8") as f:
         cases = json.load(f)
-
-    # 加载 constraints.json + source_evidence.json (前置 CalculateSizeAndFormat API 检测用)
-    # generator.py 原只读 cases.json/aclnn.txt/acc_config; 现加读同 iter_dir 的 constraints
-    # (信号 B: outputs.*.description [DERIVED]+CalculateSizeAndFormat) + source_evidence
-    # (信号 A: prerequisite_api_signature 精确签名)。缺失则跳过 prelude 注入(退回无 prelude)。
-    _iter_dir = os.path.dirname(os.path.abspath(args.case_json))
-    constraints = None
-    _constraints_path = os.path.join(_iter_dir, "constraints.json")
-    if os.path.isfile(_constraints_path):
-        with open(_constraints_path, "r", encoding="utf-8") as f:
-            constraints = json.load(f)
-    source_evidence = None
-    _se_path = os.path.join(_iter_dir, "source_evidence.json")
-    if os.path.isfile(_se_path):
-        with open(_se_path, "r", encoding="utf-8") as f:
-            source_evidence = json.load(f)
 
     # 支持 JSON 为单个对象或数组
     if isinstance(cases, dict):
@@ -1016,29 +694,10 @@ def main():
     # 一段式算子特殊处理: aclnnCalculateMatmulWeightSize / V2 的 aclnn_name 改为 Ad
     _SPECIAL_ONE_STAGE_OPS = {"aclnnCalculateMatmulWeightSize", "aclnnCalculateMatmulWeightSizeV2"}
     expanded_cases = copy.deepcopy(cases)
-    acc_default_ops: set[str] = set()  # 未在 acc_config 中配置、回退 default 的算子名
     for case in expanded_cases:
         case_name = case.get("aclnn_name", "") or case.get("name", "")
         if case_name in _SPECIAL_ONE_STAGE_OPS:
             case["aclnn_name"] = "Add"
-        if case_name == "aclnnAlltoAllMatmul":
-            if case.get("dist_api_type") == "dist_function":
-                case["dist_api_type"] = "function"
-        # 按算子名到 acc_config 查找配置，替换 standard.acc 的 "default" 占位值。
-        # 用 case_name（重命名前的原始算子名）查找，保持与 acc_config.txt 键一致。
-        if case_name in acc_config:
-            standard = case.get("standard")
-            if isinstance(standard, dict) and standard.get("acc") == "default":
-                standard["acc"] = acc_config[case_name]
-        elif case_name:
-            # acc_config.txt 中未找到该算子的 acc 配置，保持 "default" 不变
-            acc_default_ops.add(case_name)
-    if acc_default_ops:
-        print(
-            f"提示: 以下算子在 acc_config.txt 中未配置 acc，保持 \"default\": "
-            f"{sorted(acc_default_ops)}",
-            file=sys.stderr,
-        )
     expanded_json_path = base + "_expanded.json"
     with open(expanded_json_path, "w", encoding="utf-8") as f:
         json.dump(expanded_cases, f, ensure_ascii=False, indent=2)
@@ -1086,7 +745,7 @@ def main():
     # 每个算子生成一个 py 文件
     op_count = len(op_cases)
     for idx, ((op_name, sig), op_case_list) in enumerate(op_cases.items()):
-        code = generate_api_class_for_op(op_case_list, sig, op_name, constraints, source_evidence)
+        code = generate_api_class_for_op(op_case_list, sig, op_name)
 
         if args.output and op_count == 1:
             out_path = args.output

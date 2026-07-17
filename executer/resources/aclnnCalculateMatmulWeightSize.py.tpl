@@ -70,7 +70,9 @@ class AclnnNpuFormatCast(AclnnBaseApi):
 
         acl_wrapper.aclnn.aclnnCalculateMatmulWeightSize(weightShape, weightTensorSize)
 
-        self.output = torch.tensor(weightTensorSize.value, dtype=torch.long)
+        found = self.get_config_by_name(self.task_result.case_config.inputs, "weightTensorSize")
+
+        self.output = torch.tensor(found.range_values, dtype=torch.long)
 
     def after_call(self, output_packages):
 
@@ -119,7 +121,12 @@ class AclnnNpuFormatCast(AclnnBaseApi):
             data = self.backend.convert_input_data(kwarg, name=name)
             if name in param_list:
                 input_tmp[name] = data
-
+        # === 处理标杆输出 ===
+        # 收集算子输出，并储存根据输出中的shape和dtype信息生成的AclTensorStruct数据结构
+        # 输出数据结构说明：
+        for index, output_data in enumerate(self.task_result.output_info_list):
+            output = self.backend.convert_output_data(output_data, index)
+            output_packages.extend(output)  # 保存完整AclTensorStruct结构
         # 构造算子调用的入参顺序
         for i, arg_name in enumerate(param_list):
             data = input_tmp.get(arg_name)
@@ -142,12 +149,16 @@ class AclnnNpuFormatCast(AclnnBaseApi):
                     input_args.append(null_tensorlist_ptr)
                 else:
                     input_args.append(ctypes.c_void_p(None))
-
-        weightTensorSize = torch.zeros(1, dtype=torch.long)
-        weightTensorSizeAclTensor = nnopbase.create_acl_tensor(weightTensorSize, AclFormat.ACL_FORMAT_ND, weightTensorSize.shape)
-        output_packages = [weightTensorSizeAclTensor]
         return input_args, output_packages
 
+    def after_call(self, output_packages):
+        output = []
+        for output_pack in output_packages:
+            if isinstance(output_pack, AclTensorStruct):
+                output.append(self.acl_tensor_to_torch(output_pack))
+            elif isinstance(output_pack, AclTensorlistStruct):
+                output.append(self.acl_tensorlist_to_torch(output_pack))
+        return output
 
     def get_storage_shape(self, input_data: InputDataset, index=None, name=None):
         if name is not None:
@@ -240,10 +251,6 @@ class AclnnNpuFormatCast(AclnnBaseApi):
                 input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3],  # c*d
                 input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4]  # b*e
             )
-        if "aclnnCalculateMatmulWeightSize" in operator_name:
-            found_tensorShape = self.get_config_by_name(self.task_result.case_config.inputs, "tensorShape")
-            found_tensorShape[:] = found_tensorShape[-2:]
-            input_data.kwargs['tensorShape'] = found_tensorShape
 
     def parse_operator_params(self, func_signature: str):
         """
