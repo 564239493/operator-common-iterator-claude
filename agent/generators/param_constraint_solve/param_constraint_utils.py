@@ -308,6 +308,8 @@ class ParamConstraintUtils(CommonDispatcher):
         :param check: 是否立即执行冲突检测
         """
         static_range_value_expr_list = []
+        scalar_range_value_attr_name = "range_value"
+        list_tensor_range_value_attr_name = "range_value[0]"
         relation_params = list(self.case_input_map.keys())
         for param_name in relation_params:
             param_attr = self.operator_rule_data.inputs.get(param_name)
@@ -320,13 +322,18 @@ class ParamConstraintUtils(CommonDispatcher):
             if param_range_value_constraint is None:
                 continue
             param_type = self.case_input_map.get(param_name).type
+            z3_param_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(param_type, "tensor")
+            if z3_param_type in ParamModelConfig.TENSOR_ATK_TYPE:
+                range_value_attr_name = scalar_range_value_attr_name
+            else:
+                range_value_attr_name = list_tensor_range_value_attr_name
             param_range_value_expr_list = []
             for value_rule in param_range_value_constraint:
                 if value_type == ParamRangeValueType.ENUM.value:
                     if value_rule is None:
                         param_range_value_expr_list.append(f"{param_name} is {value_rule}")
                     elif isinstance(value_rule, str):
-                        param_range_value_expr_list.append(f"{param_name}.range_value == '{value_rule}'")
+                        param_range_value_expr_list.append(f"{param_name}.{range_value_attr_name} == '{value_rule}'")
                     elif isinstance(value_rule, list):
                         value_rule_expr_list = []
                         for val_index, val in enumerate(value_rule):
@@ -335,11 +342,11 @@ class ParamConstraintUtils(CommonDispatcher):
                         value_rule_expr_str = f"({value_rule_expr_str})"
                         param_range_value_expr_list.append(value_rule_expr_str)
                     else:
-                        param_range_value_expr_list.append(f"{param_name}.range_value == {value_rule}")
+                        param_range_value_expr_list.append(f"{param_name}.{range_value_attr_name} == {value_rule}")
                 else:
                     if len(value_rule) >= 2:
                         param_range_value_expr_list.append(
-                            f"({param_name}.range_value > {value_rule[0]} and {param_name}.range_value < {value_rule[1]})")
+                            f"({param_name}.{range_value_attr_name} > {value_rule[0]} and {param_name}.{range_value_attr_name} < {value_rule[1]})")
                     else:
                         logger.error(
                             f"Param name : {param_name}, allowed range value is invalid, type : 'range', value : '{value_rule}'")

@@ -717,18 +717,16 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         if any(a is None for a in args):
             raise ValueError("sum() argument failed")
 
-        if len(args) == 1:
-            arg = args[0]
-            if isinstance(arg, TensorVar):
-                return self._sum_tensor_elements(arg)
-            if z3.is_seq(arg):
-                return self._sum_z3_sequence(arg, z3.IntSort())
-            if isinstance(arg, (list, tuple)):
-                nums = [v for v in arg if isinstance(v, (int, float))]
-                return sum(nums) if nums else 0
-            if z3.is_expr(arg) or isinstance(arg, (int, float, bool)):
-                return arg
-            raise TypeError(f"sum() on unsupported type: {type(arg).__name__}")
+        if len(node.args) == 1 and isinstance(node.args[0], ast.Attribute) \
+                and node.args[0].attr == 'range_value' \
+                and isinstance(node.args[0].value, ast.Name):
+            var = self.builder.get_or_create_var(node.args[0].value.id)
+            if isinstance(var, TensorVar):
+                return self._sum_tensor_elements(var)
+            if isinstance(var, TensorListVar):
+                return self._sum_tensor_elements(var)
+            if isinstance(var, ListVar):
+                return self._sum_z3_sequence(var.z3_var, var.get_element_sort())
 
         return self._sum_scalars(args)
 
