@@ -15,14 +15,135 @@ logging = Logger().get_logger()
 
 @register("function")
 class Function(BaseApi):
-    """Auto-generated CPU reference class for aclnnBatchMatMulWeightNz."""
+    """Auto-generated CPU reference class for aclnnNpuFormatCast."""
 
-    _OP_NAME = "aclnnBatchMatMulWeightNz"
-    _SIG_STR = """aclnnStatus aclnnBatchMatMulWeightNzGetWorkspaceSize( const aclTensor *self, const aclTensor *mat2, aclTensor *out, int8_t cubeMathType, uint64_t *workspaceSize, aclOpExecutor **executor)"""
-    _INPUT_PARAM_NAMES = ['self', 'mat2', 'cubeMathType']
+    _OP_NAME = "aclnnNpuFormatCast"
+    _SIG_STR = """aclnnStatus aclnnNpuFormatCastGetWorkspaceSize(const aclTensor* srcTensor, aclTensor* dstTensor, uint64_t* workspaceSize, aclOpExecutor** executor)"""
+    _INPUT_PARAM_NAMES = ['srcTensor']
 
     def __call__(self, input_data: InputDataset, with_output: bool = False):
-        return torch.ones([1024, 1, 16], dtype=torch.float16)
+        # Build name->value mapping from input_data.args by TOP-LEVEL input position.
+        _param_map = {}
+        # 按顶层 input 位置对齐:每个顶层 input 占 input_data.args 一个条目。
+        # 不能 flatten:grouped attrs(aclIntArray,如 padding/normalizedShape)在 args
+        # 里是单个 list 条目,flatten_list 会把它拆成 N 条与 args 逐位 zip,
+        # 导致其后所有 tensor/scalar/attr 错位(位移 = 组大小 - 1)。
+        if hasattr(self, 'task_result') and getattr(self.task_result.case_config, 'inputs', None) is not None:
+            _ai = 0
+            for _cfg in self.task_result.case_config.inputs:
+                if _ai >= len(input_data.args):
+                    break
+                _val = input_data.args[_ai]
+                _ai += 1
+                if isinstance(_cfg, list):
+                    # grouped input (attrs/attr_tuple/tensors): 一个 args 条目承载整个 list/tuple
+                    _name = _cfg[0].name if _cfg and getattr(_cfg[0], 'name', None) else None
+                else:
+                    _name = getattr(_cfg, 'name', None)
+                if _name:
+                    _param_map[_name] = _val
+                    # 同时用小写键索引,便于大小写不敏感查找
+                    _param_map[_name.lower()] = _val
+        # Fallback: also index kwargs if present (for non-ACLNN paths)
+        if input_data.kwargs:
+            for k, v in input_data.kwargs.items():
+                if v is not None:
+                    _param_map[k] = v
+                    _param_map[k.lower()] = v
+
+        # CPU 侧 attr 兜底(镜像 NPU 侧 handle_attr_param):直接从 case_config.inputs
+        # 的 range_values 解析 attr 类参数,确保取值来自 JSON、不依赖 input_data.args
+        # 的对齐——避免 args 缺失 / range_values="default" / 错位时
+        # _get_param("xxx") 返回 None。标量 attr(int/double/bool)→ Python 标量;
+        # grouped attrs(aclIntArray 等)→ Python list,与 NPU create_x_list 对齐。
+        _cc_inputs = getattr(getattr(self, 'task_result', None), 'case_config', None)
+        _cc_inputs = getattr(_cc_inputs, 'inputs', None) if _cc_inputs is not None else None
+        if _cc_inputs is not None:
+            def _attr_scalar(rv):
+                # 与 NPU handle_attr_param 一致:list 取首元素,标量原样返回;
+                # "default"/None → None(交给 _get_param 的 default 兜底)
+                if rv == "default":
+                    return None
+                return rv[0] if isinstance(rv, list) and len(rv) > 0 else rv
+            for _cfg in _cc_inputs:
+                if isinstance(_cfg, list):
+                    # grouped attrs / attr_tuple(aclIntArray 等):收集每项 range_values 为 list
+                    _name = getattr(_cfg[0], 'name', None) if _cfg else None
+                    if not _name:
+                        continue
+                    _vals = [_attr_scalar(getattr(_ci, 'range_values', None)) for _ci in _cfg]
+                    # 全部为 None(如各项 range_values="default")→ 置 None,让 _get_param 的 default 兜底
+                    if all(_v is None for _v in _vals):
+                        _vals = None
+                    _param_map[_name] = _vals
+                    _param_map[_name.lower()] = _vals
+                else:
+                    _name = getattr(_cfg, 'name', None)
+                    _cfg_type = getattr(_cfg, 'type', None)
+                    if _name and _cfg_type in ('attr', 'attrs', 'attr_tuple'):
+                        _val = _attr_scalar(getattr(_cfg, 'range_values', None))
+                        _param_map[_name] = _val
+                        _param_map[_name.lower()] = _val
+
+        def _get_param(name, default=None):
+            v = _param_map.get(name)
+            if v is None:
+                v = _param_map.get(name.lower())
+            if v is not None:
+                return v
+            return default
+
+        # Tensor validation: ensures a param is actually a torch.Tensor
+        # ATK may sometimes generate non-tensor values (e.g. int) for params
+        # expected to be tensors, causing AttributeError during computation
+        def _get_tensor(name, default=None):
+            v = _get_param(name, default)
+            return v if isinstance(v, torch.Tensor) else default
+
+        # ACLNN operator: aclnnNpuFormatCast
+        # C++ signature: aclnnStatus aclnnNpuFormatCastGetWorkspaceSize(const aclTensor* srcTensor, aclTensor* dstTensor, uint64_t* workspaceSize, aclOpExecutor** executor)
+
+        # --- Input parameters from signature ---
+        # input tensor srcTensor
+        # TODO: CPU_GOLDEN - Replace ONLY the dummy computation below with
+        # the real PyTorch CPU equivalent. The parameter extraction above is pre-
+        # generated by generator.py and bound to local variables of the same
+        # names — keep it, do not rewrite it. Use the signature above to derive
+        # the correct torch.* call. attr params (int/float/bool/str/list) are
+        # already clean Python values via _get_param; tensors via _get_tensor.
+        # _get_tensor validates isinstance(v, torch.Tensor) to prevent
+        # AttributeError when ATK generates wrong types for tensor params.
+
+        # Extract input tensors (use _get_tensor to validate type):
+        srcTensor = _get_tensor("srcTensor")
+
+        # [FALLBACK] Dummy output - replace with real computation above
+        tensors = [a for a in input_data.args if isinstance(a, torch.Tensor)]
+        if not tensors:
+            tensors = [v for v in input_data.kwargs.values() if isinstance(v, torch.Tensor)]
+        dtype = next((v.dtype for v in tensors), torch.float32)
+        outputs = []
+        def _dummy_output(out_name):
+            candidates = [out_name]
+            for suffix in ("Out", "Optional"):
+                if out_name.endswith(suffix):
+                    stripped = out_name[:-len(suffix)]
+                    candidates.append(stripped)
+                    if stripped.startswith("grad"):
+                        candidates.append(stripped[4:])
+            if out_name.startswith("grad"):
+                candidates.append(out_name[4:])
+            for t in tensors:
+                tn = getattr(t, '_name', '')
+                for k in candidates:
+                    if tn and (tn == k or tn.lower() == k.lower()):
+                        return torch.ones(t.shape, dtype=dtype)
+            if tensors:
+                return torch.ones(tensors[0].shape, dtype=dtype)
+            return torch.ones([1], dtype=dtype)
+        outputs.append(_dummy_output("dstTensor"))
+        return outputs[0]
+        # END_CPU_GOLDEN
 
 
 @register("aclnn_function")
