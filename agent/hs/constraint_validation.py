@@ -5,6 +5,8 @@ import ast
 import re
 from typing import Any
 
+from .constraint_evaluator import evaluate_case_relations
+
 
 def _value(field: Any) -> Any:
     return field.get("value") if isinstance(field, dict) else field
@@ -101,10 +103,104 @@ def _is_nonconstant_mod(node: ast.BinOp) -> bool:
     )
 
 
+def _tensor(name: str, dtype: str, shape: list[int] | None, values: Any) -> dict[str, Any]:
+    return {
+        "name": name, "type": "tensor", "dtype": dtype, "shape": shape,
+        "format": "ND", "range_values": values,
+    }
+
+
+def _attr(name: str, value: Any) -> dict[str, Any]:
+    return {"name": name, "type": "attr", "dtype": "", "range_values": value}
+
+
+def _kv_quant_truth_cases() -> dict[str, dict[str, Any]]:
+    """Known-valid document scenes used to catch inverted layout implications."""
+    common_attrs = [
+        _attr("scale_value", 0.044194173824159216),
+        _attr("key_quant_mode", 2), _attr("value_quant_mode", 2),
+        _attr("sparse_block_size", 2), _attr("sparse_mode", 3),
+        _attr("pre_tokens", (1 << 63) - 1),
+        _attr("next_tokens", (1 << 63) - 1),
+        _attr("attention_mode", 2), _attr("quant_scale_repo_mode", 1),
+        _attr("tile_size", 128), _attr("rope_head_dim", 64),
+    ]
+    reserved = [
+        _tensor("key_dequant_scale", "float16", None, ["null"]),
+        _tensor("value_dequant_scale", "float16", None, ["null"]),
+    ]
+    bsnd_query = _tensor("query", "float16", [2, 3, 4, 576], [-1, 1])
+    cases = {
+        "bsnd": {
+            "inputs": [
+                bsnd_query,
+                _tensor("key", "int8", [2, 8, 1, 656], [-8, 8]),
+                _tensor("value", "int8", [2, 8, 1, 656], [-8, 8]),
+                _tensor("sparse_indices", "int32", [2, 3, 1, 2], [0, 0]),
+                *reserved,
+                _tensor("block_table", "int32", None, ["null"]),
+                _tensor("actual_seq_lengths_query", "int32", None, ["null"]),
+                _tensor("actual_seq_lengths_kv", "int32", None, ["null"]),
+                _attr("layout_query", "BSND"), _attr("layout_kv", "BSND"),
+                *common_attrs,
+                _tensor("out", "float16", [2, 3, 4, 576], [-1, 1]),
+            ]
+        },
+        "tnd_multibatch": {
+            "inputs": [
+                _tensor("query", "float16", [6, 4, 576], [-1, 1]),
+                _tensor("key", "int8", [10, 1, 656], [-8, 8]),
+                _tensor("value", "int8", [10, 1, 656], [-8, 8]),
+                _tensor("sparse_indices", "int32", [6, 1, 2], [0, 0]),
+                *reserved,
+                _tensor("block_table", "int32", None, ["null"]),
+                _tensor("actual_seq_lengths_query", "int32", [2], [3, 6]),
+                _tensor("actual_seq_lengths_kv", "int32", [2], [4, 10]),
+                _attr("layout_query", "TND"), _attr("layout_kv", "TND"),
+                *common_attrs,
+                _tensor("out", "float16", [6, 4, 576], [-1, 1]),
+            ]
+        },
+        "paged_attention": {
+            "inputs": [
+                bsnd_query,
+                _tensor("key", "int8", [4, 16, 1, 656], [-8, 8]),
+                _tensor("value", "int8", [4, 16, 1, 656], [-8, 8]),
+                _tensor("sparse_indices", "int32", [2, 3, 1, 2], [0, 0]),
+                *reserved,
+                _tensor("block_table", "int32", [2, 4], [0, 3]),
+                _tensor("actual_seq_lengths_query", "int32", [2], [3, 3]),
+                _tensor("actual_seq_lengths_kv", "int32", [2], [32, 64]),
+                _attr("layout_query", "BSND"), _attr("layout_kv", "PA_BSND"),
+                *common_attrs,
+                _tensor("out", "float16", [2, 3, 4, 576], [-1, 1]),
+            ]
+        },
+    }
+    return cases
+
+
+def _validate_kv_quant_truth_table(constraints: dict[str, Any]) -> list[str]:
+    required = {
+        "query", "key", "value", "sparse_indices", "block_table",
+        "actual_seq_lengths_query", "actual_seq_lengths_kv",
+    }
+    if not required.issubset(set((constraints.get("inputs") or {}).keys())):
+        return []
+    raw = constraints.get("constraints_in_parameters") or {}
+    platforms = list(raw) if isinstance(raw, dict) else [None]
+    errors: list[str] = []
+    for platform in platforms:
+        for scene, case in _kv_quant_truth_cases().items():
+            for issue in evaluate_case_relations(case, constraints, platform):
+                errors.append(f"{platform or 'common'} truth-table {scene}: {issue}")
+    return errors
+
+
 def validate_hs_constraints(constraints: dict[str, Any]) -> list[str]:
     """Return blocking HS extraction errors; non-HS inputs pass through."""
     operator = str(constraints.get("operator_name", ""))
-    if not operator.startswith("torch_npu."):
+    if not operator.startswith(("torch_npu.", "torch.npu.")):
         return []
     errors: list[str] = []
     input_names = list((constraints.get("inputs") or {}).keys())
@@ -156,4 +252,6 @@ def validate_hs_constraints(constraints: dict[str, Any]) -> list[str]:
             errors.append(
                 f"constraints_in_parameters[{platform}][{index}] uses variable modulo variable"
             )
+    if operator == "torch_npu.npu_kv_quant_sparse_flash_attention":
+        errors.extend(_validate_kv_quant_truth_table(constraints))
     return errors

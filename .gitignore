@@ -24,3 +24,6 @@ tests/
 /.ttk-reference/
 /cli_report_*.html
 /cli_report_*.zip
+
+op-plugin-26.0.0/
+operators-src/

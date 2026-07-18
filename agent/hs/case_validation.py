@@ -4,7 +4,10 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from .scenario_planner import classify_case_scenario, plan_hs_scenarios
+from .constraint_evaluator import evaluate_case_relations
+from .scenario_planner import (
+    classify_case_scenario, hs_coverage_domains, plan_hs_scenarios,
+)
 
 
 _DTYPE_LIMITS = {
@@ -45,6 +48,18 @@ def _attr(items: dict[str, dict[str, Any]], name: str) -> Any:
 def _shape(items: dict[str, dict[str, Any]], name: str) -> list[int] | None:
     value = (items.get(name) or {}).get("shape")
     return value if isinstance(value, list) and value else None
+
+
+def _exact_tensor_value(items: dict[str, dict[str, Any]], name: str) -> int | None:
+    value = (items.get(name) or {}).get("range_values")
+    if isinstance(value, int):
+        return value
+    if (
+        isinstance(value, list) and len(value) == 2
+        and isinstance(value[0], int) and value[0] == value[1]
+    ):
+        return value[0]
+    return None
 
 
 def _check_integer_range(item: dict[str, Any]) -> str | None:
@@ -89,14 +104,47 @@ def _validate_sparse_attention_case(
             issues.append("sparse_indices.shape[0] must equal query.shape[0]")
         if layout_q == "BSND" and len(sparse) > 1 and sparse[1] != q[1]:
             issues.append("BSND sparse_indices.shape[1] must equal query.shape[1]")
+    if q and len(q) >= 2 and q[-2] not in {1, 2, 4, 8, 16, 32, 64, 128}:
+        issues.append(f"query head count {q[-2]} is outside the documented domain")
+    for name, shape in (("key", k), ("value", v)):
+        if shape and len(shape) >= 2 and shape[-2] != 1:
+            issues.append(f"{name} KV head count {shape[-2]} must be 1")
+    if sparse and len(sparse) >= 2 and sparse[-2] != 1:
+        issues.append(f"sparse_indices KV head count {sparse[-2]} must be 1")
     block_table = items.get("block_table")
     if layout_kv == "PA_BSND":
         if _absent(block_table):
             issues.append("PA_BSND requires block_table")
         elif len(_shape(items, "block_table") or []) != 2:
             issues.append("block_table must be rank 2")
+        elif q and (_shape(items, "block_table") or [None])[0] != q[0]:
+            issues.append("block_table.shape[0] must equal query batch")
+        if _absent(items.get("actual_seq_lengths_kv")):
+            issues.append("PA_BSND requires actual_seq_lengths_kv")
+        if k and len(k) > 1 and (k[1] % 16 != 0 or k[1] > 1024):
+            issues.append("PA_BSND key block_size must be a multiple of 16 and <= 1024")
+        sparse_block_size = _attr(items, "sparse_block_size")
+        if (
+            k and len(k) > 1 and isinstance(sparse_block_size, int)
+            and sparse_block_size > 0 and k[1] % sparse_block_size != 0
+        ):
+            issues.append("sparse_block_size must divide PA block_size")
     elif layout_kv in {"BSND", "TND"} and not _absent(block_table):
         issues.append(f"{layout_kv} requires block_table to be absent")
+    if layout_q == "TND" and _absent(items.get("actual_seq_lengths_query")):
+        issues.append("TND requires actual_seq_lengths_query")
+    if layout_kv == "TND" and _absent(items.get("actual_seq_lengths_kv")):
+        issues.append("TND requires actual_seq_lengths_kv")
+    if layout_q == "BSND" and layout_kv == "BSND" and q and k and q[0] != k[0]:
+        issues.append("non-PA BSND query/key batch dimensions must match")
+    if layout_q == "TND" and q:
+        actual_q = _exact_tensor_value(items, "actual_seq_lengths_query")
+        if actual_q is not None and actual_q != q[0]:
+            issues.append("TND actual_seq_lengths_query must end at query token count")
+    if layout_kv == "TND" and k:
+        actual_kv = _exact_tensor_value(items, "actual_seq_lengths_kv")
+        if actual_kv is not None and actual_kv != k[0]:
+            issues.append("TND actual_seq_lengths_kv must end at key token count")
     return issues
 
 
@@ -127,11 +175,16 @@ def _validate_kv_quant_case(case: dict[str, Any]) -> list[str]:
         shape = _shape(items, name)
         if shape and shape[-1] != last_dim:
             issues.append(f"{name}.shape[-1]={shape[-1]} must be {last_dim}")
+    output = _shape(items, "out")
+    query = _shape(items, "query")
+    if output and query and output != query:
+        issues.append(f"out.shape must equal query.shape: {output} != {query}")
     return issues
 
 
 def validate_hs_cases(
-    cases: list[dict[str, Any]], constraints: dict[str, Any]
+    cases: list[dict[str, Any]], constraints: dict[str, Any],
+    platform: str | None = None,
 ) -> dict[str, Any]:
     operator = str(constraints.get("operator_name", ""))
     audit: list[dict[str, Any]] = []
@@ -146,14 +199,46 @@ def validate_hs_cases(
             issues.extend(_validate_kv_quant_case(case))
         elif operator == "torch_npu.npu_sparse_flash_attention":
             issues.extend(_validate_sparse_attention_case(case))
+        issues.extend(evaluate_case_relations(case, constraints, platform))
         audit.append({"id": case.get("id", index), "issues": sorted(set(issues))})
 
     scenarios = Counter(classify_case_scenario(case) for case in cases)
-    planned = plan_hs_scenarios(constraints, len(cases))
+    planned = plan_hs_scenarios(constraints, len(cases), platform)
     missing_scenarios = [
         item.name for item in planned
         if item.name != "default" and scenarios[item.name] == 0
     ]
+    expected_domains = hs_coverage_domains(constraints, platform)
+    observed_domains: dict[str, set[Any]] = {
+        name: set() for name in expected_domains
+    }
+    for case in cases:
+        items = _items(case)
+        query = items.get("query") or {}
+        query_shape = _shape(items, "query")
+        if query.get("dtype"):
+            raw_dtype = str(query["dtype"]).lower()
+            observed_domains.get("query_dtype", set()).add(
+                {"float16": "fp16", "bfloat16": "bf16"}.get(raw_dtype, raw_dtype)
+            )
+        if query_shape and len(query_shape) >= 2:
+            observed_domains.get("query_heads", set()).add(query_shape[-2])
+        for name in ("sparse_block_size", "sparse_mode"):
+            value = _attr(items, name)
+            if value is not None:
+                observed_domains.get(name, set()).add(value)
+        if _attr(items, "layout_kv") == "PA_BSND":
+            key_shape = _shape(items, "key")
+            if key_shape and len(key_shape) > 1:
+                observed_domains.get("pa_block_size", set()).add(key_shape[1])
+    domain_coverage = {
+        name: {
+            "expected": list(expected),
+            "observed": sorted(observed_domains.get(name, set())),
+            "missing": [value for value in expected if value not in observed_domains.get(name, set())],
+        }
+        for name, expected in expected_domains.items()
+    }
     return {
         "case_count": len(cases),
         "semantically_clean_count": sum(not item["issues"] for item in audit),
@@ -164,4 +249,8 @@ def validate_hs_cases(
             for item in planned
         ],
         "missing_scenarios": missing_scenarios,
+        "domain_coverage": domain_coverage,
+        "domain_coverage_complete": all(
+            not item["missing"] for item in domain_coverage.values()
+        ),
     }

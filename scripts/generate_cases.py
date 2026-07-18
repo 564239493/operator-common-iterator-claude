@@ -129,7 +129,11 @@ def generate_hs_scenario_outputs(
     """Generate HS cases scenario-by-scenario through the retained generator."""
     from agent.generators.data_definition.param_models_def import RunPlatform
     from agent.generators.facade import TestCaseGenerator
-    from agent.hs.scenario_planner import plan_hs_scenarios, pin_scenario_constraints
+    from agent.hs.scenario_planner import (
+        plan_hs_scenarios,
+        pin_scenario_constraints,
+        project_hs_case,
+    )
 
     probe = TestCaseGenerator(constraints, seed=seed)
     platforms = probe.supported_platforms or [RunPlatform.DEFAULT_PLATFORM.value]
@@ -160,7 +164,13 @@ def generate_hs_scenario_outputs(
                 jsonl_save_path=str(scenario_root),
                 json_save_path=str(scenario_root),
             )
-            payload = [case.model_dump() for case in generated]
+            payload = [
+                project_hs_case(
+                    case.model_dump(), operator_name, scenario,
+                    len(combined) + ordinal, constraints, platform,
+                )
+                for ordinal, case in enumerate(generated)
+            ]
             if len(payload) != scenario.count:
                 raise RuntimeError(
                     "HS_SCENARIO_GENERATION_INCOMPLETE: "
@@ -168,6 +178,13 @@ def generate_hs_scenario_outputs(
                     f"requested={scenario.count}, generated={len(payload)}"
                 )
             combined.extend(payload)
+            # The retained generator converts its transient JSONL to this JSON
+            # file. Overwrite it with the projected payload so checkpoints and
+            # final per-platform files describe the same runnable cases.
+            scenario_checkpoint = scenario_root / f"{operator_name}.json"
+            scenario_checkpoint.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             platform_stats.append({
                 "name": scenario.name,
                 "requested": scenario.count,
@@ -245,7 +262,7 @@ def main() -> int:
             "normalized %d type-dependent constraint attribute values",
             normalized_count,
         )
-    if str(constraints.get("operator_name", "")).startswith("torch_npu."):
+    if str(constraints.get("operator_name", "")).startswith(("torch_npu.", "torch.npu.")):
         from agent.hs.constraint_validation import validate_hs_constraints
 
         hs_constraint_errors = validate_hs_constraints(constraints)
@@ -307,27 +324,66 @@ def main() -> int:
         selected_source = per_platform_paths[selected_platform]
         canonical_cases = output_dir / "cases.json"
         canonical_cases.write_text(selected_source.read_text(encoding="utf-8"), encoding="utf-8")
+        platform_audits: dict[str, dict[str, Any]] = {}
+        platform_audit_paths: dict[str, str] = {}
+        for platform, platform_path in per_platform_paths.items():
+            platform_cases = json.loads(platform_path.read_text(encoding="utf-8"))
+            audit = validate_hs_cases(platform_cases, constraints, platform)
+            sanitized = platform.replace("/", "_")
+            audit_path = output_dir / f"hs_case_audit_{sanitized}.json"
+            audit_path.write_text(
+                json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            platform_audits[platform] = audit
+            platform_audit_paths[platform] = str(audit_path)
         concrete_cases = json.loads(canonical_cases.read_text(encoding="utf-8"))
-        hs_case_audit = validate_hs_cases(concrete_cases, constraints)
+        hs_case_audit = platform_audits[selected_platform]
         (output_dir / "hs_case_audit.json").write_text(
             json.dumps(hs_case_audit, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        if hs_case_audit["semantically_clean_count"] != hs_case_audit["case_count"]:
-            failing = [
-                entry for entry in hs_case_audit["audit"] if entry["issues"]
-            ]
+        failing_platforms = {
+            platform: [entry for entry in audit["audit"] if entry["issues"]]
+            for platform, audit in platform_audits.items()
+            if audit["semantically_clean_count"] != audit["case_count"]
+        }
+        if failing_platforms:
             raise RuntimeError(
                 "HS_CASE_SEMANTIC_VALIDATION_FAILED: "
-                + json.dumps(failing[:5], ensure_ascii=False)
+                + json.dumps(
+                    {
+                        platform: failures[:5]
+                        for platform, failures in failing_platforms.items()
+                    },
+                    ensure_ascii=False,
+                )
             )
-        if hs_case_audit["missing_scenarios"]:
+        missing_by_platform = {
+            platform: audit["missing_scenarios"]
+            for platform, audit in platform_audits.items()
+            if audit["missing_scenarios"]
+        }
+        if missing_by_platform:
             raise RuntimeError(
                 "HS_SCENARIO_COVERAGE_FAILED: "
-                + ", ".join(hs_case_audit["missing_scenarios"])
+                + json.dumps(missing_by_platform, ensure_ascii=False)
             )
         ttk_output = output_path if output_path.suffix.lower() == ".csv" else output_path.with_suffix(".csv")
         tensor_order = _ordered_input_tensor_names(constraints)
         conversion = convert_file(canonical_cases, ttk_output, selected_platform, tensor_order)
+        conversion_failures = [
+            entry for entry in conversion["audit"] if entry["issues"]
+        ]
+        if conversion_failures or conversion["self_check_warnings"]:
+            raise RuntimeError(
+                "TTK_ADAPTER_VALIDATION_FAILED: "
+                + json.dumps(
+                    {
+                        "case_failures": conversion_failures[:5],
+                        "self_check_warnings": conversion["self_check_warnings"][:10],
+                    },
+                    ensure_ascii=False,
+                )
+            )
         plugin = install_ttk_plugin(operator_name, ttk_output.parent)
         manifest = load_golden_manifest(operator_name)
         coverage = audit_golden_coverage(concrete_cases, manifest)
@@ -349,14 +405,19 @@ def main() -> int:
             "semantically_clean_count": conversion["semantically_clean_count"],
             "hs_semantically_clean_count": hs_case_audit["semantically_clean_count"],
             "hs_scenario_counts": hs_case_audit["scenario_counts"],
+            "hs_domain_coverage": hs_case_audit["domain_coverage"],
+            "hs_domain_coverage_complete": hs_case_audit["domain_coverage_complete"],
             "scenario_generation": scenario_generation,
             "hs_case_audit": str(output_dir / "hs_case_audit.json"),
+            "per_platform_hs_case_audits": platform_audit_paths,
             "output": str(ttk_output),
             "golden_plugin": str(plugin),
             "golden_status": manifest.get("status", "missing"),
             "golden_covered_cases": coverage["covered_count"],
             "golden_manifest": str(ttk_output.parent / "golden_manifest.json"),
             "adapter": "scripts.atc_to_ttk.convert_file",
+            "ttk_content_generation_mode": conversion["content_generation_mode"],
+            "ttk_content_generation_limitations": conversion["content_generation_limitations"],
         }
         (ttk_output.parent / "generation_summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"

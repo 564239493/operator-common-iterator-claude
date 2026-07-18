@@ -15,6 +15,10 @@ description: 从补充约束 Markdown 与已提取 constraints.json 产出结构
 两者都为空时跳过补充阶段。条目去重：若同一 `expr` 在两个文件都出现，以
 supplementary-doc.md（源码分析）为准。
 
+先读取 `run_state.operator_family` 和 `run_state.current_prompt`。补充阶段必须沿用当前
+family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能读 torch_npu 快照和
+已装配知识，禁止读取 `prompts/modules/**`。
+
 > 本阶段**不重新提取约束**，只对 EXTRACT 已产出的 `constraints.json` 做关系
 > 补充：追加（add）补充文件描述的新关系约束、替换（replace）文档提取过宽/过窄
 > 的约束。合并（写回 `constraints.json`）由确定性脚本
@@ -22,13 +26,16 @@ supplementary-doc.md（源码分析）为准。
 
 1. 逐节阅读补充约束 Markdown，识别其中描述的「参数间关系约束」：shape 广播/
    相等/依赖、dtype 一致/依赖、value 依赖、format 一致、presence 依赖等。
-2. 表达式规范**严格沿用 `extract-constraints` 的 expr 规范**（裸 `null` 规范化
-   为 Python `None`、数值范围用不等式、禁止 `.array_length` 改用 `len(container)`、
-   `aclDataType` 参数 dtype 固定 `["string"]` 等），以及
-   `prompts/modules/broadcast.md` 的关系展开规范（broadcast 右对齐表达、dtype
-   互推导），保证生成器可消费。
+2. 表达式规范**严格沿用当前 family 快照与 `extract-constraints` 的公共 expr 规范**
+   （裸 `null` 规范化为 Python `None`、数值范围用不等式、禁止 `.array_length`、
+   容器长度用 `len(container)`），保证生成器可消费。
+   - `operator_family=aclnn` 时，只有 ACLNN 快照实际加载 broadcast 模块才应用
+     `prompts/modules/broadcast.md` 的右对齐与 dtype 规则，并按 ACLNN 规则处理
+     `aclDataType`。
+   - `operator_family=hs` 时，不得读取 ACLNN broadcast/aclDataType/枚举码规则；
+     layout、TensorList、dtype 和 presence 只按 torch_npu 当前快照及补充证据表达。
    **【跨 sort 比较必展开析取】** 凡涉及「int 枚举码 attr 与 `tensor.dtype`
-   比较」的约束，**必须**展开成显式析取，**禁止**直接写
+   比较」的 ACLNN 约束，**必须**展开成显式析取，**禁止**直接写
    `attr == tensor.dtype` / `attr != tensor.dtype`。
    - 原因：constraints.json 里 scalar attr（如 `additionalDtype`）的
      `allowed_range_value.value` 是 **int 枚举码**（ACL dtype 码），而
@@ -40,7 +47,7 @@ supplementary-doc.md（源码分析）为准。
    - 正确写法：把相等/不等关系展开为 `(attr==<int码> and tensor.dtype=="<DType名>")`
      的析取，每个析取项是同 sort 的字面量比较，用 `or`/`and` 串联。DType 名用大写
      规范名（预处理自动映成 Z3 DType enum 常量）。
-   - ACL dtype 码表（attr int 码 ↔ DType 名）：
+   - 下列 ACL dtype 码表只允许用于 `operator_family=aclnn` 且补充文件实际声明的码集：
      `0=FLOAT, 1=FLOAT16, 2=INT8, 3=INT32, 4=UINT8, 6=INT16, 7=UINT16, 8=UINT32,
      9=INT64, 10=UINT64, 12=BOOL, 27=BFLOAT16, 35=FLOAT8_E5M2, 36=FLOAT8_E4M3FN,
      40=FLOAT4_E2M1, -1=UNDEFINED`。只展开补充文件实际声明的码集。

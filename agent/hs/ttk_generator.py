@@ -41,9 +41,18 @@ def install_ttk_plugin(operator_name: str, output_dir: Path) -> Path:
     sources = {
         "torch_npu.npu_fused_infer_attention_score": "fia_golden.py",
         "torch_npu.npu_mla_prolog_v3": "mla_prolog_v3_golden.py",
+        # combine-mode kv_quant needs the official Ascend golden wrapper so
+        # TTK's PluginScanner resolves a __golden__ entry for this op instead
+        # of falling back to the no-op runtime_bootstrap (which leaves
+        # precision comparison without a reference).
+        "torch_npu.npu_kv_quant_sparse_flash_attention":
+            "kv_quant_sparse_flash_attention_golden.py",
     }
     source_name = sources.get(operator_name, "runtime_bootstrap.py")
-    target_name = "ttk_golden_fia.py" if operator_name.endswith("fused_infer_attention_score") else "ttk_plugin.py"
+    if operator_name.endswith("fused_infer_attention_score"):
+        target_name = "ttk_golden_fia.py"
+    else:
+        target_name = "ttk_plugin.py"
     target = output_dir / target_name
     shutil.copy2(Path(__file__).parent / "ttk_plugins" / source_name, target)
     return target

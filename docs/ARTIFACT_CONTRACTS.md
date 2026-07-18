@@ -38,7 +38,7 @@ runs/<operator>-<timestamp>/
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
 `server_config`、`max_iterations`、`case_count`、`operator_family`、`test_framework`、
-`current_iteration`、`state`、
+`run_scope`、`current_iteration`、`state`、
 `history` 和时间戳。state 只能取
 WORKFLOW.md 定义的状态。
 
@@ -49,12 +49,22 @@ WORKFLOW.md 定义的状态。
 `supplement_constraints` 指向 run 内 `inputs/supplement_constraints.md` 快照。为空串时跳过
 约束补充阶段，回退纯文档驱动流程。
 
-`current_prompt_source` 指向项目内 `prompts/operator_constraints_extract_vN.md` 基线
-（v4 起为模块化基线）；`current_prompt` 指向 run 内 `inputs/prompt_v1.md` 快照。
-默认（未传 `--prompt`）由 `scripts/select_prompt.py` 按算子文档特征装配基线 + 命中的
-`prompts/modules/*.md` 模块写入该快照，`current_prompt_modules` 记录命中的模块名清单
-（可为空）；显式 `--prompt` 为逃生口，原样复制指定文件、`current_prompt_modules=[]`。
-constraint-extractor 始终只读 `current_prompt` 快照，不感知装配过程。
+`current_prompt_source` 指向项目内当前 family 的基线：ACLNN 为
+`prompts/operator_constraints_extract_vN.md`，torch_npu 为
+`prompts/torch_npu_constraints_extract_vN.md`；`current_prompt` 指向 run 内
+`inputs/prompt_v1.md` 完整快照。
+
+默认（未传 `--prompt`）时，ACLNN 由 `scripts/select_prompt.py` 装配
+`prompts/modules/*.md`；torch_npu 由 `scripts/select_torch_npu_prompt.py` 装配
+`knowledge/torch_npu/**/*.md`。两个选择器不扫描对方的根目录。
+`current_prompt_modules` 记录命中的模块名清单（torch_npu 始终含
+`common/documentation_conventions`）；显式 `--prompt` 为逃生口，原样复制指定文件、
+`current_prompt_modules=[]`。constraint-extractor 始终只读 `current_prompt` 快照，
+不感知装配过程。
+
+`run_scope` 为 `full` 或 `constraints_only`。后者由尚未适配 TTK 的 torch_npu API 在
+auto 模式下使用：约束 normalize/validate 通过后可进入 SUCCESS，但 history 必须包含
+`CONSTRAINTS_ONLY_SUCCESS`；不得生成 cases 或宣称执行/精度成功。
 
 ## constraints.json
 
@@ -159,6 +169,17 @@ TTK 路径消费统一 `cases.json`，但不得生成或消费 ATK `cases_execut
 同时生成 `ttk_conversion_audit.json`、`golden_manifest.json` 和算子独立 Golden plugin。
 manifest 未标记 `verified` 时不得进入远程精度执行，应先调用 `derive-ttk-golden`。
 
+torch_npu/TTK 在转换前必须按所选平台逐条执行 `constraints_in_parameters`；HS 手写专项
+检查只能作为 schema 无法表达内容的补充，不能代替完整关系复核。任一硬关系为 false、
+无法求值、TTK positional self-check 失败或转换审计存在 case issue 时，生成阶段必须
+fail-closed，不得产出可执行成功结论。
+
+当前 TTK CSV 只支持 `input_data_ranges`，不能无损表达动态前缀和、单调序列和有效/无效
+索引排序。适配器必须在 `ttk_conversion_audit.json` 与 `generation_summary.json` 记录
+`content_generation_mode`/`content_generation_limitations`。对需要这些内容语义的算子，
+只能生成适配器能够证明正确的受限场景（当前 kv quant sparse attention 为精确 B=1），
+不能把随机范围伪装成多元素前缀和支持。
+
 ## execution_result.json
 
 至少包含：
@@ -197,8 +218,11 @@ runs/batches/<batch-id>/
 ```
 
 `batch_state.json` 必须冻结 source_directory、glob、recursive、prompt、
-max_iterations、case_count、mode、server_config、supplement_constraints（可选，整批共享）、
-continue_on_error 和有序 operators。
+`prompt_explicit`、`prompt_sources`、operator_family、test_framework、max_iterations、
+case_count、mode、server_config、supplement_constraints（可选，整批共享）、
+continue_on_error 和有序 operators。`prompt` 只在用户显式指定原样 prompt 时非空；
+自动模式通过 `prompt_sources` 记录初始化时可用的各 family baseline，并让每个单算子
+`init_run` 自行选择/装配，防止混合目录把一个 family 的 prompt 传给另一个 family。
 每个 operator 包含原文档绝对路径、PENDING/RUNNING/COMPLETED 状态、单算子 run_id、
 run_dir 与 terminal_state。任意时刻最多只能有一个 RUNNING 项。
 

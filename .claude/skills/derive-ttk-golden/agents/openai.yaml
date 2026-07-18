@@ -1,0 +1,4 @@
+interface:
+  display_name: "Derive TTK Golden"
+  short_description: "推导并验证 torch_npu TTK CPU Golden 插件"
+  default_prompt: "Use $derive-ttk-golden to derive and validate a TTK CPU Golden plugin for this operator."

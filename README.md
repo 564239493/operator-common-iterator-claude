@@ -17,7 +17,10 @@ Skills 与 Subagents，Python 只承担确定性业务工具。
 
 海思 `torch_npu.*` + TTK 兼容流程见
 [docs/HS_TTK_WORKFLOW.md](docs/HS_TTK_WORKFLOW.md)。原 ACLNN/ATK 流程仍是默认；
-显式选择 `--test-framework ttk` 或自动识别到海思文档时才启用 TTK。
+六个已适配的重点海思算子会自动启用 TTK，其余 torch_npu API 默认只执行约束提取；
+也可以用 `--test-framework` 显式覆盖。
+torch_npu 全量文档审计、提示词分层和 schema 缺口见
+[docs/TORCH_NPU_CONSTRAINT_PROMPT.md](docs/TORCH_NPU_CONSTRAINT_PROMPT.md)。
 
 要求 Python 3.10+，Claude Code 建议 2.1.172+。
 
@@ -41,8 +44,10 @@ PyTorch/昇腾镜像，请按内部源安装后再执行其余依赖。
 ```
 
 未指定 `--prompt` 时，项目会自动选择
-`prompts/operator_constraints_extract_vN.md` 中数值版本最大的文件。需要复现指定版本
-时仍可显式传入：
+当前文档 family 数值版本最大的提示词：ACLNN 使用
+`prompts/operator_constraints_extract_vN.md`，torch_npu 使用
+`prompts/torch_npu_constraints_extract_vN.md`；两者的知识模块完全隔离。需要复现指定
+版本时仍可显式传入：
 
 ```text
 /iterate-operator operator_docs/aclnnAlltoAllMatmul.md --prompt prompts/operator_constraints_extract_v1.md

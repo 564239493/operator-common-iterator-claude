@@ -32,21 +32,6 @@ DTYPES = {
     "bool": "bool",
 }
 
-# Inclusive upper bound used to clamp ``input_data_ranges`` before TTK's
-# ``numpy.full`` materialises random data. The generator occasionally emits
-# out-of-range values for tiny integer dtypes (observed: int8 key with
-# range=(128, 128) -> ``OverflowError: 128 out of bounds for int8`` at
-# input_generation). Clamping here is a defence-in-depth net; the real fix
-# belongs in the generator's domain model.
-_DTYPE_UPPER_BOUND = {
-    "int8": 127,
-    "uint8": 255,
-    "int32": 2_147_483_647,
-    "uint32": 4_294_967_295,
-    "int64": 9_223_372_036_854_775_807,
-    "uint64": 18_446_744_073_709_551_615,
-}
-
 _DTYPE_BOUNDS = {
     "int8": (-128, 127),
     "uint8": (0, 255),
@@ -58,21 +43,21 @@ _DTYPE_BOUNDS = {
 
 
 def _clamp_range_to_dtype(dtype: str, lo: Any, hi: Any) -> tuple[Any, Any]:
-    """Clamp (lo, hi) so neither side exceeds the dtype's inclusive upper bound.
+    """Clamp both endpoints to an integer dtype's representable bounds.
 
-    Only integer dtypes with a known upper bound are touched; floats keep their
-    values as-is to preserve the original distribution. Lower bound is left to
-    the upstream generator (negative int8 is legal; the bug was on the upper
-    end).
+    This is TTK adapter defence in depth.  The pre-conversion audit still
+    reports the original invalid range, so clamping cannot silently turn an
+    invalid compact case into a clean one.
     """
-    bound = _DTYPE_UPPER_BOUND.get(dtype)
-    if bound is None:
+    bounds = _DTYPE_BOUNDS.get(dtype)
+    if bounds is None:
         return lo, hi
     try:
-        new_hi = hi if (hi is None or hi > bound) else hi
+        new_lo = None if lo is None else max(lo, bounds[0])
+        new_hi = None if hi is None else min(hi, bounds[1])
     except TypeError:
         return lo, hi
-    return lo, min(new_hi, bound) if new_hi is not None else None
+    return new_lo, new_hi
 
 HEADERS = (
     "testcase_name",
@@ -204,7 +189,7 @@ def convert_case(case: dict[str, Any], platform: str = "",
     present = {
         item.get("name"): item
         for item in case.get("inputs", [])
-        if item.get("type") == "tensor" and item.get("name") not in outputs
+        if item.get("type") in ("tensor", "tensors") and item.get("name") not in outputs
     }
     # When the full signature tensor order is known, iterate it so absent
     # optional tensors become explicit None placeholder slots (keeping
@@ -324,10 +309,75 @@ def audit_fia_case(case: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _fixed_tensor_value(item: dict[str, Any] | None) -> Any:
+    if not item:
+        return None
+    value = item.get("range_values")
+    if isinstance(value, list) and len(value) == 2 and value[0] == value[1]:
+        return value[0]
+    if not isinstance(value, list):
+        return value
+    return None
+
+
+def audit_kv_quant_ttk_case(case: dict[str, Any]) -> list[str]:
+    """Reject content semantics that TTK's range-only CSV cannot guarantee."""
+    by_name = {item.get("name"): item for item in case.get("inputs", [])}
+    issues = audit_common_case(case)
+    layout_q = (by_name.get("layout_query") or {}).get("range_values")
+    layout_kv = (by_name.get("layout_kv") or {}).get("range_values")
+    query_shape = (by_name.get("query") or {}).get("shape") or []
+    key_shape = (by_name.get("key") or {}).get("shape") or []
+
+    # A multi-element prefix sum cannot be represented by one random range in
+    # the current TTK E2E CSV.  Require the exact B=1 construction until TTK
+    # gains literal tensor data/builders.
+    for name, required, terminal in (
+        ("actual_seq_lengths_query", layout_q == "TND", query_shape[0] if query_shape else None),
+        ("actual_seq_lengths_kv", layout_kv in {"TND", "PA_BSND"},
+         (key_shape[0] if layout_kv == "TND" and key_shape else None)),
+    ):
+        item = by_name.get(name)
+        if not required:
+            continue
+        if not item or item.get("shape") != [1]:
+            issues.append(
+                f"{name}: current TTK range-only adapter requires exact B=1 data"
+            )
+            continue
+        exact = _fixed_tensor_value(item)
+        if exact is None:
+            issues.append(f"{name}: current TTK adapter requires a fixed exact value")
+        elif terminal is not None and exact != terminal:
+            issues.append(f"{name}: exact value {exact} must equal terminal token count {terminal}")
+
+    sparse = by_name.get("sparse_indices")
+    sparse_value = _fixed_tensor_value(sparse)
+    if sparse and sparse_value is None:
+        issues.append(
+            "sparse_indices: range-only random data cannot guarantee valid-before-invalid ordering"
+        )
+    if layout_kv == "PA_BSND":
+        block_table = by_name.get("block_table") or {}
+        block_num = key_shape[0] if key_shape else 0
+        values = block_table.get("range_values")
+        if not (
+            isinstance(values, list) and len(values) == 2
+            and all(isinstance(value, int) for value in values)
+            and 0 <= values[0] <= values[1] < block_num
+        ):
+            issues.append(
+                "block_table: PA random range must stay inside [0, block_num-1]"
+            )
+    return issues
+
+
 def audit_case(case: dict[str, Any]) -> list[str]:
     api_name = case.get("name") or case.get("aclnn_name")
     if api_name == "torch_npu.npu_fused_infer_attention_score":
         return audit_fia_case(case)
+    if api_name == "torch_npu.npu_kv_quant_sparse_flash_attention":
+        return audit_kv_quant_ttk_case(case)
     return audit_common_case(case)
 
 
@@ -388,6 +438,11 @@ def convert_file(source: Path, destination: Path, platform: str = "",
         "semantically_clean_count": sum(not entry["issues"] for entry in audit),
         "audit": audit,
         "self_check_warnings": warnings,
+        "content_generation_mode": "range_only",
+        "content_generation_limitations": [
+            "multi-element prefix sums require a literal tensor builder",
+            "ordered valid/invalid sparse indices require a literal tensor builder",
+        ],
     }
 
 

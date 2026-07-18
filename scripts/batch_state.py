@@ -121,6 +121,17 @@ def running_operator(batch: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def run_options_for(batch: dict[str, Any]) -> dict[str, Any]:
+    """Options the coordinator must forward to the per-document init_run."""
+    return {
+        "prompt": batch.get("prompt", "") if batch.get("prompt_explicit") else "",
+        "prompt_explicit": bool(batch.get("prompt_explicit")),
+        "operator_family": batch.get("operator_family", "auto"),
+        "test_framework": batch.get("test_framework", "auto"),
+        "supplement_constraints": batch.get("supplement_constraints", ""),
+    }
+
+
 def command_claim(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
     current = running_operator(batch)
     if current is not None:
@@ -129,7 +140,7 @@ def command_claim(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
             "action": "resume",
             "batch_dir": str(batch_dir),
             "operator": current,
-            "supplement_constraints": batch.get("supplement_constraints", ""),
+            **run_options_for(batch),
         }
     if batch["state"] == "STOPPED":
         return {
@@ -163,7 +174,7 @@ def command_claim(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
         "action": "start",
         "batch_dir": str(batch_dir),
         "operator": pending,
-        "supplement_constraints": batch.get("supplement_constraints", ""),
+        **run_options_for(batch),
     }
 
 

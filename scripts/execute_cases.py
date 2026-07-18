@@ -182,6 +182,17 @@ def main() -> int:
         help="执行框架；默认 atk 保持原 ACLNN 流程，torch_npu 海思算子使用 ttk。",
     )
     parser.add_argument(
+        "--no-golden",
+        action="store_true",
+        default=False,
+        help=(
+            "TTK 专用：跳过 CPU golden 精度门禁，仅做 NPU 功能性运行。"
+            "置位时不要求 golden_manifest.status=='verified'，强制 plugin_path=None "
+            "（不带 --plugin，框架报 'Scanned 0 custom golden.e2e functions' 并跳过"
+            "精度对比，仅执行算子调用）。默认 False 时保持原有 golden 闭环逻辑不变。"
+        ),
+    )
+    parser.add_argument(
         "--cases", required=True, help="cases.json 路径 (项目内或外部)。"
     )
     parser.add_argument(
@@ -275,7 +286,15 @@ def main() -> int:
                 plugin_path = repo_golden
             else:
                 plugin_path = cases_path.parent / "ttk_plugin.py"
-        if not manifest or manifest.get("status") != "verified":
+        # --no-golden: NPU-only functional run. Force plugin_path=None so the
+        # TTK e2e command omits --plugin (framework reports "Scanned 0 custom
+        # golden.e2e functions" and skips precision comparison, only invoking
+        # the operator). Also bypass the manifest-verified gate below so a
+        # partial/unverified manifest does not short-circuit into status=error.
+        no_golden = bool(getattr(args, "no_golden", False))
+        if no_golden:
+            plugin_path = None
+        if not no_golden and (not manifest or manifest.get("status") != "verified"):
             result = {
                 "status": "error", "mode": "ttk_e2e", "test_framework": "ttk",
                 "passed": 0, "failed": 0, "total": 0, "records": [],
@@ -288,7 +307,7 @@ def main() -> int:
             output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             _emit(result)
             return 2
-        plugin_arg = f" --plugin {plugin_path.name}" if plugin_path.is_file() else ""
+        plugin_arg = f" --plugin {plugin_path.name}" if (plugin_path and plugin_path.is_file()) else ""
         command = f"python3 -m ttk e2e -i {cases_path.name} --backend npu{plugin_arg}"
         if args.generate:
             result = {
@@ -297,7 +316,7 @@ def main() -> int:
             "test_framework": "ttk",
             "cases": str(cases_path),
             "ttk_command": command,
-            "plugin": str(plugin_path) if plugin_path.is_file() else None,
+            "plugin": str(plugin_path) if (plugin_path and plugin_path.is_file()) else None,
             "validation_command": f"python3 -m ttk e2e -i {cases_path.name} --validate",
             "engine_error": None,
             }
@@ -329,7 +348,7 @@ def main() -> int:
         from executer.ttk_runner import run_ttk_remote
         result = run_ttk_remote(
             cases_path=cases_path,
-            plugin_path=plugin_path if plugin_path.is_file() else None,
+            plugin_path=plugin_path if (plugin_path and plugin_path.is_file()) else None,
             operator_name=operator_name,
             server=server,
             artifact_dir=artifact_dir,

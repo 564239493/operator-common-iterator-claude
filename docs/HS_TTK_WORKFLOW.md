@@ -9,7 +9,8 @@ E2E CSV，避免两套参数语义互相污染。
 | API | family | framework | 用例格式 |
 |---|---|---|---|
 | `aclnn*` | `aclnn` | `atk`（默认） | compact JSON |
-| 六个 `torch_npu.*` 海思算子 | `hs` | `ttk` | E2E CSV |
+| 六个重点 `torch_npu.*` 算子 | `hs`（CLI 亦接受 `torch_npu`） | `ttk` | E2E CSV |
+| 其余 `torch_npu.*` API | `hs`（CLI 亦接受 `torch_npu`） | `constraints` | `constraints.json` |
 
 ## 初始化与提取
 
@@ -17,9 +18,16 @@ E2E CSV，避免两套参数语义互相污染。
 python scripts/init_run.py operator_docs/hs/torch_npu-npu_fused_infer_attention_score.md --mode mock
 ```
 
-文档首行或文件名含 `torch_npu` 时，自动选择 `hs`、`ttk` 和
-`prompts/hs_constraints_extract_v1.md`。也可用 `--operator-family`、
-`--test-framework` 显式覆盖。选择结果会写入 `run_state.json`。
+文档首行或文件名含 `torch_npu` 时，自动选择 `hs` 和隔离提示词；六个已有 adapter 的
+重点算子自动选择 `ttk`，其余 API 自动选择 `constraints`（仅约束提取）。提示词使用
+`prompts/torch_npu_constraints_extract_vN.md` 的最新数值版本，并由
+`scripts/select_torch_npu_prompt.py` 装配通用文档知识和命中的算子知识。也可用
+`--operator-family torch_npu`（`hs` 为兼容名）、`--test-framework` 显式覆盖。
+选择结果和模块清单会写入 `run_state.json`。
+
+torch_npu 装配器只读取 `knowledge/torch_npu/**`，不会读取 ACLNN 的
+`prompts/modules/**`；ACLNN 装配器也不会读取 torch_npu 知识。显式 `--prompt` 是原样
+复制的逃生口，不隐式追加任何模块。
 
 海思约束输出 schema 仍为 `OperatorRule`，但必须从 Python 函数原型确定
 optional/default，并按场景绑定 layout、shape、dtype、量化/稀疏模式和 optional tensor。
@@ -33,9 +41,26 @@ python scripts/generate_cases.py \
   --count 1 --test-framework ttk
 ```
 
-当前支持 FIA、MLA Prolog v3、LI、QLI、SFA、KV-SFA。所有框架共用正式生成器输出的
+约束提取 prompt 面向目录内全部 torch_npu API；当前 TTK 用例适配重点支持 FIA、
+MLA Prolog v3、LI、QLI、SFA、KV-SFA。所有框架共用正式生成器输出的
 `cases.json` 具体场景；TTK adapter 再生成 CSV。每个平台 JSON、转换审计、Golden
 manifest 均保留。禁止复制 baseline 凑数。
+
+KV-SFA 会将用例预算拆成 `tnd`、`bsnd`、`paged_attention` 三个互斥场景。场景投影
+不仅固定 layout，还同步绑定 rank、固定 D、batch/token 轴、`block_table`、actual
+sequence tensor、保留的 None tensor 槽和整数数据值域。投影后的 JSON 会覆盖同场景
+checkpoint，保证 checkpoint 与最终 `cases_<platform>.json` 一致。生成阶段会分别审计
+每个产品平台；任一平台存在非法用例或缺少计划场景都会在 TTK CSV 转换前失败。
+
+审计分两层：算子专项检查负责 dtype、固定维度和当前 schema 无法表达的内容语义；
+通用 HS 关系复核器负责逐条执行所选平台的全部 `constraints_in_parameters`。任何关系
+为 false 或无法安全求值都会 fail-closed。覆盖域从约束中读取并在最终投影后记录到
+`generation_summary.hs_domain_coverage`，不再以“场景存在”代替 dtype/head/mode/边界覆盖。
+
+KV-SFA 当前通过 TTK `input_data_ranges` 只能可靠构造单元素 actual sequence，因此 TND/PA
+暂时限定为精确 B=1；`sparse_indices` 使用固定合法值，PA `block_table` 随机范围被限制在
+`[0, block_num-1]`。多 batch 前缀和与有效/无效索引排序必须等待 literal tensor builder，
+对应限制会写入转换审计和生成摘要，不能静默宣称已覆盖。
 
 ## 执行准备
 

@@ -12,7 +12,28 @@ PROMPT_DIRECTORY = ROOT / "prompts"
 OPERATOR_PROMPT_PATTERN = re.compile(
     r"^operator_constraints_extract_v(?P<version>\d+)\.md$"
 )
-HS_PROMPT_PATTERN = re.compile(r"^hs_constraints_extract_v(?P<version>\d+)\.md$")
+TORCH_NPU_PROMPT_PATTERN = re.compile(
+    r"^torch_npu_constraints_extract_v(?P<version>\d+)\.md$"
+)
+TTK_SUPPORTED_TORCH_NPU_OPERATORS = frozenset({
+    "torch_npu.npu_fused_infer_attention_score",
+    "torch_npu.npu_mla_prolog_v3",
+    "torch_npu.npu_lightning_indexer",
+    "torch_npu.npu_quant_lightning_indexer",
+    "torch_npu.npu_sparse_flash_attention",
+    "torch_npu.npu_kv_quant_sparse_flash_attention",
+})
+
+
+def default_test_framework(operator_family: str, operator_name: str = "") -> str:
+    """Select a safe auto framework without routing unsupported APIs to TTK."""
+    if operator_family != "hs":
+        return "atk"
+    return (
+        "ttk"
+        if operator_name in TTK_SUPPORTED_TORCH_NPU_OPERATORS
+        else "constraints"
+    )
 
 
 def resolve_input_path(value: str | Path) -> Path:
@@ -39,16 +60,25 @@ def find_latest_operator_prompt(directory: Path | None = None) -> Path | None:
 
 
 def find_latest_hs_prompt(directory: Path | None = None) -> Path | None:
-    """Return the latest prompt specialized for torch_npu HiSilicon docs."""
+    """Return the latest isolated prompt for torch_npu documents."""
     prompt_dir = (directory or PROMPT_DIRECTORY).resolve()
     candidates: list[tuple[int, Path]] = []
     if not prompt_dir.is_dir():
         return None
     for path in prompt_dir.iterdir():
-        match = HS_PROMPT_PATTERN.fullmatch(path.name) if path.is_file() else None
+        match = (
+            TORCH_NPU_PROMPT_PATTERN.fullmatch(path.name)
+            if path.is_file()
+            else None
+        )
         if match:
             candidates.append((int(match.group("version")), path.resolve()))
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def find_latest_torch_npu_prompt(directory: Path | None = None) -> Path | None:
+    """Named alias for new callers; keeps the old public helper compatible."""
+    return find_latest_hs_prompt(directory)
 
 
 def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:

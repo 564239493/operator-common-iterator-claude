@@ -12,14 +12,17 @@ from pathlib import Path
 from runtime_config import (
     ROOT,
     config_error_payload,
+    default_test_framework,
     find_latest_operator_prompt,
     find_latest_hs_prompt,
     resolve_input_path,
     validate_server_config,
 )
-from select_prompt import assemble
-
-
+from select_prompt import assemble as assemble_aclnn_prompt
+from select_torch_npu_prompt import (
+    assemble as assemble_torch_npu_prompt,
+    extract_operator_name as extract_torch_npu_operator_name,
+)
 # L1 算子名 stem 全树闭包：路径含以下任一段的命中视为噪声跳过。
 CLOSURE_NOISE_PARTS = frozenset({
     "tests", "ut", "examples", "binary_config", "tbe",
@@ -251,12 +254,22 @@ def main() -> int:
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument(
-        "--operator-family", choices=("auto", "aclnn", "hs"), default="auto",
-        help="算子文档类型；auto 根据文档名/首行识别 torch_npu 海思算子。",
+        "--operator-family",
+        choices=("auto", "aclnn", "hs", "torch_npu"),
+        default="auto",
+        help=(
+            "算子文档类型；auto 根据文档名/首行识别。torch_npu 是 hs 的显式别名，"
+            "二者均选择隔离的 torch_npu 提示词和 TTK 流程。"
+        ),
     )
     parser.add_argument(
-        "--test-framework", choices=("auto", "atk", "ttk"), default="auto",
-        help="测试框架；auto 对海思算子选 ttk，其他算子选 atk。",
+        "--test-framework",
+        choices=("auto", "atk", "ttk", "constraints"),
+        default="auto",
+        help=(
+            "测试框架；auto 对已适配的六个 torch_npu 算子选 ttk，其他 torch_npu "
+            "文档选 constraints（仅约束提取），ACLNN 选 atk。"
+        ),
     )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
@@ -282,16 +295,27 @@ def main() -> int:
             ensure_ascii=False,
         ))
         return 2
-    doc_head = doc.read_text(encoding="utf-8", errors="ignore")[:4096]
-    is_hs = args.operator_family == "hs" or (
+    doc_text = doc.read_text(encoding="utf-8", errors="ignore")
+    doc_head = doc_text[:4096]
+    is_hs = args.operator_family in {"hs", "torch_npu"} or (
         args.operator_family == "auto"
-        and ("torch_npu" in doc_head or doc.name.startswith("torch_npu-"))
+        and (
+            "torch_npu" in doc_head
+            or "torch\\_npu" in doc_head
+            or "torch.npu." in doc_head
+            or "torch_npu" in doc.name
+        )
     )
     operator_family = "hs" if is_hs else "aclnn"
-    test_framework = (
-        ("ttk" if is_hs else "atk")
-        if args.test_framework == "auto" else args.test_framework
+    documented_operator_name = (
+        extract_torch_npu_operator_name(doc_text) if is_hs else ""
     )
+    if args.test_framework == "auto":
+        test_framework = default_test_framework(
+            operator_family, documented_operator_name
+        )
+    else:
+        test_framework = args.test_framework
     prompt = (
         resolve_input_path(args.prompt)
         if args.prompt
@@ -306,7 +330,8 @@ def main() -> int:
                 "code": "PROMPT_NOT_FOUND",
                 "message": (
                     "约束提取提示词不存在。请通过 --prompt 指定文件，或在 prompts "
-                    "目录提供 operator_constraints_extract_vN.md。"
+                    "目录提供对应 family 的 operator_constraints_extract_vN.md 或 "
+                    "torch_npu_constraints_extract_vN.md。"
                 ),
                 "prompt": str(prompt) if prompt else "",
                 "operator_family": operator_family,
@@ -354,7 +379,7 @@ def main() -> int:
         raise SystemExit("max-iterations and case-count must be positive")
 
     server_config: Path | None = None
-    if args.mode == "real":
+    if args.mode == "real" and test_framework != "constraints":
         server_config, config_errors = validate_server_config(args.server_config)
         if config_errors:
             print(json.dumps(
@@ -394,14 +419,19 @@ def main() -> int:
         )
         operator_src_source = str(src_path)
         operator_src_snapshot = str(src_snapshot)
-    if explicit_prompt or is_hs:
-        # --prompt 逃生口和 HS 专用 prompt 均原样复制；ACLNN 模块只装配到
-        # 通用 operator_constraints_extract_vN.md，避免污染 HS 提取规则。
+    if explicit_prompt:
+        # --prompt 是原样复制的逃生口，不隐式追加任何 family 知识。
         shutil.copy2(prompt, prompt_snapshot)
         loaded_modules = []
+    elif is_hs:
+        # torch_npu 使用完全独立的 baseline + knowledge 装配器；该装配器不会
+        # 扫描 prompts/modules，因此不会混入 ACLNN workspace/API 假设。
+        loaded_modules = assemble_torch_npu_prompt(
+            prompt, doc_snapshot, prompt_snapshot
+        )
     else:
         # 默认：按算子特征装配 base + 命中模块 -> prompt_snapshot
-        loaded_modules = assemble(prompt, doc_snapshot, prompt_snapshot)
+        loaded_modules = assemble_aclnn_prompt(prompt, doc_snapshot, prompt_snapshot)
 
     now = datetime.now(timezone.utc).isoformat()
     state = {
@@ -421,6 +451,7 @@ def main() -> int:
         "case_count": args.case_count,
         "operator_family": operator_family,
         "test_framework": test_framework,
+        "run_scope": "constraints_only" if test_framework == "constraints" else "full",
         "current_iteration": 1,
         # Initialization freezes the plan synchronously; the first actionable
         # state is EXTRACT.  Persisting PLAN here caused Claude Code runs to
@@ -460,6 +491,7 @@ def main() -> int:
             "mode": args.mode,
             "operator_family": operator_family,
             "test_framework": test_framework,
+            "run_scope": "constraints_only" if test_framework == "constraints" else "full",
             "server_config": str(server_config) if server_config else "",
         },
         ensure_ascii=False,

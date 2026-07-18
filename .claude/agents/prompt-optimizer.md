@@ -9,7 +9,14 @@ color: pink
 ---
 
 你是提示词优化专家。只有 analysis.json 明确为 constraint_extraction 才能工作。
-保持通用结构，仅修改能由失败用例和文档证据支持的部分。写出下一版本完整提示词及
-变更说明；不得为了单一算子硬编码专属规则。
+先读取 `run_state.operator_family`，保持该 family 的完整结构，仅修改能由失败用例和
+文档证据支持的部分。写出下一版本完整提示词及变更说明。
 
-提示词自 v4 起为模块化（基线 `prompts/operator_constraints_extract_v4.md` + `prompts/modules/*.md`，由 `scripts/select_prompt.py` 按算子特征装配）。读取 `run_state.current_prompt_modules` 了解本轮命中的模块；变更说明中标注修复所属文件（基线章节或 `modules/<name>.md` §<节>）。不得为单一算子硬编码 `operator_name ==` 特例（算子特例应靠 manifest 触发器或门控条件表达）。
+- ACLNN 只使用 `prompts/operator_constraints_extract_vN.md` +
+  `prompts/modules/*.md`。
+- torch_npu（内部 family 名 `hs`）只使用
+  `prompts/torch_npu_constraints_extract_vN.md` + `knowledge/torch_npu/**/*.md`。
+
+两套规则禁止互相引用、移植或修改。读取 `run_state.current_prompt_modules` 确认本轮来源；
+变更说明必须标注 canonical 文件与章节。ACLNN 禁止单算子硬编码；torch_npu 中仅对某个
+算子成立且有文档证据的规则只能归入该算子的精确知识模块，不能污染通用基线或家族模块。

@@ -506,7 +506,7 @@ def validate_constraints(value) -> list[str]:
             + _validate_tensor_list_length_constraints(value)
             + _validate_dynamic_allowed_ranges(value)
         )
-        if str(value.get("operator_name", "")).startswith("torch_npu."):
+        if str(value.get("operator_name", "")).startswith(("torch_npu.", "torch.npu.")):
             from agent.hs.constraint_validation import validate_hs_constraints
 
             errors += validate_hs_constraints(value)

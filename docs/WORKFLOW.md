@@ -20,24 +20,26 @@
 | 项 | 默认值 | 规划影响 |
 |---|---|---|
 | operator-doc | 必填；支持项目外路径 | 初始化时只读快照到 run/inputs |
-| prompt | 数值版本最新的 vN prompt | 确定首轮提取规则；显式 `--prompt` 可固定版本 |
+| prompt | 当前 family 数值版本最新的 vN prompt | 确定首轮提取规则；显式 `--prompt` 可固定原样快照 |
 | max-iterations | 5 | 防止无界循环 |
 | case-count | 10/平台 | 控制生成与执行规模 |
 | mode | real | 缺配置则停止提示；仅显式 `--mode mock` 使用 Mock |
 | server-config | servers.json | 真实执行机、平台和环境初始化配置 |
 | supplement-constraints | 可选；支持项目外路径 | EXTRACT 后据此做关系补充，为空则跳过补充阶段 |
-| operator-family | auto | `torch_npu` 文档自动选 hs，否则 aclnn |
-| test-framework | auto | hs 自动选 ttk，否则 atk；可显式覆盖 |
+| operator-family | auto | `torch_npu` 文档自动选 hs，否则 aclnn；CLI 接受 `torch_npu` 作为 hs 别名 |
+| test-framework | auto | ACLNN→atk；六个已适配 torch_npu→ttk；其余 torch_npu→constraints-only |
 
 `init_run.py` 先校验外部文档和真实执行配置。配置不完整时返回结构化提示且不创建
 run；校验通过后将外部文档复制为项目内快照并创建 run_state。主协调器必须展示调度
 计划，用户能在真正执行前看见：
 哪些 Agent 会参与、每个 Agent 接收什么、产出什么、为何停止或继续。
 
-未显式传入 `--prompt` 时，初始化脚本扫描
-`prompts/operator_constraints_extract_vN.md`，按整数 N（而非文件名字典序）选择最新
-版本。选中的源路径和项目内快照均写入 run_state，因此后续新增提示词版本不会改变
-已经创建的 run。
+未显式传入 `--prompt` 时，初始化脚本按 family 扫描：ACLNN 使用
+`prompts/operator_constraints_extract_vN.md` 并由 `scripts/select_prompt.py` 装配
+`prompts/modules/**`；torch_npu 使用 `prompts/torch_npu_constraints_extract_vN.md`
+并由 `scripts/select_torch_npu_prompt.py` 装配 `knowledge/torch_npu/**`。版本按整数 N
+（而非文件名字典序）选择。两套装配根互斥。选中的源路径、命中模块和 run 内完整快照
+均写入 run_state，因此后续新增版本不会改变已经创建的 run。
 
 ## 3. 执行状态机
 
@@ -142,6 +144,18 @@ generator_bug / executor_bug 立即止损。这样避免执行环境故障反复
 UNSUPPORTED/GOLDEN_FAILURE 归入 golden_derivation；CSV映射错误归入 ttk_adapter；
 SSH/CANN/TBE/NPU环境归入 execution_environment。
 
+prompt-optimizer 也按 `run_state.operator_family` 隔离：ACLNN 的修复只能定位到 ACLNN
+基线/模块；torch_npu 的修复只能定位到 torch_npu 基线/知识模块。run 内下一轮仍使用
+完整 `prompt_vN+1.md` 覆盖快照，不在优化阶段交叉装配另一 family。
+
+### constraints-only
+
+对尚无 TTK adapter 的 torch_npu API，auto 选择 `test_framework=constraints`、
+`run_scope=constraints_only`。EXTRACT 和可选 SUPPLEMENT 通过 normalize/validate 后即以
+`CONSTRAINTS_ONLY_SUCCESS` 事件结束；不进入 GENERATE/EXECUTE，也不要求服务器配置。
+该 SUCCESS 只表示约束文件有效，不能报告为用例或精度闭环成功。用户显式选择 `ttk`
+仍可用于开发新 adapter，但未注册算子会在生成阶段明确拒绝。
+
 ## 5. 串并行设计
 
 主链路有严格数据依赖，EXTRACT、GENERATE、EXECUTE、GATE 必须串行。质量门禁内部的
@@ -171,6 +185,12 @@ SSH/CANN/TBE/NPU环境归入 execution_environment。
 `/iterate-directory` 在单算子状态机外增加一层确定性的串行队列。初始化时一次性冻结
 目录、glob、文件顺序、单算子参数和失败策略；随后每次只认领一个文档，并为它创建或
 恢复一个独立的 `/iterate-operator` run。
+
+默认批次允许目录混合 ACLNN 与 torch_npu 文档：claim 只透传 `operator-family=auto`，
+每个 `init_run` 独立选择对应 baseline 和知识模块。只有用户显式给出 `--prompt` 时才把
+同一个原样 prompt 透传整批；这属于用户主动固定版本，不经过 family 模块装配。
+扫描 torch_npu 文档目录时，已知导航页 `torch_npu.md`、`torch_npu_list.md` 会被排除，
+不会为没有 callable 的索引创建 run。
 
 默认 `continue-on-error`：`SUCCESS` 计为成功，`BLOCKED`、`MAX_ITERATIONS`、
 `STOP_GENERATOR_BUG` 和 `STOP_EXECUTOR_BUG` 计为失败，但不会阻止后续文档执行。
