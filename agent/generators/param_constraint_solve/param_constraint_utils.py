@@ -458,9 +458,9 @@ class ParamConstraintUtils(CommonDispatcher):
             param_type = self.case_input_map.get(param_name).type
             z3_param_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(param_type, "tensor")
             if z3_param_type in ParamModelConfig.TENSOR_ATK_TYPE:
-                range_value_attr_name = scalar_range_value_attr_name
-            else:
                 range_value_attr_name = list_tensor_range_value_attr_name
+            else:
+                range_value_attr_name = scalar_range_value_attr_name
             param_range_value_expr_list = []
             for value_rule in param_range_value_constraint:
                 if value_type == ParamRangeValueType.ENUM.value:
