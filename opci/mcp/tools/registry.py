@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 from opci.config import get_project_root
+from opci.mcp._logging import log, log_elapsed
 
 
 def show_workforce() -> str:
     """Display available skills, agents, preload relations and dispatch topology."""
+    t0 = time.monotonic()
+    log("show_workforce", "start")
     project_root = get_project_root()
     skills_dir = project_root / ".claude" / "skills"
     agents_dir = project_root / ".claude" / "agents"
+    log("show_workforce", "paths_resolved", project_root=str(project_root))
 
     output_lines = ["=== Claude Code Workforce ===\n"]
 
@@ -40,6 +45,7 @@ def show_workforce() -> str:
     output_lines.append(
         "\nLive views: /agents | /hooks | /iterate-operator | /iterate-directory"
     )
+    log_elapsed("show_workforce", "done", t0)
     return "\n".join(output_lines)
 
 

@@ -21,12 +21,18 @@ Migration overview
   不再做 ``GeneratorContext`` 中间层转换；返回值是 ``single_operator_handle``
   的原始输出 ``list[CaseConfig]``。
 
-Public re-exports
------------------
+Import strategy
+---------------
+
+Only lightweight models from ``common_model_definition`` are eagerly imported.
+Heavy modules (``facade``, ``operator_handle_main``) that pull in Z3 solver,
+numpy, etc. are lazily imported via ``__getattr__`` to avoid blocking MCP
+stdio tool calls that only need ``OperatorRule`` for validation.
 """
 
 from __future__ import annotations
 
+# Eager: lightweight (pydantic + enum + typing only)
 from opci.agent.generators.common_model_definition import (
     InterConstraintsRuleType,
     InterParamConstraint,
@@ -34,15 +40,26 @@ from opci.agent.generators.common_model_definition import (
     ParamAttributes,
     ValueWithSrcText,
 )
-from opci.agent.generators.facade import (
-    DEFAULT_COUNT,
-    DEFAULT_SEED,
-    TestCaseGenerator,
-)
-from opci.agent.generators.operator_handle_main import (
-    batch_operator_handel,
-    single_operator_handle,
-)
+
+# Lazy: heavy modules (Z3, numpy, etc.) — only loaded when accessed
+_LAZY_FACADE = ("DEFAULT_COUNT", "DEFAULT_SEED", "TestCaseGenerator")
+_LAZY_HANDLE = ("single_operator_handle", "batch_operator_handel")
+
+
+def __getattr__(name: str) -> object:
+    if name in _LAZY_FACADE:
+        from opci.agent.generators.facade import DEFAULT_COUNT, DEFAULT_SEED, TestCaseGenerator
+        globals()["DEFAULT_COUNT"] = DEFAULT_COUNT
+        globals()["DEFAULT_SEED"] = DEFAULT_SEED
+        globals()["TestCaseGenerator"] = TestCaseGenerator
+        return globals()[name]
+    if name in _LAZY_HANDLE:
+        from opci.agent.generators.operator_handle_main import single_operator_handle, batch_operator_handel
+        globals()["single_operator_handle"] = single_operator_handle
+        globals()["batch_operator_handel"] = batch_operator_handel
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Public facade

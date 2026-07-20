@@ -200,7 +200,7 @@ def main():
     args = parser.parse_args()
 
     # 初始化日志系统（使用项目已有的日志机制）
-    init_logger(log_name="coverage_analyzer", log_dir="./logs")
+    init_logger(log_name="coverage_analyzer", log_dir="./logs/tools")
     logger.info("Coverage Analyzer started")
 
     # 模式选择：批量 or 单算子
