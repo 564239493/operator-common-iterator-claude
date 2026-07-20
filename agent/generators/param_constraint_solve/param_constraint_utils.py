@@ -222,7 +222,8 @@ class ParamConstraintUtils(CommonDispatcher):
                 z3_constraint = converter.visit(tree.body)
                 if z3_constraint is not None:
                     builder.solver.assert_and_track(z3_constraint, f"batch_chk:{static_expr[:50]}")
-        if builder.solver.check() == z3.sat:
+        check_status = builder.solver.check()
+        if check_status == z3.sat:
             builder.solver.pop()
             # 永久添加所有静态表达式
             for static_expr in param_static_expr_list:
@@ -236,6 +237,11 @@ class ParamConstraintUtils(CommonDispatcher):
                         builder.solver.assert_and_track(z3_constraint, f"perm:{static_expr[:50]}")
             logger.debug(f"Batch check SAT, all {len(param_static_expr_list)} exprs kept")
             return
+        elif check_status == z3.unknown:
+            logger.error(f"Batch check SAT, unknown reason : {builder.solver.reason_unknown()}")
+        else:
+            unsat_core = builder.solver.unsat_core()
+            logger.warning(f"Batch check SAT, unsat_core is {unsat_core}")
         builder.solver.pop()
 
         # 回退路径：逐个 push/pop 增量检测
@@ -250,8 +256,14 @@ class ParamConstraintUtils(CommonDispatcher):
                     z3_constraint = converter.visit(tree.body)
                     if z3_constraint is not None:
                         builder.solver.assert_and_track(z3_constraint, f"chk:{static_expr[:50]}")
-                        if builder.solver.check() == z3.sat:
+                        check_status = builder.solver.check()
+                        if check_status == z3.sat:
                             is_sat = True
+                        elif check_status == z3.unknown:
+                            logger.error(f"chk:{static_expr[:50]}, unknown reason : {builder.solver.reason_unknown()}")
+                        else:
+                            unsat_core = builder.solver.unsat_core()
+                            logger.warning(f"chk:{static_expr[:50]}, unsat_core is {unsat_core}")
             finally:
                 builder.solver.pop()
 
@@ -266,6 +278,88 @@ class ParamConstraintUtils(CommonDispatcher):
                     z3_constraint = converter.visit(tree.body)
                     if z3_constraint is not None:
                         builder.solver.assert_and_track(z3_constraint, f"perm:{static_expr[:50]}")
+
+    def choice_no_conflicts_expr_core(self, builder: Z3ConstraintBuilder, param_union_expr: List[str],
+                                      param_static_expr_list: List[str]) -> None:
+        """
+        core 模式：用 unsat_core 驱动筛选与参数静态表达式不冲突的初始值表达式（实验性）。
+
+        把每条 static 以软约束 ``Implies(tag, z)`` 加入（一次 push），然后用
+        ``check(assumptions=tags)`` 检测：SAT 则全部保留；UNSAT 则取 unsat_core，
+        从 assume 集移除一个冲突 tag 再检，直至 SAT 或 UNKNOWN。最后 pop 并把仍在 assume
+        中的 static 永久加入 builder。相比 ``choice_no_conflicts_expr`` 的 O(N) 次
+        push/check/pop，此处为 O(冲突数) 次 check。
+
+        注意：``assert_and_track`` 会把 tag 钉死 true（无法用 assumptions 选择性关闭），
+        故改用 ``solver.add(Implies(tag, z))`` 实现真正的软约束 + ``check(*tags)`` +
+        ``unsat_core()``，与 Java 端 ``choiceNoConflictsExprCore`` 一致。
+
+        :param builder: 已声明变量并添加了 JSON 约束的 Z3ConstraintBuilder 实例
+        :param param_union_expr: 关联表达式列表（会被原地修改）
+        :param param_static_expr_list: 参数静态表达式列表
+        """
+        if not param_static_expr_list:
+            return
+
+        def _build_constraint(expr_str: str):
+            """对应 Java buildConstraint：关键字替换 + 语法校验 + AST→Z3 表达式。"""
+            replaced = ExpressionPreprocessor.apply_keyword_replace(expr_str)
+            if not ExpressionPreprocessor.validate_expression(replaced):
+                return None
+            tree = ast.parse(replaced, mode='eval')
+            return ASTtoZ3Converter(builder).visit(tree.body)
+
+        builder.solver.push()
+        # static_expr -> 软约束 tag（仅对可成功构建的表达式建 tag）
+        tag_of: Dict[str, z3.BoolRef] = {}
+        for idx, static_expr in enumerate(param_static_expr_list):
+            z3_constraint = _build_constraint(static_expr)
+            if z3_constraint is not None:
+                # chk_core 前缀 + idx 保证 tag 唯一，避免与 naive 模式的 chk: 撞名
+                tag = z3.Bool(f"chk_core:{idx}:{static_expr[:40]}")
+                builder.solver.add(z3.Implies(tag, z3_constraint))
+                tag_of[static_expr] = tag
+
+        assume = list(tag_of.values())
+        iters = 0
+        while assume:
+            iters += 1
+            check_status = builder.solver.check(*assume)
+            if check_status == z3.sat:
+                break
+            if check_status == z3.unknown:
+                logger.warning(
+                    f"[choice_core] check UNKNOWN (iters={iters}, assume={len(assume)}/{len(tag_of)}) "
+                    f"reason: {builder.solver.reason_unknown()}")
+                break
+            # UNSAT：取 unsat_core，从 assume 集移除一个冲突 tag
+            unsat_core = builder.solver.unsat_core()
+            core_list = list(unsat_core)
+            if not core_list:
+                logger.warning("[choice_core] empty unsat_core on UNSAT — base infeasible?")
+                break
+            core_set = set(core_list)
+            to_remove = None
+            for tag in assume:
+                if tag in core_set:
+                    to_remove = tag
+                    break
+            if to_remove is None:
+                logger.warning("[choice_core] unsat_core contains no static tag — base infeasible?")
+                break
+            assume.remove(to_remove)
+
+        logger.info(f"[choice_core] iters={iters}, kept {len(assume)}/{len(tag_of)} statics")
+        builder.solver.pop()
+
+        # 永久加入仍在 assume 中的 static
+        kept = set(assume)
+        for static_expr, tag in tag_of.items():
+            if tag in kept:
+                param_union_expr.append(static_expr)
+                z3_constraint = _build_constraint(static_expr)
+                if z3_constraint is not None:
+                    builder.solver.assert_and_track(z3_constraint, f"perm_core:{static_expr[:50]}")
 
     def build_param_dtype_constraint(self, constraint_exprs: List[str],
                                      builder: Z3ConstraintBuilder, check: bool = True) -> None:
@@ -501,7 +595,7 @@ class ParamConstraintUtils(CommonDispatcher):
         self.build_param_length_constraint(all_static, builder, check=False)
 
         if all_static:
-            self.choice_no_conflicts_expr(builder=builder, param_union_expr=expr_list,
+            self.choice_no_conflicts_expr_core(builder=builder, param_union_expr=expr_list,
                                           param_static_expr_list=all_static)
 
         logger.info("Start whole expr solve")
