@@ -17,3 +17,6 @@ execution_results/
 tests/
 
 /operators-src/
+dist/
+cases/
+output/
