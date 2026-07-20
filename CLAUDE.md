@@ -57,6 +57,8 @@ claude  # 启动 Claude Code CLI
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
 |---|---|---|---|
 | 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` |
+| 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
+| 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
 | 用例生成 | `case-generator` | `generate-cases` | `cases.json` + `generation_summary.json` |
 | 用例执行 | `case-executor` | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
 | 根因诊断 | `failure-analyst` | `diagnose-failure` | `analysis.json` |
@@ -71,6 +73,11 @@ claude  # 启动 Claude Code CLI
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
 - `.claude/settings.json` — `dontAsk` 权限 + sandbox + Hooks 配置
 - `.claude/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
+
+> EXTRACT 后可选触发约束补充（`--supplement-constraints` 非空时）：
+> `constraint-supplementer` 产 `constraints_patch.json`，
+> `scripts/apply_supplement_constraints.py` 确定性合并并重跑 normalize+validate，
+> 失败阻断、不进 GENERATE。为独立子步骤而非新状态，空即跳过。
 
 ### Python 确定性层
 

@@ -1,4 +1,5 @@
 {
+  "_comment": "ATK 远程执行服务器配置。支持多台服务器，按平台名匹配。密码是明文（内网环境）。",
   "servers": [
     {
       "name": "Atlas A3 development host",
@@ -10,7 +11,30 @@
         "Atlas A3 训练系列产品/Atlas A3 推理系列产品"
       ],
       "supports_npu": true,
+      "transfer_mode": "auto",
+      "remote_paths": {
+        "cases_dir": "/home/operator_atk/cases",
+        "executor_dir": "/home/operator_atk/atk_executor",
+        "output_root": "/home/operator_atk/atk_output"
+      },
+      "env_init": "cd /home/operator_atk && source /usr/local/Ascend/ascend-toolkit/set_env.sh",
       "env_init_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
     }
-  ]
+  ],
+  "_fields": {
+    "name": "服务器名称（用于日志）",
+    "ip": "服务器 IP 地址",
+    "port": "SSH 端口（默认 22）",
+    "username": "SSH 用户名",
+    "password": "SSH 密码",
+    "platforms": "该服务器支持的昇腾平台列表（匹配 product_support）",
+    "supports_npu": "是否支持 NPU 后端（可选，默认 false）",
+    "transfer_mode": "文件传输方式: auto(默认, SFTP优先+SCP兜底) / scp(仅SCP, 主机不支持SFTP时用) / sftp(仅SFTP)",
+    "remote_paths": "远程目录配置（必填，需包含 cases_dir, executor_dir, output_root）",
+    "remote_paths.cases_dir": "用例文件远程目录（必填）",
+    "remote_paths.executor_dir": "执行器脚本远程目录（必填）",
+    "remote_paths.output_root": "ATK 输出根目录（必填）",
+    "env_init": "完整环境初始化命令（可选，优先级: --env-init > env_init > env_init_script > 内置默认）",
+    "env_init_script": "CANN 环境初始化脚本路径或命令（可选，向后兼容字段）"
+  }
 }

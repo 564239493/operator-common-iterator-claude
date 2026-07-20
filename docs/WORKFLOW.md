@@ -25,6 +25,7 @@
 | case-count | 10/平台 | 控制生成与执行规模 |
 | mode | real | 缺配置则停止提示；仅显式 `--mode mock` 使用 Mock |
 | server-config | servers.json | 真实执行机、平台和环境初始化配置 |
+| supplement-constraints | 可选；支持项目外路径 | EXTRACT 后据此做关系补充，为空则跳过补充阶段 |
 
 `init_run.py` 先校验外部文档和真实执行配置。配置不完整时返回结构化提示且不创建
 run；校验通过后将外部文档复制为项目内快照并创建 run_state。主协调器必须展示调度
@@ -63,6 +64,34 @@ flowchart TD
 完成条件：constraints.json 通过 Pydantic/结构校验。  
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。
 
+### EXTRACT fork-join
+
+当 `run_state.operator_src_snapshot` 非空时，EXTRACT 阶段并行委派
+`constraint-extractor`（产 `constraints.json`）与 `source-analyst`（产
+`source_raw.json` + `supplementary-doc.md`/`uncertain-doc.md`/`conflict-doc.md`/
+`conflict_candidates.json`）。两者只读文档快照、互不写对方产物，可并行；barrier
+后进 SUPPLEMENT。`operator_src_snapshot` 为空时退回纯文档驱动（只 constraint-extractor）。
+
+### SUPPLEMENT（条件触发，非独立状态）
+
+输入：`inputs/supplementary-doc.md`（source-analyst 产，主源）与/或
+`inputs/supplement_constraints.md`（`--supplement-constraints` 手写）+ 已提取
+`constraints.json`。两者都空则跳过。  
+执行者：constraint-supplementer（产出 `constraints_patch.json`）。  
+合并：`scripts/apply_supplement_constraints.py` 确定性合并 patch 进 `constraints.json`
+（标 `origin="supplement"`、剥离 patch 层字段），重跑 normalize + validate。  
+完成条件：合并后 `constraints.json` 通过 normalize + validate。  
+失败策略：合并器或 revalidate 失败则阻断，不进 GENERATE；patch schema/精确匹配
+失败由 constraint-supplementer 自修正最多三次。
+
+### conflict 异步裁决（非阻塞）
+
+source-analyst 产 `conflict-doc.md` 后，若非空，主协调器输出 `requires_user_action`
+提示（`code=CONFLICT_REQUIRES_REVIEW`），**不阻塞**主流程，继续 GENERATE。用户在
+任意时刻回 `inputs/conflict_resolution.json`，下轮 re-supplement 前由
+`scripts/apply_conflict_resolution.py` 把 source-wins 转 replace patch 并入
+（`origin="conflict_resolution"` + revalidate）。冲突永远走人工通道，不自动消费。
+
 ### GENERATE
 
 输入：已校验 constraints.json。  
@@ -90,9 +119,18 @@ flowchart TD
 
 ### DIAGNOSE / OPTIMIZE
 
-failure-analyst 使用新上下文，只读取落盘事实。三类根因中只有
-constraint_extraction 允许 prompt-optimizer 生成 prompt_vN+1。这样避免执行环境故障
-反复“优化”提示词，也避免生成器代码 bug 被错误掩盖。
+failure-analyst 使用新上下文，只读取落盘事实。当 `operator_src_snapshot` 非空时，
+先委派 source-analyst diagnose 域（error_string 模糊匹配失败日志，命中的 uncertain
+追加到 `supplementary-doc.md`，产 `source_evidence.json`），failure-analyst 读它下根因。
+
+constraint_extraction 根因走**两级补救**：
+1. 补充优先：`source_evidence.log_match` 非空或 failure-analyst 产了
+   `supplement_additions.md` → re-EXTRACT + re-SUPPLEMENT + re-GENERATE + re-EXECUTE，
+   **不走 prompt-optimizer**。
+2. 补充无可提取 → 才回退 prompt-optimizer 生成 prompt_vN+1。
+
+generator_bug / executor_bug 立即止损。这样避免执行环境故障反复”优化”提示词，
+也避免生成器代码 bug 被错误掩盖。
 
 ## 5. 串并行设计
 

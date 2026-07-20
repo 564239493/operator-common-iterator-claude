@@ -110,9 +110,24 @@ def validate_constraint_semantics(value) -> list[str]:
 
     for section, param, platform, attributes in _iter_param_attributes(value):
         allowed = attributes.get("allowed_range_value")
-        if not isinstance(allowed, dict) or allowed.get("type") != "range":
+        if not isinstance(allowed, dict):
             continue
         range_value = allowed.get("value", [])
+        # value 非空时 type 必须显式标注 enum/range: 离散枚举码不标 enum 会被
+        # 生成器当浮点范围填充(如 bool 填出 1.23e-40), 区间不标 range 则语义不明。
+        # 提示词 v4 §4.6.3 映射表与 format_cast §4.6.11 C 示例均要求带 type,
+        # 此处是 LLM 漏填时的确定性兜底: 缺失/非法即报错, 由 GATE 拦回 re-EXTRACT。
+        if isinstance(range_value, list) and range_value:
+            range_type = allowed.get("type")
+            if range_type not in ("enum", "range"):
+                errors.append(
+                    f"{section}.{param}[{platform}].allowed_range_value: "
+                    f"value is non-empty (len={len(range_value)}) but type is "
+                    f"{range_type!r}; type must be 'enum' or 'range' when "
+                    "value is non-empty (离散枚举码用 enum, 区间用 range)"
+                )
+        if allowed.get("type") != "range":
+            continue
         if any(item is None for item in _walk_values(range_value)):
             errors.append(
                 f"{section}.{param}[{platform}].allowed_range_value: "
@@ -558,12 +573,49 @@ def validate_executor(path: str) -> list[str]:
     return errors
 
 
+def _validate_md_file(path: str) -> tuple[list[str], list[str]]:
+    """校验 markdown 文件存在；空文件返回 warning 不阻断（uncertain/conflict
+    可为空，supplementary 空则由补充逻辑跳过）。自由格式，不做 schema。"""
+    p = Path(path)
+    if not p.is_file():
+        return [f"doc file not found: {path}"], []
+    if not p.read_text(encoding="utf-8").strip():
+        return [], [f"doc file is empty (allowed): {path}"]
+    return [], []
+
+
+def validate_supplementary_doc(path: str) -> tuple[list[str], list[str]]:
+    return _validate_md_file(path)
+
+
+def validate_uncertain_doc(path: str) -> tuple[list[str], list[str]]:
+    return _validate_md_file(path)
+
+
+def validate_conflict_doc(path: str) -> tuple[list[str], list[str]]:
+    return _validate_md_file(path)
+
+
+def validate_source_raw(value) -> list[str]:
+    if not isinstance(value, dict):
+        return ["source_raw must be an object"]
+    errors = []
+    for key in ("aclnn_interfaces", "platform_matrix", "raw_checks"):
+        if key not in value:
+            errors.append(f"missing field: {key}")
+    return errors
+
+
 VALIDATORS = {
     "constraints": validate_constraints,
     "cases": validate_cases,
     "execution": validate_execution,
     "analysis": validate_analysis,
     "executor": validate_executor,
+    "supplementary_doc": validate_supplementary_doc,
+    "uncertain_doc": validate_uncertain_doc,
+    "conflict_doc": validate_conflict_doc,
+    "source_raw": validate_source_raw,
 }
 
 
@@ -573,15 +625,22 @@ def main() -> int:
     parser.add_argument("path")
     args = parser.parse_args()
     try:
-        # executor 校验对象是 Python 源文件, 直接传路径; 其余校验对象是
-        # JSON 产物, 先解析再传结构.
-        if args.kind == "executor":
-            errors = VALIDATORS[args.kind](args.path)
+        # executor / *_doc 校验对象是文件路径(Python 源/markdown), 直接传路径;
+        # 其余校验对象是 JSON 产物, 先解析再传结构.
+        path_kinds = {"executor", "supplementary_doc", "uncertain_doc", "conflict_doc"}
+        if args.kind in path_kinds:
+            result = VALIDATORS[args.kind](args.path)
         else:
-            errors = VALIDATORS[args.kind](load(args.path))
+            result = VALIDATORS[args.kind](load(args.path))
     except Exception as exc:
-        errors = [str(exc)]
-    print(json.dumps({"valid": not errors, "errors": errors}, ensure_ascii=False, indent=2))
+        result = [str(exc)]
+    # 兼容二元组 (errors, warnings) 与旧式 list[str]; warnings 非阻断, 不计入 exit code
+    if isinstance(result, tuple):
+        errors, warnings = result
+    else:
+        errors, warnings = result, []
+    print(json.dumps({"valid": not errors, "errors": errors, "warnings": warnings},
+                     ensure_ascii=False, indent=2))
     return 0 if not errors else 1
 
 

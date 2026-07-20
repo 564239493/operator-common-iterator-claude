@@ -43,24 +43,93 @@ from .ssh import (
     SSHEngineError,
     ServerEndpoint,
     connect,
+    download_file,
     find_latest_output_dir,
+    list_dir,
     run,
-    sftp_download_file,
-    sftp_list_dir,
     upload_file,
 )
 
 logger = logging.getLogger(__name__)
 
-# ── Remote layout (project-local constants) ───────────────────────────────
-
-_REMOTE_HOME = "/home/operator_atk"
-_REMOTE_CASES_DIR = f"{_REMOTE_HOME}/cases"
-_REMOTE_EXECUTOR_DIR = f"{_REMOTE_HOME}/atk_executor"
-_REMOTE_OUTPUT_ROOT = f"{_REMOTE_HOME}/atk_output"
-
 _DEFAULT_ENV_INIT = "cd /home/operator_atk && source /home/marine/miniconda3/etc/profile.d/conda.sh && conda activate atk_env"
 _DEFAULT_ATK_TIMEOUT = 1800.0
+
+# Valid transfer-mode values for servers.json → ``transfer_mode`` field.
+_VALID_TRANSFER_MODES = {"auto", "scp", "sftp"}
+
+
+@dataclass(frozen=True)
+class RemotePaths:
+    """Per-server remote directory layout for cases, executor, and output.
+
+    Resolved from ``servers.json`` → ``remote_paths`` sub-object.  All
+    three fields (``cases_dir``, ``executor_dir``, ``output_root``) are
+    **required** in ``servers.json``; no hardcoded fallback is provided.
+    """
+
+    cases_dir: str
+    executor_dir: str
+    output_root: str
+
+    @classmethod
+    def from_server_info(cls, server_info: dict[str, Any]) -> "RemotePaths":
+        """Build from a ``servers.json`` server row.
+
+        Requires the ``remote_paths`` sub-object with all three fields
+        (``cases_dir``, ``executor_dir``, ``output_root``).  Raises
+        ``ValueError`` if ``remote_paths`` is missing or incomplete.
+        """
+        rp = server_info.get("remote_paths")
+        if not isinstance(rp, dict):
+            raise ValueError(
+                "servers.json 缺少 remote_paths 配置（需包含 cases_dir, "
+                "executor_dir, output_root 三个字段）"
+            )
+        cases_dir = str(rp.get("cases_dir") or "").strip()
+        executor_dir = str(rp.get("executor_dir") or "").strip()
+        output_root = str(rp.get("output_root") or "").strip()
+        missing = [
+            name for name, val in (
+                ("cases_dir", cases_dir),
+                ("executor_dir", executor_dir),
+                ("output_root", output_root),
+            ) if not val
+        ]
+        if missing:
+            raise ValueError(
+                f"servers.json remote_paths 缺少必填字段: {', '.join(missing)}"
+            )
+        return cls(
+            cases_dir=cases_dir,
+            executor_dir=executor_dir,
+            output_root=output_root,
+        )
+
+    def cases_path(self, operator_name: str) -> str:
+        """Remote SFTP/SCP destination for the expanded cases JSON."""
+        return f"{self.cases_dir}/{operator_name}_cases_expanded.json"
+
+    def executor_path(self, operator_name: str) -> str:
+        """Remote SFTP/SCP destination for the ATK executor script."""
+        return f"{self.executor_dir}/{operator_name}_executor.py"
+
+
+def _resolve_transfer_mode(server_info: dict[str, Any]) -> str:
+    """Extract and normalise the ``transfer_mode`` from a server row.
+
+    Returns one of ``_VALID_TRANSFER_MODES``.  Unknown values are
+    logged and fall back to ``"auto"`` so a typo doesn't silently
+    skip uploads.
+    """
+    raw = str(server_info.get("transfer_mode") or "auto").strip().lower()
+    if raw not in _VALID_TRANSFER_MODES:
+        logger.warning(
+            "transfer_mode=%r 不合法 (合法值: %s), 回退为 auto",
+            raw, ", ".join(sorted(_VALID_TRANSFER_MODES)),
+        )
+        return "auto"
+    return raw
 
 # ── Local generator assets (mirrored from operator-common-iterator) ───────
 
@@ -90,9 +159,27 @@ class RunRequest:
     iter_dir: Path | None = None  # runs/<run-id>/iter_NNN — used to find constraints.json + generation_summary.json for platform filtering
 
 
-def _resolve_env_init(value: str | None) -> str:
-    if value and value.strip():
-        return value.strip()
+def _resolve_env_init(
+    req_env_init: str | None,
+    server_info: dict[str, Any],
+) -> str:
+    """Resolve the env-init command with full priority chain.
+
+    Priority:
+      1. CLI ``--env-init`` (passed as ``RunRequest.env_init``)
+      2. ``server_info["env_init"]`` — full shell command (new field)
+      3. ``server_info["env_init_script"]`` — legacy field (script path
+         or full command, as used in existing servers.json files)
+      4. ``_DEFAULT_ENV_INIT`` — hardcoded fallback
+    """
+    if req_env_init and req_env_init.strip():
+        return req_env_init.strip()
+    server_env = server_info.get("env_init")
+    if isinstance(server_env, str) and server_env.strip():
+        return server_env.strip()
+    script = server_info.get("env_init_script")
+    if isinstance(script, str) and script.strip():
+        return script.strip()
     return _DEFAULT_ENV_INIT
 
 
@@ -162,22 +249,6 @@ def pick_server(
 # ── Path helpers ───────────────────────────────────────────────────────────
 
 
-def _remote_cases_path(operator_name: str) -> str:
-    """Remote path for the *expanded* cases.json consumed by ATK.
-
-    Generator writes ``cases_expanded.json`` at iter root; we upload
-    that to the host (NOT the raw ``cases.json``), so the remote file
-    ends in ``_cases_expanded.json``.
-    """
-    return (
-        f"{_REMOTE_CASES_DIR}/{operator_name}_cases_expanded.json"
-    )
-
-
-def _remote_executor_path(operator_name: str) -> str:
-    return f"{_REMOTE_EXECUTOR_DIR}/{operator_name}_executor.py"
-
-
 def _server_supports_npu(server_info: dict[str, Any]) -> bool:
     """Return whether a ``servers.json`` row declares NPU support."""
     value = server_info.get("supports_npu")
@@ -198,12 +269,13 @@ def _build_atk_command(
     operator_name: str,
     task_type: str,
     env_init: str,
+    remote_paths: RemotePaths,
     *,
     supports_npu: bool = False,
 ) -> str:
     """Compose the ATK command for the remote host."""
-    cases_remote = _remote_cases_path(operator_name)
-    executor_remote = _remote_executor_path(operator_name)
+    cases_remote = remote_paths.cases_path(operator_name)
+    executor_remote = remote_paths.executor_path(operator_name)
     node_prefix = (
         "atk node --backend pyaclnn --devices 0 node --backend cpu task "
         if supports_npu
@@ -446,6 +518,8 @@ async def _generate_atk_executor(
         str(output_target),
         "--signatures",
         str(_SIGNATURES_FILE),
+        "--acc-config",
+        "acc_config.txt",
     ]
 
     try:
@@ -555,9 +629,10 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
     log_dir = req.iter_dir or _resolve_cache_dir(req, operator_name)
     log_handler = _setup_execution_log(log_dir)
     logger.info(
-        "===== generate start: operator=%s run_id=%s =====",
+        "===== generate start: operator=%s run_id=%s transfer_mode=%s =====",
         operator_name,
         req.run_id,
+        _resolve_transfer_mode(req.server_info),
     )
 
     try:
@@ -571,6 +646,8 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
             return result
 
         cache_dir = _resolve_cache_dir(req, operator_name)
+        remote = RemotePaths.from_server_info(req.server_info)
+        transfer_mode = _resolve_transfer_mode(req.server_info)
 
         # Platform selection: same as _execute_real section 1.
         scoped_cases_path, select_error = await _resolve_iter_cases_for_server(req)
@@ -616,12 +693,13 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
         atk_command = _build_atk_command(
             operator_name,
             req.task_type,
-            _resolve_env_init(req.env_init),
+            _resolve_env_init(req.env_init, req.server_info),
+            remote,
             supports_npu=_server_supports_npu(req.server_info),
         )
-        remote_paths = {
-            "cases_expanded.json": _remote_cases_path(operator_name),
-            "cases_executor.py": _remote_executor_path(operator_name),
+        remote_paths_map = {
+            "cases_expanded.json": remote.cases_path(operator_name),
+            "cases_executor.py": remote.executor_path(operator_name),
         }
 
         # Only list files the user needs to SFTP-upload.  ``cases.json`` is
@@ -633,7 +711,7 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
                 "cases_executor.py": executor_files[0],
             },
             atk_command=atk_command,
-            remote_paths=remote_paths,
+            remote_paths=remote_paths_map,
         )
         logger.info(
             "generate: source cases.json = %s", scoped_cases_path
@@ -691,13 +769,16 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
 
     endpoint = ServerEndpoint.from_server_row(req.server_info)
     cache_dir = _resolve_cache_dir(req, operator_name)
-    env_init = _resolve_env_init(req.env_init)
+    remote = RemotePaths.from_server_info(req.server_info)
+    transfer_mode = _resolve_transfer_mode(req.server_info)
+    env_init = _resolve_env_init(req.env_init, req.server_info)
 
     logger.info(
-        "execute_cases: operator=%s server=%s task=%s",
+        "execute_cases: operator=%s server=%s task=%s transfer_mode=%s",
         operator_name,
         endpoint.host,
         req.task_type,
+        transfer_mode,
     )
 
     # ── 1. Pick the per-platform cases file matching the server ─────────
@@ -794,14 +875,16 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
             await upload_file(
                 conn,
                 str(generated["expanded_cases"]),
-                _remote_cases_path(operator_name),
+                remote.cases_path(operator_name),
+                transfer_mode=transfer_mode,
             )
             # Generator may emit multiple files (multi-op); ATK only
             # consumes the operator_name-prefixed one — use the first.
             await upload_file(
                 conn,
                 str(generated["executor_files"][0]),
-                _remote_executor_path(operator_name),
+                remote.executor_path(operator_name),
+                transfer_mode=transfer_mode,
             )
         except SSHEngineError as exc:
             logger.exception(
@@ -818,6 +901,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
             operator_name,
             req.task_type,
             env_init,
+            remote,
             supports_npu=_server_supports_npu(req.server_info),
         )
         logger.info("execute_cases: running %s", cmd)
@@ -864,7 +948,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         # ── 6. Discover + download + parse outputs ─────────────────────
         try:
             output_dir = await find_latest_output_dir(
-                conn, _REMOTE_OUTPUT_ROOT, operator_name
+                conn, remote.output_root, operator_name
             )
         except SSHEngineError as exc:
             logger.warning("execute_cases: listdir failed: %s", exc)
@@ -877,12 +961,20 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
             remote_log_path = f"{output_dir}/log/atk.log"
 
             local_log_path = cache_dir / "atk.log"
-            remote_entries = await sftp_list_dir(conn, remote_report_dir)
+            remote_entries = await list_dir(
+                conn, remote_report_dir, transfer_mode=transfer_mode
+            )
             for entry in remote_entries:
-                await sftp_download_file(
-                    conn, f"{remote_report_dir}/{entry}", cache_dir / entry
+                await download_file(
+                    conn,
+                    f"{remote_report_dir}/{entry}",
+                    cache_dir / entry,
+                    transfer_mode=transfer_mode,
                 )
-            await sftp_download_file(conn, remote_log_path, local_log_path)
+            await download_file(
+                conn, remote_log_path, local_log_path,
+                transfer_mode=transfer_mode,
+            )
 
             report_data = parse_xlsx_report(cache_dir)
             result.task_report_data = report_data
@@ -920,12 +1012,12 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         else:
             logger.warning(
                 "execute_cases: no output dir under %s for %s",
-                _REMOTE_OUTPUT_ROOT,
+                remote.output_root,
                 operator_name,
             )
             result.error_message = (
                 f"未找到 {operator_name}_ 前缀的输出目录 "
-                f"({_REMOTE_OUTPUT_ROOT})"
+                f"({remote.output_root})"
             )
 
         # ── 7. Final classification ────────────────────────────────────
@@ -1128,6 +1220,7 @@ def load_cases_payload(cases_path: Path) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "RemotePaths",
     "RunRequest",
     "load_cases_payload",
     "pick_server",

@@ -21,3 +21,17 @@ python scripts/generate_cases.py --constraints <constraints.json> --output <case
 
 随后执行 `python scripts/validate_artifacts.py cases <cases.json>`。禁止手工补造生成失败
 的 case。保留 `<iter-dir>/generation_summary.json` 作为数量和平台摘要。
+
+## 生成后 Python 侧约束复检（抓 Z3 伪 SAT）
+
+Z3 对 `len(shape)`/`shape[-1]`/`shape[-2]` 等 SeqSort/ForAll 语义不完备：`solver.check()`
+可能声称 sat 但实际用例违反该 expr。生成后须跑 Python 侧复检：读 `constraints_in_parameters[].expr`
+与 `cases_<platform>.json`，用安全内置（`len`/`max`/`min`/`abs`/`sum`/`any`/`all`）逐 case `eval`，
+expr 求值 False 即违反，落 `<iter-dir>/post_check_report.json` 供编排器判 `generator_bug`。
+
+**命名空间约定**：每个 case 参数包成暴露 `.format`/`.dtype`/`.shape`/`.range_value` 的对象
+（`__eq__` 比对 `range_value`，使 `<param> in [..]` 与 `<param> == N` 均可求值）。
+**int 标量参数（`additionalDtype`/`dstFormat` 等）不得映射成裸 int**——必须同样包成该对象，
+否则规范形 `additionalDtype.range_value == -1` 会 `AttributeError`（`int` 无 `.range_value`）。
+约束 expr 一律用 `<param>.range_value` 引用 int 标量取值（对齐 `prompts/modules/acl_format_enum.md`
+§C.4），复检命名空间须能 eval。

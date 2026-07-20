@@ -52,6 +52,7 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
     if not isinstance(servers, list) or not servers:
         return path, ["服务器配置必须包含非空 servers 数组"]
 
+    valid_transfer_modes = {"auto", "scp", "sftp", ""}
     errors: list[str] = []
     required = ("ip", "username", "password")
     for index, server in enumerate(servers):
@@ -64,6 +65,16 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
         platforms = server.get("platforms")
         if not isinstance(platforms, list) or not platforms:
             errors.append(f"servers[{index}].platforms 必须是非空数组")
+        # Optional: validate transfer_mode
+        tm = server.get("transfer_mode")
+        if tm is not None and str(tm).strip().lower() not in valid_transfer_modes:
+            errors.append(
+                f"servers[{index}].transfer_mode 必须是 auto / scp / sftp 之一"
+            )
+        # Optional: validate remote_paths structure
+        rp = server.get("remote_paths")
+        if rp is not None and not isinstance(rp, dict):
+            errors.append(f"servers[{index}].remote_paths 必须是 object")
     return path, errors
 
 
