@@ -200,6 +200,10 @@ class ParamCombinationGenerator:
         :param dtype: 数据类型
         :return: 返回值
         """
+        if dtype not in DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP:
+            logger.warning(
+                f"Get default range value profile failed, dtype : '{dtype}' is not in dtype map, range model is None")
+            return [None]
         if DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype) in ParamModelConfig.FLOAT_DTYPE:
             range_value_profiles = ParamModelConfig.FLOAT_TENSOR_DATA_PROFILE
         elif DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype) in ParamModelConfig.INT_DTYPE:
@@ -208,7 +212,7 @@ class ParamCombinationGenerator:
             range_value_profiles = ParamModelConfig.BOOL_DATA_PROFILE
         else:
             logger.warning(
-                f"Get default range value profile failed, dtype : '{dtype}' is not in dtype map, range model is None")
+                f"Get default range value profile failed, dtype : '{dtype}' is not float / int / bool, set range model is None")
             range_value_profiles = [None]
         return range_value_profiles
 

@@ -203,7 +203,11 @@ class BaseVar:
     def __init__(self, name, solver=None):
         self.name = name
         self._element_sort = None  # 由子类设置
-        self.range_value = None
+        # range_value 原始数组；resolve_model 直接访问以避免触发惰性约束（对应 Java rangeValueArr 字段）
+        self._range_value_arr = None
+        # range_value 上下界 ForAll 是否已惰性补加（幂等）
+        self._range_bounds_added = False
+        self._range_constraint_used = False
         self.solver = solver
         self._dtype_arg = None
         self.is_present = z3.Bool(f"{name}.is_present")
@@ -219,6 +223,41 @@ class BaseVar:
 
     def get_element_sort(self):
         return self._element_sort
+
+    def _ensure_range_bounds(self):
+        """首次访问 range_value 时补加基于 dtype 的上下界 ForAll（幂等）。
+
+        range_value 数组基于 dtype 的隐式上下界 ForAll 改为惰性：仅在 range_value 被约束引用
+        （.range_value / tensor[i]）时才补加。FFNV3 等不引用 range_value 的 case 跳过此死重量，
+        避免 fp16/bf16/fp32 巨大实数上下界的 forall 拖垮 Z3 量词实例化。
+        与 Java 端 TensorVar/TensorListVar.ensureRangeBounds() 一致。
+        """
+        if self._range_bounds_added:
+            return
+        self._range_bounds_added = True
+        if self._range_value_arr is None:
+            return
+        if self._dtype_arg and self._dtype_arg in DataMatchMap.DTYPE_SPECS:
+            min_val, max_val, _ = DataMatchMap.DTYPE_SPECS[self._dtype_arg]
+            if min_val is not None:
+                idx = z3.Int('idx')
+                self.solver.add(z3.ForAll([idx],
+                                          z3.Implies(idx >= 0,
+                                                     z3.And(
+                                                         z3.Select(self._range_value_arr, idx) >= min_val,
+                                                         z3.Select(self._range_value_arr, idx) <= max_val))))
+
+    @property
+    def range_value(self):
+        """range_value 数组访问入口（约束构建期，对应 Java rangeValue()）。
+
+        首次访问惰性补加 dtype 上下界 ForAll（经 _ensure_range_bounds），并标记
+        _range_constraint_used=True。resolve_model 直接访问 _range_value_arr 以避免
+        在模型求解后误触发约束添加。
+        """
+        self._ensure_range_bounds()
+        self._range_constraint_used = True
+        return self._range_value_arr
 
     @staticmethod
     def _parse_input_spec(spec):
@@ -626,7 +665,7 @@ class TensorVar(BaseVar):
         self.dtype = z3.Const(f"{name}.dtype", DType)
         self.shape = z3.Const(f"{name}.shape", z3.SeqSort(z3.IntSort()))
         self.format = z3.Const(f"{name}.format", z3.StringSort())
-        self.range_value = z3.Array(f"{name}.range_value", z3.IntSort(), self._element_sort)
+        self._range_value_arr = z3.Array(f"{name}.range_value", z3.IntSort(), self._element_sort)
         self.solver.add(z3.Length(self.shape) >= 0)
 
         # 每个维度值必须 > 0
@@ -654,16 +693,10 @@ class TensorVar(BaseVar):
         self._add_format_constraints(allowed_formats)
         # 不再添加 range_value 约束，仅作为建议保存
         # self._add_initial_range_constraints(range_value)
-        if self._dtype_arg and self._dtype_arg in DataMatchMap.DTYPE_SPECS:
-            min_val, max_val, _ = DataMatchMap.DTYPE_SPECS[self._dtype_arg]
-            if min_val is not None:
-                idx = z3.Int('idx')
-                self.solver.add(z3.ForAll([idx],
-                                          z3.Implies(
-                                              idx >= 0,
-                                              z3.And(
-                                                  z3.Select(self.range_value, idx) >= min_val,
-                                                  z3.Select(self.range_value, idx) <= max_val))))
+        # range_value 数组基于 dtype 的上下界 ForAll 改为惰性：仅在 range_value 被约束引用
+        # （.range_value / tensor[i]）时才经 _ensure_range_bounds() 补加。FFNV3 等不引用
+        # range_value 的 case 跳过此死重量，避免 fp16/bf16/fp32 巨大实数上下界的 forall 拖垮
+        # Z3 量词实例化（见 BaseVar.range_value / get_element_at）。
 
     def _add_dtype_constraints(self, dtype, allowed_dtypes):
         # A. 定义域约束
@@ -690,7 +723,9 @@ class TensorVar(BaseVar):
         return self._element_sort
 
     def get_element_at(self, idx):
-        return z3.Select(self.range_value, idx)
+        self._ensure_range_bounds()
+        self._range_constraint_used = True
+        return z3.Select(self._range_value_arr, idx)
 
     def resolve_model(self, model):
         # 解析基础属性
@@ -722,12 +757,12 @@ class TensorVar(BaseVar):
                     logger.warning(f"Could not resolve shape get actual values for {self.name}: {str(e)}")
 
         # 4. 提取实际值集合
-        if self.range_value.decl() in decls:
+        if self._range_value_arr.decl() in decls:
             logger.info("Get Tensor range")
             actual_values = set()
             arr_expr = None
             try:
-                arr_expr = model.eval(self.range_value)
+                arr_expr = model.eval(self._range_value_arr)
                 actual_values = self._extract_values_from_array_expr(arr_expr)
             except Exception as e:
                 logger.warning(f"Could not resolve range_value get actual values for {self.name}: {str(e)}")
@@ -777,7 +812,7 @@ class TensorListVar(BaseVar):
         self.elem_dtype = z3.Const(f"{name}.elem.dtype", DType)
         self.elem_shape = z3.Const(f"{name}.elem.shape", z3.SeqSort(z3.IntSort()))
         self.elem_format = z3.Const(f"{name}.elem.format", z3.StringSort())
-        self.range_value = z3.Array(f"{name}.range_value", z3.IntSort(), self._element_sort)
+        self._range_value_arr = z3.Array(f"{name}.range_value", z3.IntSort(), self._element_sort)
         self.solver.add(z3.Length(self.elem_shape) >= 0)
 
         idx = z3.Int('idx')
@@ -801,16 +836,10 @@ class TensorListVar(BaseVar):
         self._add_dtype_constraints(dtype, allowed_dtypes)
         self._add_format_constraints(allowed_formats)
 
-        if self._dtype_arg and self._dtype_arg in DataMatchMap.DTYPE_SPECS:
-            min_val, max_val, _ = DataMatchMap.DTYPE_SPECS[self._dtype_arg]
-            if min_val is not None:
-                idx = z3.Int('idx')
-                self.solver.add(z3.ForAll([idx],
-                                          z3.Implies(
-                                              idx >= 0,
-                                              z3.And(
-                                                  z3.Select(self.range_value, idx) >= min_val,
-                                                  z3.Select(self.range_value, idx) <= max_val))))
+        # range_value 数组基于 dtype 的上下界 ForAll 改为惰性：仅在 range_value 被约束引用
+        # （.range_value / x[i]）时才经 _ensure_range_bounds() 补加。不引用 range_value 的
+        # case 跳过此死重量，避免 fp16/bf16/fp32 巨大实数上下界的 forall 拖垮 Z3 量词实例化
+        # （见 BaseVar.range_value / get_element_at）。
 
     def _add_dtype_constraints(self, dtype, allowed_dtypes):
         if allowed_dtypes:
@@ -826,7 +855,9 @@ class TensorListVar(BaseVar):
         return self
 
     def get_element_at(self, idx):
-        return z3.Select(self.range_value, idx)
+        self._ensure_range_bounds()
+        self._range_constraint_used = True
+        return z3.Select(self._range_value_arr, idx)
 
     def resolve_model(self, model):
         decls = model.decls()
@@ -853,11 +884,11 @@ class TensorListVar(BaseVar):
                 except Exception as e:
                     logger.warning(f"Could not resolve shape for {self.name}: {str(e)}")
 
-        if self.range_value.decl() in decls:
+        if self._range_value_arr.decl() in decls:
             actual_values = set()
             arr_expr = None
             try:
-                arr_expr = model.eval(self.range_value)
+                arr_expr = model.eval(self._range_value_arr)
                 actual_values = self._extract_values_from_array_expr(arr_expr)
             except Exception as e:
                 logger.warning(f"Could not resolve range_value for {self.name}: {str(e)}")
@@ -954,7 +985,7 @@ class ListVar(BaseVar):
 
 
 class ScalarVar(BaseVar):
-    def __init__(self, name, solver, dtype, range_value=None, allowed_range_enum=None):
+    def __init__(self, name, solver, dtype, range_value=None):
         super().__init__(name, solver)
         if dtype not in TYPE_CONFIG:
             logger.error(f"Unsupported dtype '{dtype}' for var '{name}', fallback to 'int'")
@@ -967,43 +998,6 @@ class ScalarVar(BaseVar):
         self.z3_var = z3.Const(name, self.config['sort_fn']())
         self._range_spec = range_value
         self._element_sort = self.config['sort_fn']()
-        # 声明期硬锚定 allowed_range_value(type=enum) 入参枚举域，镜像 dtype/format 的
-        # 声明期锚定（_add_dtype_constraints/_add_format_constraints）。此前 enum 取值仅经
-        # build_param_range_value_constraint 生成 `<var>.range_value == <v>` 后走
-        # choice_no_conflicts_expr 的可丢弃通道，一旦被丢则该 z3 变量不被任何约束引用、不在
-        # model 中、resolve_model 返回空 range_values、writeback 跳过，pairwise 预置的越界值
-        # 原样透传（H1: Atlas 350 dstFormat enum=[29] 未锚定，产出 dstFormat=2/30 越界）。
-        self._add_range_value_enum_constraints(allowed_range_enum)
-
-    def _add_range_value_enum_constraints(self, allowed_enum_values):
-        """把 allowed_range_value(type=enum) 的候选值在声明期硬锚定为 z3 变量的取值域。
-
-        与 _add_dtype_constraints/_add_format_constraints 同构：声明期 solver.add(Or([...]))，
-        永不进 choice_no_conflicts_expr 的可丢弃通道，从而保证变量必在 model 中、resolve_model
-        必返回合法 enum 值。候选值按 z3 变量 sort 匹配：int/float→数值比较，str→StringVal，
-        bool→BoolVal；sort 不匹配的候选跳过并告警（不阻断）。
-        """
-        if not allowed_enum_values:
-            return
-        ors = []
-        for v in allowed_enum_values:
-            if v is None:
-                continue
-            try:
-                if isinstance(v, bool):
-                    ors.append(self.z3_var == z3.BoolVal(v))
-                elif isinstance(v, (int, float)):
-                    ors.append(self.z3_var == v)
-                elif isinstance(v, str):
-                    ors.append(self.z3_var == z3.StringVal(v))
-                else:
-                    logger.warning(
-                        f"[EnumAnchor] Unsupported enum value type {type(v).__name__} for var '{self.name}', skipped: {v}")
-            except Exception as e:
-                logger.warning(f"[EnumAnchor] Failed to anchor enum value {v!r} for var '{self.name}': {e}")
-        if ors:
-            self.solver.add(z3.Or(ors))
-            logger.debug(f"[EnumAnchor] {self.name} anchored to enum domain: {allowed_enum_values}")
 
     def get_z3_expr(self):
         return self.z3_var

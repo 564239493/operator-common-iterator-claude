@@ -518,6 +518,8 @@ async def _generate_atk_executor(
         str(output_target),
         "--signatures",
         str(_SIGNATURES_FILE),
+        "--acc-config",
+        "acc_config.txt",
     ]
 
     try:
