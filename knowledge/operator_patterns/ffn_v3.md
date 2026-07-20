@@ -15,11 +15,11 @@ extracted into `constraints_in_parameters`.
 
 - `x.shape == [M.range_value, K1.range_value]`.
 - `weight1` shape is `[K1, N1]` without experts and `[E, K1, N1]` with experts.
-- `weight2` shape is `[K2, N2]` without experts and `[G, K2, N2]` with experts.
+- `weight2` shape is `[K2, N2]` without experts and `[E, K2, N2]` with experts.
 - `bias1Optional`, when present, is `[N1]` without experts and `[E, N1]` with experts.
-- `bias2Optional`, when present, is `[N2]` without experts and `[G, N2]` with experts.
+- `bias2Optional`, when present, is `[N2]` without experts and `[E, N2]` with experts.
 - `deqScale1Optional`, when present, is `[N1]` without experts and `[E, N1]` with experts.
-- `deqScale2Optional`, when present, is `[N2]` without experts and `[G, N2]` with experts.
+- `deqScale2Optional`, when present, is `[N2]` without experts and `[E, N2]` with experts.
 - `expertTokensOptional`, when present, is rank-1, length `E`, and length <= 256.
 - A2 `activation` enum is `["fastgelu", "gelu", "relu", "silu", "geglu", "swiglu", "reglu"]`.
 - Accelerator-card `activation` enum is `["fastgelu", "gelu", "relu", "silu"]`.
@@ -36,6 +36,14 @@ extracted into `constraints_in_parameters`.
 - `innerPrecise` must be `0` or `1`; in BFLOAT16 non-quant mode it must be `0`; in accelerator-card mode it must be `1`.
 - `tokensIndexFlag == true` with expert mode requires `expertTokensOptional` values to be monotonic non-decreasing. If value-level monotonicity cannot be expressed by the generator, keep the source text and still require the tensor presence/shape constraints.
 - Accelerator-card mode supports no experts, so `expertTokensOptional is None`, all quant and pseudo-quant optional params are `None`, and `N1 == K2`.
+- All scenarios require `K1 == N2`, `K1 < 65536`, `K2 < 65536`, and the M axis (after 32-byte alignment) to be less than the INT32 maximum.
+- On A2, BFLOAT16 scenes are only supported on the Atlas 800I A2 inference product.
+- For `gelu` / `fastgelu` / `relu` / `silu`, expert or non-expert mode is supported across FLOAT16 high-precision / high-performance, BFLOAT16, quant, and pseudo-quant scenes.
+- For `geglu` / `swiglu` / `reglu`, only the no-expert FLOAT16 high-performance scene is supported, i.e. `innerPrecise == 1`.
+- `scaleOptional`, when present, is `[1]` (per-tensor, no experts), `[E]` (per-tensor, experts), `[N1]` (per-channel, no experts), or `[E, N1]` (per-channel, experts).
+- `offsetOptional`, when present, is `[1]` (no experts) or `[E]` (experts).
+- `antiquantScale1Optional` / `antiquantOffset1Optional`, when present, are `[N1]` (per-channel, no experts), `[E, N1]` (per-channel, experts), `[G, N1]` (per-group, no experts), or `[E, G, N1]` (per-group, experts).
+- `antiquantScale2Optional` / `antiquantOffset2Optional`, when present, are `[N2]` (per-channel, no experts), `[E, N2]` (per-channel, experts), `[G, N2]` (per-group, no experts), or `[E, G, N2]` (per-group, experts).
 
 ## NPU feedback rules
 
@@ -47,8 +55,8 @@ confused with source-document facts.
 - Floating-weight mode requires `y.dtype == x.dtype`.
 - Quant mode requires the full quant parameter group:
   `scaleOptional`, `offsetOptional`, `deqScale1Optional`, and `deqScale2Optional`.
-- In the measured per-tensor quant path, `scaleOptional.shape == [1]` and
-  `offsetOptional.shape == [1]`.
+- In the measured no-experts per-tensor quant path, `scaleOptional.shape == [1]` and
+  `offsetOptional.shape == [1]`. (With experts, per-tensor is `[E]` per the source doc.)
 
 ## Expression templates
 
@@ -59,11 +67,11 @@ the surrounding platform key.
 weight1.dtype == weight2.dtype
 y.shape == [M.range_value, N2.range_value]
 (weight1.shape == [E.range_value, K1.range_value, N1.range_value]) if (len(weight1.shape) == 3) else (weight1.shape == [K1.range_value, N1.range_value])
-(weight2.shape == [G.range_value, K2.range_value, N2.range_value]) if (len(weight2.shape) == 3) else (weight2.shape == [K2.range_value, N2.range_value])
+(weight2.shape == [E.range_value, K2.range_value, N2.range_value]) if (len(weight2.shape) == 3) else (weight2.shape == [K2.range_value, N2.range_value])
 (bias1Optional is None) or ((bias1Optional.shape == [N1.range_value]) if (len(weight1.shape) == 2) else (bias1Optional.shape == [E.range_value, N1.range_value]))
-(bias2Optional is None) or ((bias2Optional.shape == [N2.range_value]) if (len(weight2.shape) == 2) else (bias2Optional.shape == [G.range_value, N2.range_value]))
+(bias2Optional is None) or ((bias2Optional.shape == [N2.range_value]) if (len(weight2.shape) == 2) else (bias2Optional.shape == [E.range_value, N2.range_value]))
 (deqScale1Optional is None) or ((deqScale1Optional.shape == [N1.range_value]) if (len(weight1.shape) == 2) else (deqScale1Optional.shape == [E.range_value, N1.range_value]))
-(deqScale2Optional is None) or ((deqScale2Optional.shape == [N2.range_value]) if (len(weight2.shape) == 2) else (deqScale2Optional.shape == [G.range_value, N2.range_value]))
-(scaleOptional is None) or (scaleOptional.shape == [1])
-(offsetOptional is None) or (offsetOptional.shape == [1])
+(deqScale2Optional is None) or ((deqScale2Optional.shape == [N2.range_value]) if (len(weight2.shape) == 2) else (deqScale2Optional.shape == [E.range_value, N2.range_value]))
+(scaleOptional is None) or (scaleOptional.shape == [1] or scaleOptional.shape == [E.range_value] or scaleOptional.shape == [N1.range_value] or scaleOptional.shape == [E.range_value, N1.range_value])
+(offsetOptional is None) or (offsetOptional.shape == [1] or offsetOptional.shape == [E.range_value])
 ```
