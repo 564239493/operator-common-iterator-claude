@@ -273,7 +273,15 @@ class CaseGenerate:
         #                                            param_range_rule=param_rule)
         # param_range_data = param_range_instance.model_dump()
 
+
+        if isinstance(param_range_data, list):
+            param_range_data = [int(each) for each in param_range_data]
+            if len(set(param_range_data)) <= 1:
+                param_range_data = param_range_data[0]
+        if isinstance(param_range_data, float):
+            param_range_data = int(param_range_data)
+
         logger.debug(
-            "End generate param range, operator name: %s, param name: %s, is generate real data: %s, "
-            "param range data: %s", self.operator_name, param_name, is_generate_real_data, param_range_data)
+            "End generate param range, operator name: %s, param name: %s, is generate real data: %s, param dtype : %s"
+            "param range data: %s", self.operator_name, param_name, is_generate_real_data, data_dtype, param_range_data)
         return param_range_data

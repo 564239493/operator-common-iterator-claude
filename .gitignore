@@ -27,3 +27,6 @@ tests/
 
 op-plugin-26.0.0/
 operators-src/
+dist/
+cases/
+output/

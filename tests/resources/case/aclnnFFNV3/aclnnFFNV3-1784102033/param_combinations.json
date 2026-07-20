@@ -1,0 +1,347 @@
+{
+    "x": {
+        "param_name": "x",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 2,
+            "dim_value_profile": "Typical"
+        },
+        "dtype": "FLOAT16",
+        "format": "ND",
+        "range_value_profile": "One",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": true
+    },
+    "weight1": {
+        "param_name": "weight1",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 3,
+            "dim_value_profile": "Typical"
+        },
+        "dtype": "INT4",
+        "format": "ND",
+        "range_value_profile": "Zero",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": true
+    },
+    "weight2": {
+        "param_name": "weight2",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 2,
+            "dim_value_profile": "Typical"
+        },
+        "dtype": "INT4",
+        "format": "ND",
+        "range_value_profile": "Pos",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": true
+    },
+    "expertTokensOptional": {
+        "param_name": "expertTokensOptional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 1,
+            "dim_value_profile": "Has_Large_Size"
+        },
+        "dtype": "INT64",
+        "format": "ND",
+        "range_value_profile": "Neg",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "bias1Optional": {
+        "param_name": "bias1Optional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 2,
+            "dim_value_profile": "Has_Odd_Size"
+        },
+        "dtype": "FLOAT16",
+        "format": "ND",
+        "range_value_profile": "NegNormal",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "bias2Optional": {
+        "param_name": "bias2Optional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 2,
+            "dim_value_profile": "Has_Odd_Size"
+        },
+        "dtype": "FLOAT16",
+        "format": "ND",
+        "range_value_profile": "Zero",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "scaleOptional": {
+        "param_name": "scaleOptional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 1,
+            "dim_value_profile": "Has_Large_Size"
+        },
+        "dtype": "FLOAT32",
+        "format": "ND",
+        "range_value_profile": "Typical",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "offsetOptional": {
+        "param_name": "offsetOptional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 1,
+            "dim_value_profile": "Has_Large_Size"
+        },
+        "dtype": "FLOAT32",
+        "format": "ND",
+        "range_value_profile": "PosNormal",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "deqScale1Optional": {
+        "param_name": "deqScale1Optional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 2,
+            "dim_value_profile": "Has_Odd_Size"
+        },
+        "dtype": "FLOAT32",
+        "format": "ND",
+        "range_value_profile": "Typical",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "deqScale2Optional": {
+        "param_name": "deqScale2Optional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 1,
+            "dim_value_profile": "Typical"
+        },
+        "dtype": "FLOAT32",
+        "format": "ND",
+        "range_value_profile": "NegNormal",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "antiquantScale1Optional": {
+        "param_name": "antiquantScale1Optional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 1,
+            "dim_value_profile": "Has_Odd_Size"
+        },
+        "dtype": "FLOAT16",
+        "format": "ND",
+        "range_value_profile": "PosNormal",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "antiquantScale2Optional": {
+        "param_name": "antiquantScale2Optional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 3,
+            "dim_value_profile": "Typical"
+        },
+        "dtype": "FLOAT16",
+        "format": "ND",
+        "range_value_profile": "NegNormal",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "antiquantOffset1Optional": {
+        "param_name": "antiquantOffset1Optional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 3,
+            "dim_value_profile": "Typical"
+        },
+        "dtype": "BFLOAT16",
+        "format": "ND",
+        "range_value_profile": "Zero",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "antiquantOffset2Optional": {
+        "param_name": "antiquantOffset2Optional",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 3,
+            "dim_value_profile": "Has_Size_1"
+        },
+        "dtype": "FLOAT16",
+        "format": "ND",
+        "range_value_profile": "One",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "activation": {
+        "param_name": "activation",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "char",
+        "format": null,
+        "range_value_profile": "swiglu",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": true
+    },
+    "innerPrecise": {
+        "param_name": "innerPrecise",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "int",
+        "format": null,
+        "range_value_profile": "Min",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "tokensIndexFlag": {
+        "param_name": "tokensIndexFlag",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "bool",
+        "format": null,
+        "range_value_profile": true,
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": true,
+        "is_operator_param": true
+    },
+    "M": {
+        "param_name": "M",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "int",
+        "format": null,
+        "range_value_profile": "Pos",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": false
+    },
+    "K1": {
+        "param_name": "K1",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "int",
+        "format": null,
+        "range_value_profile": "Pos",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": false
+    },
+    "N1": {
+        "param_name": "N1",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "int",
+        "format": null,
+        "range_value_profile": "Neg",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": false
+    },
+    "K2": {
+        "param_name": "K2",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "int",
+        "format": null,
+        "range_value_profile": "Pos",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": false
+    },
+    "N2": {
+        "param_name": "N2",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "int",
+        "format": null,
+        "range_value_profile": "Pos",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": false
+    },
+    "E": {
+        "param_name": "E",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "int",
+        "format": null,
+        "range_value_profile": "Pos",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": false
+    },
+    "G": {
+        "param_name": "G",
+        "param_type": "attr",
+        "shape_property": null,
+        "dtype": "int",
+        "format": null,
+        "range_value_profile": "Min",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": false
+    },
+    "y": {
+        "param_name": "y",
+        "param_type": "tensor",
+        "shape_property": {
+            "dim_count": 2,
+            "dim_value_profile": "Has_Odd_Size"
+        },
+        "dtype": "BFLOAT16",
+        "format": "ND",
+        "range_value_profile": "Zero",
+        "memory_continuity": false,
+        "length": null,
+        "is_optional": false,
+        "is_operator_param": true
+    }
+}
