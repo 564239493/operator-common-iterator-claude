@@ -96,12 +96,15 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     :return: ``List[CaseConfig]``，已通过 inter-parameter 约束求解与修正
     """
     # 正式生成代码依赖 ``init_logger`` 初始化文件 logger，这里做一次惰性兜底。
+    # 日志目录统一到项目根下的 logs/tools/generator/，确保开发人员总能在项目目录的 logs/ 下找到日志。
     try:
         from opci.agent.generators.common_utils.logger_util import init_logger as _init_logger, get_logger as _get_logger
         try:
             _get_logger()
         except RuntimeError:
-            _init_logger(log_name="operator_generator", log_dir="./logs/generator")
+            from opci.config import get_project_root as _get_project_root
+            _log_dir = str(_get_project_root() / "logs" / "tools" / "generator")
+            _init_logger(log_name="operator_generator", log_dir=_log_dir)
     except Exception:  # pragma: no cover - 防呆
         pass
 
@@ -141,7 +144,8 @@ def batch_operator_handel(operator_constraint_directory, operators: List = None,
     :param case_num: 生成用例的个数
     :return: None
     """
-    init_logger(log_name="main")
+    from opci.config import get_project_root as _gpr
+    init_logger(log_name="main", log_dir=str(_gpr() / "logs" / "tools"))
     data_handle_utils = DataHandleUtil()
     if not os.path.exists(operator_constraint_directory):
         raise FileNotFoundError("Operator constraint directory not existed")
@@ -206,7 +210,7 @@ def main():
     else:
         operator_name, _ = os.path.splitext(os.path.basename(args.operator_constraint_path))
         time_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
-        init_logger(log_name=operator_name + "_" + time_str)
+        init_logger(log_name=operator_name + "_" + time_str, log_dir=str(_gpr() / "logs" / "tools"))
         single_operator_handle(operator_constraint=args.operator_constraint_path,
                                platform=args.platform, case_num=args.case_num,
                                jsonl_save_path=args.case_save_path)

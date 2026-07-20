@@ -13,7 +13,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from opci.config import PACKAGE_ROOT
+from opci.config import PACKAGE_ROOT, PROJECT_ROOT_MARKER
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -91,7 +91,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
         shutil.copy2(servers_src, servers_dst)
 
     # 8. Create .opci_project_root marker (pins project root for MCP tools)
-    from opci.config import PROJECT_ROOT_MARKER
     marker_path = target / PROJECT_ROOT_MARKER
     marker_path.write_text(str(target) + "\n", encoding="utf-8")
 
@@ -122,8 +121,94 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _warmup() -> None:
+    """Pre-import ALL dependencies before MCP stdio protocol starts.
+
+    In MCP stdio mode, stdout is the JSON-RPC protocol channel. Heavy C
+    extensions (z3, numpy, torch, etc.) may write to stdout during import,
+    which would corrupt the protocol and cause Claude Code to timeout.
+
+    This warmup loads **every** module that any MCP tool function might need,
+    with stdout temporarily redirected to stderr so any accidental writes
+    land in stderr (free for diagnostics) instead of the protocol pipe.
+
+    After warmup, all successfully imported modules are cached in
+    ``sys.modules`` — tool calls never trigger a fresh import, no protocol
+    corruption risk. Import failures are logged prominently at startup so
+    developers see them immediately, not during a tool call.
+    """
+    _original_stdout = sys.stdout
+    sys.stdout = sys.stderr  # protect protocol channel
+
+    _ok: list[str] = []
+    _fail: list[tuple[str, str]] = []
+
+    def _try_import(label: str, statement: str) -> None:
+        """Try an import; record success or failure."""
+        try:
+            exec(statement, {"__builtins__": __builtins__})
+            print(f"[warmup] {label} OK", file=sys.stderr)
+            _ok.append(label)
+        except Exception as exc:
+            msg = str(exc).split("\n")[0][:120]
+            print(f"[warmup] {label} FAIL: {msg}", file=sys.stderr)
+            _fail.append((label, msg))
+
+    try:
+        print("[warmup] Pre-importing all dependencies...", file=sys.stderr)
+
+        # ── C extensions ──
+        _try_import("z3",              "import z3")
+        _try_import("numpy",           "import numpy")
+        _try_import("torch",           "import torch")
+        _try_import("scipy",           "import scipy")
+        _try_import("asyncssh",        "import asyncssh")
+        _try_import("openpyxl",        "import openpyxl")
+
+        # ── Generator chain ──
+        _try_import("OperatorRule",
+                    "from opci.agent.generators.common_model_definition import OperatorRule")
+        _try_import("TestCaseGenerator",
+                    "from opci.agent.generators.facade import TestCaseGenerator")
+        _try_import("RunPlatform",
+                    "from opci.agent.generators.data_definition.param_models_def import RunPlatform")
+        _try_import("single_operator_handle",
+                    "from opci.agent.generators.operator_handle_main import single_operator_handle")
+
+        # ── Executer chain ──
+        _try_import("RunRequest",
+                    "from opci.executer.runner import RunRequest")
+        _try_import("run_cases",
+                    "from opci.executer.runner import run_cases")
+        _try_import("load_cases_payload",
+                    "from opci.executer.runner import load_cases_payload")
+        _try_import("validate_server_info",
+                    "from opci.executer.runner import validate_server_info")
+
+        # ── Summary ──
+        print("", file=sys.stderr)
+        if _fail:
+            print(f"[warmup] *** {len(_fail)} IMPORT FAILURES ***", file=sys.stderr)
+            for label, msg in _fail:
+                print(f"[warmup]   {label}: {msg}", file=sys.stderr)
+            print(f"[warmup] Tools requiring failed modules will return errors when called.", file=sys.stderr)
+        else:
+            print("[warmup] All dependencies loaded successfully.", file=sys.stderr)
+        print(f"[warmup] {len(_ok)} OK, {len(_fail)} FAIL", file=sys.stderr)
+
+    finally:
+        sys.stdout = _original_stdout  # restore protocol channel
+
+
 def cmd_mcp_server(args: argparse.Namespace) -> int:
     """Start the fastmcp MCP server in stdio mode."""
+    _warmup()
+
+    # Attach FileHandlers to deterministic Python loggers so their output
+    # lands in the unified logs/tools/ directory (not just stderr).
+    from opci.mcp._logging import setup_tool_logging
+    setup_tool_logging()
+
     from opci.server import mcp
     mcp.run()
     return 0

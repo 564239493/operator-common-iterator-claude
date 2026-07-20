@@ -20,8 +20,8 @@
     "Uniform": "从均匀分布 (浮点数) 中采样。需要 `min` (最小值) 和 `max` (最大值) 参数。",
     "LogUniform": "从对数均匀分布中采样 (在数量级上均匀，用于压力测试)。需要 `min` 和 `max` 参数。",
     "IntUniform": "从均匀分布 (整数) 中采样。需要 `min` 和 `max` 参数。",
-    "IntUniformOdd": "从均匀分布中仅采样"奇数"整数 (用于测试内存对齐)。需要 `min` 和 `max` 参数。",
-    "Choice": "从一个给定的 `options` 列表 (数组) 中随机选择一个值。"
+    "IntUniformOdd": "从均匀分布中仅采样奇数整数 (用于测试内存对齐)。需要 min 和 max 参数。",
+    "Choice": "从一个给定的 options 列表 (数组) 中随机选择一个值。"
   },
 
   "role_data_generic": {
