@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "opci": {
+      "command": "opci",
+      "args": ["mcp-server"]
+    }
+  }
+}

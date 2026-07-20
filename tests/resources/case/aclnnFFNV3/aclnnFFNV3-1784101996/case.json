@@ -1,0 +1,419 @@
+{
+    "id": 0,
+    "name": "aclnnFFNV3",
+    "aclnn_name": "aclnnFFNV3",
+    "triton_name": null,
+    "version": null,
+    "expected_error_msg": null,
+    "api": "pytorch",
+    "api_type": "function",
+    "aclnn_api_type": "aclnn_function",
+    "triton_api_type": "triton_function",
+    "fusion_api_type": "fusion_function",
+    "fusion_mode": null,
+    "dist_api_type": "dist_function",
+    "backward": false,
+    "standard": {
+        "acc": "default",
+        "perf": "not_key"
+    },
+    "outputs": null,
+    "inputs": [
+        {
+            "name": "x",
+            "type": "tensor",
+            "required": true,
+            "dtype": "int8",
+            "shape": [
+                65534,
+                1
+            ],
+            "range_values": [
+                -100.0,
+                -0.01
+            ],
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "weight1",
+            "type": "tensor",
+            "required": true,
+            "dtype": "int8",
+            "shape": [
+                32,
+                16
+            ],
+            "range_values": 0.0,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "weight2",
+            "type": "tensor",
+            "required": true,
+            "dtype": "int8",
+            "shape": [
+                1011,
+                127
+            ],
+            "range_values": -8,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "expertTokensOptional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "int64",
+            "shape": [
+                4
+            ],
+            "range_values": [
+                101.0,
+                32767.0
+            ],
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "bias1Optional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "fp32",
+            "shape": [
+                65534
+            ],
+            "range_values": 1.0,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "bias2Optional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "int32",
+            "shape": [
+                65534
+            ],
+            "range_values": [
+                1.080072030919891,
+                8.919927969080108
+            ],
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "scaleOptional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "fp32",
+            "shape": [
+                1,
+                65534
+            ],
+            "range_values": 0.0,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "offsetOptional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "fp32",
+            "shape": [
+                257
+            ],
+            "range_values": [
+                -100.0,
+                -0.01
+            ],
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "deqScale1Optional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "bf16",
+            "shape": [
+                768
+            ],
+            "range_values": [
+                -1.9599639845400545,
+                1.959963984540054
+            ],
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "deqScale2Optional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "bf16",
+            "shape": [
+                7,
+                33
+            ],
+            "range_values": 1.0,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "antiquantScale1Optional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "bf16",
+            "shape": [
+                255,
+                127,
+                65
+            ],
+            "range_values": 0.0,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "antiquantScale2Optional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "bf16",
+            "shape": [
+                1,
+                32,
+                32
+            ],
+            "range_values": 0.0,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "antiquantOffset1Optional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "fp16",
+            "shape": [
+                2,
+                2,
+                65534
+            ],
+            "range_values": 1.23e-40,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "antiquantOffset2Optional",
+            "type": "tensor",
+            "required": true,
+            "dtype": "bf16",
+            "shape": [
+                3,
+                9,
+                15
+            ],
+            "range_values": 0.0,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "activation",
+            "type": "attr",
+            "required": true,
+            "dtype": "string",
+            "shape": null,
+            "range_values": "reglu",
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "innerPrecise",
+            "type": "attr",
+            "required": true,
+            "dtype": "int64",
+            "shape": null,
+            "range_values": 2147483647.0,
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "tokensIndexFlag",
+            "type": "attr",
+            "required": true,
+            "dtype": "bool",
+            "shape": null,
+            "range_values": false,
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "M",
+            "type": "attr",
+            "required": true,
+            "dtype": "int64",
+            "shape": null,
+            "range_values": 2147483647.0,
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "K1",
+            "type": "attr",
+            "required": true,
+            "dtype": "int64",
+            "shape": null,
+            "range_values": -2147483648.0,
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "N1",
+            "type": "attr",
+            "required": true,
+            "dtype": "int64",
+            "shape": null,
+            "range_values": [
+                1.0,
+                19.79981992270027
+            ],
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "K2",
+            "type": "attr",
+            "required": true,
+            "dtype": "int64",
+            "shape": null,
+            "range_values": 2147483647.0,
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "N2",
+            "type": "attr",
+            "required": true,
+            "dtype": "int64",
+            "shape": null,
+            "range_values": 16,
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "E",
+            "type": "attr",
+            "required": true,
+            "dtype": "int64",
+            "shape": null,
+            "range_values": 1.0,
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "G",
+            "type": "attr",
+            "required": true,
+            "dtype": "int64",
+            "shape": null,
+            "range_values": 2147483647.0,
+            "length": null,
+            "format": null,
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        },
+        {
+            "name": "y",
+            "type": "tensor",
+            "required": true,
+            "dtype": "fp16",
+            "shape": [
+                2,
+                65534
+            ],
+            "range_values": 1.23e-40,
+            "length": null,
+            "format": "ND",
+            "backward": false,
+            "align_32B": null,
+            "outlier_values": null
+        }
+    ],
+    "acl_json": "",
+    "method_inputs": null,
+    "tensor_input": null,
+    "save_name": null,
+    "uuid": null,
+    "downloaded": false,
+    "is_boundary": false,
+    "xrun_cs_name": null,
+    "xrun_data": null
+}

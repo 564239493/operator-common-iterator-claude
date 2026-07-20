@@ -18,6 +18,7 @@ from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import DataMatchMap, GlobalConfig, ParamModelConfig
 from agent.generators.data_definition.param_models_def import RunPlatform
 from agent.generators.common_model_definition import OperatorRule, ParamAttributes, ValueWithSrcText
+from opci.resources.claude.hooks.guard_project_writes import is_inside
 
 logger = LazyLogger()
 
@@ -262,8 +263,15 @@ class DataHandleUtil:
         if dtype in ParamModelConfig.INT_DTYPE:
             if isinstance(range_value, list):
                 range_value = [int(v) for v in range_value]
-                return range_value
             if isinstance(range_value, float):
                 range_value = int(range_value)
-                return range_value
+
+        range_value_boundary = DataMatchMap.DTYPE_SPECS.get(dtype)
+        if range_value_boundary is not None and range_value_boundary[0] is not None:
+            low_boundary = range_value_boundary[0] + 1
+            high_boundary = range_value_boundary[1] - 1
+            if isinstance(range_value, list):
+                range_value = [max(low_boundary, min(high_boundary, v)) for v in range_value]
+            else:
+                range_value = max(low_boundary, min(high_boundary, range_value))
         return range_value

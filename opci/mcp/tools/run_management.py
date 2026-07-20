@@ -1,0 +1,221 @@
+"""run_management MCP tools: init_run, find_latest_operator_prompt, validate_server_config, update_run_state, read_operator_prompt, write_operator_prompt."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from opci.config import (
+    config_error_payload,
+    find_latest_operator_prompt as find_latest_operator_prompt_config,
+    get_project_root,
+    resolve_input_path,
+    validate_server_config as validate_server_config_config,
+)
+from opci.mcp._logging import log, log_elapsed
+
+
+def init_run(
+    doc: str,
+    prompt: str | None = None,
+    max_iterations: int = 5,
+    case_count: int = 10,
+    mode: str = "real",
+    server_config: str = "servers.json",
+) -> dict[str, Any]:
+    """Create a run directory and initial workflow state."""
+    t0 = time.monotonic()
+    log("init_run", "start", doc=doc, mode=mode, max_iterations=max_iterations, case_count=case_count)
+    project_root = get_project_root()
+    doc_path = resolve_input_path(doc, project_root)
+    prompt_path = (
+        resolve_input_path(prompt, project_root)
+        if prompt
+        else find_latest_operator_prompt_config()
+    )
+    log("init_run", "paths_resolved", doc_path=str(doc_path), prompt_path=str(prompt_path) if prompt_path else "None")
+
+    if not doc_path.is_file():
+        log("init_run", "doc_not_found", doc_path=str(doc_path))
+        return {
+            "ok": False,
+            "requires_user_action": True,
+            "code": "OPERATOR_DOC_NOT_FOUND",
+            "message": "算子文档不存在，请提供绝对路径、项目相对路径或包含 .. 的相对路径。",
+            "operator_doc": str(doc_path),
+        }
+    if prompt_path is None or not prompt_path.is_file():
+        log("init_run", "prompt_not_found", prompt_path=str(prompt_path) if prompt_path else "None")
+        return {
+            "ok": False,
+            "requires_user_action": True,
+            "code": "PROMPT_NOT_FOUND",
+            "message": "约束提取提示词不存在。请通过 --prompt 指定文件，或在 prompts 目录提供 operator_constraints_extract_vN.md。",
+            "prompt": str(prompt_path) if prompt_path else "",
+        }
+    if max_iterations < 1 or case_count < 1:
+        log("init_run", "invalid_params", max_iterations=max_iterations, case_count=case_count)
+        return {"ok": False, "message": "max-iterations and case-count must be positive"}
+
+    server_config_path: Path | None = None
+    if mode == "real":
+        log("init_run", "validate_server_config")
+        server_config_path, config_errors = validate_server_config_config(server_config, project_root)
+        if config_errors:
+            log("init_run", "config_error", errors=config_errors)
+            return config_error_payload(server_config_path, config_errors)
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    run_id = f"{doc_path.stem}-{stamp}"
+    run_dir = project_root / "runs" / run_id
+    input_dir = run_dir / "inputs"
+    log("init_run", "create_dirs", run_id=run_id, run_dir=str(run_dir))
+    (run_dir / "iter_001").mkdir(parents=True, exist_ok=False)
+    input_dir.mkdir(parents=True, exist_ok=False)
+
+    doc_snapshot = input_dir / doc_path.name
+    prompt_snapshot = input_dir / "prompt_v1.md"
+    shutil.copy2(doc_path, doc_snapshot)
+    shutil.copy2(prompt_path, prompt_snapshot)
+
+    now = datetime.now(timezone.utc).isoformat()
+    state = {
+        "run_id": run_id,
+        "operator_doc_source": str(doc_path),
+        "operator_doc": str(doc_snapshot),
+        "current_prompt_source": str(prompt_path),
+        "current_prompt": str(prompt_snapshot),
+        "mode": mode,
+        "server_config": str(server_config_path) if server_config_path else "",
+        "max_iterations": max_iterations,
+        "case_count": case_count,
+        "current_iteration": 1,
+        "state": "PLAN",
+        "history": [{"state": "PLAN", "at": now}],
+        "created_at": now,
+        "updated_at": now,
+    }
+    (run_dir / "run_state.json").write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    log_elapsed("init_run", "done", t0, run_id=run_id, run_dir=str(run_dir))
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "operator_doc_source": str(doc_path),
+        "operator_doc_snapshot": str(doc_snapshot),
+        "prompt_snapshot": str(prompt_snapshot),
+        "mode": mode,
+        "server_config": str(server_config_path) if server_config_path else "",
+    }
+
+
+def update_run_state(
+    run_dir: str,
+    state: str,
+    iteration: int | None = None,
+) -> dict[str, Any]:
+    """Update run_state.json state and iteration."""
+    t0 = time.monotonic()
+    log("update_run_state", "start", run_dir=run_dir, state=state, iteration=iteration)
+    run_dir_path = resolve_input_path(run_dir)
+    state_path = run_dir_path / "run_state.json"
+    if not state_path.is_file():
+        log("update_run_state", "state_not_found", path=str(state_path))
+        return {"ok": False, "message": f"run_state.json not found: {state_path}"}
+
+    run_state: dict[str, Any] = json.loads(state_path.read_text(encoding="utf-8"))
+    now = datetime.now(timezone.utc).isoformat()
+    run_state["state"] = state
+    run_state["updated_at"] = now
+    if iteration is not None:
+        run_state["current_iteration"] = iteration
+    run_state["history"].append({"state": state, "at": now})
+
+    state_path.write_text(
+        json.dumps(run_state, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    log_elapsed("update_run_state", "done", t0, run_id=run_state["run_id"], state=state)
+    return {"ok": True, "run_id": run_state["run_id"], "state": state}
+
+
+def read_operator_prompt(run_dir: str) -> dict[str, Any]:
+    """Read the current operator prompt content from run inputs."""
+    t0 = time.monotonic()
+    log("read_operator_prompt", "start", run_dir=run_dir)
+    run_dir_path = resolve_input_path(run_dir)
+    # Find the prompt file in inputs/
+    prompt_files = sorted((run_dir_path / "inputs").glob("prompt_v*.md"))
+    if not prompt_files:
+        log("read_operator_prompt", "no_prompt_found")
+        return {"ok": False, "message": "No prompt file found in run inputs/"}
+    latest = prompt_files[-1]
+    content = latest.read_text(encoding="utf-8")
+    log_elapsed("read_operator_prompt", "done", t0, path=str(latest), version=latest.stem)
+    return {
+        "ok": True,
+        "path": str(latest),
+        "version": latest.stem,  # e.g. "prompt_v1"
+        "content": content,
+    }
+
+
+def write_operator_prompt(
+    run_dir: str,
+    iter_dir: str,
+    content: str,
+    version: int,
+) -> dict[str, Any]:
+    """Write an optimized prompt to both iter/ snapshot and project prompts/ directory."""
+    t0 = time.monotonic()
+    log("write_operator_prompt", "start", run_dir=run_dir, iter_dir=iter_dir, version=version)
+    project_root = get_project_root()
+    iter_dir_path = resolve_input_path(iter_dir)
+
+    # Write to iter/ snapshot
+    log("write_operator_prompt", "write_iter_snapshot", iter_dir=str(iter_dir_path))
+    iter_prompt = iter_dir_path / f"prompt_v{version}.md"
+    iter_prompt.write_text(content, encoding="utf-8")
+
+    # Write to project prompts/ directory
+    log("write_operator_prompt", "write_project_prompt")
+    project_prompt = project_root / "prompts" / f"operator_constraints_extract_v{version}.md"
+    (project_root / "prompts").mkdir(exist_ok=True)
+    project_prompt.write_text(content, encoding="utf-8")
+
+    log_elapsed("write_operator_prompt", "done", t0, version=version)
+    return {
+        "ok": True,
+        "iter_prompt_path": str(iter_prompt),
+        "project_prompt_path": str(project_prompt),
+        "version": version,
+    }
+
+
+def find_latest_operator_prompt() -> dict[str, Any]:
+    """Find the latest versioned operator prompt file."""
+    t0 = time.monotonic()
+    log("find_latest_operator_prompt", "start")
+    result = find_latest_operator_prompt_config()
+    if result is None:
+        log("find_latest_operator_prompt", "not_found")
+        return {"ok": False, "message": "No operator prompt found"}
+    log_elapsed("find_latest_operator_prompt", "done", t0, path=str(result))
+    return {"ok": True, "path": str(result)}
+
+
+def validate_server_config(path: str = "servers.json") -> dict[str, Any]:
+    """Validate server config without exposing credential values."""
+    t0 = time.monotonic()
+    log("validate_server_config", "start", path=path)
+    project_root = get_project_root()
+    config_path, errors = validate_server_config_config(path, project_root)
+    log_elapsed("validate_server_config", "done", t0, config_path=str(config_path), error_count=len(errors))
+    if errors:
+        return config_error_payload(config_path, errors)
+    return {"ok": True, "config_path": str(config_path)}
