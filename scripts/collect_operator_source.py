@@ -17,9 +17,11 @@
 3. include 不动点闭包 + L0 反查：对工作集里所有源码头递归解析 ``#include "..."``
    （引号 include），在 include 搜索根集合里找命中文件，加入集合并继续递归，
    直到不动点。当命中的是 ``aclnn_kernels/<x>.h``（声明 ``namespace l0op``），
-   用 ``<x>`` 当 stem 反查全树 ``<x>.{cpp,cc}``（``namespace l0op`` 实现体），
-   **只拉该 .cpp 本身 + 其 include 闭包**，不整目录拉（避免误入同目录无关的
-   别的 aclnn 接口层）。这条把 ``npu_format_cast`` → ``transdata``/``contiguous``
+   用 ``<x>`` 的归一化 stem（去下划线）反查全树实现体，**只拉该 .cpp/.cc 本身 +
+   其 include 闭包**，不整目录拉（避免误入同目录无关的别的 aclnn 接口层）。
+   归一化是为桥接 CANN 同算子跨层 stem 不一致：L0 头/aicpu ``transdata``(无下划线)
+   vs op_tiling/op_proto ``trans_data``(带下划线)，否则精确 stem 会漏 tiling 实现。
+   这条把 ``npu_format_cast`` → ``transdata``(含 ``trans_data`` tiling)/``contiguous``
    /``reshape``/``transpose``/``view_copy`` 跨目录 L0 实现闭环。
 4. 落盘：复制成快照目录（保相对路径），可直接喂
    ``extract_source_constraints.py --snapshot``；写 ``manifest.json``（每文件
@@ -58,6 +60,16 @@ DOC_EXTS = (".md",)
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
 # 命中 namespace l0op 的头视为 L0 声明头，触发实现反查。
 L0_NAMESPACE_RE = re.compile(r"\bnamespace\s+l0op\b")
+
+
+def _norm_stem(stem: str) -> str:
+    """stem 归一化：去下划线 + 小写。
+
+    CANN 同一算子跨层文件名 stem 不一致——L0 声明头/aicpu/ops-math 用
+    ``transdata``(无下划线)，op_tiling/op_proto 实现用 ``trans_data``(带下划线)。
+    L0 反查按精确 stem 匹配会漏掉 tiling 实现；归一化后两者同 key 闭环。
+    """
+    return stem.replace("_", "").lower()
 
 # --- 外部 SDK 头判定（记清单，不复制不递归） --------------------------------
 # include 路径前缀属外部框架/SDK。
@@ -180,11 +192,13 @@ def collect_stem_closure(
                 if hit.is_file():
                     out.add(hit.resolve())
 
-    # 预建 stem_index：全树 .cpp/.cc/.h 按 stem 分组（供 L0 反查精确匹配）
+    # 预建 stem_index：全树 .cpp/.cc/.h 按归一化 stem(去下划线)分组，供 L0 反查
+    # 与 --extra-stem 查询。归一化桥接 CANN 同算子跨层 stem 不一致(transdata↔trans_data)，
+    # 否则精确 stem 会让 L0 头 transdata 漏掉 op_tiling/op_proto 的 trans_data 实现。
     stem_index: dict[str, list[Path]] = defaultdict(list)
     for ext in SOURCE_EXTS:
         for p in src_tree.rglob(f"*{ext}"):
-            stem_index[p.stem].append(p.resolve())
+            stem_index[_norm_stem(p.stem)].append(p.resolve())
     return out, stem_index
 
 
@@ -294,10 +308,12 @@ def include_closure(
                 if found.suffix.lower() in SOURCE_EXTS and found not in queued:
                     queued.add(found)
                     queue.append(found)
-                # L0 反查：命中 aclnn_kernels/<x>.h（namespace l0op）-> 反查 <x>.cpp 实现体
+                # L0 反查：命中 aclnn_kernels/<x>.h（namespace l0op）-> 反查 <x> 实现体。
+                # stem 归一化(去下划线)以拉到与声明头 stem 不一致的同算子实现：
+                # transdata.h -> op_tiling/op_proto 的 trans_data.cc（精确 stem 会漏）。
                 if is_l0_namespace or "aclnn_kernels" in inc.replace("\\", "/"):
                     impl_stem = found.stem
-                    for impl in stem_index.get(impl_stem, []):
+                    for impl in stem_index.get(_norm_stem(impl_stem), []):
                         # 只拉实现体本身（.cpp/.cc，非 .h；非 stub/ut），不整目录拉
                         if impl.suffix.lower() not in (".cpp", ".cc"):
                             continue
@@ -447,7 +463,7 @@ def collect(
     # --extra-stem: 共声明实现（如 ViewCopy 在 view_copy.cpp）绕过 include 触发，
     # 直接用 stem_index 拉同名 .cpp/.cc（op_api 层、非 stub）。
     for es in (extra_stems or []):
-        for impl in stem_index.get(es, []):
+        for impl in stem_index.get(_norm_stem(es), []):
             pposix = impl.as_posix()
             if impl.suffix.lower() not in (".cpp", ".cc"):
                 continue

@@ -1416,3 +1416,36 @@ return result
 - [ ] **NPU error 161002** — if you see "Expected X dimension input, but got otherTensor with sizes [...]", the mat2 format is wrong (ND instead of NZ) → check `get_format` and `init_by_input_data`
 - [ ] **CPU error "batch2 must be a 3D tensor"** — mat2 is 5D NZ on CPU → need NZ→dense decompression
 - [ ] **CPU code handles self_transposed** — reads `self_transposed` from `_get_param` and transposes self before matmul: `if self_transposed: self_t = self_t.transpose(1, 2)`
+
+## 两段式 + 前置 CalculateSizeAndFormat 算子（自动 prelude 注入）
+
+某些两段式算子（如 `aclnnNpuFormatCast`）文档要求"必须先调用 `aclnnXxxCalculateSizeAndFormat` 推导 dstTensor 的 shape 和 actualFormat，再调用两段式 GetWorkspaceSize"。`dstTensor`/`actualFormat`/`dstShape`/`dstShapeSize` 是 `[DERIVED]` 输出，由前置 API 运行时派生，**生成器不得独立随机赋值**。若 executor 不调前置 API，dstTensor 沿用 cases.json 占位 shape（可能是未初始化内存模式的垃圾值），流入主 API 触发 tiling 崩溃（如 trans_data `c0 should be 8 or 16 for b32...` / 507035 vector-core 异常）+ 毒化设备级联。详见项目 memory `calculate-size-and-format-prerequisite-executor-bug`。
+
+**生成器已自动注入 prelude**：`executer/resources/generator.py` 的 `_detect_prerequisite_api` 检测到前置 API 后，通过 j2 模板 `{% if prerequisite_api %}` 分支自动产出 prelude 块。本 skill 推导 CPU golden 时**复核**生成的 cases_executor.py 含 prelude 块；缺失（生成器未检测到，如 constraints 的 `[DERIVED]` 标注缺失）则按本章节手补。
+
+### 检测条件（不硬编码算子名）
+
+- **信号 B（主，总存在）**：`constraints.json` 的 `outputs.<tensor>.<plat>.description` 含 `[DERIVED]` 且含 `CalculateSizeAndFormat` → 正则 `(aclnn\w+CalculateSizeAndFormat)` 抽前置 API 全名。
+- **信号 A（辅，有 src_snapshot 时更精确）**：`source_evidence.json` 的 `prerequisite_api_name` + `prerequisite_api_signature`（analyze-source 从源码头文件抽出的结构化字段，含完整 C 签名，供 bind_function 参数类型解析）。
+
+### prelude 注入模板（已验证 9/10）
+
+参考已验证先例 `runs/aclnnNpuFormatCast-20260716-171337-832965/iter_002/cases_executor.py` 的 `init_by_input_data` prelude 块（移植自 `runs/aclnnNpuFormatCast-20260716-160234-425163/iter_001/cases_executor.py:73-166`）。核心步骤：
+
+1. `acl_wrapper.aclnn.bind_function("<prereq_api_name>", <argtypes>, AclnnStatus)` —— argtypes 按前置 API C 签名生成（`aclTensor*`→`TensorPtr`，标量 `int`→`c_int`，末3 out 固定 `[POINTER(POINTER(c_int64)), POINTER(c_uint64), POINTER(c_int)]` 对应 dstShape/dstShapeSize/actualFormat）。
+2. 从 case_config 读前置 API 的标量 attr 入参（主签名外，如 dstFormat/additionalDtype），用 `get_config_by_name` + `range_values[0]`。
+3. `srcTensorStruct = input_tmp['srcTensor'][0]`，调 `acl_wrapper.aclnn.<prereq_api_name>(srcTensorStruct.tensor, ..., byref(dst_shape_p), byref(dst_shape_size), byref(actual_format))`。
+4. `dst_shape = tuple(dst_shape_p[i] for i in range(shape_len))`，`dst_storage = torch.empty(dst_shape, dtype=src.dtype, device="npu")`，`dstTensorStruct = nnopbase.create_acl_tensor(dst_storage, AclFormat(actual_format.value))`。
+5. `input_args = [srcTensorStruct, dstTensorStruct]`，`input_tmp['<derived_tensor_output>'] = [dstTensorStruct]`。
+6. output_packages 用 attr-skip（`hasattr(data[0], 'shape')` 过滤，跳 `[DERIVED]` attr 输出 actualFormat/dstShape/dstShapeSize）。
+
+### 必踩坑
+
+- **`acl_wrapper.aclnn` 必须用 module-attr 访问**：`import atk.tasks.backends.lib_interface.acl_wrapper as acl_wrapper` + `acl_wrapper.aclnn.bind_function(...)`。**禁止** `from ... import aclnn` 再 `aclnn.bind_function(...)`——`from-import` 在 module import 时拿到的是占位 `object`（无 `bind_function`），运行时 `AttributeError: 'object' object has no attribute 'bind_function'`（全 case 在 prelude 第一行崩，0/10）。`acl_wrapper.aclnn` 运行时属性访问才拿到 init 后的真正 AclnnApi 实例。
+- **prelude 失败不 fallback**：前置 API 返回非 0 时 ATK wrapper 抛 `ACLRuntimeError`（构造时 `aclGetRecentErrMsg()=None` 二级 bug 可能抛 `AttributeError`），被 ATK 捕获标 **case-level fail**——**不崩设备、不毒化级联**，优于占位 dstShape 崩 + 毒化。让异常抛出，不要 try/except 吞掉。
+- **`[DERIVED]` 输出不得随机赋值**：constraints.json 标 `[DERIVED]` 的 output（dstTensor/dstShape/dstShapeSize/actualFormat）由前置 API 运行时派生，case-generator 只能写占位（最好良性如全 1 或复制 src shape），executor 必须调前置 API 覆盖任何占位。
+
+### 已知残留（不在 prelude 注入修复范围）
+
+- **src viewShape 语义**：case config 的 `shape` 存 storageShape，但前置 API（`CalcToNCDHW` 等）读 `GetViewShape()`。FRACTAL_Z_3D src 4 维 storageShape 当 viewShape → `GetDim(4)` 越界读垃圾值 → NPU OOM。根因在 case-generator/constraints 的 shape 语义（应发 viewShape 或 convert_input_data 还原），独立评估。
+- **output warning `no tensor in output data`**：output_packages attr-skip 修好后或消；若存，待远程核查 `AclTensorStruct` 字段（本地无 atk 源码）。

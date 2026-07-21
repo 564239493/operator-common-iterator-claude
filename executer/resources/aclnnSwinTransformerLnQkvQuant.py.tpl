@@ -12,13 +12,13 @@ from atk.configs.results_config import TaskResult
 from atk.tasks.api_execute import register
 from atk.tasks.api_execute.aclnn_base_api import AclnnBaseApi
 from atk.tasks.api_execute.base_api import BaseApi
-from atk.tasks.backends.lib_interface.acl_wrapper import Int64, Uint64, AclTensorStruct, TORCH_TO_ACLTYPE, nnopbase, AclFormat, aclnn, AclnnStatus, TensorPtr ,AclTensorlistStruct, pointer, AclIntArray, AclTensor, AclTensorList
+from atk.tasks.backends.lib_interface.acl_wrapper import AclTensorStruct, AclTensorlistStruct, AclFormat, nnopbase, AclTensor, AclTensorList
 
 logging = Logger().get_logger()
 
 
-@register("{{ aclnn_api_type }}")
-class {{ class_name }}(AclnnBaseApi):
+@register("aclnn_function")
+class AclnnSwinTransformerLnQkvQuant(AclnnBaseApi):
     def init_by_input_data(self, input_data: InputDataset):
         """
         初始化输入参数并整合算子输出到输入参数列表
@@ -96,8 +96,16 @@ class {{ class_name }}(AclnnBaseApi):
                 output_packages.append(data[0])
             else:
                 output_packages.append(data)
-
         return input_args, output_packages
+
+    def after_call(self, output_packages):
+        output = []
+        for output_pack in output_packages:
+            if isinstance(output_pack, AclTensorStruct):
+                output.append(self.acl_tensor_to_torch(output_pack))
+            elif isinstance(output_pack, AclTensorlistStruct):
+                output.append(self.acl_tensorlist_to_torch(output_pack))
+        return output
 
     def get_storage_shape(self, input_data: InputDataset, index=None, name=None):
         if name is not None:
@@ -116,7 +124,7 @@ class {{ class_name }}(AclnnBaseApi):
         return AclFormat.ACL_FORMAT_ND
 
     def get_cpp_func_signature_type(self):
-        return "{{ signature }}"
+        return "aclnnStatus aclnnSwinTransformerLnQkvQuantGetWorkspaceSize( const aclTensor *x, const aclTensor *gamma, const aclTensor *beta, const aclTensor *weight, const aclTensor *bias, const aclTensor *quantScale, const aclTensor *quantOffset, const aclTensor *dequantScale, int64_t headNum, int64_t seqLength, double epsilon, int64_t oriHeight, int64_t oriWeight, int64_t hWinSize, int64_t wWinSize, bool weightTranspose, const aclTensor *queryOutputOut, const aclTensor *keyOutputOut, const aclTensor *valueOutputOut, uint64_t *workspaceSize, aclOpExecutor **executor)"
     def get_param_names_excluding_last_two(self, func_str):
         """
         返回参数名称列表。
@@ -167,12 +175,6 @@ class {{ class_name }}(AclnnBaseApi):
                 for config_item in config:
                     if config_item.type == "attrs" or config_item.type == "attr_tuple":
                         range_val = config_item.range_values[0] if isinstance(config_item.range_values, list) else config_item.range_values
-                        if range_val is None:
-                            AclIntArrayPtr = ctypes.POINTER(AclIntArray)
-                            null_void_ptr = ctypes.c_void_p(None)
-                            null_array_ptr = ctypes.cast(null_void_ptr, AclIntArrayPtr)
-                            input_tmp[data_name] = null_array_ptr
-                            return
                         data.append(self.get_ctype(config_item.dtype)(range_val))
                         input_tmp[data_name] = nnopbase.create_x_list(data)
 
@@ -180,7 +182,6 @@ class {{ class_name }}(AclnnBaseApi):
 
         if "aclnnBatchMatMulWeightNz" in operator_name:
             found_mat2_transposed = next((config for config in self.task_result.case_config.inputs if config.name == "mat2_transposed"), None)
-            found_self_transposed = next((config for config in self.task_result.case_config.inputs if config.name == "self_transposed"), None)
             # 转置的情况
             if found_mat2_transposed.range_values:
                 # 转换
@@ -189,15 +190,18 @@ class {{ class_name }}(AclnnBaseApi):
                     input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4],  # k1 * k0 = k
                     input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3]  # n1 * n0 = n
                 )
-            else:
-                input_data.kwargs['mat2'] = input_data.kwargs['mat2'].reshape(
-                    input_data.kwargs['mat2'].shape[0],  # a
-                    input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3],  # c*d
-                    input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4]  # b*e
-                )
-            if found_mat2_transposed.range_values:
                 input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
-
+                return
+            input_data.kwargs['mat2'] = input_data.kwargs['mat2'].reshape(
+                input_data.kwargs['mat2'].shape[0],  # a
+                input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3],  # c*d
+                input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4]  # b*e
+            )
+        if "aclnnSwinTransformerLnQkvQuant" in operator_name:
+            input_data.kwargs['dequantScale'] = input_data.kwargs['dequantScale'].to(torch.float32).view(torch.int32).to(torch.uint64)
+            weightTrans = next((config for config in self.task_result.case_config.inputs if config.name == "weightTranspose"), None)
+            if weightTrans.range_values:
+                input_data.kwargs["weight"] = input_data.kwargs["weight"].permute(1, 0)
 
 
     def parse_operator_params(self, func_signature: str):
@@ -291,17 +295,14 @@ class {{ class_name }}(AclnnBaseApi):
             'HWCN': AclFormat.ACL_FORMAT_HWCN,
             'NHWC': AclFormat.ACL_FORMAT_NHWC,
             'NC1HWC0': AclFormat.ACL_FORMAT_NC1HWC0,
-            'NDC1HWC0': AclFormat.ACL_FORMAT_NDC1HWC0,
             'NCL': AclFormat.ACL_FORMAT_NCL,
             'NCDHW': AclFormat.ACL_FORMAT_NCDHW,
             'NDHWC': AclFormat.ACL_FORMAT_NDHWC,
-            'FRACTAL_Z_3D': AclFormat.ACL_FRACTAL_Z_3D,
         }
 
         if format_str in FORMAT_MAPPING:
             return FORMAT_MAPPING[format_str]
         else:
-            logging.error(f"not found format: {format_str}")
             return AclFormat.ACL_FORMAT_ND
 
     def get_ctype(self, type_str):
@@ -334,171 +335,72 @@ class {{ class_name }}(AclnnBaseApi):
             raise ValueError(f"Unsupported CTYPE format: {type_str}")
 
 
-{% for api_type, cpu_class_name in cpu_classes %}
-@register("{{ api_type }}")
-class {{ cpu_class_name }}(BaseApi):
-    """Auto-generated CPU reference class for {{ op_name }}."""
-
-    _OP_NAME = "{{ op_name }}"
-    _SIG_STR = """{{ signature }}"""
-    _INPUT_PARAM_NAMES = {{ input_sig_names }}
-
+@register("function")
+class FunctionApi(BaseApi):
     def __call__(self, input_data: InputDataset, with_output: bool = False):
-        # Build name->value mapping from input_data.args by TOP-LEVEL input position.
-        _param_map = {}
-        # 按顶层 input 位置对齐:每个顶层 input 占 input_data.args 一个条目。
-        # 不能 flatten:grouped attrs(aclIntArray,如 padding/normalizedShape)在 args
-        # 里是单个 list 条目,flatten_list 会把它拆成 N 条与 args 逐位 zip,
-        # 导致其后所有 tensor/scalar/attr 错位(位移 = 组大小 - 1)。
-        if hasattr(self, 'task_result') and getattr(self.task_result.case_config, 'inputs', None) is not None:
-            _ai = 0
-            for _cfg in self.task_result.case_config.inputs:
-                if _ai >= len(input_data.args):
-                    break
-                _val = input_data.args[_ai]
-                _ai += 1
-                if isinstance(_cfg, list):
-                    # grouped input (attrs/attr_tuple/tensors): 一个 args 条目承载整个 list/tuple
-                    _name = _cfg[0].name if _cfg and getattr(_cfg[0], 'name', None) else None
-                else:
-                    _name = getattr(_cfg, 'name', None)
-                if _name:
-                    _param_map[_name] = _val
-                    # 同时用小写键索引,便于大小写不敏感查找
-                    _param_map[_name.lower()] = _val
-        # Fallback: also index kwargs if present (for non-ACLNN paths)
-        if input_data.kwargs:
-            for k, v in input_data.kwargs.items():
-                if v is not None:
-                    _param_map[k] = v
-                    _param_map[k.lower()] = v
+        input_tmp = {}
+        for config in self.task_result.case_config.inputs:
+            if not isinstance(config, list):
+                if config.type == "attr":
+                    range_val = config.range_values[0] if isinstance(config.range_values, list) else config.range_values
+                    input_tmp[config.name] = [range_val]
+            else:
+                data = []
+                data_name = config[0].name
+                for config_item in config:
+                    if config_item.type == "attrs" or config_item.type == "attr_tuple":
+                        range_val = config_item.range_values[0] if isinstance(config_item.range_values,
+                                                                              list) else config_item.range_values
+                        data.append(range_val)
+                        input_tmp[data_name] = data
 
-        # CPU 侧 attr 兜底(镜像 NPU 侧 handle_attr_param):直接从 case_config.inputs
-        # 的 range_values 解析 attr 类参数,确保取值来自 JSON、不依赖 input_data.args
-        # 的对齐——避免 args 缺失 / range_values="default" / 错位时
-        # _get_param("xxx") 返回 None。标量 attr(int/double/bool)→ Python 标量;
-        # grouped attrs(aclIntArray 等)→ Python list,与 NPU create_x_list 对齐。
-        _cc_inputs = getattr(getattr(self, 'task_result', None), 'case_config', None)
-        _cc_inputs = getattr(_cc_inputs, 'inputs', None) if _cc_inputs is not None else None
-        if _cc_inputs is not None:
-            def _attr_scalar(rv):
-                # 与 NPU handle_attr_param 一致:list 取首元素,标量原样返回;
-                # "default"/None → None(交给 _get_param 的 default 兜底)
-                if rv == "default":
-                    return None
-                return rv[0] if isinstance(rv, list) and len(rv) > 0 else rv
-            for _cfg in _cc_inputs:
-                if isinstance(_cfg, list):
-                    # grouped attrs / attr_tuple(aclIntArray 等):收集每项 range_values 为 list
-                    _name = getattr(_cfg[0], 'name', None) if _cfg else None
-                    if not _name:
-                        continue
-                    _vals = [_attr_scalar(getattr(_ci, 'range_values', None)) for _ci in _cfg]
-                    # 全部为 None(如各项 range_values="default")→ 置 None,让 _get_param 的 default 兜底
-                    if all(_v is None for _v in _vals):
-                        _vals = None
-                    _param_map[_name] = _vals
-                    _param_map[_name.lower()] = _vals
-                else:
-                    _name = getattr(_cfg, 'name', None)
-                    _cfg_type = getattr(_cfg, 'type', None)
-                    if _name and _cfg_type in ('attr', 'attrs', 'attr_tuple'):
-                        _val = _attr_scalar(getattr(_cfg, 'range_values', None))
-                        _param_map[_name] = _val
-                        _param_map[_name.lower()] = _val
+        input = input_data.kwargs["x"]
+        gamma = input_data.kwargs["gamma"]
+        beta = input_data.kwargs["beta"]
+        weight = input_data.kwargs["weight"]
+        bias = input_data.kwargs["bias"]
+        quant_scale = input_data.kwargs["quantScale"]
+        quant_offset = input_data.kwargs["quantOffset"]
+        dequant_scale = input_data.kwargs["dequantScale"].to(torch.float32)
+        oriHeight = input_tmp["oriHeight"][0]
+        oriWeight = input_tmp["oriWeight"][0]
+        head_num = input_tmp["headNum"][0]
+        hWinSize = input_tmp["hWinSize"][0]
+        wWinSize = input_tmp["wWinSize"][0]
+        sizePerHead = input_tmp["seqLength"][0]
+        weightTrans = input_tmp["weightTranspose"][0]
+        epsilon = input_tmp["epsilon"][0]
 
-        def _get_param(name, default=None):
-            v = _param_map.get(name)
-            if v is None:
-                v = _param_map.get(name.lower())
-            if v is not None:
-                return v
-            return default
+        input_dtype = input.dtype
+        B, S, H = input.shape
+        # if weightTrans:
+        #     weight = weight.permute(1, 0)
+        # 1.Layernorm
+        reduce_axis = 2
+        mean2 = torch.mean(input, reduce_axis, keepdims=True)
+        variance = torch.mean(torch.pow((input - mean2), 2), reduce_axis, keepdims=True)
+        result = gamma * ((input - mean2) / torch.sqrt(variance + epsilon)) + beta
+        input_x = result.reshape(B, oriHeight // hWinSize, hWinSize, (oriWeight // wWinSize), wWinSize, H)
+        windows = input_x.permute((0, 1, 3, 2, 4, 5)).contiguous()
+        windows = windows.reshape(-1, hWinSize, wWinSize, H)
+        windows = windows.reshape(-1, hWinSize * wWinSize, H)
 
-        # Tensor validation: ensures a param is actually a torch.Tensor
-        # ATK may sometimes generate non-tensor values (e.g. int) for params
-        # expected to be tensors, causing AttributeError during computation
-        def _get_tensor(name, default=None):
-            v = _get_param(name, default)
-            return v if isinstance(v, torch.Tensor) else default
+        # 3.quant
+        out1 = windows.to(input_dtype) * quant_scale.to(input_dtype) + quant_offset.to(input_dtype)
+        ln_after_transpose_int8 = torch.round(out1).to(torch.int8)
 
-        # ACLNN operator: {{ op_name }}
-        # C++ signature: {{ signature }}
+        # 3.bmm
+        output = torch.matmul(ln_after_transpose_int8.to(torch.int32), weight.to(torch.int32)) + bias.to(
+            torch.int32)
+        output_aft_dequant = output * dequant_scale
+        output_aft_dequant = output_aft_dequant.to(input_dtype)
 
-        # --- Input parameters from signature ---
-{% for comment in param_comments %}
-{{ comment }}
-{% endfor %}
-        # TODO: CPU_GOLDEN - Replace ONLY the dummy computation below with
-        # the real PyTorch CPU equivalent. The parameter extraction above is pre-
-        # generated by generator.py and bound to local variables of the same
-        # names — keep it, do not rewrite it. Use the signature above to derive
-        # the correct torch.* call. attr params (int/float/bool/str/list) are
-        # already clean Python values via _get_param; tensors via _get_tensor.
-        # _get_tensor validates isinstance(v, torch.Tensor) to prevent
-        # AttributeError when ATK generates wrong types for tensor params.
+        # 4 SPLIT & transpose
+        output_d = output_aft_dequant.reshape(-1, hWinSize * wWinSize, 3, head_num, sizePerHead).permute(
+            (2, 0, 1, 3, 4))
+        output_d = output_d.permute((0, 1, 3, 2, 4))  # 3 64 3 49 32
+        golden_q = output_d[0]
+        golden_k = output_d[1]
+        golden_v = output_d[2]
 
-{% if tensor_lines %}
-        # Extract input tensors (use _get_tensor to validate type):
-{% for line in tensor_lines %}
-{{ line }}
-{% endfor %}
-{% endif %}
-{% if scalar_lines %}
-        # Extract scalars:
-{% for line in scalar_lines %}
-{{ line }}
-{% endfor %}
-{% endif %}
-{% if attr_lines %}
-        # Extract attrs (already clean Python literal/list/str from _get_param, use directly):
-{% for line in attr_lines %}
-{{ line }}
-{% endfor %}
-{% endif %}
-{% if tensor_lines or scalar_lines or attr_lines %}
-
-{% endif %}
-{% if output_count == 0 %}
-        # [FALLBACK] Inplace operator, no output tensor
-        tensors = [a for a in input_data.args if isinstance(a, torch.Tensor)]
-        if not tensors:
-            tensors = [v for v in input_data.kwargs.values() if isinstance(v, torch.Tensor)]
-        return next(iter(tensors)) if tensors else torch.tensor([])
-{% else %}
-        # [FALLBACK] Dummy output - replace with real computation above
-        tensors = [a for a in input_data.args if isinstance(a, torch.Tensor)]
-        if not tensors:
-            tensors = [v for v in input_data.kwargs.values() if isinstance(v, torch.Tensor)]
-        dtype = next((v.dtype for v in tensors), torch.float32)
-        outputs = []
-        def _dummy_output(out_name):
-            candidates = [out_name]
-            for suffix in ("Out", "Optional"):
-                if out_name.endswith(suffix):
-                    stripped = out_name[:-len(suffix)]
-                    candidates.append(stripped)
-                    if stripped.startswith("grad"):
-                        candidates.append(stripped[4:])
-            if out_name.startswith("grad"):
-                candidates.append(out_name[4:])
-            for t in tensors:
-                tn = getattr(t, '_name', '')
-                for k in candidates:
-                    if tn and (tn == k or tn.lower() == k.lower()):
-                        return torch.ones(t.shape, dtype=dtype)
-            if tensors:
-                return torch.ones(tensors[0].shape, dtype=dtype)
-            return torch.ones([1], dtype=dtype)
-{% for line in output_append_lines %}
-{{ line }}
-{% endfor %}
-{% if output_count == 1 %}
-        return outputs[0]
-{% else %}
-        return outputs
-{% endif %}
-{% endif %}
-        # END_CPU_GOLDEN
-
-{% endfor %}
+        return golden_q, golden_k, golden_v
