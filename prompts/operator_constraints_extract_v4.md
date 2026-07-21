@@ -451,8 +451,8 @@ class OperatorRule(BaseModel):
 | `"per-channel/per-group/per-tensor/per-token"` | `["per-channel","per-group","per-tensor","per-token"]` | `enum` | 量化粒度 |
 | `"true/false"` | `[true, false]` | `enum` | bool 列举 |
 | `"支持空或某个固定值"` | `[null, fixed_value]` | `enum` | `type=enum` 时 `null` 是合法离散候选 |
-| `"k0=16、n0=16"`（NZ 块尺寸硬约束） | `[[16,16], [16,16]]` | `range` | **5D NZ 张量**：shape[3]/shape[4] 端点均为 16，写两条单点区间；详见 §4.6.5 |
-| `"块尺寸为 16"`（NZ 通用，未指明轴位） | `[[16,16]]` | `range` | 单条单点区间；具体轴位须在 §4.6.5 中再识别 |
+| `"k0=16、n0=16"`（NZ 块尺寸硬约束） | `[]` | `range` | **5D NZ 张量**：块尺寸 16 是 **shape 硬约束**，落 `constraints_in_parameters` 的 `shape_equality`（见 §4.6.5 §C）；`allowed_range_value` 只约束元素数据值，**不**承载块尺寸，故留空 |
+| `"块尺寸为 16"`（NZ 通用，未指明轴位） | `[]` | `range` | 同上，shape 约束走 `shape_equality`；具体轴位在 §4.6.5 识别后落 `mat2.shape[3]/[4]==16` |
 | 文档无任何取值约束 | `[]` | `range` | **不**在数组中产出该参数 |
 
 `type=range` 与 `type=enum` 对 `null` 的规则不同：
@@ -686,7 +686,8 @@ transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
    描述和上界说明，使隐式下界可追溯。
 7. **NZ 块尺寸必须显式落库（v2 新增）**：见 §4.6.5 C。NZ 张量的 `shape[3]` /
    `shape[4]` 块尺寸硬约束**必须**用 `shape_equality`（或 `shape_value_dependency`）
-   形式化写出，不允许只放在 `allowed_range_value` 中。
+   形式化写出，**禁止**把 `[[16,16],[16,16]]` / `[[16,16]]` 写进 `allowed_range_value`
+   冒充块尺寸约束（该字段只约束元素数据值，生成器按元素值解释，见 §4.6.5 D）。
 8. **条件 Shape 约束必须按门控参数分支（v3 新增）**：当某参数 X 的 shape 由
    enum/boolean 门控参数 Y 的取值决定（见 §4.6.3 G），必须在
    `constraints_in_parameters[平台]` 中为 X 产出**单一条件 shape 约束**条目，
@@ -1148,9 +1149,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | 文档写"x 和 y 必须共存，要么都存在要么都不存在" | `expr_type=presence_dependency`，`expr=(x is None) == (y is None)` |
 | 文档写"actType 取值为 0 到 5" | `allowed_range_value.value=[[0, 5]]`，`type=range`；可附加 `self_value_range`：`0 <= actType.range_value <= 5` 增强机器可判定性 |
 | 文档把 epsilon/eps 描述为"除0保护值"，并建议"≤1e-4" | `allowed_range_value.value=[]`；增加 `value_dependency`：`0 < epsilon.range_value <= 1e-4`，`src_text` 同时摘录两句 |
-| **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"（v2 新增）** | 按 §4.6.5 全流程处理：①`mat2.dimensions.value=[5,5]`；②`mat2.allowed_range_value.value=[[16,16],[16,16]]`，`type=range`；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
-| **文档写"NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 16， k0为16"（v2 新增，转置 NZ）** | 同上，但**作为独立两条约束**落库（与上一种布局不合并），`src_text` 摘录对应的转置原文；`mat2.allowed_range_value` 同样含 `[[16,16],[16,16]]` |
-| **文档同时写明非转置与转置 NZ 两种布局（v2 新增）** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`allowed_range_value` 的 `value` 仍为 `[[16,16],[16,16]]`（数值上等价，但约束条目按布局拆分） |
+| **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"（v2 新增）** | 按 §4.6.5 全流程处理：①`mat2.dimensions.value=[5,5]`；②`mat2.allowed_range_value.value=[]`（块尺寸是 shape 约束，不入元素取值字段）；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
+| **文档写"NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 16， k0为16"（v2 新增，转置 NZ）** | 同上，但**作为独立两条约束**落库（与上一种布局不合并），`src_text` 摘录对应的转置原文；`mat2.allowed_range_value.value=[]` |
+| **文档同时写明非转置与转置 NZ 两种布局（v2 新增）** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`mat2.allowed_range_value.value=[]`（块尺寸约束不入元素取值字段，约束条目按布局拆分） |
 | **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
 | **文档写"X 的 shape 为 (A, B)；当 Y 配置为 True 时 shape 为 (C, D)"（v3 新增）** | **不可**拆为两条独立无条件 shape 描述；必须在 `constraints_in_parameters` 中为 X 产出**单一条件 shape 约束**（§6.3 模式 6），用 `Y.range_value` 等门控参数分支；`expr_type` 优先 `shape_choice` 或 `parameter_representation`；`src_text` 同时摘录默认 shape 短语与"配置为 X 时…为…"短语，确保门控可溯源（典型反例：aclnnAlltoAllMatmul 中 x2.shape 在 transposeX2=True 时应为 (N, H*rankSize) 而非无条件 (H*rankSize, N)） |
 | **`shape_value_dependency` 写成无条件形式（含 `mat2.shape[j]` / `self.shape[i]` 引用但未按 §4.6.5 B.1 隐式 bool 门控）** | 改写为 §6.3 模式 6.1 单条 if/else 或 unless 多分支；`relation_params` 包含对应隐式 bool；`src_text` 同时摘录"非转置 NZ (b, n1, k1, k0, n0)" 与 "转置 NZ (b, k1, n1, n0, k0)" 原文 |
@@ -1204,10 +1205,10 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
     `mat2_transposed` 必须使用 `[true, false]`，见 §4.6.5 B.1。
 15. **NZ 块尺寸硬约束（v2 新增）**：若存在 5D NZ 张量（`format ∈ {"NZ","FRACTAL_NZ","FRACTAL_NZ_C0_16"}` 且 `dimensions.value=[5,5]`），
     必须满足**全部**下列子项：
-    a. `mat2.allowed_range_value.value` 包含 `[[16,16],[16,16]]` 或文档明示的其他端点（`type=range`）；
+    a. `mat2.allowed_range_value.value=[]`（空）或文档**显式约束元素取值**的端点；**禁止**为表达块尺寸而写 `[[16,16],[16,16]]` / `[[16,16]]`（块尺寸是 shape 约束，只落 §4.6.5 §C 的 `shape_equality`，见 §4.6.5 §D）；
     b. `constraints_in_parameters[每个支持平台]` 含 `mat2.shape[3] == 16` 与 `mat2.shape[4] == 16` 两条 `shape_equality`（或 `shape_value_dependency`）；
     c. 文档同时描述非转置与转置 NZ 两种布局时，两套 `shape[3]/shape[4]==16` 须**分别落库**为不同条目（共 4 条），`src_text` 摘录对应原文；
-    d. `src_text` 非空，且包含 `k0` / `n0` / `16` 等关键词。
+    d. 各 `shape_equality` 的 `src_text` 非空，且包含 `k0` / `n0` / `16` 等关键词。
 16. **一段式算子一致性（v3 新增）**：若 `function_signature` **不含** `GetWorkspaceSize`（一段式），必须满足**全部**：
     a. 函数名与 `operator_name` 一致（无 `GetWorkspaceSize` 后缀）；
     b. 标量指针输出（如 `uint64_t*`/`int64_t*`）在 `outputs` 中，`type.value` 去 `*`、`format.value="N/A"`、`dimensions.value=[]`、`is_operator_param.value=true`；

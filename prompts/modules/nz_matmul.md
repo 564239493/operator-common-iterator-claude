@@ -146,22 +146,32 @@ src_text: "NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 
    关系参数列表只写 `["mat2"]`；`k0` / `n0` 已在 §4.6.4 D 标记为 constant，无需
    在约束条目中再列。
 
-##### D. 必须产出的 `allowed_range_value` 条目
+##### D. `allowed_range_value` 不承载块尺寸硬约束（语义修正）
+
+> **关键澄清**：`allowed_range_value` 是**参数取值范围**，对 tensor 参数指**元素数据值**
+> 范围。生成器在 `data_handle_utils.get_range_data_boundary`、
+> `param_combination_generate.generate_range_value_property`、
+> `param_constraint_utils.build_param_range_value_constraint` 等多处均按**元素值**
+> 解释，从不解释为逐维 shape 区间。**任何 shape 维度硬约束一律落
+> `constraints_in_parameters`（见 §C 的 `shape_equality`），禁止塞进 `allowed_range_value`。**
 
 按平台，对 `mat2`（或任何 5D NZ 张量）的 `allowed_range_value` 字段：
 
-1. `type=range`、`value` 至少包含两条单点区间 `[[16, 16], [16, 16]]`，
-   分别对应 `shape[3]` 和 `shape[4]` 的块尺寸硬约束；
-2. 若文档同时写明 `k0=16`、`n0=16`，亦可写 `[[16, 16]]`（统一单点），
-   **但**`shape[3]` 与 `shape[4]` 的硬等式约束仍须在 `constraints_in_parameters`
-   中独立落库（见 C），不能因为 `allowed_range_value` 已含区间就省略；
-3. 当 `shape[3]` / `shape[4]` 同时还有其他取值范围（如某些算子的 pad 维度支持
-   `32`），按文档原文端点区间落库；若文档明确写明块尺寸为 16，则 `[[16, 16]]`
-   必须作为子区间之一出现。
+1. `aclnnBatchMatMulWeightNz` 等仅约束 shape 块尺寸（`k0=16`、`n0=16`）、未约束
+   mat2 元素取值的算子，`allowed_range_value.value=[]`（空）、`src_text=""`；
+   块尺寸 16 的硬约束由 §C 的 `shape_equality` 独立承载，与本字段无关；
+2. **禁止**把 `[[16, 16], [16, 16]]` / `[[16, 16]]` 写入 `allowed_range_value`
+   冒充 shape 块尺寸约束——生成器会按元素值范围解释：pairwise 路径因 `[16, 16]`
+   非 scalar 被丢弃（no-op、回退默认数据 profile），Z3 路径会生成
+   `mat2.range_value[0] > 16 and < 16` 的空区间（UNSAT），二者均为语义错位；
+3. 仅当文档**显式约束该 tensor 元素的数值取值范围**（如"取值 [0, 1]"、"仅 0/1"）
+   时，才按 §4.6.3 range / §4.6.4 enum 通用规则填 `allowed_range_value`，端点
+   严禁为 `null`；shape 维度的其他取值（如 pad 支持 `32`）仍走 `shape_equality`，
+   不入本字段。
 
 **反例（禁止）**：
-- `allowed_range_value.value=[]`、`type=range`，但文档明示 `k0=16, n0=16` →
-  漏抓，违规则 C.1 + D.1。
+- `allowed_range_value.value=[[16, 16], [16, 16]]`、`type=range`，企图表达
+  `shape[3]` / `shape[4]` 块尺寸 → 语义滥用，生成器按元素值解释，违本节 D.2。
 - `allowed_range_value.value=[[16, 16]]` 但 `constraints_in_parameters` 无
   `mat2.shape[3]==16` / `mat2.shape[4]==16` → 漏抓，违规则 C.1。
 - `constraints_in_parameters` 仅写 `mat2.shape[3] == 16`（未写 `shape[4]`）→
@@ -171,11 +181,10 @@ src_text: "NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 
 
 - `k0` / `n0` 一律按 §4.6.4 D 标为 `constant`，`constant_value=16`；**不**在
   `inputs` 中产出隐式维度变量卡片（区别于 `(N, C, H, W)` 中的 `N`、`C` 等）。
-- `mat2.allowed_range_value` 中的 `src_text` 摘录 `k0 = 16` / `n0为16` 等
-  原文短语，确保可溯源。
-- `mat2.allowed_range_value` 的 `type=range` 端点严禁为 `null`（与 §4.6.3
-  range 通用规则一致）；若文档只写"块尺寸为 16"未指明具体轴位，按 §4.6.5 D.2
-  使用 `[[16, 16]]` 并在 `src_text` 中说明"统一块尺寸"。
+- 块尺寸 `k0 = 16` / `n0为16` 的原文溯源由 §C 各 `shape_equality` 条目的
+  `src_text` 承载（摘录 NZ 维度元组原文）；`allowed_range_value` 留空时无需 `src_text`。
+- `mat2.allowed_range_value` 仅在文档显式约束元素取值时填写，端点严禁为 `null`
+  （与 §4.6.3 range 通用规则一致）；shape 块尺寸约束不入本字段（见 §D）。
 
 #### 模式 5：NZ 块尺寸硬约束（v2 新增）
 
