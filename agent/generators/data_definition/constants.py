@@ -94,7 +94,8 @@ class ParamModelConfig:
     # tensor shape每一维取值模型全集
     DIM_VALUE_PROFILE_LIST = ["Has_Large_Size", "Has_Size_1", "Has_Odd_Size", "Typical"]
     # 定义属于float, int, bool等可枚举的数据类型
-    FLOAT_DTYPE = ["fp16", "fp32", "fp64", "bf16", "fp", "double"]
+    FLOAT_DTYPE = ["fp16", "fp32", "fp64", "bf16", "fp", "double", "hifloat8", "float8_e5m2", "float8_e4m3fn",
+                   "float8_e8m0", "float6_e3m2", "float8_e4m3fn", "float6_e2m3", "float4_e2m1", "float4_e1m2"]
     INT_DTYPE = ["int", "int16", "int8", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "int4"]
     BOOL_DTYPE = ["bool"]
 
@@ -145,7 +146,8 @@ class DataMatchMap:
                                        "DOUBLE": torch.float64}
 
     # 在case_config中只生成数据生成方法字段，不生成实际数据时使用，用于适配ATK框架
-    ACL_DTYPE_TRANSFER_TENSOR_MAP = {"INT4": "int4", "int4": "int4", "INT8": "int8","int8":"int8","int8_t":"int8", "INT16": "int16", "INT32": "int32",
+    ACL_DTYPE_TRANSFER_TENSOR_MAP = {"INT4": "int4", "int4": "int4", "INT8": "int8", "int8": "int8", "int8_t": "int8",
+                                     "INT16": "int16", "INT32": "int32",
                                      "UINT8": "uint8", "INT": "int64", "uint64": "uint64", "uint64_t": "uint64",
                                      "UINT16": "uint16", "UINT32": "uint32", "UINT64": "uint64", "INT64": "int64",
                                      "BFLOAT16": "bf16", "FLOAT16": "fp16", "FLOAT32": "fp32", "FLOAT64": "fp64",
