@@ -11,6 +11,8 @@
         "Atlas A3 训练系列产品/Atlas A3 推理系列产品"
       ],
       "supports_npu": true,
+      "supports_fusion": true,
+      "fusion_devices": [0, 1],
       "transfer_mode": "auto",
       "remote_paths": {
         "cases_dir": "/home/operator_atk/cases",
@@ -29,6 +31,8 @@
     "password": "SSH 密码",
     "platforms": "该服务器支持的昇腾平台列表（匹配 product_support）",
     "supports_npu": "是否支持 NPU 后端（可选，默认 false）",
+    "supports_fusion": "是否支持通算融合双卡 dist 执行（可选，默认 false；fusion 策略所需）",
+    "fusion_devices": "通算融合流程所需 NPU 卡号数组，长度 2（card_1, card_2）；supports_fusion=true 时必填",
     "transfer_mode": "文件传输方式: auto(默认, SFTP优先+SCP兜底) / scp(仅SCP, 主机不支持SFTP时用) / sftp(仅SFTP)",
     "remote_paths": "远程目录配置（必填，需包含 cases_dir, executor_dir, output_root）",
     "remote_paths.cases_dir": "用例文件远程目录（必填）",

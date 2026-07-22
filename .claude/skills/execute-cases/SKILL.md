@@ -64,3 +64,48 @@ python scripts/execute_cases.py --mode mock --cases <cases.json> --output <execu
 
 执行结束后运行 `python scripts/validate_artifacts.py execution <execution_result.json>`。
 网络、认证、环境和框架故障写入 `engine_error`，不要伪装成普通 case fail。
+
+## fusion 模式（通算融合算子，`run_state.execution_strategy=="fusion"`）
+
+仅当 `run_state.execution_strategy=="fusion"` 时启用；否则走上面 real 三步。fusion 走
+4 步执行流程，**跳过 CPU golden 推导**（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.tpl`，
+已是真实实现，无 dummy 标记）。
+
+### 1. generate（与 default 相同）
+
+```text
+python scripts/execute_cases.py --generate \
+  --cases <iter>/<cases>.json --output <iter>/generate_result.json \
+  --doc <run>/inputs/<doc>.md --operator <op> \
+  --server-config servers.json --run-id <run-id>
+```
+
+fusion 的 `cases_executor.py` 走专属 `.tpl`，无 `# TODO: CPU_GOLDEN` 块。
+
+### 2. 跳过 CPU golden 推导
+
+fusion `.tpl` 已是真实实现，`atc-cpu-golden-derivation` skill 天然无操作。不执行
+dummy 自检（grep `# TODO: CPU_GOLDEN` 自然无命中）。
+
+### 3. real-run（4 步流程）
+
+```text
+python scripts/execute_cases.py --mode real --strategy fusion --num <case_count> \
+  --cases <iter>/<cases>.json --output <iter>/execution_result.json \
+  --doc <run>/inputs/<doc>.md --operator <op> \
+  --server-config servers.json --run-id <run-id>
+```
+
+runner 内部按 4 步执行：① CPU 标杆(dist/gloo) ② NPU 级联标杆(dist/hccl/is_bm)
+③ dist_cpu→cpu_benchmark 改名 ④ 精度对比(accuracy_load)。每步远程命令完整落
+`execution.log`。路径门禁（`rank_0`/`rank_1` 非空）失败写 `engine_error` 终止。
+精度对比结果记入 `comparison_result`，**不入成败**；`passed/failed` 只反映执行成败。
+
+### 4. 校验
+
+```text
+python scripts/validate_artifacts.py execution <iter>/execution_result.json
+```
+
+fusion 时校验 `fusion_phases` + `dir_check_passed` 全真，`comparison_result` 可选
+（记录性，不校验阈值）。

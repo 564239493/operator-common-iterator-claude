@@ -75,6 +75,18 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
         rp = server.get("remote_paths")
         if rp is not None and not isinstance(rp, dict):
             errors.append(f"servers[{index}].remote_paths 必须是 object")
+        # Optional: validate fusion config (supports_fusion + fusion_devices)
+        supports_fusion = server.get("supports_fusion")
+        if supports_fusion is not None and not isinstance(supports_fusion, bool):
+            errors.append(f"servers[{index}].supports_fusion 必须是 bool")
+        if supports_fusion:
+            fusion_devices = server.get("fusion_devices")
+            if not isinstance(fusion_devices, list) or len(fusion_devices) != 2 or not all(
+                isinstance(d, int) and d >= 0 for d in fusion_devices
+            ):
+                errors.append(
+                    f"servers[{index}].fusion_devices 必须是长度 2 的非负整数数组 (card_1, card_2)；supports_fusion=true 时必填"
+                )
     return path, errors
 
 

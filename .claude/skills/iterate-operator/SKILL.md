@@ -38,6 +38,12 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
      `inputs/conflict_candidates.json`）；两者只读文档快照、互不写对方产物，可并行。
      barrier（两者都完成）后进补充。`operator_src_snapshot` 为空时只委派
      `constraint-extractor`，退回纯文档驱动。
+   - **CLASSIFY（EXTRACT barrier 后）**：主协调器跑
+     `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，读
+     stdout JSON（`operator_category` + `evidence`），回写 `run_state.json` 的
+     `execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
+     `operator_category`、`operator_category_evidence`。分类不进 constraints.json、
+     不依赖 constraint-extractor 自由文本。此步每轮 EXTRACT 后都执行（覆盖上轮分类）。
    - **SUPPLEMENT**：当 `supplementary-doc.md` 或 `supplement_constraints.md`
      任一非空时，委派 `constraint-supplementer`（读两者 + `constraints.json`，产
      `constraints_patch.json`），随后运行
@@ -52,8 +58,17 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
      `python scripts/apply_conflict_resolution.py <iter>/constraints.json --candidates <inputs>/conflict_candidates.json --resolution <inputs>/conflict_resolution.json`
      把 source-wins 并入（replace patch + revalidate）。
    - `case-generator`
-   - `case-executor`（real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
-     三子步骤；推导须清除 `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run）
+   - `case-executor`：
+     - **default**（`run_state.execution_strategy != "fusion"`）：real 模式内部完成
+       generate→`atc-cpu-golden-derivation` 推导→real-run 三子步骤；推导须清除
+       `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run。
+     - **fusion**（`run_state.execution_strategy == "fusion"`）：先读 `run_state.json`
+       取 `execution_strategy` 确认策略；generate 子步骤不变；**跳过** CPU golden
+       推导（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.tpl`，已是真实实现，无 dummy 标记，
+       skill 天然无操作）；real-run 替换为 4 步流程（CPU 标杆→NPU 级联标杆→改名→
+       精度对比），拼 `execute_cases.py --mode real --strategy fusion --num <case_count>`
+       透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
+       `engine_error` 终止流程。
    - `quality-reviewer`
 6. 若门禁确认全部通过，更新 run_state 为 SUCCESS 并结束。
 7. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
