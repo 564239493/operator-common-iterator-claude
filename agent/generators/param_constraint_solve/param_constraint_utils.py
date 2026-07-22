@@ -367,12 +367,15 @@ class ParamConstraintUtils(CommonDispatcher):
         # static_expr -> 软约束 tag（仅对可成功构建的表达式建 tag）
         tag_of: Dict[str, z3.BoolRef] = {}
         for idx, static_expr in enumerate(param_static_expr_list):
-            z3_constraint = _build_constraint(static_expr)
-            if z3_constraint is not None:
-                # chk_core 前缀 + idx 保证 tag 唯一，避免与 naive 模式的 chk: 撞名
-                tag = z3.Bool(f"chk_core:{idx}:{static_expr[:40]}")
-                builder.solver.add(z3.Implies(tag, z3_constraint))
-                tag_of[static_expr] = tag
+            try:
+                z3_constraint = _build_constraint(static_expr)
+                if z3_constraint is not None:
+                    # chk_core 前缀 + idx 保证 tag 唯一，避免与 naive 模式的 chk: 撞名
+                    tag = z3.Bool(f"chk_core:{idx}:{static_expr[:40]}")
+                    builder.solver.add(z3.Implies(tag, z3_constraint))
+                    tag_of[static_expr] = tag
+            except Exception as e:
+                logger.error(f"choice_no_conflicts_expr_core, ast.parse failed, expr : {static_expr}, err msg : {str(e)}")
 
         assume = list(tag_of.values())
         iters = 0

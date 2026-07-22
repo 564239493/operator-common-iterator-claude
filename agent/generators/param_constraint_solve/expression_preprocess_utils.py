@@ -431,6 +431,8 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             return value.get_element_at(actual_idx)
         elif z3.is_seq(value):
             return value[actual_idx]
+        elif z3.is_array(value):
+            return z3.Select(value, actual_idx)
         raise TypeError(f"Invalid subscript target: {type(value).__name__}")
 
     def _handle_slice(self, seq, slice_node):
