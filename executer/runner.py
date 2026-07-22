@@ -287,7 +287,7 @@ def _build_atk_command(
         f"-c {cases_remote} "
         f"-p {executor_remote} "
         f"--task {task_type} "
-        f"--bind_cpu_type BIND_IN_PHYSICAL"
+        f"--bind_cpu_type 1"
     )
 
 
@@ -519,7 +519,7 @@ async def _generate_atk_executor(
         "--signatures",
         str(_SIGNATURES_FILE),
         "--acc-config",
-        "acc_config.txt",
+        str(_RESOURCES_DIR / "acc_config.txt"),
     ]
 
     try:
