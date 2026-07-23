@@ -15,7 +15,7 @@ logging = Logger().get_logger()
 
 
 @register("aclnn_function")
-class AclnnBatchMatMulWeightNz(AclnnBaseApi):
+class AclnnSwinAttentionScoreQuant(AclnnBaseApi):
     def init_by_input_data(self, input_data: InputDataset):
         """
         初始化输入参数并整合算子输出到输入参数列表
@@ -59,7 +59,6 @@ class AclnnBatchMatMulWeightNz(AclnnBaseApi):
             data = self.backend.convert_input_data(kwarg, name=name)
             if name in param_list:
                 input_tmp[name] = data
-
         # 构造算子调用的入参顺序
         for i, arg_name in enumerate(param_list):
             data = input_tmp.get(arg_name)
@@ -102,6 +101,10 @@ class AclnnBatchMatMulWeightNz(AclnnBaseApi):
                 output.append(self.acl_tensor_to_torch(output_pack))
             elif isinstance(output_pack, AclTensorlistStruct):
                 output.append(self.acl_tensorlist_to_torch(output_pack))
+        logging.info(f"npu output =======>>>{output}")
+        tol = 1e-9
+        is_all_zero = torch.all(torch.abs(output[0]) < tol)
+        print(is_all_zero)  # 输出: True
         return output
 
     def get_storage_shape(self, input_data: InputDataset, index=None, name=None):
@@ -121,7 +124,7 @@ class AclnnBatchMatMulWeightNz(AclnnBaseApi):
         return AclFormat.ACL_FORMAT_ND
 
     def get_cpp_func_signature_type(self):
-        return "aclnnStatus aclnnBatchMatMulWeightNzGetWorkspaceSize( const aclTensor *self, const aclTensor *mat2, aclTensor *out, int8_t cubeMathType, uint64_t *workspaceSize, aclOpExecutor **executor)"
+        return "aclnnStatus aclnnSwinAttentionScoreQuantGetWorkspaceSize( const aclTensor *query, const aclTensor *key, const aclTensor *value, const aclTensor *scaleQuant, const aclTensor *scaleDequant1, const aclTensor *scaleDequant2, const aclTensor *biasQuantOptional, const aclTensor *biasDequant1Optional, const aclTensor *biasDequant2Optional, const aclTensor *paddingMask1Optional, const aclTensor *paddingMask2Optional, bool queryTranspose, bool keyTranspose, bool valueTranspose, int64_t softmaxAxes, const aclTensor *out, uint64_t *workspaceSize, aclOpExecutor **executor)"
     def get_param_names_excluding_last_two(self, func_str):
         """
         返回参数名称列表。
@@ -179,8 +182,6 @@ class AclnnBatchMatMulWeightNz(AclnnBaseApi):
 
         if "aclnnBatchMatMulWeightNz" in operator_name:
             found_mat2_transposed = next((config for config in self.task_result.case_config.inputs if config.name == "mat2_transposed"), None)
-            found_self_transposed = next(
-                (config for config in self.task_result.case_config.inputs if config.name == "self_transposed"), None)
             # 转置的情况
             if found_mat2_transposed.range_values:
                 # 转换
@@ -189,15 +190,16 @@ class AclnnBatchMatMulWeightNz(AclnnBaseApi):
                     input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4],  # k1 * k0 = k
                     input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3]  # n1 * n0 = n
                 )
-                #input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
-            else:
-                input_data.kwargs['mat2'] = input_data.kwargs['mat2'].reshape(
+                input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
+                return
+            input_data.kwargs['mat2'] = input_data.kwargs['mat2'].reshape(
                 input_data.kwargs['mat2'].shape[0],  # a
                 input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3],  # c*d
                 input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4]  # b*e
             )
-            if found_self_transposed.range_values:
-                input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
+        if "aclnnSwinAttentionScoreQuant" in operator_name:
+            input_data.kwargs['scaleDequant1'] = input_data.kwargs['scaleDequant1'].to(torch.float32).view(torch.int32).to(torch.uint64)
+            input_data.kwargs['scaleDequant2'] = input_data.kwargs['scaleDequant2'].to(torch.float32).view(torch.int32).to(torch.uint64)
 
 
     def parse_operator_params(self, func_signature: str):
@@ -333,102 +335,44 @@ class AclnnBatchMatMulWeightNz(AclnnBaseApi):
 
 @register("function")
 class Function(BaseApi):
-    """Auto-generated CPU reference class for aclnnBatchMatMulWeightNz."""
-
-    _OP_NAME = "aclnnBatchMatMulWeightNz"
-    _SIG_STR = """aclnnStatus aclnnBatchMatMulWeightNzGetWorkspaceSize( const aclTensor *self, const aclTensor *mat2, aclTensor *out, int8_t cubeMathType, uint64_t *workspaceSize, aclOpExecutor **executor)"""
-    _INPUT_PARAM_NAMES = ['self', 'mat2', 'cubeMathType']
-
     def __call__(self, input_data: InputDataset, with_output: bool = False):
-        # Build name->value mapping from input_data.args using case_config.inputs names.
-        # ATK base_dataset.py appends each generated value to input_data.args in JSON inputs[] order.
-        # case_config.inputs[i].name gives the parameter name for args[i].
-        _param_map = {}
-        if input_data.args and hasattr(self, 'task_result') and self.task_result.case_config.inputs:
-            flat_configs = self.task_result.case_config.flatten_list(self.task_result.case_config.inputs)
-            for idx, conf in enumerate(flat_configs):
-                if idx < len(input_data.args) and conf.name:
-                    _param_map[conf.name] = input_data.args[idx]
-                    # Also index by lowercase for case-insensitive lookup
-                    _param_map[conf.name.lower()] = input_data.args[idx]
-        # Fallback: also index kwargs if present (for non-ACLNN paths)
-        if input_data.kwargs:
-            for k, v in input_data.kwargs.items():
-                if v is not None:
-                    _param_map[k] = v
-                    _param_map[k.lower()] = v
+        query = input_data.kwargs["query"]
+        key = input_data.kwargs["key"]
+        value = input_data.kwargs["value"]
+        scaleQuant = input_data.kwargs["scaleQuant"]
+        scaleDequant1 = input_data.kwargs["scaleDequant1"].float()
+        scaleDequant2 = input_data.kwargs["scaleDequant2"].float()
+        biasQuantOptional = input_data.kwargs["biasQuantOptional"]
+        biasDequant1Optional = input_data.kwargs["biasDequant1Optional"].float()
+        biasDequant2Optional = input_data.kwargs["biasDequant2Optional"].float()
+        paddingMask1Optional = None
 
-        def _get_param(name, default=None):
-            v = _param_map.get(name)
-            if v is None:
-                v = _param_map.get(name.lower())
-            if v is not None:
-                return v
-            return default
+        def swin_attention_score_quant(query, key, value, scaleQuant, scaleDequant1, scaleDequant2, biasQuantOptional,
+                                       biasDequant1Optional, biasDequant2Optional):
+            key_trans = torch.transpose(key, 2, 3)
 
-        # Tensor validation: ensures a param is actually a torch.Tensor
-        # ATK may sometimes generate non-tensor values (e.g. int) for params
-        # expected to be tensors, causing AttributeError during computation
-        def _get_tensor(name, default=None):
-            v = _get_param(name, default)
-            return v if isinstance(v, torch.Tensor) else default
+            # 第一个matmul
+            qk = torch.matmul(query.float(), key_trans.float())
+            qk_res = ((qk.int() + biasDequant1Optional).float() * scaleDequant1.float()).half()
 
-        # ACLNN operator: aclnnBatchMatMulWeightNz
-        # C++ signature: aclnnStatus aclnnBatchMatMulWeightNzGetWorkspaceSize( const aclTensor *self, const aclTensor *mat2, aclTensor *out, int8_t cubeMathType, uint64_t *workspaceSize, aclOpExecutor **executor)
-        #
-        # Doc constraints:
-        # - self: 3D ND [b, m, k] (or [b, k, m] when self_transposed=True)
-        # - mat2: 5D NZ; non-transposed:[b, n1, k1, 16, 16]; transposed:[b, k1, n1, 16, 16]
-        # - k1=ceil(k/16), n1=ceil(n/16), k0=n0=16
-        # - cubeMathType: 0 (KEEP_DTYPE) or 2 (USE_FP16, not with bf16)
-        # - self_transposed / mat2_transposed: bool attrs (not in C++ signature, but in JSON)
+            # 可选add
 
-        # Extract input tensors
-        self_t = _get_tensor("self")  # 3D: [b, m, k] or [b, k, m] (transposed)
-        mat2_t = _get_tensor("mat2")  # 5D NZ format
+            qk_bias = qk_res
 
-        # Extract attrs (self_transposed/mat2_transposed from JSON config, not in C++ signature)
-        self_transposed = bool(_get_param("self_transposed", False))
-        mat2_transposed = bool(_get_param("mat2_transposed", False))
+            # softmax
+            soft = torch.nn.functional.softmax(qk_bias.float(), dim=-1).half()
 
-        k0, n0 = 16, 16  # NZ block size (fixed per doc)
+            # 量化为int8
+            p_fp16 = soft * scaleQuant + biasQuantOptional
+            p_int8 = torch.round(p_fp16.float()).char()
 
-        # --- Handle self_transposed ---
-        # When self_transposed=True, JSON shape is [b, k, m]; transpose to [b, m, k] for bmm
-        if self_transposed and self_t is not None:
-            self_t = self_t.permute(0, 2, 1)
+            # 第二个matmul
+            pv = torch.matmul(p_int8.float(), value.float())
+            score = ((pv.int() + biasDequant2Optional).float() * scaleDequant2.float()).half()
+            return score
 
-        # --- NZ to Dense decompression for mat2 ---
-        if mat2_t is not None and mat2_t.dim() == 5:
-            nz = mat2_t.float()
-            b = nz.shape[0]
+        output = swin_attention_score_quant(query, key, value, scaleQuant, scaleDequant1, scaleDequant2,
+                                            biasQuantOptional,
+                                            biasDequant1Optional, biasDequant2Optional)
 
-            if mat2_transposed:
-                # Transposed NZ: [b, k1, n1, n0=16, k0=16]
-                k1 = nz.shape[1]
-                n1 = nz.shape[2]
-                # permute(0,1,4,2,3): [b, k1, k0, n1, n0] -> reshape to [b, k, n]
-                dense_padded = nz.permute(0, 2, 1, 4, 3).reshape(b, k1 * k0, n1 * n0)
-            else:
-                # Non-transposed NZ: [b, n1, k1, k0=16, n0=16]
-                n1 = nz.shape[1]
-                k1 = nz.shape[2]
-                # permute(0,2,3,1,4): [b, k1, k0, n1, n0] -> reshape to [b, k, n]
-                dense_padded = nz.reshape(b, k1 * k0, n1 * n0)
-
-            # Slice to actual k dimension (remove padding)
-            k_actual = self_t.shape[-1]
-            dense_t = dense_padded[..., :k_actual, :]
-        else:
-            # Fallback: treat as already dense
-            dense_t = mat2_t.float() if mat2_t is not None else None
-
-
-        dtype = input_data.kwargs['self'].dtype
-        #output = torch.bmm(
-        #    self_t,
-        #    dense_t.to(dtype),
-        #)
-        output = torch.matmul(self_t, dense_t.to(dtype))
         return output
-        # return result
