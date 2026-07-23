@@ -250,6 +250,26 @@ def main() -> int:
             "默认 <run-dir>/iter_NNN/remote_artifacts。"
         ),
     )
+    parser.add_argument(
+        "--strategy",
+        choices=("default", "fusion"),
+        default="default",
+        help=(
+            "执行策略 (默认 default)。fusion 走通算融合 4 步流程 "
+            "(CPU 标杆→NPU 级联标杆→改名→精度对比)。"
+            "正常迭代由 case-executor 读 run_state.execution_strategy 后透传, "
+            "此处仅作人工覆盖项。"
+        ),
+    )
+    parser.add_argument(
+        "--num",
+        type=int,
+        default=None,
+        help=(
+            "fusion 专用: 本次实际执行用例数, 透传 atk -e {num}。"
+            "default 流程不使用。"
+        ),
+    )
     args = parser.parse_args()
 
     cases_path = resolve_input_path(args.cases)
@@ -366,6 +386,8 @@ def main() -> int:
             project_root=ROOT,
             env_init=args.env_init,  # CLI override only; runner resolves full chain
             iter_dir=iter_dir,
+            execution_strategy=args.strategy,
+            case_count=args.num,
         )
 
         result = run_cases(effective_mode, cases, request=request)

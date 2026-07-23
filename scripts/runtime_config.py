@@ -75,7 +75,57 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
         rp = server.get("remote_paths")
         if rp is not None and not isinstance(rp, dict):
             errors.append(f"servers[{index}].remote_paths 必须是 object")
+        # Optional: validate fusion config (supports_fusion + fusion_devices)
+        supports_fusion = server.get("supports_fusion")
+        if supports_fusion is not None and not isinstance(supports_fusion, bool):
+            errors.append(f"servers[{index}].supports_fusion 必须是 bool")
+        if supports_fusion:
+            fusion_devices = server.get("fusion_devices")
+            if not isinstance(fusion_devices, list) or len(fusion_devices) != 2 or not all(
+                isinstance(d, int) and d >= 0 for d in fusion_devices
+            ):
+                errors.append(
+                    f"servers[{index}].fusion_devices 必须是长度 2 的非负整数数组 (card_1, card_2)；supports_fusion=true 时必填"
+                )
     return path, errors
+
+
+def resolve_fusion_world_size(server_config_path: str | Path) -> int | None:
+    """Return ``len(fusion_devices)`` from the fusion server in ``servers.json``.
+
+    Reads only the non-secret ``fusion_devices`` field (device indices) — never
+    ip/password — so case generation can pin ``rankSize`` to the actual
+    communication-domain card count and produce cases runnable on the
+    provisioned hardware.
+
+    Returns ``None`` when the config is missing, not JSON, has no
+    ``supports_fusion=true`` server, or that server lacks a valid non-empty
+    non-negative-int ``fusion_devices`` list. Callers then fall back to the
+    doc-derived ``rankSize`` enum (no pinning) — backward compatible.
+    """
+    path = resolve_input_path(server_config_path)
+    if not path.is_file():
+        return None
+    try:
+        payload: Any = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    servers = payload.get("servers")
+    if not isinstance(servers, list):
+        return None
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        if not server.get("supports_fusion"):
+            continue
+        fusion_devices = server.get("fusion_devices")
+        if isinstance(fusion_devices, list) and fusion_devices and all(
+            isinstance(d, int) and d >= 0 for d in fusion_devices
+        ):
+            return len(fusion_devices)
+    return None
 
 
 def config_error_payload(path: Path, errors: list[str]) -> dict[str, Any]:

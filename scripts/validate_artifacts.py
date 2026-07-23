@@ -529,6 +529,26 @@ def validate_execution(value) -> list[str]:
         errors.append("passed + failed must equal total")
     if not isinstance(value.get("records", []), list):
         errors.append("records must be an array")
+
+    # fusion 策略扩展：从产物顶层取 execution_strategy（不读 run_state，产物自包含）。
+    # fusion 时 fusion_phases 必填且路径门禁 dir_check_passed 全真；
+    # comparison_result 仅记录性，不做必填或阈值校验（精度不入成败）。
+    strategy = value.get("execution_strategy", "default")
+    if strategy == "fusion":
+        phases = value.get("fusion_phases")
+        if not isinstance(phases, list) or not phases:
+            errors.append("fusion: fusion_phases 必须是非空数组")
+        else:
+            for ph in phases:
+                if not isinstance(ph, dict):
+                    continue
+                phase_name = ph.get("phase", "")
+                if phase_name in ("cpu_benchmark", "npu_cascaded"):
+                    if ph.get("dir_check_passed") is not True:
+                        errors.append(
+                            f"fusion: phase {phase_name} dir_check_passed 必须为 true "
+                            f"(rank_0/rank_1 输出非空门禁)"
+                        )
     return errors
 
 

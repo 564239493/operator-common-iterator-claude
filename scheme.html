@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>通算融合算子执行策略方案</title>
+<style>
+  :root{
+    --bg:#fafbfc; --fg:#1f2328; --muted:#6b7280; --line:#d6dbe1;
+    --accent:#2f6feb; --accent2:#0969da; --warn:#b08300; --warn-bg:#fff8e1;
+    --ok:#1a7f37; --ok-bg:#e6f4ea; --danger:#cf222e; --danger-bg:#ffeef0;
+    --code-bg:#f6f8fa; --code-fg:#1f2328; --kbd:#0550ae;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);line-height:1.65;font-size:15.5px}
+  .wrap{max-width:1060px;margin:0 auto;padding:0 24px 80px}
+  header{background:linear-gradient(135deg,#1f3a5f,#2f6feb);color:#fff;padding:42px 24px 34px;border-radius:0 0 14px 14px;box-shadow:0 4px 18px rgba(0,0,0,.12)}
+  header h1{margin:0 0 6px;font-size:27px;letter-spacing:.5px}
+  header .sub{opacity:.92;font-size:14.5px}
+  header .meta{margin-top:14px;font-size:12.5px;opacity:.85;display:flex;gap:18px;flex-wrap:wrap}
+  header .meta span{background:rgba(255,255,255,.14);padding:3px 10px;border-radius:20px}
+  nav.toc{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:22px 0 26px;display:grid;grid-template-columns:repeat(2,1fr);gap:4px 22px;font-size:13.5px}
+  nav.toc .t-title{grid-column:1/-1;font-weight:700;color:var(--accent2);margin-bottom:4px;font-size:13px;text-transform:uppercase;letter-spacing:1px}
+  nav.toc a{color:var(--accent2);text-decoration:none;padding:2px 0;display:inline-block}
+  nav.toc a:hover{text-decoration:underline}
+  h2{font-size:21px;margin:38px 0 6px;padding-bottom:8px;border-bottom:2px solid var(--accent);color:#1f3a5f}
+  h2 .n{display:inline-block;background:var(--accent);color:#fff;font-size:13px;width:26px;height:26px;line-height:26px;text-align:center;border-radius:50%;margin-right:10px;vertical-align:middle}
+  h3{font-size:17px;margin:26px 0 8px;color:#1f3a5f}
+  h4{font-size:15px;margin:18px 0 6px;color:#374151}
+  p{margin:8px 0}
+  code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;background:var(--code-bg);padding:1.5px 6px;border-radius:4px;font-size:13px;color:var(--kbd)}
+  pre{background:#0d1b2a;color:#e6edf3;padding:14px 16px;border-radius:8px;overflow-x:auto;font-size:13px;line-height:1.6}
+  pre code{background:none;color:inherit;padding:0;font-size:13px}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px;background:#fff}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#eef2f7;color:#1f3a5f;font-weight:600}
+  tr:nth-child(even) td{background:#f8fafc}
+  .callout{border-left:4px solid var(--accent);background:#eef4ff;padding:12px 16px;margin:14px 0;border-radius:0 6px 6px 0}
+  .callout.warn{border-color:var(--warn);background:var(--warn-bg)}
+  .callout.danger{border-color:var(--danger);background:var(--danger-bg)}
+  .callout.ok{border-color:var(--ok);background:var(--ok-bg)}
+  .callout .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.5px;padding:1px 7px;border-radius:3px;background:var(--accent);color:#fff;margin-right:8px;vertical-align:middle}
+  .callout.warn .tag{background:var(--warn)}
+  .callout.danger .tag{background:var(--danger)}
+  .callout.ok .tag{background:var(--ok)}
+  .filetag{display:inline-block;background:#1f3a5f;color:#fff;font-family:Consolas,monospace;font-size:12px;padding:1px 7px;border-radius:3px}
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin:16px 0}
+  .flow .step{flex:1;min-width:150px;background:#fff;border:1.5px solid var(--accent);border-radius:8px;padding:10px 12px;position:relative;font-size:13px}
+  .flow .step .ph{font-weight:700;color:var(--accent);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+  .flow .step .nm{font-weight:600;margin:3px 0;font-size:13.5px}
+  .flow .step .det{color:var(--muted);font-size:12px}
+  .flow .arr{display:flex;align-items:center;color:var(--accent);font-size:20px;padding:0 4px;font-weight:700}
+  .kv{display:grid;grid-template-columns:170px 1fr;gap:0;font-size:13.5px;margin:10px 0}
+  .kv .k{background:#eef2f7;padding:6px 10px;font-weight:600;color:#1f3a5f;border:1px solid var(--line);border-right:none}
+  .kv .v{background:#fff;padding:6px 10px;border:1px solid var(--line)}
+  ul,ol{margin:8px 0 8px 4px;padding-left:22px}
+  li{margin:3px 0}
+  .small{font-size:12.5px;color:var(--muted)}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;letter-spacing:.4px}
+  .pill.yes{background:var(--ok);color:#fff}
+  .pill.no{background:var(--danger);color:#fff}
+  .pill.weak{background:var(--warn);color:#fff}
+  .footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>通算融合算子执行策略方案</h1>
+  <div class="sub">为“先通信后计算”类算子（AllToAll / AllGather / ReduceScatter + MatMul/Quant）设计独立执行流程，并完成算子分类标识从 EXTRACT 到 EXECUTE 的透传</div>
+  <div class="meta">
+    <span>状态机：PLAN → EXTRACT → GENERATE → EXECUTE → GATE</span>
+    <span>影响阶段：EXTRACT（分类） + EXECUTE（4 步流程）</span>
+    <span>不改动：GENERATE</span>
+    <span>日期：2026-07-21</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+<nav class="toc">
+  <div class="t-title">目录</div>
+  <a href="#bg">0. 背景与目标</a>
+  <a href="#step1">1. 通算融合算子特征识别</a>
+  <a href="#step1-table">　1.1 七个算子特征表</a>
+  <a href="#step1-rules">　1.2 可程序化识别规则</a>
+  <a href="#step2">2. 分类标识透传链路</a>
+  <a href="#step2-flow">　2.1 数据流图</a>
+  <a href="#step2-schema">　2.2 Schema 改造点</a>
+  <a href="#step3">3. 四步执行流程改造</a>
+  <a href="#step3-cmd">　3.1 命令模板与变量</a>
+  <a href="#step3-check">　3.2 路径检查门禁</a>
+  <a href="#step3-real">　3.3 与现有 real 三步的关系</a>
+  <a href="#step3-impl">　3.4 执行层改造点</a>
+  <a href="#summary">4. 改造点汇总表</a>
+  <a href="#risk">5. 风险与边界</a>
+  <a href="#roadmap">6. 落地优先级</a>
+</nav>
+
+<!-- ===================== 0 ===================== -->
+<h2 id="bg"><span class="n">0</span>背景与目标</h2>
+<p>当前项目的执行链路（<code>executer/runner.py</code>）面向单卡单后端算子：<code>_build_atk_command</code> 硬编码
+<code>atk node --backend cpu task ...</code> 或 <code>atk node --backend pyaclnn --devices 0 node --backend cpu task ...</code>，
+通过 <code>supports_npu</code> 二元开关切换。这对普通算子足够，但 <strong>通算融合算子</strong>需要分布式双卡、
+双标杆（CPU 标杆 + NPU 级联标杆）+ 精度对比，现有链路无法表达。</p>
+
+<p>用户需求拆解为三步：</p>
+<ol>
+  <li><strong>浏览指定算子</strong>，发现通算融合算子的可识别特征（先通信后计算 / 命名含 AllToAll·AllGather / 计算融合·并行 / 文档标记“通算融合”）。</li>
+  <li><strong>把“通算融合”标识透传到执行阶段</strong>，使 case-executor 能据此选用专用执行策略。</li>
+  <li><strong>按 4 步执行流程优化当前流程</strong>：① CPU 标杆执行 ② NPU 级联标杆执行 ③ 文件改名 ④ 精度对比。</li>
+</ol>
+
+<div class="callout">
+  <span class="tag">核心约束</span>
+  用户明确：<strong>生成约束和生成用例不需要单独策略</strong>（EXTRACT、GENERATE 阶段保持现有逻辑，<strong>constraints.json 不改动</strong>，
+  分类元信息写入 <code>run_state.json</code>）；只有 EXECUTE 阶段对通算融合算子启用独立的 4 步流程。
+</div>
+
+<div class="callout ok">
+  <span class="tag">关键既有资产</span>
+  <code>executer/resources/acc_config.txt</code> 已存在 <code>cv_fused_double_benchmark</code> acc 类型
+  （含 <code>max_re_ratio / avg_re_ratio / root_mean_squared_ratio</code> 三阈值），<code>generator.py:load_acc_config</code>
+  已解析，<code>cases.json</code> 的 <code>standard.acc</code> 字段已能承载 per-case 策略 —— 可直接复用为精度对比阈值来源。
+  <span class="small">但 <code>acc_config.txt</code> 按本方案定义的 7 个通算融合算子仅 <code>aclnnAlltoAllMatmul</code> 一条在列（文件另有 SwinTransformerLnQkvQuant/BatchMatmulWeightNz/ReflectionPad1dBackward 三条 <code>cv_fused_double_benchmark</code>，不属本方案 fusion 范畴），<strong>不能作为算子分类的唯一依据</strong>，分类必须由 EXTRACT 阶段独立判定。</span>
+</div>
+
+<!-- ===================== 1 ===================== -->
+<h2 id="step1"><span class="n">1</span>通算融合算子特征识别</h2>
+<p>已通读 <code>D:\project\operator-job\operators\9.0\ops-transformer</code> 下 7 个目标算子文档。
+它们在“功能说明 / 约束说明”两节高度同构，具备稳定的程序化识别信号。</p>
+
+<h3 id="step1-table">1.1 七个算子特征表</h3>
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>算子名</th><th>文档“通算融合”原文</th><th>通信原语</th><th>计算部分</th><th>组合模式</th><th>分布式语义</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>aclnnAlltoAllMatmul</td><td>“通算融合算子不支持并发调用…”</td><td>AllToAll (+Permute)</td><td>Matmul (+bias)</td><td>先通信后计算</td><td>rankSize=2/4/8/16/32；HCCL group</td></tr>
+    <tr><td>2</td><td>aclnnAlltoAllAllGatherBatchMatMul</td><td>“通算融合算子不支持并发调用…”</td><td>AllToAll + AllGather</td><td>BatchMatMul (+bias+激活)</td><td>通信→通信→计算→激活</td><td>epWorldSize + tpWorldSize；groupEp+groupTp</td></tr>
+    <tr><td>3</td><td>aclnnAllGatherMatmul</td><td>“一个模型中的通算融合MC2算子，仅支持相同通信域”</td><td>AllGather</td><td>MatMul (+bias)</td><td>先通信后计算</td><td>rank_size=2…64；HCCL group</td></tr>
+    <tr><td>4</td><td>aclnnAlltoAllQuantMatmul</td><td>“通算融合算子不支持并发调用…”</td><td>AllToAll (+Permute)</td><td>Quant+Matmul+Dequant</td><td>先通信后计算</td><td>rankSize=2/4/8/16；HCCL group</td></tr>
+    <tr><td>5</td><td>aclnnAlltoAllvGroupedMatMul</td><td><span class="pill weak">弱</span> 无显式字样（仅“融合”）</td><td>AlltoAllv (+Permute)</td><td>GroupedMatMul‖MatMul 并行</td><td>先通信后计算</td><td>epWorldSize=2~128；EP 通信域</td></tr>
+    <tr><td>6</td><td>aclnnAlltoAllvQuantGroupedMatMul</td><td><span class="pill weak">弱</span> 无显式字样（仅“融合”）</td><td>AlltoAllv</td><td>Quant+GroupedMatMul‖Quant+MatMul</td><td>先通信后计算</td><td>epWorldSize=2…64；HCCL group</td></tr>
+    <tr><td>7</td><td>aclnnBatchMatMulReduceScatterAlltoAll</td><td>“BatchMatMulReduceScatterAllToAll是通算融合算子…”</td><td>ReduceScatter + AllToAll</td><td>BatchMatMul (+bias/Add)</td><td>计算→通信→通信</td><td>epWorldSize + tpWorldSize；groupEp+groupTp</td></tr>
+  </tbody>
+</table>
+
+<h3 id=”step1-rules”>1.2 可程序化识别规则</h3>
+<p>识别由 orchestrator 在 EXTRACT 后跑确定性分类脚本（见 2.2.3 <code>classify_operator.py</code>）按下列规则判定，
+<strong>不依赖 constraint-extractor 的自由文本输出</strong>、不落盘到 <code>constraints.json</code>，结果回写 <code>run_state.json</code>。
+<code>constraint-extractor</code> 不产出分类字段、<code>normalize_constraints.py</code> 不做分类复核（保持纯 format/dtype 规范化职责），分类与约束语义彻底解耦。</p>
+
+<h4>强规则（命中任一即可，全部覆盖 7/7）</h4>
+<table>
+  <thead><tr><th>规则</th><th>判定逻辑</th><th>命中</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>S1 命名匹配</td>
+      <td>算子名匹配正则（大小写不敏感）：<br><code>^aclnn(AllToAll|AlltoAll|AlltoAllv|AllGather|ReduceScatter).*(Matmul|MatMul|BatchMatMul|GroupedMatMul)$</code><br>或反序形态 <code>^aclnnBatchMatMul.*(ReduceScatter|AllToAll).*$</code>（#7）</td>
+      <td><span class="pill yes">7/7</span></td>
+    </tr>
+    <tr>
+      <td>S2 源码路径</td>
+      <td>文档存在 <code>gitcode.com/cann/ops-transformer/tree/master/mc2/</code> 链接（源码位于 <code>mc2/</code> 目录）</td>
+      <td><span class="pill yes">7/7</span></td>
+    </tr>
+    <tr>
+      <td>S3 显式字样</td>
+      <td>功能说明或约束说明出现任一固定短语：<code>通算融合</code> / <code>通算融合MC2算子</code> / <code>通算融合算子不支持并发调用</code> / <code>是通算融合算子</code></td>
+      <td><span class="pill weak">5/7</span>（#5、#6 无）</td>
+    </tr>
+  </tbody>
+</table>
+
+<h4>弱规则（兜底，命中 S3 缺失的 #5、#6）</h4>
+<table>
+  <thead><tr><th>规则</th><th>判定逻辑</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>W1 特征组合</td>
+      <td>同时出现：(a) 通信原语名（AllToAll/AllGather/ReduceScatter/AlltoAllv 之一）+ (b) 计算原语名（Matmul/BatchMatMul/GroupedMatMul）+ (c) “融合”关键词 + (d) 通信域参数 <code>group</code>/<code>groupEp</code>/<code>groupTp</code> + (e) worldSize 参数</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout warn">
+  <span class="tag">结论（修订）</span>
+  <strong>S1（命名）为唯一可靠强规则</strong>——不依赖文档正文内容，单独覆盖 7/7。S2（mc2 路径）依赖原文档含
+  <code>gitcode.com/.../mc2/</code> 链接，但分类脚本读的是 <code>runs/&lt;run-id&gt;/inputs/&lt;doc&gt;.md</code> 快照，
+  若快照无此链接（库内 <code>aclnnAlltoAllMatmul.md</code> 副本已观测到无 gitcode 链接、无 <code>mc2</code> 字样），S2 不命中——
+  故 S2 仅作佐证、不作强依赖。S3/W1 同为可解释性证据。<code>classify_operator.py</code> 判定逻辑：<code>S1 命中 → fusion</code>；
+  S1 未命中时 S2/S3/W1 任一命中亦判 fusion 并在 evidence 标注证据来源；全不命中 → default。
+</div>
+
+<!-- ===================== 2 ===================== -->
+<h2 id="step2"><span class="n">2</span>分类标识透传链路</h2>
+<p>目标：让 EXTRACT 阶段判定的“通算融合”标识，沿产物链路无损传递到 EXECUTE 阶段，
+由 case-executor 读取并切换执行策略。透传介质为<strong>磁盘产物字段</strong>（符合“每轮产物只通过 runs/&lt;run-id&gt;/ 下文件交接”约定），不引入跨 Agent 隐式上下文。</p>
+
+<h3 id="step2-flow">2.1 数据流图</h3>
+<div class="flow">
+  <div class="step">
+    <div class="ph">EXTRACT</div>
+    <div class="nm">constraints.json（纯约束）</div>
+    <div class="det"><strong>不改动</strong>。仅含约束语义，保持 OperatorRule 严格 schema，不影响用例生成时的约束校验。</div>
+  </div>
+  <div class="arr">→</div>
+  <div class="step">
+    <div class="ph">CLASSIFY</div>
+    <div class="nm">run_state.json</div>
+    <div class="det">orchestrator 在 EXTRACT 后跑确定性分类脚本，写 <code>execution_strategy</code>+证据。<strong>唯一落点</strong>，Agent 层已贯穿。</div>
+  </div>
+  <div class="arr">→</div>
+  <div class="step">
+    <div class="ph">GENERATE</div>
+    <div class="nm">cases.json</div>
+    <div class="det"><strong>不变</strong>。复用已有 <code>standard.acc</code> 承载 <code>cv_fused_double_benchmark</code> 阈值，不新增分类字段。</div>
+  </div>
+  <div class="arr">→</div>
+  <div class="step">
+    <div class="ph">EXECUTE</div>
+    <div class="nm">case-executor → CLI → runner</div>
+    <div class="det">case-executor 读 run_state 取策略，拼 execute_cases.py 带 <code>--strategy fusion --num N</code>；execute_cases 不主动读 run_state（纯 CLI 驱动）。</div>
+  </div>
+</div>
+
+<h3 id="step2-schema">2.2 Schema 改造点</h3>
+
+<h4>2.2.1 constraints.json — 不改动（避免影响约束校验）</h4>
+<p><span class="filetag">agent/generators/common_model_definition.py:78-106</span> OperatorRule 保持 <code>model_config = {"extra": "forbid"}</code>，
+<strong>不新增任何字段</strong>。理由：constraints.json 是约束语义载体，被 <code>validate_constraints</code> 严格校验、被 Z3 生成器直接消费，
+混入“算子分类/执行策略”这类元信息会污染约束语义、增加校验复杂度。分类信息改由 orchestrator 派生写入 run_state.json（见 2.2.2），
+constraints.json 与用例生成链路完全不受影响。</p>
+<div class="callout ok">
+  <span class="tag">零回归</span> constraints.json schema 不变 → <code>validate_constraints</code> / <code>generate_cases.py</code> / 历史存量算子迭代全部不受影响。
+</div>
+
+<h4>2.2.2 run_state.json — 分类元信息唯一落点</h4>
+<p><span class="filetag">scripts/init_run.py:386-409</span> + orchestrator 回写。run_state.json 是“状态、轮次、参数”唯一真相源。
+extract-constraints / analyze-source / supplement-constraints / diagnose-failure 等 Agent 已读 run_state；<strong>case-executor 当前不读 run_state</strong>
+（纯 CLI 驱动，见 2.2.5），fusion 时需<strong>新增</strong>“读 <code>run_state.execution_strategy</code> 取策略”的能力，而非复用既有贯穿。
+<strong>execution_strategy 本质是 run 级参数</strong>，放这里语义最对，无需新增文件。新增 Optional 字段：</p>
+<pre><code>{
+  "execution_strategy": "fusion",          // fusion | default；EXECUTE 阶段据此走 4 步流程
+  "operator_category": "fusion_comm_compute",
+  "operator_category_evidence": [
+    "S1 命名匹配: aclnnAlltoAllMatmul",
+    "S2 mc2 源码路径: gitcode.com/cann/ops-transformer/tree/master/mc2/...",
+    "S3 原文: 通算融合算子不支持并发调用"
+  ]
+}</code></pre>
+<p class="small"><strong>写入时机</strong>：init_run.py 创建 run 时留空（<code>execution_strategy=null</code>）；
+EXTRACT 完成后，orchestrator 跑确定性分类脚本（见 2.2.3）判定分类，回写 run_state。分类不依赖 constraint-extractor 的自由文本输出，可复现可复核。</p>
+<div class="callout">
+  <span class="tag">为何不单开 operator_meta.json</span> 核实结论：<code>execute_cases.py</code> / <code>runner.py</code> 当前<strong>不读</strong> run_state.json（<code>grep run_state</code> 在 <code>executer/</code> 下零命中），靠 CLI 参数驱动。故无论放 run_state 还是独立 meta 文件，到 execute_cases 这层都得靠 case-executor 读后 CLI 透传（见 2.2.5）——独立文件无贯穿性优势，却多一套读写约定与契约条目。故选 run_state.json 单一落点。
+</div>
+
+<h4>2.2.3 确定性分类脚本 — orchestrator 派生 execution_strategy</h4>
+<p>新增 <span class="filetag">scripts/classify_operator.py</span>（或并入 <code>normalize_constraints.py</code> 现有复核逻辑）：
+输入算子文档快照，按 1.2 的 S1/S2/S3/W1 规则跑确定性判定，输出 JSON 到 stdout（<code>operator_category</code> + <code>evidence</code>），
+<strong>不落盘</strong>。orchestrator 在 EXTRACT 后调用，读 stdout 回写 run_state.execution_strategy。</p>
+<pre><code>python scripts/classify_operator.py --doc runs/&lt;run-id&gt;/inputs/&lt;doc&gt;.md
+# stdout: {"operator_category":"fusion_comm_compute","evidence":["S1...","S2...","S3..."]}
+# orchestrator 读 stdout → 回写 run_state.execution_strategy="fusion"</code></pre>
+<p class="small">分类不进 constraints.json、不新增贯穿文件、不新增 iter 产物。证据仅以字段存于 run_state，供 quality_gate 复核。</p>
+
+<h4>2.2.4 servers.json — 新增卡号配置</h4>
+<p><span class="filetag">servers.example.json</span> 当前 <code>remote_paths</code> 已声明 <code>cases_dir / executor_dir / output_root</code>
+（即用户所说 <code>operator_case_dir / executor_file_dir</code>），但<strong>无卡号字段</strong>。新增：</p>
+<pre><code>{
+  "supports_npu": true,
+  "supports_fusion": true,                 // 该机是否支持通算融合双卡 dist 执行
+  "fusion_devices": [0, 1],                // card_1, card_2 — fusion 流程所需 NPU 卡号
+  "remote_paths": { ... }
+}</code></pre>
+<p><span class="filetag">scripts/runtime_config.py:40-78</span> <code>validate_server_config</code> 需新增校验：
+当 <code>supports_fusion=true</code> 时 <code>fusion_devices</code> 必须是长度 2 的整数数组；
+缺失时按现有“停止并提示”语义报错，禁止静默回退。</p>
+
+<h4>2.2.5 execute_cases 层 — CLI 透传（不主动读 run_state）</h4>
+<p>核实结论：<code>execute_cases.py</code> / <code>runner.py</code> 当前<strong>不读 run_state.json</strong>（<code>grep run_state</code> 在 <code>executer/</code> 下零命中），
+靠 CLI 参数驱动——这是既有设计，不破坏。链路改为：case-executor Agent <strong>新增</strong>读 <code>run_state.execution_strategy</code> 的能力（case-executor 此前不读 run_state，纯 CLI 驱动），
+拼 execute_cases.py 命令时带 CLI 参数透传：</p>
+<pre><code>python scripts/execute_cases.py --mode real \
+  --cases &lt;iter&gt;/cases.json --output &lt;iter&gt;/execution_result.json \
+  --doc &lt;run&gt;/inputs/&lt;doc&gt;.md --operator &lt;op&gt; \
+  --server-config servers.json --run-id &lt;run-id&gt; \
+  --strategy fusion --num &lt;N&gt;          # 新增透传</code></pre>
+<p><span class="filetag">executer/runner.py:146-160</span> RunRequest 新增字段，由 execute_cases 从 CLI 注入：</p>
+<pre><code>@dataclass
+class RunRequest:
+    ...
+    execution_strategy: str = "default"   # default | fusion
+    case_count: int | None = None         # 透传 atk -e {num}</code></pre>
+<p class="small"><strong>fusion 卡号（card_1, card_2）不靠 CLI 透传</strong>——由 execute_cases.py 从 <code>server_info.fusion_devices</code> 读取
+（execute_cases 已读 servers.json 选服务器），见 2.2.4。<code>--num</code> = 本次实际执行用例数（用户明确“通过入参透传”）。</p>
+
+<!-- ===================== 3 ===================== -->
+<h2 id="step3"><span class="n">3</span>四步执行流程改造</h2>
+<p>仅当 <code>execution_strategy=="fusion"</code> 时启用；否则走现有 real 三步流程，完全不变。</p>
+
+<h3 id="step3-cmd">3.1 命令模板与变量</h3>
+<p>5 个变量：<code>card_1, card_2, operator_case_dir, executor_file_dir, num</code>。
+其中 <code>operator_case_dir = remote_paths.cases_dir</code>、<code>executor_file_dir = remote_paths.executor_dir</code>（已在 servers.json）；
+<code>card_1, card_2</code> 来自新增 <code>fusion_devices</code>；<code>num</code> 由 CLI 入参 <code>--num</code> 透传（=本次实际执行用例数）。</p>
+
+<h4>步骤 1 — CPU 标杆执行（dist + gloo）</h4>
+<pre><code>atk node --backend dist --name cpu \
+  --devices {card_1},{card_2} --dist_backend gloo \
+  task -c {operator_case_dir}/cases.json -p {executor_file_dir}/executor.py \
+  --task accuracy --save_data output -mt 1 -e {num}</code></pre>
+<div class="kv">
+  <div class="k">产出路径</div><div class="v">两个独立 rank 目录，均须非空：<code>{output_root}/case_{format-time-1}/output/dist_cpu/cases/0/rank_0</code> 与 <code>.../rank_1</code></div>
+  <div class="k">dist_backend</div><div class="v"><code>gloo</code>（CPU 分布式通信后端）</div>
+  <div class="k">name</div><div class="v"><code>cpu</code>（标杆名，决定子目录名 <code>dist_cpu</code>）</div>
+</div>
+
+<h4>步骤 2 — NPU 级联标杆执行（dist + hccl + is_bm）</h4>
+<pre><code>atk node --backend dist --name npu_bm \
+  --devices {card_1},{card_2} --dist_backend hccl --is_bm true \
+  task -c {operator_case_dir}/cases.json -p {executor_file_dir}/executor.py \
+  --task accuracy --save_data output -mt 1 -e {num}</code></pre>
+<div class="kv">
+  <div class="k">产出路径</div><div class="v">两个独立 rank 目录，均须非空：<code>{output_root}/case_{format-time-2}/output/dist_npu_bm/cases/0/rank_0</code> 与 <code>.../rank_1</code></div>
+  <div class="k">dist_backend</div><div class="v"><code>hccl</code>（NPU 集合通信后端）</div>
+  <div class="k">is_bm</div><div class="v"><code>true</code>（级联标杆模式）</div>
+</div>
+
+<h4>步骤 3 — 文件改名（dist_cpu → cpu_benchmark）</h4>
+<pre><code># 远程将步骤1产出的目录改名，避免被步骤2/4的取最新目录逻辑覆盖
+mv {output_root}/case_{format-time-1}/output/dist_cpu \
+   {output_root}/case_{format-time-1}/output/cpu_benchmark</code></pre>
+<div class="callout warn">
+  <span class="tag">为何必须改名</span>
+  <code>executer/ssh.py:find_latest_output_dir</code> 当前用 <code>ls -1td ... | head -1</code> 取 mtime 最新的输出目录。
+  步骤 1 与步骤 2 都会在 <code>{output_root}</code> 下生成新 <code>case_{time}</code> 目录，第二次取最新会落到 NPU 目录、
+  CPU 目录被“吞掉”。步骤 3 在取最新逻辑之外加一道显式标记，使步骤 4 的 <code>--output_path</code> 能精确指向步骤 2 的目录。
+</div>
+
+<h4>步骤 4 — 精度对比（accuracy_load）</h4>
+<pre><code>atk node --backend pyaclnn --is_dist true --task accuracy \
+  --devices {card_1},{card_2} \
+  node --backend dist \
+  --output_path {output_root}/case_{format-time-2}/output \
+  --name npu_bm --devices {card_1},{card_2} \
+  --task accuracy_load \
+  task -c {operator_case_dir}/cases.json -p {executor_file_dir}/executor.py \
+  -mt 1 -e {num}</code></pre>
+<p class="small">注：上述命令按用户描述还原（用户原文有 <code>---task</code>/<code>card_0</code> 笔误，已按语义修正为
+<code>--task accuracy_load</code> 与 <code>{card_1},{card_2}</code>）。ATK dist 子命令语法已确认，落地照写进 <code>executer/runner.py</code>；若执行有偏差后续修正。</p>
+
+<h3 id="step3-check">3.2 路径检查门禁</h3>
+<p>步骤 1、2 各有一道硬门禁：执行后必须检查对应 <code>dist_*/cases/0/rank_0</code> 与 <code>rank_1</code> 两个独立目录均非空，任一为空即判定任务失败。
+这要求 <code>executer/ssh.py</code> 新增远程目录非空检查原语：</p>
+<pre><code>async def check_remote_dir_has_files(conn, dir_path: str) -> bool:
+    """检查远程目录是否存在且至少含一个文件；对 rank_0、rank_1 分别调用，两者皆须非空。"""
+    cmd = f"if [ -d '{dir_path}' ]; then " \
+          f"  n=$(find '{dir_path}' -type f 2>/dev/null | head -1 | wc -l); " \
+          f"  echo $n; else echo __MISSING__; fi"
+    out = (await run(conn, cmd)).strip()
+    return out.isdigit() and int(out) > 0</code></pre>
+<table>
+  <thead><tr><th>步骤</th><th>检查路径</th><th>失败语义</th></tr></thead>
+  <tbody>
+    <tr><td>1.1</td><td><code>{output_root}/case_{t1}/output/dist_cpu/cases/0/rank_0</code> 与 <code>rank_1</code></td><td>任一为空 → status=failed, engine_error="cpu benchmark dist output empty"</td></tr>
+    <tr><td>2.1</td><td><code>{output_root}/case_{t2}/output/dist_npu_bm/cases/0/rank_0</code> 与 <code>rank_1</code></td><td>任一为空 → status=failed, engine_error="npu cascaded benchmark dist output empty"</td></tr>
+  </tbody>
+</table>
+<div class="callout danger">
+  <span class="tag">门禁纪律</span>
+  路径检查失败必须如实写入 <code>engine_error</code>（与现有“网络/认证/环境故障不伪装为 case fail”一致），
+  <strong>不得</strong>降级为普通 case fail 或静默继续步骤 4。步骤 1/2 任一失败即终止 4 步流程，不进入对比。
+</div>
+
+<h3 id="step3-real">3.3 与现有 real 三步流程的关系</h3>
+<p><span class="filetag">.claude/skills/execute-cases/SKILL.md</span> 现有 real 模式是 <strong>generate → CPU golden 推导 → real-run</strong> 三步。
+其中“CPU golden 推导”子步骤用 <code>atc-cpu-golden-derivation</code> skill 把 <code>cases_executor.py</code> 的
+<code># TODO: CPU_GOLDEN</code> dummy 块替换为 <code>torch.*</code> 真实计算。</p>
+<p>对通算融合算子，<strong>CPU 参考由 ATK dist <code>--name cpu</code> 后端自行产出</strong>（步骤 1 的 <code>dist_cpu</code>），
+不再需要 torch 侧推导。因此：</p>
+<table>
+  <thead><tr><th>real 子步骤</th><th>default 策略</th><th>fusion 策略</th></tr></thead>
+  <tbody>
+    <tr><td>1. generate（生成 executor + expanded）</td><td>执行</td><td>执行（不变，用户要求 GENERATE 不单独策略）</td></tr>
+    <tr><td>2. CPU golden 推导（atc-cpu-golden-derivation）</td><td>执行</td><td><span class="pill no">跳过</span>（fusion .tpl 已是真实实现、无 <code># TODO: CPU_GOLDEN</code> 标记，skill 天然无操作；CPU 标杆由 ATK dist 产出）</td></tr>
+    <tr><td>3. real-run</td><td>单趟 <code>atk --backend cpu/pyaclnn</code></td><td><span class="pill yes">替换为 4 步流程</span>（见 3.1）</td></tr>
+  </tbody>
+</table>
+<div class="callout ok">
+  <span class="tag">executor 生成器（已确认）</span>
+  <span class="filetag">executer/resources/generator.py:488-604</span> 的 <code>_SPECIAL_TEMPLATES</code> 对 fusion 算子（如 <code>aclnnAlltoAllMatmul</code>）
+  <strong>直接返回专属 <code>.tpl</code>，绕过 j2 dummy 模板</strong>。<code>aclnnAlltoAllMatmul.py.tpl</code> 已是完整真实实现：CPU 路径走 <code>manual_all_to_all</code>
+  （<code>dist.send/recv</code>）+ <code>torch.matmul</code>+bias，NPU 标杆走 <code>is_bm</code> 分支的 <code>dist.all_to_all_single</code>，<strong>无 dummy、无 <code># TODO: CPU_GOLDEN</code> 标记</strong>。
+  故 <code>atc-cpu-golden-derivation</code> skill 对 fusion 算子天然无操作（找不到标记即跳过），<strong>无需 torch 推导介入</strong>，CPU 标杆由 ATK dist <code>--name cpu</code> 后端产出。
+  “保留 dummy/待确认”假设取消。
+</div>
+
+<h3 id="step3-impl">3.4 执行层改造点</h3>
+
+<h4>3.4.1 ATK 命令拼装 — 参数化 phase</h4>
+<p><span class="filetag">executer/runner.py:268-291</span> 当前 <code>_build_atk_command</code> 是单卡单后端、硬编码 <code>--devices 0</code>。
+新增 fusion 专用命令构造，按 phase 区分 4 种形态：</p>
+<pre><code>def _build_fusion_atk_command(phase, operator_name, remote_paths, devices, num, env_init):
+    """phase ∈ {'cpu_benchmark','npu_cascaded','accuracy_load'}"""
+    cases_remote = remote_paths.cases_path(operator_name)
+    executor_remote = remote_paths.executor_path(operator_name)
+    c1, c2 = devices
+    common = (f"-c {cases_remote} -p {executor_remote} --save_data output -mt 1 -e {num}")
+    if phase == "cpu_benchmark":
+        return f"{env_init} && atk node --backend dist --name cpu " \
+               f"--devices {c1},{c2} --dist_backend gloo task {common} --task accuracy"
+    if phase == "npu_cascaded":
+        return f"{env_init} && atk node --backend dist --name npu_bm " \
+               f"--devices {c1},{c2} --dist_backend hccl --is_bm true task {common} --task accuracy"
+    if phase == "accuracy_load":
+        # 见 3.1 步骤4；--output_path 指向步骤2目录
+        return f"{env_init} && atk node --backend pyaclnn --is_dist true --task accuracy " \
+               f"--devices {c1},{c2} node --backend dist --output_path {out_path_t2} " \
+               f"--name npu_bm --devices {c1},{c2} --task accuracy_load task {common}"</code></pre>
+
+<h4>3.4.2 编排重构 — _execute_fusion</h4>
+<p><span class="filetag">executer/runner.py:747-1066</span> 现有 <code>_execute_real</code> 单趟编排。fusion 抽取为多趟 + 中间改名 + 末尾对比（精度对比照跑但<strong>不入成败</strong>，见 3.4.3）：</p>
+<pre><code>async def _execute_fusion(req, server_info, operator_name, ...):
+    conn = await connect(...)
+    await upload_file(conn, cases_expanded, cases_remote)
+    await upload_file(conn, cases_executor, executor_remote)
+
+    # Step1 CPU 标杆 — atk 跑完【立即】find_latest_output_dir 抓 case_{t1} 并缓存到 out_t1
+    # （此时 output_root 最新仍是 t1；务必在 Step2 启动前抓取，否则被 t2 覆盖 mtime）
+    out_t1 = await _run_phase(conn, phase="cpu_benchmark", ...)  # _run_phase 内部 atk 执行后调 find_latest_output_dir 返回
+    if not (await check_remote_dir_has_files(conn, f"{out_t1}/output/dist_cpu/cases/0/rank_0")
+            and await check_remote_dir_has_files(conn, f"{out_t1}/output/dist_cpu/cases/0/rank_1")): -> failed
+    # Step2 NPU 级联标杆 — 同理，跑完【立即】抓 case_{t2}，Step4 前缓存
+    out_t2 = await _run_phase(conn, phase="npu_cascaded", ...)
+    if not (await check_remote_dir_has_files(conn, f"{out_t2}/output/dist_npu_bm/cases/0/rank_0")
+            and await check_remote_dir_has_files(conn, f"{out_t2}/output/dist_npu_bm/cases/0/rank_1")): -> failed
+    # Step3 改名 — 用已缓存的 out_t1，不再 find_latest（此时最新已是 t2）
+    await move_remote(conn, f"{out_t1}/output/dist_cpu", f"{out_t1}/output/cpu_benchmark")
+    # Step4 精度对比 — --output_path 显式指向 out_t2，不依赖 find_latest；对比结果记录但不入成败
+    await _run_phase(conn, phase="accuracy_load", out_path_t2=f"{out_t2}/output", ...)
+    # 解析对比结果（见 3.4.3；comparison 记录性，passed/failed 由执行成败决定）
+    return _compose_fusion_result(out_t1, out_t2, comparison)</code></pre>
+<div class="callout warn">
+  <span class="tag">out_t 抓取时序（硬约束）</span>
+  atk dist 命令<strong>不通过 stdout 返回</strong> <code>case_{format-time}</code> 目录名，须靠 <code>find_latest_output_dir</code>（ssh.py:305-328，mtime 最新）抓取。
+  故 <code>_run_phase</code> 必须在 atk 执行<strong>返回后立即</strong>调 <code>find_latest_output_dir</code> 并把目录路径作为返回值缓存到 <code>out_t1/out_t2</code>——
+  <strong>下一步启动前必须抓完</strong>，否则后续 step 的新 <code>case_{time}</code> 目录会盖过 mtime、<code>find_latest</code> 取到错目录。
+  Step3 改名、Step4 <code>--output_path</code> 一律用已缓存的 <code>out_t1/out_t2</code>，禁止再次 <code>find_latest</code>。
+  若 atk 支持显式指定输出目录（待风险1核实），可预生成唯一目录名传入，彻底消除 mtime 竞态。
+</div>
+<p><span class="filetag">executer/runner.py:1111-1203</span> <code>run_cases</code> 分发器新增分支：
+<code>if req.execution_strategy == "fusion": return await _execute_fusion(...)</code>，否则走现有 real 分支。</p>
+
+<h4>3.4.3 结果对比与 schema 扩展（精度对比照跑，但<strong>不入成败</strong>）</h4>
+<div class="callout">
+  <span class="tag">成败语义（与 default 的关键差异）</span>
+  default 流程的 <code>passed/failed</code> 来自 ATK <code>--task accuracy</code> 的精度判定（精度超阈=failed，<strong>精度定成败</strong>）。
+  <strong>fusion 不让精度定成败</strong>：用户明确“只需要执行、对比就行，不据精度决定任务成败”。故 fusion 的
+  <code>passed/failed/total</code> 只反映<strong>执行成败</strong>：<code>total = N = --num</code> 透传的实际执行用例数（非 atk per-case 精度结果）；三步 atk exit 0 + 路径门禁全真 → <code>passed=N/failed=0</code>；任一执行失败/路径空 → <code>passed=0/failed=N</code>、status=failed。保证 <code>passed+failed==total</code> 恒成立，
+  精度对比结果独立记入 <code>comparison_result</code>，<strong>不影响 status、不影响 passed/failed</strong>。
+</div>
+<p><span class="filetag">executer/report_parser.py</span> 现有 <code>parse_xlsx_report</code> 解析单份 xlsx（default 复用）。fusion 精度对比解析（仅记录，不产 passed）：</p>
+<pre><code>def parse_fusion_comparison(cpu_benchmark_dir, npu_cascaded_dir, acc_config) -> ComparisonResult:
+    """读 cv_fused_double_benchmark 阈值，记录实际比值。仅记录、不据此置 passed/failed。"""
+    thresholds = acc_config.get("cv_fused_double_benchmark")   # 来自 acc_config.txt（无则 thresholds=None）
+    actual = _extract_ratios(npu_cascaded_dir)                 # 从 step4 accuracy_load 产出
+    # 注意：不再计算 passed、不再影响 status；actual 仅作记录
+    return ComparisonResult(thresholds=thresholds, actual=actual)</code></pre>
+<p class="small"><strong>actual 数据来源（已确认）</strong>：step4 <code>accuracy_load</code> 产出 <strong>xlsx</strong>（用户已手动确认），<code>_extract_ratios</code> 直接复用现有 <code>parse_xlsx_report</code> 解析比值，无需新解析器。</p>
+<div class="callout warn">
+  <span class="tag">落地需验</span> <code>parse_xlsx_report</code> 现有列名别名映射（<code>_RUN_RESULT_ALIASES</code> 等）是为 default 的 pass/fail 列设计的。accuracy_load 产出的 xlsx 若列名为 <code>max_re_ratio / avg_re_ratio / root_mean_squared_ratio</code>，别名映射<strong>可能不覆盖</strong>。落地时先确认 xlsx 实际列名；若不覆盖，<code>_extract_ratios</code> 需在复用 parse 框架的基础上<strong>扩列名匹配</strong>（加这三个 ratio 的别名），而非整写新解析器。
+</div>
+<p><span class="filetag">executer/models.py</span> <code>ExecutionResult</code> 扩展：</p>
+<ul>
+  <li><code>status</code> Literal <strong>维持现有 5 值</strong>（success/failed/timeout/error/generate）——<strong>不新增 <code>accuracy_mismatch</code></strong>，精度超阈不改 status。</li>
+  <li>新增顶层字段 <code>execution_strategy</code>（default | fusion），由 <code>to_flat()</code> 写入 execution_result.json，供 validate 判定（见下）。</li>
+  <li>新增顶层字段 <code>comparison_result</code>（thresholds/actual）——<strong>记录性</strong>，不入成败；step4 未跑或解析失败时为 null。</li>
+  <li>新增 <code>fusion_phases</code>：记录每步 phase 的 <code>output_dir / dir_check_passed / duration</code>，供 quality_gate 与诊断回溯。</li>
+</ul>
+<p><span class="filetag">scripts/validate_artifacts.py</span> <code>validate_execution</code> 扩展：从 <code>execution_result.json</code> 顶层
+<code>value.get("execution_strategy")</code> 取策略（<strong>不读 run_state</strong>，产物自包含）；当 <code>=="fusion"</code> 时，
+<code>fusion_phases</code> 列为必填并校验 <code>dir_check_passed</code> 全真（执行产出门禁），<code>comparison_result</code> 可选（记录性，不校验 passed）；
+<code>passed+failed==total</code> 仍按执行成败校验。default 走现有分支不变。</p>
+
+<h4>3.4.4 CLI 入口</h4>
+<p><span class="filetag">scripts/execute_cases.py</span> 新增参数：</p>
+<ul>
+  <li><code>--num &lt;int&gt;</code>：透传 atk <code>-e {num}</code>（实际执行用例数）。</li>
+  <li>策略来源：<code>run_state.json.execution_strategy</code> 自动读取；<code>--strategy fusion|default</code> 仅作人工覆盖项。</li>
+</ul>
+<p>构造 <code>RunRequest</code> 时把 <code>execution_strategy / case_count</code> 一并注入；<code>fusion_devices</code> 由 execute_cases 从 <code>server_info</code> 读取，不入 RunRequest（见 2.2.4 / 2.2.5）。</p>
+
+<h4>3.4.5 远程命令落日志（可观测性）</h4>
+<p><span class="filetag">executer/runner.py:572-597</span> 现有 <code>_setup_execution_log</code> 已为每次执行创建
+<code>runs/&lt;run-id&gt;/iter_NNN/execution_logs/execution.log</code>（UTF-8 追加），run 结束后由 <code>_cleanup_log_handler</code>（runner.py:600-606）收尾。
+real 模式 atk 执行已用 <code>logger.info("execute_cases: running %s", cmd)</code>（runner.py:907）记命令原文 + exit/stdout/stderr，
+generate 模式同（runner.py:735 <code>logger.info("generate atk command: %s", atk_command)</code>）。
+<strong>fusion 4 步对齐此模式，每条远程命令都完整落日志</strong>，保证可回溯、可审计。</p>
+
+<p><code>_execute_fusion</code> 每步执行前后各记一条，命令原文<strong>不截断</strong>：</p>
+<pre><code># 步骤 1 CPU 标杆
+logger.info("[fusion step1 cpu_benchmark] command: %s", cmd1)
+r1 = await run(conn, cmd1, timeout=req.atk_timeout)
+logger.info("[fusion step1] exit=%d duration=%.2fs stderr_head=%s",
+            r1.exit_code, r1.duration, (r1.stderr or "")[:500])
+ok0 = await check_remote_dir_has_files(conn, f"{out_t1}/output/dist_cpu/cases/0/rank_0")
+ok1 = await check_remote_dir_has_files(conn, f"{out_t1}/output/dist_cpu/cases/0/rank_1")
+logger.info("[fusion step1] dir_check rank_0=%s rank_1=%s", ok0, ok1)
+if not (ok0 and ok1):
+    logger.error("[fusion step1] FAILED: dist_cpu output empty"); -> failed
+# 步骤 2 NPU 级联标杆：同结构，记 cmd2 + dist_npu_bm/cases/0/rank_0|rank_1 路径检查
+# 步骤 3 改名
+logger.info("[fusion step3 rename] command: mv %s %s", src, dst)
+logger.info("[fusion step3] exit=%d", (await run(conn, mv_cmd, timeout=60)).exit_code)
+# 步骤 4 精度对比：记 cmd4(accuracy_load) + 对比结果(max/avg/rms ratio vs 阈值)</code></pre>
+
+<div class="kv">
+  <div class="k">日志文件</div><div class="v"><code>runs/&lt;run-id&gt;/iter_NNN/execution_logs/execution.log</code>（与现有 real/generate 同路径，<code>_setup_execution_log</code> 自动创建）</div>
+  <div class="k">记录范围</div><div class="v">6 条远程命令：step1 atk(dist cpu) + step1 路径检查 + step2 atk(dist npu_bm) + step2 路径检查 + step3 mv 改名 + step4 accuracy_load atk；每条含命令原文、exit_code、duration、stderr 摘要、路径检查布尔值</div>
+  <div class="k">结构化镜像</div><div class="v">同步把每步 <code>command</code> + <code>exit_code</code> + <code>dir_check</code> 写入 <code>execution_result.json</code> 的 <code>fusion_phases[]</code>（见 3.4.3）——execution.log 供人读，fusion_phases 供程序回溯</div>
+  <div class="k">纪律</div><div class="v">命令原文<strong>不截断</strong>；密码等敏感字段由 servers.json deny 规则兜底，不进日志（env_init 仅含 source 路径，无密）</div>
+</div>
+
+<div class="callout">
+  <span class="tag">复用而非新增</span> 不新建日志文件、不引入新 handler；fusion 复用现有 <code>_setup_execution_log</code> / <code>_cleanup_log_handler</code> 与 <code>logger.info("running %s", cmd)</code> 模式，与 real/generate 完全一致，<code>execution.log</code> 单文件按步追加，开头/结尾沿用 <code>===== execute start / done =====</code> 边界标记。
+</div>
+
+<!-- ===================== 4 ===================== -->
+<h2 id="summary"><span class="n">4</span>改造点汇总表</h2>
+<table>
+  <thead><tr><th>层</th><th>文件:位置</th><th>改造内容</th><th>步骤</th></tr></thead>
+  <tbody>
+    <tr><td>EXTRACT</td><td><span class="filetag">extract-constraints SKILL / prompt</span></td><td>不变。constraints.json 不含分类字段；分类由 orchestrator 派生（见下）</td><td>步骤2</td></tr>
+    <tr><td>分类</td><td><span class="filetag">scripts/classify_operator.py</span>（新）</td><td>orchestrator EXTRACT 后跑确定性分类（S1/S2/S3/W1），输出 stdout 回写 run_state；不落盘</td><td>步骤1+2</td></tr>
+    <tr><td>约束 Schema</td><td><span class="filetag">common_model_definition.py:78-106</span></td><td><strong>不改动</strong>。OperatorRule 保持 extra=forbid，不混入分类元信息</td><td>步骤2</td></tr>
+    <tr><td>INIT</td><td><span class="filetag">scripts/init_run.py:386-409</span> + orchestrator</td><td>run_state.json 新增 execution_strategy / operator_category / evidence；init_run 留空，EXTRACT 后 orchestrator 回写</td><td>步骤2</td></tr>
+    <tr><td>配置</td><td><span class="filetag">servers.example.json</span></td><td>新增 supports_fusion / fusion_devices 字段</td><td>步骤3</td></tr>
+    <tr><td>配置校验</td><td><span class="filetag">scripts/runtime_config.py:40-78</span></td><td>validate_server_config 新增 fusion_devices 结构校验</td><td>步骤3</td></tr>
+    <tr><td>执行</td><td><span class="filetag">executer/runner.py:146-160</span></td><td>RunRequest 新增 execution_strategy / case_count；fusion_devices 经 server_info 透传（runner 从 req.server_info 读，不单独加 RunRequest 字段）</td><td>步骤2+3</td></tr>
+    <tr><td>执行</td><td><span class="filetag">executer/runner.py:268-291</span></td><td>新增 _build_fusion_atk_command(phase=...) 区分 4 种命令；--devices 从 fusion_devices 取</td><td>步骤3.1</td></tr>
+    <tr><td>执行</td><td><span class="filetag">executer/runner.py:747-1066</span></td><td>抽取 _execute_fusion（两趟执行+改名+对比+路径门禁）</td><td>步骤3.2</td></tr>
+    <tr><td>执行</td><td><span class="filetag">executer/runner.py:1111-1203</span></td><td>run_cases 分发器新增 fusion 分支</td><td>步骤3.4.2</td></tr>
+    <tr><td>SSH</td><td><span class="filetag">executer/ssh.py:305-328</span></td><td>find_latest_output_dir 支持 phase 定位；避免第二趟覆盖</td><td>步骤3.3</td></tr>
+    <tr><td>SSH</td><td><span class="filetag">executer/ssh.py</span></td><td>新增 move_remote（改名）+ check_remote_dir_has_files（路径门禁）原语</td><td>步骤3.2+3.3</td></tr>
+    <tr><td>报告</td><td><span class="filetag">executer/report_parser.py:93-225</span></td><td>新增 parse_fusion_comparison（三阈值对比）</td><td>步骤3.4.3</td></tr>
+    <tr><td>结果 Schema</td><td><span class="filetag">executer/models.py:60-180</span></td><td>status 维持现有 5 值（不增 accuracy_mismatch）；新增 execution_strategy / comparison_result(记录性) / fusion_phases 顶层字段；to_flat 写入</td><td>步骤3.4.3+4</td></tr>
+    <tr><td>校验</td><td><span class="filetag">scripts/validate_artifacts.py:521-532</span></td><td>validate_execution 从 execution_result.json 顶层取 execution_strategy 判 fusion（不读 run_state）；fusion 时 fusion_phases 必填 + dir_check 全真，comparison_result 可选；passed+failed==total 按执行成败校验</td><td>步骤3.4.3+4</td></tr>
+    <tr><td>CLI</td><td><span class="filetag">scripts/execute_cases.py:180-185,265-371</span></td><td>新增 --strategy fusion|default + --num 参数；不主动读 run_state，由 case-executor 透传</td><td>步骤3.4.4</td></tr>
+    <tr><td>日志</td><td><span class="filetag">executer/runner.py:572-597,600-606,907</span></td><td>fusion 4 步复用 _setup_execution_log / execution.log，每条远程命令 logger.info 原文 + exit + dir_check；fusion_phases 结构化镜像</td><td>步骤3.4.5</td></tr>
+    <tr><td>Skill</td><td><span class="filetag">.claude/skills/execute-cases/SKILL.md</span></td><td>新增“fusion 模式 4 步流程”章节，含跳过 CPU golden 推导说明</td><td>步骤3.3</td></tr>
+    <tr><td>Agent</td><td><span class="filetag">.claude/agents/case-executor.md</span></td><td>扩展 real 模式：fusion 策略时 4 子步骤；读 run_state.execution_strategy 取策略</td><td>步骤3.3</td></tr>
+    <tr><td>生成器</td><td><span class="filetag">executer/resources/generator.py:488-604</span> + 模板</td><td>已确认：fusion 走 _SPECIAL_TEMPLATES 专属 .tpl（如 aclnnAlltoAllMatmul.py.tpl），已是真实实现，无 dummy、无需 torch 推导</td><td>步骤3.3</td></tr>
+  </tbody>
+</table>
+
+<!-- ===================== 5 ===================== -->
+<h2 id="risk"><span class="n">5</span>风险与边界</h2>
+<div class="callout ok">
+  <span class="tag">风险1（已拍板）</span> <strong>ATK dist 命令语法按既定写法认定正确</strong>。
+  步骤 4 命令的嵌套 <code>node</code> 子句、<code>--name / --dist_backend / --is_bm / --output_path / accuracy_load</code> 语义与层级按方案 3.1 写定，
+  落地照写进 <code>runner.py</code>；若执行时发现偏差，后续修正。
+</div>
+<div class="callout warn">
+  <span class="tag">风险2</span> <strong>双卡资源与并发</strong>。通算融合算子“不支持并发调用、不同的通算融合算子也不支持并发调用”
+  （7 个文档均强调）。<code>iterate-directory</code> 串行迭代目录时，若含多个 fusion 算子必须严格串行；
+  <code>servers.json</code> 的 <code>fusion_devices</code> 不可被同机其他任务占用。
+</div>
+<div class="callout warn">
+  <span class="tag">风险3</span> <strong>output_root 路径冲突</strong>。步骤 1、2、4 都在 <code>{output_root}</code> 下生成
+  <code>case_{format-time}</code> 目录。<code>format-time</code> 需保证毫秒级唯一（避免同秒覆盖）；
+  <code>out_t1/out_t2</code> 必须在各自 step 的 atk 执行后<strong>立即</strong> <code>find_latest_output_dir</code> 抓取并缓存（见 3.4.2 时序硬约束），
+  后续 step 一律用缓存值、<strong>不再次 find_latest</strong>；步骤 4 的 <code>--output_path</code> 显式指向 <code>out_t2</code>。
+</div>
+<div class="callout danger">
+  <span class="tag">边界</span> <strong>不自动回退、不静默 Mock</strong>（继承项目既有安全边界）。
+  <code>fusion_devices</code> 缺失或 <code>supports_fusion</code> 未声明时，fusion 策略直接停止并提示用户补充配置；
+  路径门禁失败如实写 <code>engine_error</code>，不降级为普通 case fail；不自动提交/推送/删除文件。
+</div>
+<div class="callout">
+  <span class="tag">边界</span> <strong>GENERATE 阶段不动</strong>（用户明确）。通算融合只新增 run_state 执行策略字段与 4 步执行流程，
+  constraints.json schema 不变、约束生成器、用例生成器（Z3 + pairwise）保持现有逻辑；<code>standard.acc</code> 复用已有 fusion acc 阈值（供 step4 对比记录，不入成败），不新增 case 字段。
+  分类不命中时<strong>完全走现有 default 流程</strong>，零回归。
+</div>
+
+<!-- ===================== 6 ===================== -->
+<h2 id="roadmap"><span class="n">6</span>落地优先级</h2>
+<ol>
+  <li><strong>P0 — 标识透传</strong>（步骤1+2）：新增 classify_operator.py 确定性分类 + orchestrator 回写 run_state.execution_strategy；constraints.json 不改动。
+    先让“通算融合”可被识别并贯穿到执行入口，default 流程零影响。</li>
+  <li><strong>P0 — 配置</strong>（步骤3前置）：servers.example.json 加 <code>fusion_devices / supports_fusion</code> + runtime_config 校验。</li>
+  <li><strong>P1 — 执行核心</strong>：runner.py 的 <code>_build_fusion_atk_command</code> + <code>_execute_fusion</code> + ssh.py 的
+    <code>move_remote / check_remote_dir_has_files</code>。先打通 4 步命令骨架，路径门禁先行。</li>
+  <li><strong>P1 — 结果对比（记录性）</strong>：report_parser <code>parse_fusion_comparison</code>（仅记录 actual/thresholds，不产 passed）+ models <code>comparison_result / fusion_phases / execution_strategy</code>（不增 accuracy_mismatch）+ validate_artifacts 从 execution_result.json 取 execution_strategy 判 fusion。</li>
+  <li><strong>P2 — CLI 与文档</strong>：execute_cases <code>--num</code> + SKILL/Agent 流程文档更新。</li>
+  <li><strong>P2 — 生成器适配（已确认）</strong>：fusion 算子走专属 <code>.tpl</code> 已是真实实现，无 dummy、无需 torch 推导；本项从“待确认”降为“已核实，无需改造”。</li>
+  <li><strong>P3 — 串行约束</strong>：iterate-directory 对 fusion 算子强制串行 + 资源占用提示。</li>
+</ol>
+
+<div class="callout ok">
+  <span class="tag">零回归承诺</span>
+  所有新增字段均 Optional + 有默认值；所有新分支均由 <code>execution_strategy=="fusion"</code> 守卫；
+  非 fusion 算子从 EXTRACT 到 EXECUTE 全链路与现状<strong>逐字节一致</strong>。可先用单个 fusion 算子（建议
+  <code>aclnnAlltoAllMatmul</code>，已有 <code>acc_config.txt</code> 阈值）端到端验证，再扩展到其余 6 个。
+</div>
+
+<div class="footer">
+  本方案基于 <code>D:\project\operator-job\operators\9.0\ops-transformer</code> 下 7 个通算融合算子文档与
+  <code>D:\project\operator-common-iterator-claude</code> 当前执行链路（runner.py / ssh.py / models.py / acc_config.txt 等）核实编写。
+  落地实现以各文件实际行号为准，ATK dist 命令语法已按用户确认写定，若有偏差后续修正。
+</div>
+
+</div>
+</body>
+</html>
