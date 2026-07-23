@@ -109,6 +109,96 @@ def generate_platform_outputs(
     return per_platform_paths, per_platform_counts, checkpoint_paths
 
 
+def _apply_runtime_ranksize_pin(constraints: dict, server_config_path: Path) -> int | None:
+    """Pin ``rankSize`` to ``len(fusion_devices)`` in-memory for fusion ops.
+
+    Fusion distributed operators require ``rankSize == world_size`` (the
+    actual communication-domain card count): the operator's alltoAll exchanges
+    over ``rankSize`` cards and the CPU golden builds
+    ``A=[BS/world_size, H*world_size]`` to matmul with ``x2=[H*rankSize, N]``.
+    The doc-derived constraints list the operator's *supported* rankSize values
+    per platform (e.g. A2: {2,4,8}), but the harness only provisions
+    ``len(fusion_devices)`` cards — so unpinned cases with rankSize != world_size
+    are unrunnable (CPU golden matmul shape mismatch; NPU alltoAll over a
+    too-large group).
+
+    This narrows the rankSize candidate source (``allowed_range_value.value``)
+    and the mirrored ``self_value_enum`` constraint to ``[world_size]``, in
+    memory only — the on-disk ``constraints.json`` stays doc-faithful. Returns
+    the pinned ``world_size``, or ``None`` when no pinning applies (no
+    ``rankSize`` param, or no fusion_devices in the config).
+    """
+    from scripts.runtime_config import resolve_fusion_world_size
+
+    world_size = resolve_fusion_world_size(server_config_path)
+    if world_size is None:
+        return None
+    # Parameter definitions live under the top-level "inputs" key (keyed by
+    # param name -> platform -> spec); fall back to "parameters" in case a
+    # future schema renames it.
+    parameters = constraints.get("inputs")
+    if not isinstance(parameters, dict):
+        parameters = constraints.get("parameters")
+    if not isinstance(parameters, dict) or not isinstance(parameters.get("rankSize"), dict):
+        return None
+    rank_param = parameters["rankSize"]
+    # Narrow the per-platform candidate enum (the source the generator draws
+    # rankSize from) so it has no choice but world_size.
+    for spec in rank_param.values():
+        if isinstance(spec, dict) and isinstance(spec.get("allowed_range_value"), dict):
+            spec["allowed_range_value"]["value"] = [world_size]
+    # Keep the mirrored self_value_enum constraint consistent, in case the
+    # solver also consults it as a candidate source.
+    cip = constraints.get("constraints_in_parameters")
+    if isinstance(cip, dict):
+        for bucket in cip.values():
+            if not isinstance(bucket, list):
+                continue
+            for entry in bucket:
+                if not isinstance(entry, dict):
+                    continue
+                if (
+                    entry.get("expr_type") == "self_value_enum"
+                    and entry.get("relation_params") == ["rankSize"]
+                    and "rankSize.range_value" in entry.get("expr", "")
+                ):
+                    entry["expr"] = f"rankSize.range_value in [{world_size}]"
+    return world_size
+
+
+def _log_ranksize_distribution(
+    per_platform_paths: dict[str, Path], pinned_ws: int | None
+) -> None:
+    """Best-effort: log the rankSize value distribution per generated file."""
+    if pinned_ws is None:
+        return
+    from collections import Counter
+
+    for platform, path in per_platform_paths.items():
+        try:
+            cases = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(cases, list):
+            continue
+        counts: Counter = Counter()
+        for case in cases:
+            if not isinstance(case, dict):
+                continue
+            flat: list = []
+            for it in case.get("inputs", []):
+                flat.extend(it if isinstance(it, list) else [it])
+            for it in flat:
+                if isinstance(it, dict) and it.get("name") == "rankSize":
+                    counts[it.get("range_values")] += 1
+        logger.info(
+            "rankSize distribution [%s]: %s (expected 100%% = %d)",
+            platform,
+            dict(counts),
+            pinned_ws,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--constraints", required=True)
@@ -125,6 +215,14 @@ def main() -> int:
         default=None,
         help="可选: 迭代目录 (如 runs/<run>/iter_001)。传入后, "
         "生成过程日志会写到 <iter-dir>/generation.log。",
+    )
+    parser.add_argument(
+        "--server-config",
+        default=str(ROOT / "servers.json"),
+        help="servers.json 路径, 用于读 fusion_devices 把 rankSize 钉为 "
+        "len(fusion_devices) (fusion 分布式算子 rankSize 必须等于实际卡数)。"
+        "默认项目根 servers.json; 文件不存在或无 fusion server 时不钉值, "
+        "保持文档 enum。仅读非秘密字段 fusion_devices。",
     )
     args = parser.parse_args()
     if args.count < 1:
@@ -165,6 +263,21 @@ def main() -> int:
         len(constraints.get("product_support", [])),
     )
 
+    # Pin rankSize to len(fusion_devices) for fusion distributed operators so
+    # generated cases are runnable on the provisioned hardware (rankSize must
+    # equal the actual card count). In-memory only; the on-disk
+    # constraints.json stays doc-faithful. No-op when the operator has no
+    # rankSize param or servers.json has no fusion_devices. See plan
+    # golden-crafting-chipmunk.md.
+    server_config_path = Path(args.server_config)
+    pinned_ws = _apply_runtime_ranksize_pin(constraints, server_config_path)
+    if pinned_ws is not None:
+        logger.info(
+            "rankSize pinned to %d (= len(fusion_devices) from %s) for fusion run",
+            pinned_ws,
+            server_config_path,
+        )
+
     # Reference entry point — facade.TestCaseGenerator delegates to
     # ``single_operator_handle`` for each platform.
     from agent.generators.facade import TestCaseGenerator
@@ -177,6 +290,8 @@ def main() -> int:
         jsonl_save_path,
         output_dir,
     )
+
+    _log_ranksize_distribution(per_platform_paths, pinned_ws)
 
     summary = {
         "operator_name": generator.operator_name,

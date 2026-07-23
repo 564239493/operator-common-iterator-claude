@@ -328,6 +328,44 @@ async def find_latest_output_dir(
     return candidate
 
 
+async def move_remote(
+    conn: asyncssh.SSHClientConnection,
+    src: str,
+    dst: str,
+    *,
+    timeout: float = 60.0,
+) -> CommandResult:
+    """Rename a remote path via ``mv``.
+
+    Used by fusion step3 (``dist_cpu`` → ``cpu_benchmark``) so the CPU
+    benchmark output is not shadowed by the subsequent NPU cascade run.
+    """
+    cmd = f"mv '{src}' '{dst}'"
+    return await run(conn, cmd, timeout=timeout)
+
+
+async def check_remote_dir_has_files(
+    conn: asyncssh.SSHClientConnection,
+    dir_path: str,
+    *,
+    timeout: float = 30.0,
+) -> bool:
+    """Return True if ``dir_path`` exists and contains at least one file.
+
+    Used by the fusion path gate: caller invokes twice — once per rank dir
+    (``rank_0`` / ``rank_1``) — both must be non-empty or the step is
+    treated as a hard failure (engine_error, not a plain case fail).
+    """
+    cmd = (
+        f"if [ -d '{dir_path}' ]; then "
+        f"n=$(find '{dir_path}' -type f 2>/dev/null | head -1 | wc -l); "
+        f"echo $n; else echo __MISSING__; fi"
+    )
+    result = await run(conn, cmd, timeout=timeout)
+    out = (result.stdout or "").strip()
+    return out.isdigit() and int(out) > 0
+
+
 async def sftp_download_file(
     conn: asyncssh.SSHClientConnection,
     remote_path: str,

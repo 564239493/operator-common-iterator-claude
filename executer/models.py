@@ -57,6 +57,53 @@ class TaskReportData(BaseModel):
     )
 
 
+class ComparisonRatio(BaseModel):
+    """精度对比的实际比值 (记录性, 不入成败)."""
+
+    max_re_ratio: float | None = Field(default=None, description="最大相对误差比.")
+    avg_re_ratio: float | None = Field(default=None, description="平均相对误差比.")
+    root_mean_squared_ratio: float | None = Field(
+        default=None, description="均方根误差比."
+    )
+
+
+class ComparisonResult(BaseModel):
+    """fusion 精度对比结果 (仅记录, 不影响 status / passed / failed).
+
+    default 流程不填充. fusion 流程由 step4 ``accuracy_load`` 产出 xlsx 解析得到,
+    阈值取自 ``acc_config.txt`` 的 ``cv_fused_double_benchmark``.
+    """
+
+    thresholds: dict[str, Any] | None = Field(
+        default=None,
+        description="来自 acc_config.txt 的 cv_fused_double_benchmark 阈值 (max/avg/rms).",
+    )
+    actual: ComparisonRatio | None = Field(
+        default=None,
+        description="step4 accuracy_load 产出的实际比值.",
+    )
+
+
+class FusionPhase(BaseModel):
+    """fusion 4 步流程中某一步的执行留痕."""
+
+    phase: str = Field(
+        ...,
+        description="cpu_benchmark | npu_cascaded | rename | accuracy_load.",
+    )
+    command: str = Field(default="", description="执行的远程命令原文 (不截断).")
+    exit_code: int | None = Field(default=None, description="命令退出码.")
+    duration: float = Field(default=0.0, description="该步耗时 (秒).")
+    output_dir: str | None = Field(
+        default=None,
+        description="该步产出的 case_{time}/output 目录 (rename 步为 None).",
+    )
+    dir_check_passed: bool | None = Field(
+        default=None,
+        description="路径门禁 (rank_0/rank_1 非空) 结果; rename/accuracy_load 步为 None.",
+    )
+
+
 class ExecutionResult(BaseModel):
     """Canonical result object emitted by the local executer.
 
@@ -100,6 +147,18 @@ class ExecutionResult(BaseModel):
     remote_output_dir: str | None = Field(
         default=None,
         description="远端 ATK 实际使用的输出目录 (含 operator_name 前缀).",
+    )
+    execution_strategy: Literal["default", "fusion"] = Field(
+        default="default",
+        description="执行策略: default 走现有单卡单后端流程; fusion 走通算融合 4 步流程.",
+    )
+    comparison_result: ComparisonResult | None = Field(
+        default=None,
+        description="fusion 精度对比结果 (仅记录, 不影响 status/passed/failed); default 为 None.",
+    )
+    fusion_phases: list[FusionPhase] = Field(
+        default_factory=list,
+        description="fusion 4 步流程每步留痕; default 为空.",
     )
     _generate_artifacts: dict[str, Path] | None = None
     _generate_atk_command: str | None = None
@@ -177,7 +236,20 @@ class ExecutionResult(BaseModel):
         if self.status == "generate":
             payload["generate_atk_command"] = self._generate_atk_command or ""
             payload["generate_remote_paths"] = self._generate_remote_paths or {}
+        payload["execution_strategy"] = self.execution_strategy
+        if self.execution_strategy == "fusion":
+            payload["comparison_result"] = (
+                self.comparison_result.model_dump() if self.comparison_result else None
+            )
+            payload["fusion_phases"] = [p.model_dump() for p in self.fusion_phases]
         return payload
 
 
-__all__ = ["ExecutionResult", "ReportRecord", "TaskReportData"]
+__all__ = [
+    "ExecutionResult",
+    "ReportRecord",
+    "TaskReportData",
+    "ComparisonRatio",
+    "ComparisonResult",
+    "FusionPhase",
+]

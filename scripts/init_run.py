@@ -398,6 +398,9 @@ def main() -> int:
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
         "case_count": args.case_count,
+        "execution_strategy": None,  # EXTRACT 后 orchestrator 跑 classify_operator.py 回写: fusion | default
+        "operator_category": None,  # fusion_comm_compute | default | None
+        "operator_category_evidence": [],  # 分类证据 (规则编号 + 原文摘录)
         "current_iteration": 1,
         "state": "PLAN",
         "history": [{"state": "PLAN", "at": now}],

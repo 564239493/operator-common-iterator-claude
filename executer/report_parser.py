@@ -18,7 +18,12 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from .models import ReportRecord, TaskReportData
+from .models import (
+    ComparisonRatio,
+    ComparisonResult,
+    ReportRecord,
+    TaskReportData,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +43,19 @@ _CASE_JSON_ALIASES = (
 _ID_ALIASES = (
     "用例ID", "用例 ID", "id", "ID", "case_id", "用例编号", "序号",
 )
+
+# fusion 精度对比比值列名别名（accuracy_load xlsx 实际列名落地需验，不覆盖则在此扩）。
+_RATIO_ALIASES = {
+    "max_re_ratio": (
+        "max_re_ratio", "maxreratio", "最大相对误差", "max_re", "max相对误差比",
+    ),
+    "avg_re_ratio": (
+        "avg_re_ratio", "avgreratio", "平均相对误差", "avg_re", "avg相对误差比",
+    ),
+    "root_mean_squared_ratio": (
+        "root_mean_squared_ratio", "rmsratio", "rms", "均方根误差", "root_mean_squared",
+    ),
+}
 
 
 def _norm(value: Any) -> str:
@@ -225,4 +243,67 @@ def parse_xlsx_report(report_dir: Path) -> TaskReportData:
     return data
 
 
-__all__ = ["parse_xlsx_report"]
+def _collect_ratio_values(
+    records: list[ReportRecord], aliases: tuple[str, ...]
+) -> list[float]:
+    """Collect numeric values from any xlsx column fuzzy-matching ``aliases``.
+
+    Scans every record's ``extra`` (catch-all for non-canonical columns) so
+    per-case or summary ratio rows are both handled; non-numeric cells are
+    skipped silently.  Mirrors the substring strategy of
+    :func:`parse_xlsx_report`'s column matching.
+    """
+    values: list[float] = []
+    for record in records:
+        for key, val in (record.extra or {}).items():
+            target = _norm(key)
+            if not target:
+                continue
+            if not any(_norm(a) and _norm(a) in target for a in aliases):
+                continue
+            if val is None:
+                continue
+            try:
+                values.append(float(str(val).strip()))
+            except (ValueError, TypeError):
+                continue
+    return values
+
+
+def parse_fusion_comparison(
+    comparison_report_dir: Path,
+    thresholds: dict[str, Any] | None = None,
+) -> ComparisonResult:
+    """Parse step4 ``accuracy_load`` xlsx into a :class:`ComparisonResult`.
+
+    Record-only — does NOT set passed/failed or influence status.  Reuses
+    :func:`parse_xlsx_report` for the xlsx open + row sweep, then pulls
+    ``max_re_ratio / avg_re_ratio / root_mean_squared_ratio`` from the
+    records' ``extra`` columns via fuzzy aliases.
+
+    If the accuracy_load xlsx uses column names not covered by
+    ``_RATIO_ALIASES``, the corresponding ``actual`` field stays ``None``
+    — extend the alias tuples once the real column names are confirmed
+    (see scheme.html 3.4.3 落地需验).
+    """
+    data = parse_xlsx_report(comparison_report_dir)
+    actual = ComparisonRatio()
+    records = data.report_records
+    max_vals = _collect_ratio_values(records, _RATIO_ALIASES["max_re_ratio"])
+    avg_vals = _collect_ratio_values(records, _RATIO_ALIASES["avg_re_ratio"])
+    rms_vals = _collect_ratio_values(records, _RATIO_ALIASES["root_mean_squared_ratio"])
+    if max_vals:
+        actual.max_re_ratio = max(max_vals)
+    if avg_vals:
+        actual.avg_re_ratio = sum(avg_vals) / len(avg_vals)
+    if rms_vals:
+        actual.root_mean_squared_ratio = max(rms_vals)
+    if data.parse_error:
+        logger.warning(
+            "parse_fusion_comparison: xlsx parse_error=%s; actual may be partial",
+            data.parse_error,
+        )
+    return ComparisonResult(thresholds=thresholds, actual=actual)
+
+
+__all__ = ["parse_fusion_comparison", "parse_xlsx_report"]
