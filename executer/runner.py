@@ -1225,6 +1225,7 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
     generator_work_dir = req.iter_dir or cache_dir
     stem = scoped_cases_path.stem
     expanded = generator_work_dir / f"{stem}_expanded.json"
+    remote_stem = Path(remote.cases_path(operator_name)).stem
     executor_files = _resolve_generated_executors(generator_work_dir, stem)
     if not executor_files or not expanded.is_file():
         missing: list[str] = []
@@ -1309,14 +1310,14 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
                 )
                 ok0 = (
                     await check_remote_dir_has_files(
-                        conn, f"{out_t1}/output/dist_cpu/{stem}/0/rank_0"
+                        conn, f"{out_t1}/output/dist_cpu/{remote_stem}/0/rank_0"
                     )
                     if out_t1
                     else False
                 )
                 ok1 = (
                     await check_remote_dir_has_files(
-                        conn, f"{out_t1}/output/dist_cpu/{stem}/0/rank_1"
+                        conn, f"{out_t1}/output/dist_cpu/{remote_stem}/0/rank_1"
                     )
                     if out_t1
                     else False
@@ -1372,14 +1373,14 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
                 )
                 ok0b = (
                     await check_remote_dir_has_files(
-                        conn, f"{out_t2}/output/dist_npu_bm/{stem}/0/rank_0"
+                        conn, f"{out_t2}/output/dist_npu_bm/{remote_stem}/0/rank_0"
                     )
                     if out_t2
                     else False
                 )
                 ok1b = (
                     await check_remote_dir_has_files(
-                        conn, f"{out_t2}/output/dist_npu_bm/{stem}/0/rank_1"
+                        conn, f"{out_t2}/output/dist_npu_bm/{remote_stem}/0/rank_1"
                     )
                     if out_t2
                     else False
