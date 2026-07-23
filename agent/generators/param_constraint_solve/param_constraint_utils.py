@@ -377,7 +377,7 @@ class ParamConstraintUtils(CommonDispatcher):
                     builder.solver.add(z3.Implies(tag, z3_constraint))
                     tag_of[static_expr] = tag
             except Exception as e:
-                logger.error(f"choice_no_conflicts_expr_core, failed , expr : {static_expr}, err msg : {str(e)}")
+                logger.error(f"choice_no_conflicts_expr_core, failed , expr : '{static_expr}', err msg : {str(e)}")
 
         assume = list(tag_of.values())
         iters = 0
