@@ -1,32 +1,19 @@
 ---
-description: 对单轮 constraints、cases、execution 和 analysis 产物执行独立质量门禁。
+description: 对单轮 constraints、cases、execution 和 analysis 产物执行非阻塞基础检查。
 ---
 
-# 质量门禁
+# 基础可运行性检查
 
-调用 `scripts/validate_artifacts.py` 分别校验已存在的阶段产物，再核对：
+当前目标是先生成并执行基础用例。只把下列情况作为 blocking issue：
 
-- constraints 中所有非空 expr 通过规范化后的 Python AST 校验；
-- `allowed_range_value.type=range` 不含 `null` 边界；`type=enum` 只有文档明确允许
-  未传/null 时才可包含 `null`；
-- 数值范围 expr 使用不等式而不是 `.range_value in [[min, max]]`；
-- cases 数量与 generation_summary 一致；
-- passed + failed = total；
-- execution records 中 case id 可回溯到 cases；
-- analysis 的根因属于固定枚举；
-- 下一状态与根因/通过统计一致。
-- `operator_family=aclnn` 时，一段式算子（`function_signature` 不含
-  `GetWorkspaceSize`）合法；其 `outputs` 可含标量指针输出，不得判为缺失两段式函数。
-  `operator_family=hs` 时完全不使用 `GetWorkspaceSize` 判定，也不得要求 C 指针输出。
-  `is_single_function_mode` 字段已废弃，任一 family 命中都阻断。
+- 必需产物不存在或不可读；
+- 没有任何可执行用例；
+- CSV/JSON 缺少执行器定位 API 所需的基础字段；
+- 执行器自身报错，导致用例没有实际运行。
 
-real 模式额外追加 CPU golden 推导门禁：对 `iter_dir/cases_executor.py` 运行
-`python scripts/validate_artifacts.py executor <iter>/cases_executor.py`，命中
-`_dummy_output` / `# [FALLBACK]` / `# TODO: CPU_GOLDEN` 任一标记或语法错误 →
-`blocking_issues` 非空。dummy 残留说明 `atc-cpu-golden-derivation` skill 未真正执行
-或未生效，real 上传的会是 `torch.ones` 假参考，passed/failed 无精度语义，必须阻断。
+约束 AST、参数语义、场景覆盖率、Golden 覆盖率、准确度、统计一致性和记录回溯等
+检查当前均为可选诊断；即使发现问题也只写入 `checks[].warnings`，不得删除已生成用例、
+不得阻止进入执行。TTK E2E 可使用现有 Golden，但精度失败不阻塞；ACLNN 不要求 Golden。
 
-写入 quality_gate.json。任何 blocking_issues 非空时 status 必须为 blocked。
-质量门禁只确认阻断事实，不得跳过 failure-analyst 直接把表达式解析失败判成
-`generator_bug`。约束语义或表达式有误时，next_state 应进入 DIAGNOSE，由
-failure-analyst 判定是否为 `constraint_extraction`。
+可以写入 `quality_gate.json` 记录检查结果，但它不是生成或执行的前置产物。只有上述
+基础可运行性错误使 `blocking_issues` 非空；其他 warning 不改变下一状态。

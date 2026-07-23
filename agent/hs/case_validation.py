@@ -76,7 +76,8 @@ def _check_integer_range(item: dict[str, Any]) -> str | None:
 
 
 def _validate_sparse_attention_case(
-    case: dict[str, Any], *, require_key_value_equal: bool = True
+    case: dict[str, Any], *, require_key_value_equal: bool = True,
+    platform: str | None = None,
 ) -> list[str]:
     issues: list[str] = []
     items = _items(case)
@@ -104,8 +105,12 @@ def _validate_sparse_attention_case(
             issues.append("sparse_indices.shape[0] must equal query.shape[0]")
         if layout_q == "BSND" and len(sparse) > 1 and sparse[1] != q[1]:
             issues.append("BSND sparse_indices.shape[1] must equal query.shape[1]")
-    if q and len(q) >= 2 and q[-2] not in {1, 2, 4, 8, 16, 32, 64, 128}:
-        issues.append(f"query head count {q[-2]} is outside the documented domain")
+    if q and len(q) >= 2:
+        if platform and "Ascend 950" in platform:
+            if not (1 <= q[-2] <= 128):
+                issues.append(f"query head count {q[-2]} outside Ascend 950 domain [1,128]")
+        elif q[-2] not in {1, 2, 4, 8, 16, 32, 64, 128}:
+            issues.append(f"query head count {q[-2]} is outside the documented domain")
     for name, shape in (("key", k), ("value", v)):
         if shape and len(shape) >= 2 and shape[-2] != 1:
             issues.append(f"{name} KV head count {shape[-2]} must be 1")
@@ -182,6 +187,57 @@ def _validate_kv_quant_case(case: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _validate_lightning_indexer_case(case: dict[str, Any]) -> list[str]:
+    """Validate the runtime contracts exposed by LightningIndexer InputCheck."""
+    issues: list[str] = []
+    items = _items(case)
+    layout_q = _attr(items, "layout_query")
+    layout_k = _attr(items, "layout_key")
+    query = _shape(items, "query")
+    block_table = items.get("block_table")
+
+    if layout_k == "PA_BSND":
+        if _absent(block_table):
+            issues.append("PA_BSND requires block_table")
+        elif len(_shape(items, "block_table") or []) != 2:
+            issues.append("PA_BSND block_table must be rank 2")
+    elif layout_k in {"BSND", "TND"} and not _absent(block_table):
+        issues.append(f"{layout_k} requires block_table to be absent")
+
+    if layout_q == "TND" and _absent(items.get("actual_seq_lengths_query")):
+        issues.append("TND requires actual_seq_lengths_query")
+    if layout_k in {"TND", "PA_BSND"} and _absent(
+        items.get("actual_seq_lengths_key")
+    ):
+        issues.append(f"{layout_k} requires actual_seq_lengths_key")
+
+    if layout_q == "TND" and layout_k == "TND":
+        query_lengths_shape = _shape(items, "actual_seq_lengths_query")
+        key_lengths_shape = _shape(items, "actual_seq_lengths_key")
+        if (
+            query_lengths_shape
+            and key_lengths_shape
+            and query_lengths_shape[0] != key_lengths_shape[0]
+        ):
+            issues.append(
+                "TND actual_seq_lengths_query.shape[0] must equal "
+                "actual_seq_lengths_key.shape[0]"
+            )
+
+    if layout_q == "BSND" and query:
+        for name in (
+            "actual_seq_lengths_query",
+            "actual_seq_lengths_key",
+        ):
+            item = items.get(name)
+            shape = _shape(items, name)
+            if item and not _absent(item) and shape and shape[0] != query[0]:
+                issues.append(
+                    f"BSND {name}.shape[0] must equal query.shape[0]"
+                )
+    return issues
+
+
 def validate_hs_cases(
     cases: list[dict[str, Any]], constraints: dict[str, Any],
     platform: str | None = None,
@@ -198,7 +254,9 @@ def validate_hs_cases(
         if operator == "torch_npu.npu_kv_quant_sparse_flash_attention":
             issues.extend(_validate_kv_quant_case(case))
         elif operator == "torch_npu.npu_sparse_flash_attention":
-            issues.extend(_validate_sparse_attention_case(case))
+            issues.extend(_validate_sparse_attention_case(case, platform=platform))
+        elif operator == "torch_npu.npu_lightning_indexer":
+            issues.extend(_validate_lightning_indexer_case(case))
         issues.extend(evaluate_case_relations(case, constraints, platform))
         audit.append({"id": case.get("id", index), "issues": sorted(set(issues))})
 

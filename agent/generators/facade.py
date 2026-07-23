@@ -32,6 +32,8 @@
   dtype、shape、range 等），不再由 facade 显式注入 ``random.seed``。``seed`` 参数保留
   以保持 API 兼容 —— 下游内部的 random 调用使用 Python 全局 ``random`` 状态时，
   调用方可在外部 ``random.seed(seed)`` 来获得确定行为。
+* 正式生成日志按算子和平台拆分到
+  ``logs/generate_case_<operator>_<platform>.log``，不同平台不共用文件。
 * 入参 dict 中的 ``constraints_in_parameters`` 字典会一并传入，Z3 求解器
   据此修正 / 求解参数。
 """
@@ -40,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
@@ -50,39 +53,20 @@ from agent.generators.operator_handle_main import single_operator_handle
 logger = logging.getLogger(__name__)
 
 
-# 正式生成代码依赖 ``common_utils.logger_util.init_logger`` 创建文件 logger。
-# 当上层（节点 / 路由 / MCP 工具）首次调用时，若主流程还没初始化过 logger，
-# 这里自动惰性初始化一次，避免出现 ``Log file don't init`` 异常。
-#
-# 由于 ``init_logger`` 会覆盖全局 ``_global_logger``，而不同算子需要独立的
-# 日志文件（``generate_case_{operator_name}.log``），这里用集合记录已初始化过的
-# 算子名，使同一算子只切换一次 logger，避免每次生成都重建 handler。
-_logger_initialized_operators: set[str] = set()
-# 当算子名缺失时使用的兜底日志文件名（不含扩展名）。
-_FALLBACK_LOG_NAME = "operator_generator"
+def _safe_log_component(value: str, fallback: str) -> str:
+    """Return a filesystem-safe, stable component for generator log names."""
+    text = value.strip() if isinstance(value, str) else ""
+    # 平台通常是枚举字符串，但同时兼容 ``a/b``、空格及 Windows 非法文件名字符。
+    sanitized = re.sub(r"[^0-9A-Za-z_.-]+", "_", text).strip("._-")
+    return sanitized or fallback
 
 
-def _ensure_formal_logger_initialized(operator_name: str = "") -> None:
-    """Initialize the formal-generator file logger for ``operator_name``.
+def _platform_log_name(operator_name: str, platform: str) -> str:
+    """Build ``generate_case_<operator>_<platform>`` without an extension."""
+    operator_part = _safe_log_component(operator_name, "unknown_operator")
+    platform_part = _safe_log_component(platform, "unknown_platform")
+    return f"generate_case_{operator_part}_{platform_part}"
 
-    日志文件命名为 ``generate_case_{operator_name}.log``；当 ``operator_name``
-    为空时回退到 ``operator_generator.log``。同一算子名只会初始化一次，
-    重复调用直接返回。
-    """
-    key = operator_name.strip() if isinstance(operator_name, str) else ""
-    if key in _logger_initialized_operators:
-        return
-    log_name = f"generate_case_{key}" if key else _FALLBACK_LOG_NAME
-    try:
-        from agent.generators.common_utils.logger_util import init_logger
-        init_logger(log_name=log_name, log_dir="./logs")
-        _logger_initialized_operators.add(key)
-    except Exception as init_err:  # pragma: no cover - 防呆
-        # 不要因为 logger 初始化失败就阻塞用例生成；保留 traceback 供排查。
-        logging.getLogger(__name__).debug(
-            "init_logger for formal generator skipped (operator=%s): %s",
-            key or "<fallback>", init_err,
-        )
 
 DEFAULT_COUNT = 10
 DEFAULT_SEED: int | None = 42
@@ -193,31 +177,45 @@ class TestCaseGenerator:
         if count == 0:
             return []
 
-        # 正式生成代码依赖 ``init_logger`` 初始化文件 logger，这里做一次惰性兜底。
-        # 按算子名初始化，日志文件为 ``generate_case_{operator_name}.log``。
-        _ensure_formal_logger_initialized(self._operator_name)
-        self._apply_seed()
+        # 正式生成代码使用全局 LazyLogger。每个平台在独立上下文中临时切换 logger，
+        # 避免同一算子的所有平台继续混写 generate_case_<operator>.log。
+        from agent.generators.common_utils.logger_util import DocumentLogContext
 
+        log_name = _platform_log_name(self._operator_name, platform)
         cases: list[CaseConfig] = []
-        try:
-            cases = single_operator_handle(
-                operator_constraint=self._constraints,
-                platform=platform,
-                case_num=count,
-                jsonl_save_path=jsonl_save_path,
+        with DocumentLogContext(log_name, log_dir="./logs") as platform_logger:
+            self._apply_seed()
+            platform_logger.info(
+                "Start platform generation, operator=%s, platform=%s, count=%d",
+                self._operator_name,
+                platform,
+                count,
             )
-        except Exception as gen_err:
-            logger.exception(
-                "single_operator_handle failed for platform=%s, operator=%s: %s",
-                platform, self._operator_name, gen_err,
-            )
-        finally:
-            if jsonl_save_path is not None:
-                DataHandleUtil.convert_jsonl_to_json(
-                    api_name=self._operator_name,
+            try:
+                cases = single_operator_handle(
+                    operator_constraint=self._constraints,
+                    platform=platform,
+                    case_num=count,
                     jsonl_save_path=jsonl_save_path,
-                    json_save_path=json_save_path or jsonl_save_path,
                 )
+            except Exception as gen_err:
+                platform_logger.exception(
+                    "single_operator_handle failed for platform=%s, operator=%s: %s",
+                    platform, self._operator_name, gen_err,
+                )
+            finally:
+                if jsonl_save_path is not None:
+                    DataHandleUtil.convert_jsonl_to_json(
+                        api_name=self._operator_name,
+                        jsonl_save_path=jsonl_save_path,
+                        json_save_path=json_save_path or jsonl_save_path,
+                    )
+            platform_logger.info(
+                "End platform generation, operator=%s, platform=%s, generated=%d",
+                self._operator_name,
+                platform,
+                len(cases or []),
+            )
         return list(cases or [])
 
     def generate_by_platform(

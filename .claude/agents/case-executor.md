@@ -19,7 +19,8 @@ dummy executor。
 用例文件，但 EXECUTE 阶段**只执行一个平台**。不要循环所有产品。调用
 `scripts/execute_cases.py` 时通常不传 `--platform`；执行器会按 `servers.json` 中每台
 服务器 `platforms` 数组的顺序，选择第一个被算子支持且已有 `cases_<platform>.json`
-的产品用例执行。`--platform` 仅用于人工调试时显式覆盖。
+的产品用例执行。若旧 CSV 指向其他平台，自动复用匹配桶重组 canonical JSON/CSV，
+不要求重新 EXTRACT 或 GENERATE。`--platform` 仅用于人工调试时显式覆盖。
 
 ## real 模式三子步骤
 
@@ -59,18 +60,23 @@ dummy executor。
 
 输入必须为 `<iter>/cases_ttk.csv`：
 
-先读取 `golden_manifest.json`。若状态不是 `verified`，调用 `derive-ttk-golden`，完成
-插件推导、TTK validate 和真实单场景验证；未验证通过不得批量执行。
+先读取 `run_state.operator_family`。当前 TTK 默认只做基础 NPU 功能性运行：HS/E2E
+不读取 `golden_manifest.json`，不调用 `derive-ttk-golden`，不以 Golden 覆盖率、
+准确度或严格语义校验作为执行门禁；ACLNN 同样不要求 manifest，并由 CSV 的
+`api_name=aclnn*` 自动选择原生 `python3 -m ttk aclnn`。只有用户明确要求精度对比时，
+HS/E2E 默认加载可用的自主推导或源码 Golden，但精度失败不得阻塞功能流程；
+`--no-golden` 仅关闭算子 Golden，不得关闭内部格式 runtime bootstrap。
 
 `python scripts/execute_cases.py --test-framework ttk --generate --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json`
 
 `--generate` 只产生 Linux NPU 节点命令；`--mode real` 从 `servers.json.ttk` 读取
 `remote_root/repo_path/python/env_init_script`，创建算子名_时间点目录，上传 CSV/plugin，
-执行 E2E，并把 `results.csv`、`log/` 下载到 iter 的 `ttk_artifacts/`。不得调用 ATK
-golden 推导或上传 `/home/operator_atk`。
+HS 执行 E2E 并下载到 `ttk_artifacts/`；ACLNN 执行原生 ACLNN 模式并下载到
+`ttk_aclnn_artifacts/`。两者均不得调用 ATK golden 推导或上传 `/home/operator_atk`。
 
 ## 通用纪律
 
-执行前校验 cases，执行后校验 execution_result。不得把 SSH、凭据或环境故障误写成
-用例失败；engine 层故障单独写 `engine_error`。返回 passed/failed、执行模式、产物路径
-和引擎错误。
+执行前只检查 cases 可读且至少包含一条可执行用例；执行后记录 execution_result。
+覆盖率、准确度和语义审计仅作可选诊断，不得阻止基础执行。不得把 SSH、凭据或环境
+故障误写成用例失败；engine 层故障单独写 `engine_error`。返回 passed/failed、执行模式、
+产物路径和引擎错误。

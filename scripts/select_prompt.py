@@ -32,7 +32,10 @@ PROMPTS = ROOT / "prompts"
 MODULES_DIR = PROMPTS / "modules"
 
 # Fixed assembly order = original §-order of the sections in the monolith.
-MODULE_ORDER = ["nz_matmul", "backward_partial", "format_cast", "implicit_pos", "broadcast", "acl_format_enum"]
+MODULE_ORDER = [
+    "nz_matmul", "backward_partial", "format_cast", "implicit_pos",
+    "broadcast", "acl_format_enum", "scatter_pa_kv_cache",
+]
 
 
 def parse_manifest(md_text: str) -> dict:

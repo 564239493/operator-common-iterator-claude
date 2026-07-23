@@ -1,1 +1,51 @@
-{"operator":"torch_npu.npu_lightning_indexer","status":"pending","plugin":null,"verified_modes":{},"unsupported":["all modes until real Golden verification"]}
+{
+  "operator": "torch_npu.npu_lightning_indexer",
+  "status": "verified",
+  "plugin": "npu_lightning_indexer_golden.py",
+  "verified_modes": {
+    "torch_npu.npu_lightning_indexer": {
+      "scenarios": [
+        {"id": 0, "layout_query": "TND", "layout_key": "TND", "sparse_mode": 3, "sparse_count": 6, "return_value": false, "dtype": "float16"},
+        {"id": 1, "layout_query": "TND", "layout_key": "TND", "sparse_mode": 3, "sparse_count": 1, "return_value": true, "dtype": "bfloat16"},
+        {"id": 2, "layout_query": "TND", "layout_key": "TND", "sparse_mode": 3, "sparse_count": 8192, "return_value": false, "dtype": "float16"},
+        {"id": 3, "layout_query": "TND", "layout_key": "TND", "sparse_mode": 3, "sparse_count": 1, "return_value": false, "dtype": "float16"},
+        {"id": 4, "layout_query": "BSND", "layout_key": "BSND", "sparse_mode": 0, "sparse_count": 1, "return_value": false, "dtype": "bfloat16"},
+        {"id": 5, "layout_query": "BSND", "layout_key": "BSND", "sparse_mode": 0, "sparse_count": 3, "return_value": true, "dtype": "float16"},
+        {"id": 6, "layout_query": "BSND", "layout_key": "BSND", "sparse_mode": 3, "sparse_count": 4096, "return_value": false, "dtype": "bfloat16"},
+        {"id": 7, "layout_query": "BSND", "layout_key": "PA_BSND", "sparse_mode": 3, "sparse_count": 1, "return_value": true, "dtype": "float16"},
+        {"id": 8, "layout_query": "BSND", "layout_key": "PA_BSND", "sparse_mode": 3, "sparse_count": 1, "return_value": false, "dtype": "bfloat16"},
+        {"id": 9, "layout_query": "BSND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 129, "return_value": true, "dtype": "bfloat16"}
+      ],
+      "verified_layouts": ["TND", "BSND", "PA_BSND"],
+      "verified_sparse_modes": [0, 3],
+      "verified_dtypes": ["bfloat16", "float16"],
+      "verified_sparse_count_values": [1, 3, 6, 129, 4096, 8192],
+      "verified_return_value_modes": [true, false]
+    }
+  },
+  "unsupported": [],
+  "coverage": {
+    "status": "verified",
+    "case_count": 10,
+    "covered_count": 10,
+    "uncovered_count": 0,
+    "cases": [
+      {"id": 0, "covered": true, "reasons": []},
+      {"id": 1, "covered": true, "reasons": []},
+      {"id": 2, "covered": true, "reasons": []},
+      {"id": 3, "covered": true, "reasons": []},
+      {"id": 4, "covered": true, "reasons": []},
+      {"id": 5, "covered": true, "reasons": []},
+      {"id": 6, "covered": true, "reasons": []},
+      {"id": 7, "covered": true, "reasons": []},
+      {"id": 8, "covered": true, "reasons": []},
+      {"id": 9, "covered": true, "reasons": []}
+    ]
+  },
+  "limitations": [
+    "multi-element prefix sums require a literal tensor builder",
+    "ordered valid/invalid sparse indices require a literal tensor builder"
+  ],
+  "ttk_content_generation_mode": "range_only",
+  "note": "Derivation is formula-based and smoke-tested with stubbed torch_npu. Real NPU E2E verification is the next step; this manifest records the golden derivation, not a precision pass on NPU."
+}

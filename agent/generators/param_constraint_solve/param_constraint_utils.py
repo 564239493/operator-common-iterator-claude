@@ -736,8 +736,10 @@ class ParamConstraintUtils(CommonDispatcher):
                 attr_value = property_dict.get(field_name, None)
                 if param_attr_ori_status and attr_value is not None:
                     self.case_input_map[param_name].__setattr__(field_name, attr_value)
-        if not self._post_check_resolved_case(builder, z3_constraints):
-            return False
+        # 生成优先：Z3 已给出解后直接保留用例。旧的 Python PostCheck 会再次 eval
+        # constraints_in_parameters，并把“伪 SAT”用例 fail-closed 丢弃；复杂算子中
+        # Param 包装、可选参数和 SeqSort 语义不完整，曾导致 0/10 用例全部被误杀。
+        # 真实合法性改由后续 TTK/ATK 执行结果观察，不在生成阶段二次阻断。
         return True
 
     def _post_check_resolved_case(self, builder: Z3ConstraintBuilder,

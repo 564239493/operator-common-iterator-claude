@@ -161,6 +161,12 @@ TYPE_CONFIG = {
         'sort_fn': z3.StringSort,
         'parse_fn': lambda v: v.as_string()
     },
+    # 别名：部分约束提取器（hs 文档）把 dtype 写成 'str'，与 'string' 等价；
+    # 此前缺失导致 ScalarVar 静默 fallback 到 int sort，触发 Z3 parser error。
+    'str': {
+        'sort_fn': z3.StringSort,
+        'parse_fn': lambda v: v.as_string()
+    },
     'hifloat8': {
         'sort_fn': z3.RealSort,
         'parse_fn': _parse_float_value

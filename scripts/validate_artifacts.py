@@ -106,6 +106,25 @@ def _is_nested_numeric_interval_membership(node: ast.AST) -> bool:
     return False
 
 
+def _has_unsupported_sum_comprehension(node: ast.AST) -> bool:
+    """Detect aggregate forms that the Z3 expression converter cannot lower.
+
+    ``sum(param.range_value)`` is supported.  Generator/list/set
+    comprehensions inside ``sum`` are not; linear reductions should be
+    rewritten algebraically, e.g. ``sum(A) - sum(B)``.
+    """
+    for item in ast.walk(node):
+        if not isinstance(item, ast.Call):
+            continue
+        if not isinstance(item.func, ast.Name) or item.func.id != "sum":
+            continue
+        if item.args and isinstance(
+            item.args[0], (ast.GeneratorExp, ast.ListComp, ast.SetComp)
+        ):
+            return True
+    return False
+
+
 def validate_constraint_semantics(value) -> list[str]:
     errors: list[str] = []
 
@@ -147,6 +166,12 @@ def validate_constraint_semantics(value) -> list[str]:
             )
             continue
         try:
+            # 通用 TODO 标记：`# TODO:` 前缀的 expr 表示该约束 Z3 求解不完备或语义需
+            # 人工 channel，由 z3_expression_solver_utils.add_constraint 检测并跳过
+            # solver（dropped_constraints 携带 reason="todo_skip"）。这类 expr 不应
+            # 作为 Python AST 解析，免校验直接放行。
+            if expr.lstrip().startswith("# TODO:"):
+                continue
             normalized = normalize_expr_null(expr)
             tree = ast.parse(normalized, mode="eval")
         except (SyntaxError, tokenize.TokenError) as exc:
@@ -161,6 +186,14 @@ def validate_constraint_semantics(value) -> list[str]:
                 "'in [[min, max]]' as a numeric range; use chained "
                 "inequalities such as 'min <= value <= max'"
             )
+        if _has_unsupported_sum_comprehension(tree):
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}].expr uses "
+                "sum() with a generator/comprehension, which the Z3 "
+                "converter does not support; for linear reductions rewrite "
+                "sum(A[i] - B[i]) as "
+                "sum(A.range_value) - sum(B.range_value)"
+            )
         if any(
             isinstance(item, ast.Attribute) and item.attr == "array_length"
             for item in ast.walk(tree)
@@ -173,6 +206,30 @@ def validate_constraint_semantics(value) -> list[str]:
         for item in ast.walk(tree):
             if not isinstance(item, ast.Compare):
                 continue
+            compare_operands = [item.left, *item.comparators]
+            for left, op, right in zip(
+                compare_operands, item.ops, compare_operands[1:]
+            ):
+                scalar_attr = next((
+                    operand.attr
+                    for operand in (left, right)
+                    if isinstance(operand, ast.Attribute)
+                    and operand.attr in {"format", "dtype"}
+                ), None)
+                list_operand = any(
+                    isinstance(operand, (ast.List, ast.Tuple, ast.Set))
+                    for operand in (left, right)
+                )
+                if (
+                    scalar_attr and list_operand
+                    and isinstance(op, (ast.Eq, ast.NotEq))
+                ):
+                    errors.append(
+                        f"constraints_in_parameters[{platform}][{index}].expr "
+                        f"compares scalar .{scalar_attr} with a list using "
+                        "==/!=; compare with a string literal or use 'in [...]'"
+                    )
+                    break
             operands = [item.left, *item.comparators]
             has_none = any(
                 isinstance(operand, ast.Constant) and operand.value is None
@@ -188,6 +245,73 @@ def validate_constraint_semantics(value) -> list[str]:
                 )
                 break
 
+    return errors
+
+
+def _validate_scatter_pa_kv_cache_constraints(value) -> list[str]:
+    """Operator-local completeness checks; never affect other ACLNN ops."""
+    if value.get("operator_name") != "aclnnScatterPaKvCache":
+        return []
+    errors: list[str] = []
+    expected_dimensions = {
+        ("inputs", "value"): [0, 3, 4],
+        ("outputs", "valueCacheRef"): [0, 4, 5],
+    }
+    for (section, name), expected in expected_dimensions.items():
+        cards = (value.get(section) or {}).get(name) or {}
+        for platform, attrs in cards.items():
+            if not isinstance(attrs, dict):
+                continue
+            raw = attrs.get("dimensions")
+            actual = raw.get("value") if isinstance(raw, dict) else raw
+            if actual != expected:
+                errors.append(
+                    f"{section}.{name}[{platform}].dimensions.value must be "
+                    f"the documented discrete rank set {expected}, got {actual!r}"
+                )
+
+    positive_params = {
+        "num_blocks", "block_size", "num_head", "k_head_size", "v_head_size",
+    }
+    for platform, relations in (value.get("constraints_in_parameters") or {}).items():
+        if not isinstance(relations, list):
+            continue
+        exprs = [
+            str(item.get("expr") or "") for item in relations
+            if isinstance(item, dict)
+        ]
+        compact = [re.sub(r"\s+", "", expr) for expr in exprs]
+        joined = "\n".join(compact)
+        for param in positive_params:
+            if not any(
+                re.search(
+                    rf"(?:{re.escape(param)}\.range_value>0|0<{re.escape(param)}\.range_value)",
+                    expr,
+                )
+                for expr in compact
+            ):
+                errors.append(
+                    f"constraints_in_parameters[{platform}] misses "
+                    f"{param}.range_value > 0"
+                )
+        required_fragments = {
+            'keyCacheRef.format=="FRACTAL_NZ"': "PA_NZ key cache format",
+            'valueCacheRef.format=="FRACTAL_NZ"': "PA_NZ value cache format",
+            'keyCacheRef.format=="ND"': "Norm key cache format",
+            'valueCacheRef.format=="ND"': "Norm value cache format",
+        }
+        single_quote_joined = joined.replace("'", '"')
+        for fragment, label in required_fragments.items():
+            if fragment not in single_quote_joined:
+                errors.append(
+                    f"constraints_in_parameters[{platform}] misses {label}: {fragment}"
+                )
+        for mode in ("Alibi", "Rope", "Omni", "Nct", "NHSD"):
+            if mode not in joined:
+                errors.append(
+                    f"constraints_in_parameters[{platform}] does not gate "
+                    f"scatterModeOptional={mode} to cacheModeOptional=Norm"
+                )
     return errors
 
 
@@ -349,9 +473,12 @@ def _validate_array_lengths(value) -> list[str]:
         if length_value is None:
             errors.append(f"{path} must not be null; use [] when unconstrained")
             continue
-        is_single_interval = (
+        # A flat integer list is a list of exact/discrete candidate lengths.
+        # In particular, a fixed Python-list shape ``[1]`` is represented as
+        # array_length.value=[1].  Length intervals use nested [min, max]
+        # entries so they are not confused with discrete candidates.
+        is_discrete_lengths = (
             isinstance(length_value, list)
-            and len(length_value) == 2
             and all(isinstance(item, int) for item in length_value)
         )
         is_interval_list = (
@@ -363,9 +490,9 @@ def _validate_array_lengths(value) -> list[str]:
                 for item in length_value
             )
         )
-        if not (is_single_interval or is_interval_list):
+        if not (is_discrete_lengths or is_interval_list):
             errors.append(
-                f"{path} must be [], [min,max], or "
+                f"{path} must be [], [length1,length2,...], or "
                 "[[min1,max1],[min2,max2],...]"
             )
             continue
@@ -505,6 +632,7 @@ def validate_constraints(value) -> list[str]:
             + _validate_conditional_shape_constraints(value)
             + _validate_tensor_list_length_constraints(value)
             + _validate_dynamic_allowed_ranges(value)
+            + _validate_scatter_pa_kv_cache_constraints(value)
         )
         if str(value.get("operator_name", "")).startswith(("torch_npu.", "torch.npu.")):
             from agent.hs.constraint_validation import validate_hs_constraints
@@ -524,7 +652,7 @@ def validate_cases(value) -> list[str]:
 
 
 def validate_ttk_cases(path: str) -> list[str]:
-    """Validate the portable structure of a TTK E2E CSV without CANN/NPU."""
+    """Validate a TTK ACLNN or E2E CSV without CANN/NPU."""
     file_path = Path(path)
     if not file_path.is_file():
         return [f"TTK cases file not found: {path}"]
@@ -542,6 +670,13 @@ def validate_ttk_cases(path: str) -> list[str]:
         return [f"cannot parse TTK CSV: {exc}"]
     if not rows:
         errors.append("TTK cases CSV must not be empty")
+        return errors
+    first_api = (rows[0].get("api_name") or "").strip()
+    if first_api.startswith("aclnn"):
+        from scripts.validate_ttk_aclnn_csv import validate_csv
+
+        result = validate_csv(file_path)
+        return [str(issue) for issue in result["issues"]]
     for index, row in enumerate(rows):
         api = (row.get("api_name") or "").strip()
         if not api or api.lower().startswith("aclnn"):

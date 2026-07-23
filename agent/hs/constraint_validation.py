@@ -5,7 +5,11 @@ import ast
 import re
 from typing import Any
 
-from .constraint_evaluator import evaluate_case_relations
+from .constraint_evaluator import (
+    ConstraintValue,
+    evaluate_case_relations,
+    evaluate_expression,
+)
 
 
 def _value(field: Any) -> Any:
@@ -197,6 +201,131 @@ def _validate_kv_quant_truth_table(constraints: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _validate_lightning_indexer_truth_table(
+    constraints: dict[str, Any],
+) -> list[str]:
+    """Catch inverted presence implications before case generation.
+
+    The operator contract is deliberately checked as a truth table.  Merely
+    finding an expression mentioning layout_key/block_table is insufficient:
+    the 2026-07-22 regression had the right names and src_text but constrained
+    the opposite branch.
+    """
+    if constraints.get("operator_name") != "torch_npu.npu_lightning_indexer":
+        return []
+    raw = constraints.get("constraints_in_parameters") or {}
+    groups = {"common": raw} if isinstance(raw, list) else raw
+    if not isinstance(groups, dict):
+        return []
+    errors: list[str] = []
+    for platform, items in groups.items():
+        if not isinstance(items, list):
+            continue
+        presence_exprs = [
+            str(item.get("expr", ""))
+            for item in items
+            if isinstance(item, dict)
+            and item.get("expr_type") == "presence_dependency"
+            and {"layout_key", "block_table"}.issubset(
+                set(item.get("relation_params") or [])
+            )
+        ]
+        for layout, present, expected in (
+            ("PA_BSND", True, True),
+            ("PA_BSND", False, False),
+            ("BSND", True, False),
+            ("BSND", False, True),
+            ("TND", True, False),
+            ("TND", False, True),
+        ):
+            environment = {
+                "layout_key": ConstraintValue(range_value=layout),
+                "block_table": ConstraintValue(is_present=present),
+            }
+            try:
+                actual = bool(presence_exprs) and all(
+                    evaluate_expression(expr, environment)
+                    for expr in presence_exprs
+                )
+            except Exception as exc:
+                errors.append(
+                    f"{platform} lightning_indexer block_table truth-table "
+                    f"could not evaluate: {type(exc).__name__}: {exc}"
+                )
+                break
+            if actual != expected:
+                state = "present" if present else "absent"
+                errors.append(
+                    f"{platform} lightning_indexer block_table truth-table "
+                    f"failed for layout_key={layout}, block_table={state}: "
+                    f"expected {expected}, got {actual}"
+                )
+
+        key_align_exprs = [
+            str(item.get("expr", ""))
+            for item in items
+            if isinstance(item, dict)
+            and {"layout_query", "query", "actual_seq_lengths_key"}.issubset(
+                set(item.get("relation_params") or [])
+            )
+        ]
+        mismatch_environment = {
+            "layout_query": ConstraintValue(range_value="BSND"),
+            "query": ConstraintValue(shape=(1, 2, 3, 128)),
+            "actual_seq_lengths_key": ConstraintValue(shape=(7,)),
+        }
+        try:
+            rejects_mismatch = bool(key_align_exprs) and not all(
+                evaluate_expression(expr, mismatch_environment)
+                for expr in key_align_exprs
+            )
+        except Exception as exc:
+            errors.append(
+                f"{platform} lightning_indexer actual_seq_lengths_key "
+                f"truth-table could not evaluate: {type(exc).__name__}: {exc}"
+            )
+            continue
+        if not rejects_mismatch:
+            errors.append(
+                f"{platform} lightning_indexer must reject BSND "
+                "actual_seq_lengths_key.shape[0] != query.shape[0]"
+            )
+
+        tnd_align_exprs = [
+            str(item.get("expr", ""))
+            for item in items
+            if isinstance(item, dict)
+            and {
+                "layout_query", "layout_key",
+                "actual_seq_lengths_query", "actual_seq_lengths_key",
+            }.issubset(set(item.get("relation_params") or []))
+        ]
+        tnd_mismatch_environment = {
+            "layout_query": ConstraintValue(range_value="TND"),
+            "layout_key": ConstraintValue(range_value="TND"),
+            "actual_seq_lengths_query": ConstraintValue(shape=(2,)),
+            "actual_seq_lengths_key": ConstraintValue(shape=(1,)),
+        }
+        try:
+            rejects_tnd_mismatch = bool(tnd_align_exprs) and not all(
+                evaluate_expression(expr, tnd_mismatch_environment)
+                for expr in tnd_align_exprs
+            )
+        except Exception as exc:
+            errors.append(
+                f"{platform} lightning_indexer TND actual sequence "
+                f"truth-table could not evaluate: {type(exc).__name__}: {exc}"
+            )
+            continue
+        if not rejects_tnd_mismatch:
+            errors.append(
+                f"{platform} lightning_indexer must reject TND "
+                "actual_seq_lengths_query.shape[0] != "
+                "actual_seq_lengths_key.shape[0]"
+            )
+    return errors
+
+
 def validate_hs_constraints(constraints: dict[str, Any]) -> list[str]:
     """Return blocking HS extraction errors; non-HS inputs pass through."""
     operator = str(constraints.get("operator_name", ""))
@@ -254,4 +383,6 @@ def validate_hs_constraints(constraints: dict[str, Any]) -> list[str]:
             )
     if operator == "torch_npu.npu_kv_quant_sparse_flash_attention":
         errors.extend(_validate_kv_quant_truth_table(constraints))
+    elif operator == "torch_npu.npu_lightning_indexer":
+        errors.extend(_validate_lightning_indexer_truth_table(constraints))
     return errors

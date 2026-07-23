@@ -16,19 +16,23 @@ from agent.generators.param_constraint_solve.z3_expression_solver_utils import E
 
 logger = LazyLogger()
 
-# 短名（InputCaseConfig.dtype 实际取值）→ canonical 名（constraints_in_parameters expr 用）。
-# 镜像 per-run post_check_cases.py 的 DTYPE_SHORT_TO_CANON（DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP 反向）。
+# 短名（InputCaseConfig.dtype 实际取值）→ Python 小写字面量名（constraints_in_parameters expr 用）。
+# 镜像 per-run post_check_cases.py 的 DTYPE_SHORT_TO_CANON（DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP 反向），
+# 但 target 改为小写 Python 形式以匹配 prompts/torch_npu_constraints_extract_v2.md §3.2
+# 与 knowledge/torch_npu/operator_patterns/npu_sparse_flash_attention.md 的 dtype 约定
+# （prompt/knowledge 使用 'float16'/'bfloat16'/'int32'/'double' 等小写 Python 字面量，
+# 而非 ACL canonical 大写 'FLOAT16'/'BFLOAT16'）。
 DTYPE_SHORT_TO_CANON = {
-    "fp16": "FLOAT16", "fp32": "FLOAT32", "fp64": "FLOAT64", "bf16": "BFLOAT16",
-    "float": "FLOAT32", "double": "FLOAT64",
-    "int8": "INT8", "int16": "INT16", "int32": "INT32", "int64": "INT64", "int": "INT64",
-    "uint8": "UINT8", "uint16": "UINT16", "uint32": "UINT32", "uint64": "UINT64",
-    "bool": "BOOL", "string": "STRING",
-    "float8_e5m2": "FLOAT8_E5M2", "float8_e4m3fn": "FLOAT8_E4M3FN", "float8_e8m0": "FLOAT8_E8M0",
-    "float4_e2m1": "FLOAT4_E2M1", "float4_e1m2": "FLOAT4_E1M2",
-    "float6_e3m2": "FLOAT6_E3M2", "float6_e2m3": "FLOAT6_E2M3",
-    "hifloat8": "HIFLOAT8", "int4": "INT4", "uint4": "UINT4",
-    "complex64": "COMPLEX64", "complex128": "COMPLEX128",
+    "fp16": "float16", "fp32": "float32", "fp64": "float64", "bf16": "bfloat16",
+    "float": "float32", "double": "double",
+    "int8": "int8", "int16": "int16", "int32": "int32", "int64": "int64", "int": "int",
+    "uint8": "uint8", "uint16": "uint16", "uint32": "uint32", "uint64": "uint64",
+    "bool": "bool", "string": "string",
+    "float8_e5m2": "float8_e5m2", "float8_e4m3fn": "float8_e4m3fn", "float8_e8m0": "float8_e8m0",
+    "float4_e2m1": "float4_e2m1", "float4_e1m2": "float4_e1m2",
+    "float6_e3m2": "float6_e3m2", "float6_e2m3": "float6_e2m3",
+    "hifloat8": "hifloat8", "int4": "int4", "uint4": "uint4",
+    "complex64": "complex64", "complex128": "complex128",
 }
 
 SAFE_BUILTINS = {
@@ -51,8 +55,9 @@ class Param:
     def __init__(self, case_input: InputCaseConfig):
         self.name = getattr(case_input, "name", None)
         short = getattr(case_input, "dtype", None)
-        # 兼容 canonical 名（不在表内 → upper）与短名（表内映射）。
-        self.dtype = DTYPE_SHORT_TO_CANON.get(short, (short.upper() if short else None))
+        # 兼容短名（表内映射到 Python 小写）与已 Python 化形式（不在表内 → lower 后回写）。
+        # 不再强制 UPPERCASE：prompt/knowledge 用 'float16'/'bfloat16'，与 'FLOAT16' 不相等。
+        self.dtype = DTYPE_SHORT_TO_CANON.get(short, (short.lower() if short else None))
         self.format = getattr(case_input, "format", None)
         self.shape = getattr(case_input, "shape", None)
         self.range_value = getattr(case_input, "range_values", None)

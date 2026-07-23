@@ -165,6 +165,7 @@ async def _run_aclnn(
 
         return {
             "status": status, "mode": f"ttk_aclnn_{mode}",
+            "test_framework": "ttk", "ttk_mode": "aclnn",
             "exit_code": result.exit_code,
             "stdout": result.stdout, "stderr": result.stderr,
             "duration": duration,
@@ -172,10 +173,18 @@ async def _run_aclnn(
             "local_artifact_dir": str(artifact_dir),
             "results_csv": str(local_results) if local_results.is_file() else None,
             "npu_passed": npu_pass, "npu_failed": npu_fail, "npu_total": npu_total,
+            "passed": npu_pass, "failed": npu_fail, "total": npu_total,
+            "records": results_info.get("rows", []),
+            "engine_error": "" if status == "success" else (
+                "TTK ACLNN command failed" if not passed else
+                "TTK ACLNN produced no passing result set"
+            ),
         }
     except SSHEngineError as exc:
         return {
             "status": "error", "mode": f"ttk_aclnn_{mode}",
+            "test_framework": "ttk", "ttk_mode": "aclnn",
+            "passed": 0, "failed": 0, "total": 0, "records": [],
             "engine_error": str(exc),
             "duration": time.monotonic() - started,
             "remote_dir": remote_dir,

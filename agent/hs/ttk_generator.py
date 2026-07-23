@@ -36,8 +36,8 @@ def is_hs_operator(name: str) -> bool:
     return name in HS_OPERATORS
 
 
-def install_ttk_plugin(operator_name: str, output_dir: Path) -> Path:
-    """Install the verified per-operator TTK plugin beside generated CSV."""
+def resolve_ttk_plugin(operator_name: str, *, golden: bool = True) -> Path:
+    """Resolve an operator golden or the runtime-only fallback plugin."""
     sources = {
         "torch_npu.npu_fused_infer_attention_score": "fia_golden.py",
         "torch_npu.npu_mla_prolog_v3": "mla_prolog_v3_golden.py",
@@ -47,14 +47,22 @@ def install_ttk_plugin(operator_name: str, output_dir: Path) -> Path:
         # precision comparison without a reference).
         "torch_npu.npu_kv_quant_sparse_flash_attention":
             "kv_quant_sparse_flash_attention_golden.py",
+        "torch_npu.npu_lightning_indexer": "npu_lightning_indexer_golden.py",
+        "torch_npu.npu_sparse_flash_attention": "sparse_flash_attention_golden.py",
     }
-    source_name = sources.get(operator_name, "runtime_bootstrap.py")
+    source_name = sources.get(operator_name) if golden else None
+    return Path(__file__).parent / "ttk_plugins" / (source_name or "runtime_bootstrap.py")
+
+
+def install_ttk_plugin(operator_name: str, output_dir: Path) -> Path:
+    """Install the best available per-operator TTK plugin beside generated CSV."""
+    source = resolve_ttk_plugin(operator_name)
     if operator_name.endswith("fused_infer_attention_score"):
         target_name = "ttk_golden_fia.py"
     else:
         target_name = "ttk_plugin.py"
     target = output_dir / target_name
-    shutil.copy2(Path(__file__).parent / "ttk_plugins" / source_name, target)
+    shutil.copy2(source, target)
     return target
 
 

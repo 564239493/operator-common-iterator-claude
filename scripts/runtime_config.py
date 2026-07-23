@@ -96,7 +96,9 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
     if not isinstance(servers, list) or not servers:
         return path, ["服务器配置必须包含非空 servers 数组"]
 
-    valid_transfer_modes = {"auto", "scp", "sftp", ""}
+    # 与 executer/ssh.py upload_file 支持的传输方式保持一致：base64 用于
+    # 不支持 SFTP/SCP 的服务器（SSH stdin base64 编码传输），是合法值。
+    valid_transfer_modes = {"auto", "scp", "sftp", "base64", ""}
     errors: list[str] = []
     required = ("ip", "username", "password")
     for index, server in enumerate(servers):
@@ -113,7 +115,7 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
         tm = server.get("transfer_mode")
         if tm is not None and str(tm).strip().lower() not in valid_transfer_modes:
             errors.append(
-                f"servers[{index}].transfer_mode 必须是 auto / scp / sftp 之一"
+                f"servers[{index}].transfer_mode 必须是 auto / scp / sftp / base64 之一"
             )
         # Optional: validate remote_paths structure
         rp = server.get("remote_paths")

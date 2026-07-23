@@ -56,6 +56,11 @@
 ## 5. Shape、列表与返回值
 
 - `dimensions` 表示离散 rank 集合，不表示 rank 区间。文档写 1~8 维时展开为 `[1,2,3,4,5,6,7,8]`。
+- 对 Python `List[int]`、tuple、aclIntArray 等非 Tensor 容器，“shape 为 `[N]`”或
+  “长度为 N”表示容器长度，固定长度写 `array_length.value=[N]`；不得写入
+  `dimensions`。长度区间才写 `array_length.value=[[lo,hi]]`。
+- `allowed_range_value` 只描述容器元素值域。不得把 list shape/长度写进该字段，也不得
+  把 optional 的 `None/null` 当成元素候选；presence 使用 `param is None` / `is not None`。
 - 文档只给符号 shape 时，先写 rank，再用 `shape[i]` 关系表达轴约束。不同参数复用 B/S/N/D 符号时，必须显式写相等关系。
 - TensorList 的“每个元素”约束应表达为当前 schema 可承载的最接近形式，并标记无法逐元素量化的部分；不要把 list 长度、元素 rank 和元素 shape 混为一谈。
 - Python 整型列表可能表示普通长度列表，也可能表示 TND 累积序列。只有文档明确“前缀和/累计值”时，才添加单调递增、最后一项等于 T 或长度等于 B 等关系。
@@ -75,6 +80,32 @@
 - 若文档未定义哨兵值、无效区填充值、输出 dtype/shape 或某个场景的行为，写 `DOC_GAP`，不要从同族算子推断。
 - 专项知识模块中的数字和场景仅用于提醒审校当前文档。若输入文档版本发生变化，以输入文档为准，并在变化处按证据重新提取。
 
+### 6.1 Bool 值关系的表达语法
+
+- 参数或参数属性与布尔常量比较时必须使用值比较：`flag == False`、
+  `flag.range_value == True`、`flag != True`。
+- 禁止使用 `flag is False`、`flag is not True` 等对象身份判断，也不要用
+  `not flag` 替代明确的参数值关系。
+- `is` / `is not` 只用于 `None` presence 判断；`True`/`False` 必须使用
+  `==` / `!=`。条件分支同样遵守此规则。
+- 例如“`return_value=False` 时 `layout_key` 不能为 `PA_BSND`”应写为
+  `(return_value == False) or (layout_key.range_value != "PA_BSND")`，不得写
+  `(return_value is False) or ...`。
+
+### 6.2 Optional presence 与有效表达式
+
+- optional 参数统一写 `param is None` / `param is not None`；禁止在提取结果中使用
+  `param.is_present`，因为它属于生成器内部实现，不是文档或稳定 schema 字段。
+- 属性约束使用短路形式，例如
+  `(param is None) or (len(param.shape) == 1)`；条件必传使用
+  `(layout.range_value != "TND") or (param is not None)`。
+- `expr` 必须是完整、可解析的 Python 布尔表达式。禁止添加 `# TODO:`/`TODO:`
+  前缀来绕过生成器；若存在生成器能力缺口，保留真实表达式，并把
+  `[GENERATOR_LIMITATION:原因]` 写入 `src_text` 或参数 `description`。
+
 ## 7. 最低审校闭环
 
 完成 JSON 后至少反查：函数原型的每个参数和返回槽位、参数表每一行、所有 HTML/Markdown 场景表、约束说明每一条、示例是否暴露了解释矛盾。随后验证所有关系中的参数名、shape 轴、dtype 枚举、默认值和 presence 方向均能被当前 schema/校验器接受。
+额外搜索全部 `expr`，确保不存在 `is True`、`is False`、`is not True` 或
+`is not False`；发现后必须改为对应的 `==` / `!=` 值比较。
+同时确保不存在 `.is_present` 和以 `# TODO:`/`TODO:` 开头的 `expr`。

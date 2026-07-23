@@ -1,5 +1,5 @@
-# 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达)
-# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters / joint cross dtype/format combo table expressed as OR-of-ANDs disjunction)
+# 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达 / v5 新增 dtype 与 value 候选逐字一致性硬规则并修正 §5.2 受控字典 HFLOAT8→HIFLOAT8 拼写)
+# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters / joint cross dtype/format combo table expressed as OR-of-ANDs disjunction / v5 adds verbatim dtype/value candidate consistency hard rule and fixes §5.2 controlled dictionary typo HFLOAT8→HIFLOAT8)
 
 > **用途**：从昇腾 CANN（Compute Architecture for Neural Networks）算子官方说明文档（Markdown / HTML）中，**人工 + LLM 协同** 提取结构化的算子约束信息，并以**纯 JSON** 形式输出，可直接喂给下游的测试用例生成引擎。
 >
@@ -29,7 +29,7 @@
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 32 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、表达式求解器兼容性） |
+| 9 | 自检清单 | 提取完成后必须执行 30 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、v5 新增 dtype/value 逐字一致性） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 | 知识库路径速查表 | 本提示词与 `knowledge/` 的对应关系（维护参考） |
 | （外部）`CHANGELOG.md` | v1→v3 变更记录 | 不参与提取，维护参考 |
@@ -327,7 +327,7 @@ class OperatorRule(BaseModel):
   禁止错误合并为 `[1, 1024]`。
 | `dtype.value` | 是 | `List[str]` | 支持的 dtype 字符串（见 §5.2）；标量参数允许填写其自身类型字符串（如 `"bool"`、`"char"`、`"int"`）；不适用 → `[]` |
 | `dtype.src_text` | 是 | `str` | 摘录原文 |
-| `dimensions.value` | 是 | `List[int]` 或 `[]` | **维度（rank）约束**：如 `[2, 3]` 表示 `2 ≤ rank ≤ 3`；不适用 → `[]` |
+| `dimensions.value` | 是 | `List[int]` 或 `[]` | **允许的 Tensor rank 离散集合**：如 `[2, 3]` 表示 rank 只能是 2 或 3；不适用 → `[]`。连续区间必须展开。 |
 | `dimensions.src_text` | 是 | `str` | 摘录原文（如 `"2-3"`、`"2维"`） |
 
 **`is_optional` 判定强制规则**：
@@ -378,6 +378,14 @@ class OperatorRule(BaseModel):
 - 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`。
 - 注：`aclIntArray` 的 dtype 不走"文档张量 dtype 列回填"——见下方「aclIntArray 参数的固定 dtype 规则」（`dtype.value` 固定 `["int"]`）。
 
+**dtype / value 候选逐字一致性硬规则（v5 新增）**：
+
+- 每个约束条目 `value` 数组中的 dtype 字符串（以及 format 字符串、`allowed_range_value` 的字符串枚举候选、`dtype_support_description` / `format_support_description` 的 combo 值）必须**逐字复制**自文档原文 / 该条目 `src_text`，仅允许 §5.2 / §5.3 明确登记的规范化映射（`BF16` / `bfloat16` / `bf16` → `BF16`；`float` / `Float` / `FLOAT` → `FLOAT32`）。**禁止**任何其他形式的缩写、漏字母、字母替换、大小写改写、词干截断或意译。
+- **条目内自洽**：同一条目中，`src_text` 里出现的每个 dtype/format token 必须能在 `value` 数组中找到**逐字一致**的对应项，反之 `value` 数组每个元素也必须能在 `src_text` / 文档原文中找到逐字一致来源。若 `src_text` 记 `HIFLOAT8` 而 `value` 写 `HFLOAT8`（或反之），即为提取错误，必须修正为与文档原文逐字一致。
+- **受控字典缺口处置**：当文档原文使用的 dtype token 不在 §5.2 受控字典中时，**禁止**将其改写为字典中“形似”的项（漏字母 / 截断 / 替换字母以凑出字典里已有的串，如把 `HIFLOAT8` 改成 `HFLOAT8`）；应**原样保留**文档 token、在 `src_text` 摘录原文，并在该参数 `description` 末尾补注 `[DICT_GAP:<token>]` 标记供人工扩容字典。此为字典缺口，不属誊写错误，不受 §9.4「dtype 必须来自 §5.2」的拒绝（以原样 token 为准）。
+- 该规则同样适用于 `allowed_range_value.value` 的字符串枚举候选、`format.value` 的格式串，以及 `dtype_support_description` / `format_support_description` 中的 combo 值。
+- **反例（必须避免）**：算子文档原文与条目 `src_text` 均为 `HIFLOAT8`，但 `value` 数组误写为 `HFLOAT8`（漏字母 `I`）——属本规则明确禁止的誊写错误；下游生成器仅识别 `HIFLOAT8`，`HFLOAT8` 会触发 `_infer_sort` KeyError 并被 try/except 静默吞掉，最终 ZERO_CASES_GENERATED。
+
 **aclDataType 参数的固定 dtype 规则**：
 - 当 `type.value == "aclDataType"` 时，`dtype.value` **固定**为 `["string"]`。`aclDataType` 是表示数据类型的标量枚举，参数本身取值为 dtype 名称字符串，故其"自身 dtype"恒为 `string`。此规则**优先级高于**上面的"类型回填规则"——无论文档"数据类型"列是否给出候选都强制执行，**不**因列值非空而改写，也**不**走"其他非 Tensor 参数使用 `type.value` 回填"分支（否则会错误地产出 `["aclDataType"]`）。
 - 文档"数据类型"列里的候选（如 `FLOAT16`/`BFLOAT16`/`INT8`）是参数的**取值域**，必须写入 `allowed_range_value`：`type="enum"`、`value=["FLOAT16","BFLOAT16","INT8"]`；若文档允许"空/缺省/不传"则追加 `null` 候选。**禁止**把这些候选写进 `dtype.value`，也**禁止**给 `dtype.type` 填 `"enum"`（`ValueWithSrcText.type` 仅 `allowed_range_value` 使用，`dtype.type` 恒为 `null`）。
@@ -398,13 +406,14 @@ class OperatorRule(BaseModel):
 
 | 原文形态 | `dimensions.value` | 备注 |
 | -------- | ------------------ | ---- |
-| `"0-8"` / `"2~6"` | `[0, 8]` / `[2, 6]` | Rank 区间 |
-| `"2D"` / `"3-D"` | `[2, 2]` / `[3, 3]` | Rank 精确（D 后缀） |
-| `"1D~8D"` / `"2维~8维"` | `[1, 8]` / `[2, 8]` | 带 D / 维 后缀的区间 |
-| `"1维"` / `"3维"` | `[1, 1]` / `[3, 3]` | 中文精确 |
-| `"1维，最大长度256"` | `[1, 1]`（长度256 不在此字段） | 长度限制另入 `constraints_in_parameters` |
-| `"(N,C,H,W)"` | `[4, 4]` | 符号元组，按逗号槽数 |
-| `"(H*rankSize, N)"` | `[2, 2]` | 复合表达式，按槽数 |
+| `"0-8"` / `"2~6"` | `[0,1,2,3,4,5,6,7,8]` / `[2,3,4,5,6]` | 连续 Rank 必须逐值展开 |
+| `"2D"` / `"3-D"` | `[2]` / `[3]` | Rank 精确（D 后缀） |
+| `"1D~8D"` / `"2维~8维"` | `[1,2,3,4,5,6,7,8]` / `[2,3,4,5,6,7,8]` | 带 D / 维 后缀的连续集合 |
+| `"1维"` / `"3维"` | `[1]` / `[3]` | 中文精确 |
+| `"0、3、4"` / `"0、4、5"` | `[0,3,4]` / `[0,4,5]` | 离散 Rank 原样保留，禁止压成 `[0,4]` / `[0,5]` |
+| `"1维，最大长度256"` | `[1]`（长度256 不在此字段） | 长度限制另入 `constraints_in_parameters` |
+| `"(N,C,H,W)"` | `[4]` | 符号元组，按逗号槽数 |
+| `"(H*rankSize, N)"` | `[2]` | 复合表达式，按槽数 |
 | `"[2, 3, 4]"` | `[[2,2],[3,3],[4,4]]` | 纯数值 → per-dim |
 | `"[8]"` | `[[8,8]]` | 单维数值 |
 | `"[0-100, 0-200]"` | `[[0,100],[0,200]]` | per-dim 带区间 |
@@ -413,7 +422,7 @@ class OperatorRule(BaseModel):
 | `"与输入相同"` / `"与xxx一致"` | `[]` | 跨参数引用，留给约束表达 |
 
 **关键原则 —— "维数 vs 长度" 区分**：
-- "N 维" 描述的是 tensor 的**维度数（rank）**，应输出 `[N, N]`；
+- "N 维" 描述的是 tensor 的**维度数（rank）**，应输出 `[N]`；
 - "最大长度 M" / "最大长度为 M" 描述的是某一维的**大小限制**，**不属于 `dimensions`**；
 - 该大小限制应由 `constraints_in_parameters` 中的 `self_shape_axis_value` 约束表达。
 - **反例**：把 `"1维，最大长度256"` 解析为 `[[1, 256]]`（per-dim 格式）属于错误。
@@ -422,12 +431,12 @@ class OperatorRule(BaseModel):
 当 shape 描述里出现 `<ul><li>` + 多种方括号变体（如 `[E, N1]/[N1]`）：
 1. 从原文抽取**所有** `[...]` 方括号组；
 2. 每个组内按逗号槽数 = rank；
-3. 取所有变体的 rank 区间作为 `dimensions.value`；
+3. 取所有变体的 rank 去重离散集合作为 `dimensions.value`，禁止补齐文档未出现的中间 rank；
 - 示例：`<ul><li>per-channel...[E, N1]/[N1]</li><li>per-group...[E, G, N1]/[G, N1]</li></ul>`
-  → `[E,N1]=2`、`[N1]=1`、`[E,G,N1]=3`、`[G,N1]=2` → 最终 `dimensions.value=[1, 3]`。
+  → `[E,N1]=2`、`[N1]=1`、`[E,G,N1]=3`、`[G,N1]=2` → 最终 `dimensions.value=[1,2,3]`。
 
 **校验规则**：
-- rank 格式：`0 ≤ min ≤ max ≤ 10`；
+- rank 集合：所有元素均为 `0..10` 的整数，去重后按升序保存；
 - per-dim 格式：每维 `min ≤ max`（或 `null`），最多 10 维；
 - `[]` 永远合法。
 
@@ -872,13 +881,15 @@ transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
 
 ### 5.2 标准 dtype 字符串（受控字典）
 
-提取 `dtype.value` / `dtype_support_description` 中的 dtype 时，**必须**使用以下字符串之一：
+提取 `dtype.value` / `dtype_support_description` 中的 dtype 时，**必须**使用以下字符串之一（v5 修正：`HFLOAT8` 为误写，正确名为 `HIFLOAT8`，与 `agent/generators/data_definition/constants.py` 及全部算子文档原文一致）：
 
 ##### Tensor 数据类型
 ```
 FLOAT32, FLOAT16, BFLOAT16, BF16, DOUBLE, INT8, UINT8, INT16, UINT16,
 INT32, UINT32, INT64, UINT64, BOOL, COMPLEX64, COMPLEX128,
-FLOAT8_E4M3FN, FLOAT8_E5M2, FLOAT4_E2M1, HFLOAT4, HFLOAT8
+FLOAT8_E4M3FN, FLOAT8_E5M2, FLOAT4_E2M1, HFLOAT4, HIFLOAT8
+```
+
 ```
 
 ##### 标量参数"类型"（仅用于 `dtype.value`，不用于 `dtype_support_description` 的 combo）
@@ -916,6 +927,9 @@ NDC1HWC0, FRACTAL_NZ_C0_16, FRACTAL_NZ_C0_32, NDHWC, NCHW_VECT_C0_16, NC1HWC0, N
    - ✅ `rankSize.range_value in [2, 4, 8]`
    - ✅ `x1.shape[0] == BS.range_value`
    - ✅ `x1.format == x2.format`
+   - ✅ `x1.format == "FRACTAL_NZ"`、`x1.dtype == "BFLOAT16"`（运行时属性是标量字符串）
+   - ✅ `x1.format in ["ND", "FRACTAL_NZ"]`（多个候选用 `in`）
+   - ❌ `x1.format == ["FRACTAL_NZ"]`、`x1.dtype == ["BFLOAT16"]`（候选元数据是列表，不代表运行时属性是列表）
    - ❌ `tensor_x.dim == 3`（**禁止**别名）
 2. **取值范围**：数值区间必须使用比较运算；离散枚举使用 `in [v1, v2]`：
    - ✅ `0 <= actType.range_value <= 5`（数值闭区间）
@@ -936,26 +950,6 @@ NDC1HWC0, FRACTAL_NZ_C0_16, FRACTAL_NZ_C0_32, NDHWC, NCHW_VECT_C0_16, NC1HWC0, N
    - ✅ `all(v >= 1 for v in padding.range_value)`
    - ✅ `all(d > 0 for d in x.shape)`（不允许空 Tensor）
    - ❌ `[v >= 1 for v in padding.range_value]`（返回 list，不返回 bool）
-   - `all()` / `any()` 的生成器仅用于逐元素布尔判定；**不得**将生成器
-     传给 `sum()`，当前求解器不支持 `sum(expr for ... in ...)`、
-     `sum(... for ... in zip(...))` 或带索引循环的求和。
-   - 数组整体求和只使用 `sum(param.range_value)`。若被求和项是线性组合，
-     必须先做代数等价变换：
-
-     ```text
-     # 文档：reduceSum(A[i] - B[i]) <= capacity
-     # 正例：分别对完整数组求和，再做标量运算
-     sum(A.range_value) - sum(B.range_value) <= capacity.range_value
-
-     # 反例：当前求解器无法翻译
-     sum(A.range_value[i] - B.range_value[i]
-         for i in range(min(len(A.range_value), len(B.range_value)))) <= capacity.range_value
-     sum(a - b for a, b in zip(A.range_value, B.range_value)) <= capacity.range_value
-     ```
-
-   - 代数改写不得擅自加入 `min(len(...))` 截断。若文档明确要求数组等长，
-     另建 shape/长度约束；若合法场景中两数组长度本来不同，不得为了
-     索引循环强制等长，应根据文档的总量语义对两个完整数组分别求和。
 5. **"维数 vs 长度"**：表达式中的 `len(x.shape)` 表示 rank（仅 `aclTensor` / `aclTensorList` 有 `.shape`），"shape size" 永远指 rank，**不是**各维大小乘积。`aclIntArray` / `aclFloatArray` / `aclBoolArray` **没有 `.shape`**，其元素个数直接写 `len(paramName)`（裸参数名），**禁止** `len(paramName.shape)`。
 6. **负索引优先**：当约束引用了以字母命名的维度（如 `H`、`W`）且该维度在 shape 描述中**始终处于固定语义位置**（如"最后一维"），必须使用 `shape[-1]` 而非固定正索引 `shape[1]` 或 `shape[3]`。
 7. **命名维度变量 / 外部常量引用**：使用 `变量名.range_value` 形式（如 `BS.range_value`、`rankSize.range_value`），不写 `BS.shape[0]`。
@@ -1190,20 +1184,20 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | **文档写 bool 参数（无固定值约束）** | `allowed_range_value.type="enum"`、`value=[false, true]`；强行 bool 枚举，不允许填 `[]` 配 `type="range"`（否则下游生成器按浮点填充，会产生 1.0/1.23e-40 等非法值） |
 | 表达式无法用 Python 表达（自然语言公式） | **不**产出 `constraints_in_parameters` 条目（空 `expr` 违 §4.7.2）；把语义记入相关参数 `description`/`src_text` 摘录原文，待人工校对 |
 | 文档出现矛盾（A段dtype=X，B段dtype=Y） | 优先**保守**取值（取并集），`src_text` 摘录矛盾原文，等待人工确认 |
-| 文档写"1维，最大长度256" | `dimensions.value=[1, 1]`，**长度256 不得放入 `dimensions`**；须在 `constraints_in_parameters` 中加 `self_shape_axis_value` 约束 |
+| 文档写"1维，最大长度256" | `dimensions.value=[1]`，**长度256 不得放入 `dimensions`**；须在 `constraints_in_parameters` 中加 `self_shape_axis_value` 约束 |
 | 文档写"shape 与 weight1 一致" / "与输入相同" | `dimensions.value=[]`；**跨参数引用留给 `constraints_in_parameters`** 的 `shape_equality` 约束 |
-| 文档写"(BS, H) 或 (BS/rankSize, rankSize*H)" | 拆为 `shape_choice` 约束 + `parameter_representation` 约束；`dimensions.value` 按区间取值 |
+| 文档写"(BS, H) 或 (BS/rankSize, rankSize*H)" | 拆为 `shape_choice` 约束 + `parameter_representation` 约束；两者均为 2D，`dimensions.value=[2]` |
 | 文档写"其中k0=16" | `k0` 归类为 `constant`，`constant_value=16`；不放入 `inputs`（直接写入 `expr` 表达式） |
 | 文档写"H*rankSize"中的 `rankSize` 仅在复合表达式出现 | 归类为 `external_constant`，按平台分别给 `allowed_range_value` |
 | 文档写"Reduce 维度需要…" | `Reduce` 是 reduce 操作概念词，**不**抽取为隐式维度变量 |
 | 文档写"Softmax、LayerNorm" | **不**抽取为隐式维度变量（是操作名 / 算法名） |
 | 文档写"支持配置空或者[-2,-1]"（aclIntArray） | `allowed_range_value.value=[null, [-2, -1]]`，`type=enum`；"空"表示未传值，不得写成字符串 |
 | 文档写"仅 Atlas A2 支持 BF16" | 在对应平台的 `dtype.value` 中体现差异，`src_text` 摘录原文 |
-| 文档写"shape 为 [E, N1] / [N1]（per-channel / per-tensor）" | `dimensions.value=[1, 3]`（HTML 多变体取区间），shape 选择逻辑走 `shape_choice` / `shape_value_dependency` 约束 |
+| 文档写"shape 为 [E, N1] / [N1]（per-channel / per-tensor）" | `dimensions.value=[1,2]`（仅保留文档真实出现的 rank），shape 选择逻辑走 `shape_choice` / `shape_value_dependency` 约束 |
 | 文档写"x 和 y 必须共存，要么都存在要么都不存在" | `expr_type=presence_dependency`，`expr=(x is None) == (y is None)` |
 | 文档写"actType 取值为 0 到 5" | `allowed_range_value.value=[[0, 5]]`，`type=range`；可附加 `self_value_range`：`0 <= actType.range_value <= 5` 增强机器可判定性 |
 | 文档把 epsilon/eps 描述为"除0保护值"，并建议"≤1e-4" | `allowed_range_value.value=[]`；增加 `value_dependency`：`0 < epsilon.range_value <= 1e-4`，`src_text` 同时摘录两句 |
-| **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"（v2 新增）** | 按 §4.6.5 全流程处理：①`mat2.dimensions.value=[5,5]`；②`mat2.allowed_range_value.value=[]`（块尺寸是 shape 约束，不入元素取值字段）；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
+| **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"（v2 新增）** | 按 §4.6.5 全流程处理：①`mat2.dimensions.value=[5]`；②`mat2.allowed_range_value.value=[]`（块尺寸是 shape 约束，不入元素取值字段）；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
 | **文档写"NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 16， k0为16"（v2 新增，转置 NZ）** | 同上，但**作为独立两条约束**落库（与上一种布局不合并），`src_text` 摘录对应的转置原文；`mat2.allowed_range_value.value=[]` |
 | **文档同时写明非转置与转置 NZ 两种布局（v2 新增）** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`mat2.allowed_range_value.value=[]`（块尺寸约束不入元素取值字段，约束条目按布局拆分） |
 | **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
@@ -1223,6 +1217,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | **文档组合表只有 dtype 列（纯 dtype 表，跨多参数也行），或只有 format 列（纯 format 表）（v3 增补）** | 纯 dtype 表填 `dtype_support_description`、纯 format 表填 `format_support_description`，**不**落 OR-of-ANDs expr；不属 §6.3 模式 9 适用范围 |
 | **文档组合表同表含 dtype 列与 format 列但二者独立（任意 dtype 配任意 format，拆开不丢失信息）（v3 增补）** | 按"单独 dtype 约束 + 单独 format 约束"处理：dtype 部分填 `dtype_support_description`、format 部分填 `format_support_description`（或用 `type_equality` + format 枚举 + `format_rank_consistency`）；**不**强制 OR-of-ANDs。判据：拆成纯 dtype 表+纯 format 表后是否产生原本非法的 dtype×format 组合——不产生即为独立 |
 | **`constraints_in_parameters` 出现 `expr=""` 空壳条目（`derived_value`/`cross_param_constraint` 等）（v3 增补）** | 违 §4.7.2/§4.6.8 C.1：`derived_value` 在文档存在确定映射时 `expr` 必须编码为可求解 OR-of-ANDs/等式 expr（§6.3 模式 9），不得为空；不可形式化的约束（如「转 NZ 后不许 contiguous/transpose」）**不**产出条目，改记入 `description`/`src_text`。典型反例：aclnnNpuFormatCast iter_001 三平台 `derived_value.expr=""` 与 `cross_param_constraint.expr=""` 空壳 |
+| **条目内 `src_text` 的 dtype/format token 与 `value` 数组元素不逐字一致（v5 新增）** | 违 §4.6.3「dtype / value 候选逐字一致性硬规则」与 §9.32：必须修正 `value` 元素使其与 `src_text` / 文档原文逐字一致；典型反例：`src_text` 含 `HIFLOAT8` 而 `dtype.value` 写 `HFLOAT8`（漏字母 `I`），下游生成器 `HIFLOAT8` 之外一律 KeyError 被静默吞掉，终致 ZERO_CASES_GENERATED |
+| **文档原文 dtype token 不在 §5.2 受控字典（v5 新增）** | **不得**改写为字典内"形似"项凑数（漏字母/截断/替换字母）；原样保留文档 token，`src_text` 摘录原文，并在该参数 `description` 末尾补注 `[DICT_GAP:<token>]` 供人工扩容字典；此情形不属 §9.4 拒绝，以原样 token 为准 |
 
 ## 9. 自检清单（提取完成后必跑）
 
@@ -1236,13 +1232,16 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
    `product_support` 中的每一个平台都产出条目**——即使各平台 `ParamAttributes` 内容完全
    一致，也必须逐平台复制；不得用单个平台名"代笔"。常见错误模式：从 `Atlas 350 加速卡`
    文档表格读取约束后，只输出 `Atlas 350 加速卡` 条目，遗漏 `Atlas A3 / A2` 条目。
-4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；非 Tensor 参数若非"仅支持空指针"，`dtype.value` 不得为空，缺失时按 type 回填；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。
+4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）且与该条目
+   `src_text` / 文档原文逐字一致（仅允许 §5.2 登记的规范化映射，见 §9.32）；文档 token
+   不在 §5.2 时按 `[DICT_GAP]` 原样保留，不受本项拒绝；非 Tensor 参数若非"仅支持空指针"，
+   `dtype.value` 不得为空，缺失时按 type 回填；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。
 5. **表达式合法**：每条 `expr`（非空）先把裸 `null` token 规范化为 `None`，再用
    Python AST 解析；不得有 `SyntaxError`。`null`/`None` 不得作为数值大小比较边界。
 6. **关系参数一致**：`expr` 中**所有出现的标识符**都在 `relation_params` 中；`relation_params` 中所有参数名都在 `inputs`/`outputs` 有对应卡片（隐式维度变量/外部常量允许例外，但须在 `inputs` 中登记）。
 7. **来源可溯**：`function_explanation`/`dtype`/`format`/`dimensions`/`allowed_range_value` 的 `src_text` 至少 30% 非空（无来源的纯模型外推视为无效）。
 8. **隐式参数完整性**：所有在 `constraints_in_parameters` 的 `expr` 中出现的**非函数签名标识符**（如 `BS`、`H`、`N`、`rankSize`），必须**全部**出现在 `inputs` 中，且 `is_operator_param.value=false`。
-9. **dimensions 合理性与类型门禁**：仅 `aclTensor` / `aclTensorList` 允许 `dimensions.value` 非空；其他类型必须为 `[]`。非空时形态必须合规（rank 格式 `[min, max]` 且 `0 ≤ min ≤ max ≤ 10`，或 per-dim 格式 `[[min,max], ...]`）。
+9. **dimensions 合理性与类型门禁**：仅 `aclTensor` / `aclTensorList` 允许 `dimensions.value` 非空；其他类型必须为 `[]`。非空时必须是 `0..10` 的升序去重整数离散集合；连续区间逐值展开，离散原文不得补齐中间 rank。per-dim 数值范围仍使用 `[[min,max], ...]`。
 10. **枚举拆分完整**：若 `allowed_range_value.type=enum` 且 value 是 `List[str]`，则字符串中**不得**再包含 `/`、`、`、`以及`、`and`、`/` 等分隔符（必须已被拆成独立元素）。
 11. **range 的 null 禁令**：若 `allowed_range_value.type=range`，所有区间端点必须为
     实际数值且不得为 `null`；`type=enum` 的离散候选允许包含 `null`。
@@ -1257,7 +1256,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
     范围填充会产生非法 bool 取值，触发 `create_dataset` 报告 `attr bool error`）。
     唯一顺序特例：`aclnnBatchMatMulWeightNz` 的 `self_transposed` 与
     `mat2_transposed` 必须使用 `[true, false]`，见 §4.6.5 B.1。
-15. **NZ 块尺寸硬约束（v2 新增）**：若存在 5D NZ 张量（`format ∈ {"NZ","FRACTAL_NZ","FRACTAL_NZ_C0_16"}` 且 `dimensions.value=[5,5]`），
+15. **NZ 块尺寸硬约束（v2 新增）**：若存在 5D NZ 张量（`format ∈ {"NZ","FRACTAL_NZ","FRACTAL_NZ_C0_16"}` 且 `dimensions.value=[5]`），
     必须满足**全部**下列子项：
     a. `mat2.allowed_range_value.value=[]`（空）或文档**显式约束元素取值**的端点；**禁止**为表达块尺寸而写 `[[16,16],[16,16]]` / `[[16,16]]`（块尺寸是 shape 约束，只落 §4.6.5 §C 的 `shape_equality`，见 §4.6.5 §D）；
     b. `constraints_in_parameters[每个支持平台]` 含 `mat2.shape[3] == 16` 与 `mat2.shape[4] == 16` 两条 `shape_equality`（或 `shape_value_dependency`）；
@@ -1450,19 +1449,18 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
        `(cacheModeOptional.range_value == "PA_NZ") or (...)` 和
        `optional is None or x.dtype == optional.dtype` 必须均为
        `type_dependency`，不得为 `type_equality`。
-32. **聚合表达式求解器兼容性自检**：遍历所有 `expr`：
-    a. 不得出现 `sum(... for ... in ...)`、`sum(... for ... in zip(...))` 或
-       `sum([comprehension])`；当前生成器只支持 `sum(param.range_value)` 这类
-       对完整数组的直接求和；
-    b. 对 `reduceSum(A[i] - B[i])` 等线性聚合，必须改写为
-       `sum(A.range_value) - sum(B.range_value)`，并保留原有门控与容量不等式；
-    c. 不得用 `range(min(len(A), len(B)))` 静默截断较长数组；只在文档
-       明确要求等长时另建长度约束；
-    d. `aclnnScatterPaKvCache` 专项形式必须为
-       `(seqLensOptional is None or compressLensOptional is None) or `
-       `(sum(seqLensOptional.range_value) - sum(compressLensOptional.range_value) <= `
-       `num_blocks.range_value * block_size.range_value)`，不得产出索引生成器或
-       `zip()` 生成器。
+32. **dtype / value 候选逐字一致性自检（v5 新增）**：逐平台遍历全部 `inputs`/`outputs`
+    的 `dtype`、`format`、`allowed_range_value` 字段及 `dtype_support_description` /
+    `format_support_description`，必须满足**全部**：
+    a. 每个字符串候选**逐字**来自该条目 `src_text` / 文档原文，仅允许 §5.2/§5.3 登记
+       的规范化映射（`BF16`/`bfloat16`/`bf16`→`BF16`、`float`/`FLOAT`→`FLOAT32`）；
+       其余改写（漏字母、字母替换、截断、大小写、意译）均视为错误；
+    b. **条目内自洽**：`src_text` 中每个 dtype/format token 与 `value` 数组元素一一逐字对应；
+       典型反例：`src_text` 含 `HIFLOAT8` 而 `value` 写 `HFLOAT8`（漏字母 `I`），必须修正；
+    c. 文档 token 不在 §5.2 受控字典时，**不得**改写为字典内形似项凑数；原样保留 token，
+       并在参数 `description` 末尾补注 `[DICT_GAP:<token>]`，此情形不受 §9.4 拒绝；
+    d. 该自检同样覆盖 `allowed_range_value.value` 的字符串枚举、`format.value` 格式串、
+       combo 表 dtype/format 值；发现不一致即重做该条目。
 
 ## 10. 调用模板
 
@@ -1471,7 +1469,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ```text
 # System
 你是一名昇腾 CANN 算子约束抽取专家。
-请严格遵循《算子约束提取通用提示词 v3》的所有规则，并参考知识库：
+请严格遵循《算子约束提取通用提示词 v5》的所有规则，并参考知识库：
 - 解析 shape/dimensions 时参考 §4.6.3 dimensions 解析表
 - 识别隐式维度变量时参考 §4.6.4（概念词/操作名/类型词需剔除）
 - 处理 NZ / FRACTAL_NZ 张量时参考 §4.6.5（块尺寸硬约束、转置/非转置布局区分）
@@ -1493,6 +1491,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
   条件 Shape 使用模式 6；shape_value_dependency 隐式 bool 门控使用模式 6.1；
   Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0；派生值查找使用模式 9）
 - 写 allowed_range_value 时参考 §4.6.3 allowed_range 文本→结构化映射
+- dtype / format / 枚举候选必须与 src_text / 文档原文逐字一致（见 §4.6.3
+  「dtype / value 候选逐字一致性硬规则」与 §9.32）；文档 token 不在 §5.2 时
+  原样保留并标 `[DICT_GAP:<token>]`，不得改写为字典内形似项凑数
 
 输出必须是**纯 JSON 字符串**，无任何前后缀。
 
@@ -1512,10 +1513,10 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 
 ## 你的任务
 1. 完整阅读算子说明文档；
-2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 30 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
+2. 按《算子约束提取通用提示词 v5》第 3 章 schema 输出 JSON；
+3. 内部执行第 9 章 32 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
    §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0、§9.26 公共互推导/broadcast 知识展开、
-   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表）；
+   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.32 dtype/value 候选逐字一致性）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
@@ -1544,3 +1545,13 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | [`knowledge/relation_skills/presence_dependency.md`](knowledge/relation_skills/presence_dependency.md) | 存在性依赖 3 类模板 | §6.3 模式 3 |
 | [`prompts/modules/broadcast.md §A`](prompts/modules/broadcast.md) | CANN aclTensor dtype 互推导关系、推导结果与输出 dtype 绑定、非法组合排除（原 `knowledge/common/type_promotion.md`，已内联） | §4.6.10 A + §9.26 |
 | [`prompts/modules/broadcast.md §B`](prompts/modules/broadcast.md) | broadcast 右对齐、维度为 1 拉伸、输出 broadcast 结果轴、特殊 dtype 限制（原 `knowledge/common/broadcast.md`，已内联） | §4.6.10 B + §9.26 |
+
+---
+
+## v5 变更摘要（相对 v4）
+
+1. §4.6.3 新增「dtype / value 候选逐字一致性硬规则」子节（位于「dtype 为空时的类型回填规则」之后、「aclDataType 参数的固定 dtype 规则」之前）。
+2. §5.2 受控字典 Tensor 数据类型清单：`HFLOAT8` → `HIFLOAT8`（依据 `agent/generators/data_definition/constants.py` 第 159-160 行及全部算子文档原文；`HFLOAT4` 暂无证据，未动）。
+3. §8 边缘场景处理新增两条：条目内 `src_text` 与 `value` 不逐字一致；文档 token 不在 §5.2 的 `[DICT_GAP]` 处置。
+4. §9 自检清单新增 §9.32「dtype / value 候选逐字一致性自检」；§9.4 补充逐字一致与 `[DICT_GAP]` 例外；§9 标题自检项数由 30 改为 32。
+5. §10 调用模板：System 段补引逐字一致性规则与 `[DICT_GAP]`；任务第 3 步自检列表追加 §9.32、项数改 32。

@@ -27,7 +27,7 @@
 | server-config | servers.json | 真实执行机、平台和环境初始化配置 |
 | supplement-constraints | 可选；支持项目外路径 | EXTRACT 后据此做关系补充，为空则跳过补充阶段 |
 | operator-family | auto | `torch_npu` 文档自动选 hs，否则 aclnn；CLI 接受 `torch_npu` 作为 hs 别名 |
-| test-framework | auto | ACLNN→atk；六个已适配 torch_npu→ttk；其余 torch_npu→constraints-only |
+| test-framework | auto | ACLNN→atk（可显式 ttk）；六个已适配 torch_npu→ttk；其余 torch_npu→constraints-only |
 
 `init_run.py` 先校验外部文档和真实执行配置。配置不完整时返回结构化提示且不创建
 run；校验通过后将外部文档复制为项目内快照并创建 run_state。主协调器必须展示调度
@@ -50,8 +50,11 @@ flowchart TD
     G --> A{"framework adapter"}
     A -->|ATK| X["EXECUTE<br/>ATK executor"]
     A -->|TTK| C["cases.json → cases_ttk.csv"]
-    C --> R["DERIVE GOLDEN<br/>derive-ttk-golden"]
+    C --> TM{"api_name"}
+    TM -->|"aclnn*"| XA["EXECUTE<br/>TTK aclnn"]
+    TM -->|"torch_npu.*"| R["DERIVE GOLDEN<br/>derive-ttk-golden"]
     R --> X2["EXECUTE<br/>TTK e2e"]
+    XA --> Q
     X2 --> Q
     X --> Q["GATE<br/>quality-reviewer"]
     Q -->|全部通过| S["SUCCESS"]
@@ -106,7 +109,8 @@ source-analyst 产 `conflict-doc.md` 后，若非空，主协调器输出 `requi
 输入：已校验 constraints.json 和 run_state.test_framework。
 执行者：case-generator。  
 动作：所有框架先调用原有 Z3 生成器得到统一 `cases.json`；ATK直接消费，TTK通过
-adapter 生成 `cases_ttk.csv`、转换审计和 Golden manifest。
+adapter 生成 `cases_ttk.csv` 和转换审计。torch_npu/E2E 额外生成 Golden manifest；
+ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生成原生 ACLNN CSV。
 完成条件：`cases.json` 非空；TTK 还要求 CSV 与 audit 结构合法。
 失败策略：不让 LLM 手工“补齐”用例，保留 generator_bug 证据。
 
@@ -114,7 +118,8 @@ adapter 生成 `cases_ttk.csv`、转换审计和 Golden manifest。
 
 输入：已校验 cases.json。  
 执行者：case-executor。  
-动作：ATK 默认走 SSH/ATK；TTK 生成/执行 E2E CSV 命令，远程能力未配置时明确阻断。
+动作：ATK 默认走 SSH/ATK；TTK 根据 CSV `api_name` 自动执行 `ttk aclnn` 或
+`ttk e2e`，远程能力未配置时明确阻断。
 完成条件：execution_result.json 统计自洽。  
 失败策略：服务器配置缺失时先提示用户且不执行；其他引擎故障单独写 engine_error，
 避免污染用例通过率，禁止自动降级 Mock。

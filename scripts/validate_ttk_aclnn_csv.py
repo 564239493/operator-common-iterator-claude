@@ -72,6 +72,19 @@ def _flatten_dtypes(dtypes: object, path: str = "") -> list[str]:
     return result
 
 
+def _flatten_formats(formats: object) -> list[str | None]:
+    """Flatten nested tensor formats while retaining absent tensor slots."""
+    result: list[str | None] = []
+    if isinstance(formats, (tuple, list)):
+        for item in formats:
+            result.extend(_flatten_formats(item))
+    elif isinstance(formats, str):
+        result.append(formats)
+    elif formats is None:
+        result.append(None)
+    return result
+
+
 def _flatten_shapes(shapes: object, path: str = "") -> list[tuple | None]:
     """Recursively flatten nested shape tuples to list of shape tuples.
 
@@ -188,6 +201,11 @@ def validate_csv(csv_path: Path) -> dict:
                 attrs, err = _safe_parse(attrs_raw, dict, f"{prefix} attributes")
                 if err:
                     issues.append(err)
+                elif isinstance(attrs, dict) and any(value is None for value in attrs.values()):
+                    warnings.append(
+                        f"{prefix}: attributes contains explicit None; char* parameters "
+                        "must be omitted or normalized to a documented equivalent string"
+                    )
 
             # --- output_tensor_indexes ---
             out_idx_raw = row.get("output_tensor_indexes", "")
@@ -205,7 +223,30 @@ def validate_csv(csv_path: Path) -> dict:
                             )
 
             # --- Other tuple fields ---
-            for field in ("tensor_formats", "input_data_ranges", "precision_tolerances",
+            formats_raw = row.get("tensor_formats", "")
+            if not formats_raw or not formats_raw.strip():
+                warnings.append(
+                    f"{prefix}: tensor_formats is empty; TTK will materialize all tensors as ND"
+                )
+            else:
+                formats, err = _safe_parse(
+                    formats_raw, tuple, f"{prefix} tensor_formats"
+                )
+                if err:
+                    issues.append(err)
+                elif formats is not None and shapes is not None:
+                    format_count = len(formats) if isinstance(formats, tuple) else 1
+                    tensor_count = len(shapes) if isinstance(shapes, tuple) else 1
+                    if format_count not in (1, tensor_count):
+                        issues.append(
+                            f"{prefix}: tensor format count mismatch: {format_count} "
+                            f"formats vs {tensor_count} tensors"
+                        )
+                    for token in _flatten_formats(formats):
+                        if token is not None and not token.strip():
+                            issues.append(f"{prefix}: tensor_formats contains an empty token")
+
+            for field in ("input_data_ranges", "precision_tolerances",
                           "scalar_dtypes", "scalar_data_ranges"):
                 raw = row.get(field, "")
                 if raw and raw.strip():

@@ -315,12 +315,17 @@ torch_npu 原型中的每个真实输入参数以及原型/返回段定义的每
 
 ### 6.6 `array_length`
 
-- 固定容器长度 N 写嵌套闭区间 `{"value":[[N,N]],...}`；如 `bool[2]` 写
-  `[[2,2]]`。长度区间 `[lo,hi]` 统一写 `[[lo,hi]]`，多个备选区间写
+- 固定容器长度 N 写离散精确值 `{"value":[N],...}`；如 Python `List[int]` 的
+  “shape 为 `[1]`”写 `{"value":[1],...}`。长度区间 `[lo,hi]` 写
+  `[[lo,hi]]`，多个备选区间写
   `[[lo1,hi1],[lo2,hi2]]`。不要写扁平 `[lo,hi]`：当前 validator 虽接受它，生成器却
   会把它当两个离散端点而漏掉中间长度。
 - 动态长度或只给与 B/其它参数的关系时留 `[]`，并用 `len(container)` 关系表达。
 - Tensor rank 不写进 `array_length`；list 长度也不写进 `dimensions`。
+- `allowed_range_value` 只描述容器元素的值域，不描述 Python List/aclIntArray 的
+  shape 或长度。不得因为“shape 为 `[1]`”写成 `allowed_range_value=[1,null]`。
+- optional 容器是否缺省由 `is_optional` 和 `param is None` 表达；不得把 `null`
+  混入元素的 `allowed_range_value`。
 - 表达式禁止使用 `.array_length`，它只是 JSON 元数据。
 
 ### 6.7 `allowed_range_value`

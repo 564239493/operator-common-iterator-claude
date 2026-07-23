@@ -268,7 +268,8 @@ def main() -> int:
         default="auto",
         help=(
             "测试框架；auto 对已适配的六个 torch_npu 算子选 ttk，其他 torch_npu "
-            "文档选 constraints（仅约束提取），ACLNN 选 atk。"
+            "文档选 constraints（仅约束提取），ACLNN 选 atk；ACLNN 可显式选择 ttk "
+            "进入原生 TTK ACLNN 流程。"
         ),
     )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")

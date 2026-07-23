@@ -135,6 +135,9 @@ class Z3ConstraintBuilder:
             self.solver.set('timeout', timeout_ms)
         self.var_map = {}
         self._slice_counter = 0
+        # 仅用于兼容历史 constraints 中已经存在的 ``# TODO:`` 前缀。
+        # 新版 torch_npu 提示词禁止再生成该前缀，但恢复旧任务时不能因列表未初始化崩溃。
+        self.dropped_constraints = []
 
     def get_next_slice_id(self):
         self._slice_counter += 1
@@ -178,17 +181,71 @@ class Z3ConstraintBuilder:
 
     def add_constraints(self, expr_str_dict: Dict[str, str]):
         for expr_str_name, expr_str in expr_str_dict.items():
+            # 通用 TODO 标记：在 apply_keyword_replace 与 validate_expression 之前先
+            # 检测前缀，避免 `# TODO:` 被 ast.parse 拒为 invalid syntax。前缀检测
+            # 与 add_constraint 内 TODO 分支一致，确保 solver 与 validator 行为统一。
+            if isinstance(expr_str, str) and expr_str.lstrip().startswith("# TODO:"):
+                self.add_constraint(expr_str_name, expr_str)
+                continue
             replace_expr = ExpressionPreprocessor.apply_keyword_replace(expr_str)
             if ExpressionPreprocessor.validate_expression(replace_expr):
                 self.add_constraint(expr_str_name, replace_expr)
 
     def add_constraint(self, expr_name, expr_str, is_print_log=False):
+        # 通用规则：约束文本以 `# TODO:` 开头时跳过 solver（Z3 求解不完备或约束语义
+        # 需人工 channel 时使用），但仍记录到 dropped_constraints 携带 reason="todo_skip"，
+        # PostCheck 区分真实 drop 与 todo_skip，前者阻断、后者放行。Prefix 是文本层标记，
+        # 不依赖 AST；任何 family 通用。
+        if isinstance(expr_str, str) and expr_str.lstrip().startswith("# TODO:"):
+            dropped = {
+                "name": expr_name,
+                "expr": expr_str,
+                "error": "todo_skip",
+                "reason": "todo_skip",
+            }
+            self.dropped_constraints.append(dropped)
+            if is_print_log:
+                logger.debug(f"[TODO-SKIP] {expr_str}")
+            return
         try:
             tree = ast.parse(expr_str, mode='eval')
             converter = ASTtoZ3Converter(self)
             z3_constraint = converter.visit(tree.body)
             if z3_constraint is not None:
                 self.solver.assert_and_track(z3_constraint, expr_name)
+                # 通用规则：检测到 z3.Or(z3.Bool==False, z3.String!=X) 形式时，附加
+                # Implies(X, ==False) 作为 hint。该形式 Z3 对 Or 的传播不完备（mixed-sort：
+                # Bool/String），Implies 形式 Z3 watch-list 处理更优，能让 solver 拒绝
+                # spurious SAT。等价性：`Or(A==False, B!=X) ⇔ Implies(B==X, A==False)`。
+                # Z3 simplify 后节点变换：`A==False` → `Not(A)`；`B!=X` → `Not(B==X)`，
+                # 必须同时探测两种表示，否则 hint 加入失败。
+                try:
+                    if z3.is_or(z3_constraint):
+                        children = z3_constraint.children()
+                        if len(children) == 2:
+                            a, b = children
+                            bool_side = None  # a 候选：==False 或 Not(x)
+                            str_side = None   # b 候选：!=X 或 Not(x=="X")
+                            # 模式 (i)：a 是 ==BoolVal(False)，b 是 !=X
+                            if (z3.is_eq(a) and a.num_args() == 2
+                                    and z3.is_false(a.arg(1))):
+                                bool_side = a
+                            elif z3.is_not(a) and z3.is_bool(a.arg(0)):
+                                bool_side = z3.Not(a.arg(0))  # Not(x) 表示 x==False 等价
+                            # 模式 (ii)：b 是 !=X (Not(x==X))
+                            if z3.is_not(b) and z3.is_eq(b.arg(0)):
+                                str_side = b
+                            if bool_side is not None and str_side is not None:
+                                target = str_side.arg(0).arg(0)
+                                x_val = str_side.arg(0).arg(1)
+                                hint = z3.Implies(
+                                    target == x_val,
+                                    z3.Not(bool_side.arg(0))
+                                )
+                                self.solver.assert_and_track(
+                                    hint, f"{expr_name}#implies_hint")
+                except Exception:
+                    pass
                 if is_print_log:
                     logger.debug(f"[OK] {expr_str}")
             else:

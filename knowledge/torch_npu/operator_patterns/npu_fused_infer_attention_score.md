@@ -28,6 +28,21 @@ depends_on: ["attention_family", "quantization", "collections_and_grouped_ops"]
 
 - `num_heads`、`num_key_value_heads` 与 Q/KV 的 N/H 轴关系随 layout 改变；GQA/MQA、NZ/transformed layout 的整除和 head 组合不能套用普通 BSH 公式。
 - `actual_seq_lengths` 与 `actual_seq_lengths_kv` 是 Python `List[int]`，不是 Tensor。TND/NTD 场景的前缀和、batch 数上限、末值与 T 关系要保留；当前 schema 无法完整表达序列内容时标记 `SCHEMA_GAP`。
+- `actual_shared_prefix_len` 是 optional `List[int]`，不是 Tensor。文档的“存在时 shape
+  为 `[1]`”必须写 `array_length.value=[1]`，不得误写成
+  `allowed_range_value=[1,null]`。它的唯一元素还必须不大于
+  `key_shared_prefix` 和 `value_shared_prefix` 各自在当前 `input_layout` 下的 S 轴；
+  用带 `actual_shared_prefix_len is None`、共享前缀参数 presence 和 layout 分支守卫的
+  `shape_value_dependency` 表达。BSH/BSND 的 S 轴为 1，BNSD 的 S 轴为 2；其他布局
+  只按当前输入文档明确的轴定义提取，不得统一套用 `shape[1]`。
+  长度固定为 1 后，元素关系使用 `actual_shared_prefix_len[0]`，不要拿整个
+  `.range_value` 序列与整数比较。至少生成：
+  `(actual_shared_prefix_len is None) or ((key_shared_prefix is not None) and (value_shared_prefix is not None))`，
+  以及分别针对 key/value、按布局选择 S 轴的上界关系，例如
+  `(actual_shared_prefix_len is None) or (key_shared_prefix is None) or (input_layout.range_value not in ["BSH", "BSND"]) or (actual_shared_prefix_len[0] <= key_shared_prefix.shape[1])`；
+  BNSD 分支把最后一轴索引改为 `shape[2]`。value 侧生成对应的独立约束。
+- `key_shared_prefix`、`value_shared_prefix` 自身的 shape 和互等关系也必须带 optional
+  presence 守卫，避免参数缺省时仍访问 `.shape`。
 - PageAttention 的 `block_table`、`block_size`、KV cache shape、有效 block id 和 padding 规则按 `Q_S`、产品与 layout 条件化。文档声明 block id 不校验时，写成用户前置条件。
 - query/key rope、shared prefix、query/KV padding、mask、pse 的 dtype/shape/presence 都有独立条件和互斥项，不能根据名字自动成对必选。
 - `sparse_mode` 与 mask shape、pre/next token 的规则按 mode 分支；文中的 `sparse_modew` 等明显笔误保留为 `DOC_GAP`，不要创建不存在的输入名。

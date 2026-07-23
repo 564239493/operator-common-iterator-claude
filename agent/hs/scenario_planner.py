@@ -395,6 +395,131 @@ def _project_kv_quant_sparse_flash_attention(
     return projected
 
 
+def _project_sparse_flash_attention(
+    case: dict[str, Any], scenario: HSScenario, ordinal: int,
+    constraints: dict[str, Any] | None = None, platform: str | None = None,
+) -> dict[str, Any]:
+    """Project a random Z3 case onto a runnable sparse_flash_attention scene.
+
+    The doc mandates attention_mode=2 (MLA-absorb) which REQUIRES query_rope
+    and key_rope tensors.  Without this projection the Z3 solver can avoid
+    the presence dependency by choosing a different guard value for the
+    integer scalar attention_mode, leaving rope tensors absent in the CSV.
+    """
+    projected = deepcopy(case)
+    query_heads_domain = _query_head_domain(constraints or {}, platform) or (1, 2, 4, 8, 16, 32, 64, 128)
+    # Use float16 only — bfloat16 requires ml_dtypes/tensorflow on the TTK server
+    query_dtype = "fp16"
+    query_heads = int(query_heads_domain[ordinal % len(query_heads_domain)])
+    sparse_block_domain = tuple(sorted(_domain(constraints or {}, "sparse_block_size", platform))) or (1, 2, 4, 8, 16)
+    sparse_block_size = int(sparse_block_domain[ordinal % len(sparse_block_domain)])
+    sparse_modes = tuple(sorted(_domain(constraints or {}, "sparse_mode", platform))) or (0, 3)
+    sparse_mode = int(sparse_modes[ordinal % len(sparse_modes)])
+
+    query_shape: list[int]
+    key_shape: list[int]
+    sparse_shape: list[int]
+    rope_dim = 64  # fixed per doc: "query_rope中的D和key_rope的D值相等为64"
+
+    if scenario.name == "tnd":
+        query_tokens = 1 + ordinal
+        kv_tokens = max(query_tokens + 1, 4 + ordinal)
+        query_shape = [query_tokens, query_heads, 512]
+        key_shape = [kv_tokens, 1, 512]
+        sparse_shape = [query_tokens, 1, 1 + ordinal % 4]
+        rope_q_shape = [query_tokens, query_heads, rope_dim]
+        rope_k_shape = [kv_tokens, 1, rope_dim]
+        _set_tensor(
+            projected, "actual_seq_lengths_query", "int32", [1],
+            [query_tokens, query_tokens], required=True,
+        )
+        _set_tensor(
+            projected, "actual_seq_lengths_kv", "int32", [1],
+            [kv_tokens, kv_tokens], required=True,
+        )
+        _set_tensor(projected, "block_table", "int32", None, ["null"])
+    elif scenario.name == "paged_attention":
+        batch = 1
+        query_sequence = 1 + ordinal % 4
+        pa_block_sizes = (16, 32, 64, 256, 1024)
+        block_size = int(pa_block_sizes[ordinal % len(pa_block_sizes)])
+        # PA requires block_size % sparse_block_size == 0.  Both domains were
+        # previously rotated independently after Z3 generation, so ordinal 7
+        # produced block_size=64 with sparse_block_size=128 and was rejected by
+        # CheckFeatureMlaNoquantPa.  Select the sparse size from divisors of the
+        # already selected physical page size as one atomic scenario tuple.
+        compatible_sparse_sizes = tuple(
+            value for value in sparse_block_domain
+            if isinstance(value, int) and value > 0 and block_size % value == 0
+        )
+        if not compatible_sparse_sizes:
+            raise ValueError(
+                "PA sparse scenario has no sparse_block_size dividing "
+                f"block_size={block_size}; domain={sparse_block_domain}"
+            )
+        sparse_block_size = int(
+            compatible_sparse_sizes[ordinal % len(compatible_sparse_sizes)]
+        )
+        block_num = 2 + ordinal % 3
+        kv_tokens = block_num * block_size
+        query_shape = [batch, query_sequence, query_heads, 512]
+        key_shape = [block_num, block_size, 1, 512]
+        sparse_shape = [batch, query_sequence, 1, 1 + ordinal % 4]
+        rope_q_shape = [batch, query_sequence, query_heads, rope_dim]
+        rope_k_shape = [block_num, block_size, 1, rope_dim]
+        _set_tensor(
+            projected, "block_table", "int32", [batch, block_num],
+            [0, block_num - 1], required=True,
+        )
+        _set_tensor(
+            projected, "actual_seq_lengths_query", "int32", [batch],
+            [query_sequence, query_sequence],
+        )
+        _set_tensor(
+            projected, "actual_seq_lengths_kv", "int32", [batch],
+            [kv_tokens, kv_tokens], required=True,
+        )
+    else:  # bsnd
+        batch = 1 + ordinal % 2
+        query_sequence = 1 + ordinal % 4
+        kv_sequence = max(4, query_sequence + 2 + ordinal)
+        query_shape = [batch, query_sequence, query_heads, 512]
+        key_shape = [batch, kv_sequence, 1, 512]
+        sparse_shape = [batch, query_sequence, 1, 1 + ordinal % 4]
+        rope_q_shape = [batch, query_sequence, query_heads, rope_dim]
+        rope_k_shape = [batch, kv_sequence, 1, rope_dim]
+        _set_tensor(projected, "block_table", "int32", None, ["null"])
+        _set_tensor(projected, "actual_seq_lengths_query", "int32", None, ["null"])
+        _set_tensor(projected, "actual_seq_lengths_kv", "int32", None, ["null"])
+
+    _set_tensor(projected, "query", query_dtype, query_shape, [-1.0, 1.0], required=True)
+    _set_tensor(projected, "key", query_dtype, key_shape, [-1.0, 1.0], required=True)
+    _set_tensor(projected, "value", query_dtype, key_shape, [-1.0, 1.0], required=True)
+    _set_tensor(
+        projected, "sparse_indices", "int32", sparse_shape,
+        [0, max(0, key_shape[0] // sparse_block_size - 1)], required=True,
+    )
+    # attention_mode=2 REQUIRES query_rope and key_rope (MLA-absorb)
+    _set_tensor(projected, "query_rope", query_dtype, rope_q_shape, [-1.0, 1.0])
+    _set_tensor(projected, "key_rope", query_dtype, rope_k_shape, [-1.0, 1.0])
+
+    _set_attr(projected, "scale_value", "double", 1.0 / (512 ** 0.5))
+    _set_attr(projected, "sparse_block_size", "int64", sparse_block_size)
+    _set_attr(projected, "layout_query", "string", scenario.fixed_attrs["layout_query"])
+    _set_attr(projected, "layout_kv", "string", scenario.fixed_attrs["layout_kv"])
+    _set_attr(projected, "sparse_mode", "int64", sparse_mode)
+    _set_attr(projected, "pre_tokens", "int64", (1 << 63) - 1)
+    _set_attr(projected, "next_tokens", "int64", (1 << 63) - 1)
+    _set_attr(projected, "attention_mode", "int64", 2)
+    # Always False for now: TTK precision tolerance indexing expects 1 entry per
+    # output, but return_softmax_lse=True produces 3 outputs.  Once the core
+    # attention_out precision is verified, softmax_lse can be re-enabled with
+    # multi-output tolerances in atc_to_ttk._precision_policy.
+    _set_attr(projected, "return_softmax_lse", "bool", False)
+
+    return projected
+
+
 def project_hs_case(
     case: dict[str, Any], operator_name: str, scenario: HSScenario, ordinal: int,
     constraints: dict[str, Any] | None = None, platform: str | None = None,
@@ -402,6 +527,10 @@ def project_hs_case(
     """Apply an operator-specific complete scenario projection when available."""
     if operator_name == "torch_npu.npu_kv_quant_sparse_flash_attention":
         return _project_kv_quant_sparse_flash_attention(
+            case, scenario, ordinal, constraints, platform
+        )
+    if operator_name == "torch_npu.npu_sparse_flash_attention":
+        return _project_sparse_flash_attention(
             case, scenario, ordinal, constraints, platform
         )
     return deepcopy(case)

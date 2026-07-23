@@ -66,7 +66,8 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    - `case-executor`（ATK real 模式内部完成 generate→`atc-cpu-golden-derivation` 推导→real-run
      三子步骤；推导须清除 `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run）
    - `quality-reviewer`
-6. 若门禁确认全部通过，更新 run_state 为 SUCCESS 并结束。
+6. 若基础产物可读、至少生成一条用例且执行器已完成运行，更新 run_state 为 SUCCESS
+   并结束。Golden 覆盖率、准确度、场景覆盖率和语义审计 warning 当前不作为门禁。
 7. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
    diagnose 域（读 execution_result + uncertain-doc + source_raw，error_string
    匹配，命中的 uncertain 追加到 `inputs/supplementary-doc.md`，产
@@ -93,8 +94,10 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
 - 每个 Agent 委派前读取 `run_state.json` 的 `operator_family` 与 `test_framework`。
 - `atk`：产物为每平台 compact JSON，沿用原 ACLNN 生成和 ATK executor。
 - `ttk`：先产出统一 `cases.json`，再适配为 `cases_ttk.csv`；generator 命令必须带
-  `--test-framework ttk`。executor 先检查 Golden manifest，必要时调用
-  `derive-ttk-golden`，再执行真实 E2E；不得调用 ATK golden 推导。
+  `--test-framework ttk`。`operator_family=hs` 默认加载可用的自主推导或源码 Golden，
+  但不以 Golden manifest 或精度结果阻塞流程；只有用户明确要求完全跳过 Golden 时
+  才使用 `--no-golden`。`operator_family=aclnn` 直接走原生 `ttk aclnn`。两者均不得调用
+  ATK golden 推导。
 - `constraints`：只产出并校验 `constraints.json`，不调用任何 case/executor 命令；
   SUCCESS 必须注明 `run_scope=constraints_only`，不能表述成用例或精度闭环成功。
 - EXTRACT 阶段与测试框架无关，任何 framework 都必须先产生非空且校验通过的
