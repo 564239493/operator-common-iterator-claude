@@ -303,6 +303,7 @@ def _build_fusion_atk_command(
     num: int,
     env_init: str,
     *,
+    out_path_t1: str | None = None,
     out_path_t2: str | None = None,
 ) -> str:
     """Compose the ATK dist command for a fusion phase.
@@ -336,12 +337,13 @@ def _build_fusion_atk_command(
         )
     if phase == "accuracy_load":
         out_ref = out_path_t2 or ""
+        out_ref_t1 = out_path_t1 or ""
         return (
             f"{prefix}atk node --backend pyaclnn --is_dist true --task accuracy "
             f"--devices {c1},{c2} "
             f"node --backend dist --output_path {out_ref} "
             f"--name npu_bm --devices {c1},{c2} --task accuracy_load "
-            f"task {common}"
+            f"task {common} -bmo {out_ref_t1}"
         )
     raise ValueError(f"未知 fusion phase: {phase!r}")
 
@@ -1307,14 +1309,14 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
                 )
                 ok0 = (
                     await check_remote_dir_has_files(
-                        conn, f"{out_t1}/output/dist_cpu/cases/0/rank_0"
+                        conn, f"{out_t1}/output/dist_cpu/{stem}/0/rank_0"
                     )
                     if out_t1
                     else False
                 )
                 ok1 = (
                     await check_remote_dir_has_files(
-                        conn, f"{out_t1}/output/dist_cpu/cases/0/rank_1"
+                        conn, f"{out_t1}/output/dist_cpu/{stem}/0/rank_1"
                     )
                     if out_t1
                     else False
@@ -1370,14 +1372,14 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
                 )
                 ok0b = (
                     await check_remote_dir_has_files(
-                        conn, f"{out_t2}/output/dist_npu_bm/cases/0/rank_0"
+                        conn, f"{out_t2}/output/dist_npu_bm/{stem}/0/rank_0"
                     )
                     if out_t2
                     else False
                 )
                 ok1b = (
                     await check_remote_dir_has_files(
-                        conn, f"{out_t2}/output/dist_npu_bm/cases/0/rank_1"
+                        conn, f"{out_t2}/output/dist_npu_bm/{stem}/0/rank_1"
                     )
                     if out_t2
                     else False
@@ -1436,7 +1438,9 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
         if failed_phase is None and out_t2:
             cmd4 = _build_fusion_atk_command(
                 "accuracy_load", operator_name, remote, fusion_devices, num,
-                env_init, out_path_t2=f"{out_t2}/output",
+                env_init, 
+                out_path_t2=f"{out_t1}/output" if out_t1 else None,
+                out_path_t1=f"{out_t2}/output",
             )
             logger.info("[fusion step4 accuracy_load] command: %s", cmd4)
             t = time.monotonic()

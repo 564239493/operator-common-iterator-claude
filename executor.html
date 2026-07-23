@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>手动执行工作单 · aclnnAlltoAllMatmul (fusion)</title>
+<style>
+  :root{
+    --bg:#fafbfc; --fg:#1f2328; --muted:#6b7280; --line:#d6dbe1;
+    --accent:#2f6feb; --accent2:#0969da; --warn:#b08300; --warn-bg:#fff8e1;
+    --ok:#1a7f37; --ok-bg:#e6f4ea; --danger:#cf222e; --danger-bg:#ffeef0;
+    --code-bg:#f6f8fa; --code-fg:#1f2328; --kbd:#0550ae; --ink:#1f3a5f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);line-height:1.65;font-size:15.5px}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 100px}
+  header{background:linear-gradient(135deg,#1f3a5f,#2f6feb);color:#fff;padding:40px 24px 32px;border-radius:0 0 14px 14px;box-shadow:0 4px 18px rgba(0,0,0,.12)}
+  header h1{margin:0 0 6px;font-size:26px;letter-spacing:.5px}
+  header .sub{opacity:.92;font-size:14.5px}
+  header .meta{margin-top:14px;font-size:12.5px;opacity:.9;display:flex;gap:10px;flex-wrap:wrap}
+  header .meta span{background:rgba(255,255,255,.14);padding:3px 10px;border-radius:20px}
+  header .meta span.tag-fusion{background:#ffe58f;color:#5b4500;font-weight:600}
+  nav.toc{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:22px 0 26px;display:grid;grid-template-columns:repeat(2,1fr);gap:4px 22px;font-size:13.5px}
+  nav.toc .t-title{grid-column:1/-1;font-weight:700;color:var(--accent2);margin-bottom:4px;font-size:13px;text-transform:uppercase;letter-spacing:1px}
+  nav.toc a{color:var(--accent2);text-decoration:none;padding:2px 0;display:inline-block}
+  nav.toc a:hover{text-decoration:underline}
+  h2{font-size:21px;margin:38px 0 6px;padding-bottom:8px;border-bottom:2px solid var(--accent);color:var(--ink)}
+  h2 .n{display:inline-block;background:var(--accent);color:#fff;font-size:13px;width:26px;height:26px;line-height:26px;text-align:center;border-radius:50%;margin-right:10px;vertical-align:middle}
+  h2 .progress{float:right;font-size:12.5px;color:var(--muted);font-weight:400;margin-top:6px}
+  h3{font-size:17px;margin:24px 0 8px;color:var(--ink)}
+  h4{font-size:15px;margin:18px 0 6px;color:#374151}
+  p{margin:8px 0}
+  code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;background:var(--code-bg);padding:1.5px 6px;border-radius:4px;font-size:13px;color:var(--kbd)}
+  pre{background:#0d1b2a;color:#e6edf3;padding:14px 16px;border-radius:8px;overflow-x:auto;font-size:13px;line-height:1.6;position:relative}
+  pre code{background:none;color:inherit;padding:0;font-size:13px}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px;background:#fff}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#eef2f7;color:var(--ink);font-weight:600}
+  tr:nth-child(even) td{background:#f8fafc}
+  .callout{border-left:4px solid var(--accent);background:#eef4ff;padding:12px 16px;margin:14px 0;border-radius:0 6px 6px 0}
+  .callout.warn{border-color:var(--warn);background:var(--warn-bg)}
+  .callout.danger{border-color:var(--danger);background:var(--danger-bg)}
+  .callout.ok{border-color:var(--ok);background:var(--ok-bg)}
+  .tag{display:inline-block;background:var(--accent);color:#fff;font-size:11.5px;padding:1px 8px;border-radius:10px;margin-right:6px;vertical-align:1px;font-weight:600}
+  .callout.warn .tag{background:var(--warn);color:#fff}
+  .callout.danger .tag{background:var(--danger);color:#fff}
+  .callout.ok .tag{background:var(--ok);color:#fff}
+  .filetag{display:inline-block;background:#eef2f7;color:var(--ink);font-size:12px;padding:1px 7px;border-radius:4px;border:1px solid var(--line);font-family:Consolas,monospace}
+  .small{font-size:12.5px;color:var(--muted)}
+  .pill{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:10px;font-weight:600}
+  .pill.yes{background:var(--ok-bg);color:var(--ok)}
+  .pill.no{background:var(--danger-bg);color:var(--danger)}
+  .pill.weak{background:var(--warn-bg);color:var(--warn)}
+  .pill.wait{background:#eef2f7;color:var(--accent2)}
+
+  /* 命令块 + 复制按钮 */
+  .cmd{position:relative;margin:14px 0}
+  .cmd pre{margin:0}
+  .cmd .copy{position:absolute;top:8px;right:8px;background:rgba(255,255,255,.12);color:#9ecbff;border:1px solid rgba(255,255,255,.18);border-radius:5px;padding:3px 9px;font-size:11.5px;cursor:pointer;font-family:inherit}
+  .cmd .copy:hover{background:rgba(255,255,255,.22)}
+  .cmd .copy.ok{background:#1a7f37;color:#fff;border-color:#1a7f37}
+  .cmd-label{font-size:12px;color:var(--muted);margin:0 0 4px 2px;font-family:Consolas,monospace}
+
+  /* 步骤卡 + checkbox */
+  .step{background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+  .step>label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-weight:600;color:var(--ink);font-size:15.5px}
+  .step>label input{margin-top:4px;width:17px;height:17px;accent-color:var(--accent);flex:0 0 auto}
+  .step.done{border-color:var(--ok);background:var(--ok-bg)}
+  .step .body{margin:10px 0 0 32px}
+  .step input:checked + .si::before{content:"";}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:6px 12px;margin:10px 0;font-size:13.5px}
+  .kv .k{color:var(--muted);font-weight:600}
+  .kv .v{word-break:break-all}
+  .kv code{word-break:break-all}
+  .phase{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:10px;background:#eef2f7;color:var(--ink);font-weight:600;margin-right:6px}
+
+  .bar{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,#1a7f37,#2f6feb);width:0;transition:width .3s;z-index:50}
+  details>summary{cursor:pointer;font-weight:600;color:var(--accent2);margin:8px 0}
+  details>summary::-webkit-details-marker{color:var(--accent2)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr} nav.toc{grid-template-columns:1fr}}
+  .footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px;text-align:center}
+  kbd{font-family:Consolas,monospace;background:#eef2f7;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="bar" id="bar"></div>
+<div class="wrap">
+
+<header>
+  <h1>手动执行工作单 — EXECUTE → GATE → DIAGNOSE</h1>
+  <div class="sub">通算融合算子 fusion 4 步流程，针对当前 run 的可直接复制执行的命令清单与进度跟踪。</div>
+  <div class="meta">
+    <span>算子: <strong>aclnnAlltoAllMatmul</strong></span>
+    <span>run_id: aclnnAlltoAllMatmul-20260722-105637-736731</span>
+    <span>iter_001</span>
+    <span class="tag-fusion">strategy = fusion</span>
+    <span>mode = real</span>
+    <span>case_count = 100</span>
+    <span>平台 = Atlas A2 训练系列产品_Atlas A2 推理系列产品</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="t-title">导航</div>
+  <a href="#status">§0 当前状态与产物清单</a>
+  <a href="#preflight">§1 前置检查</a>
+  <a href="#exec">§2 执行 fusion 4 步</a>
+  <a href="#exec-auto">　2.A 一条命令全自动</a>
+  <a href="#exec-manual">　2.B 手动分步（诊断/单步重跑）</a>
+  <a href="#validate">§3 校验 execution_result.json</a>
+  <a href="#gate">§4 GATE 质量门禁</a>
+  <a href="#diagnose">§5 失败诊断 DIAGNOSE</a>
+  <a href="#terminal">§6 终态判定与下一步</a>
+</nav>
+
+<div class="callout">
+  <span class="tag">怎么用</span>
+  这是一份<strong>交互式工作单</strong>：每个步骤前的复选框可勾选，进度条与勾选状态会自动保存到本机（刷新不丢）。命令块右上角 <strong>复制</strong> 按钮一键复制完整命令到剪贴板，粘贴到已激活 <code>.venv</code> 的 Git Bash 终端即可运行。所有路径已按当前 run 填实，无需替换占位符。
+</div>
+
+<div class="callout warn">
+  <span class="tag">安全边界</span>
+  本文档只输出项目内已落盘的产物路径与从 <code>execution.log</code> 反推的远程路径（不含密钥）。登录凭据（ip/用户/密码）请从 <code>servers.json</code> 读取；CLAUDE 禁止读取或输出该文件的秘密字段。手动分步登录命令中的 <code>&lt;host&gt; &lt;user&gt;</code> 需你自行替换。
+</div>
+
+<!-- ===================== 0 ===================== -->
+<h2 id="status"><span class="n">0</span>当前状态与产物清单</h2>
+<p>状态机：<code>PLAN → EXTRACT → GENERATE → EXECUTE → GATE</code>。本 run 的 <code>run_state.json.state</code> 仍停在 <code>PLAN</code>（编排未回写），但实际产物已推进到 <strong>EXECUTE</strong> 阶段入口——<strong>generate 已完成</strong>，上次 real-run 在 step1 命令打印后中断、未产出 <code>execution_result.json</code>，需重跑。</p>
+
+<h3>产物清单（iter_001）</h3>
+<table>
+  <thead><tr><th>产物</th><th>路径</th><th>状态</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>constraints.json</td><td><code>iter_001/constraints.json</code></td><td><span class="pill yes">就绪</span></td><td>已通过 EXTRACT + normalize + validate</td></tr>
+    <tr><td>cases.json</td><td><code>iter_001/cases.json</code></td><td><span class="pill yes">就绪</span></td><td>平台选择已落 Atlas A2 副本（540653 bytes）</td></tr>
+    <tr><td>generation_summary.json</td><td><code>iter_001/generation_summary.json</code></td><td><span class="pill yes">就绪</span></td><td>GENERATE 摘要</td></tr>
+    <tr><td>cases_executor.py</td><td><code>iter_001/cases_executor.py</code></td><td><span class="pill yes">就绪</span></td><td>fusion 专属 .tpl 生成，<strong>无</strong> <code># TODO: CPU_GOLDEN</code> dummy 块</td></tr>
+    <tr><td>cases_expanded.json</td><td><code>iter_001/cases_expanded.json</code></td><td><span class="pill yes">就绪</span></td><td>紧凑用例已展开，上传用</td></tr>
+    <tr><td>generate_result.json</td><td><code>iter_001/generate_result.json</code></td><td><span class="pill yes">就绪</span></td><td>generate 步骤结果（status=generate）</td></tr>
+    <tr><td>execution_result.json</td><td><code>iter_001/execution_result.json</code></td><td><span class="pill wait">待产出</span></td><td>real-run 跑完后由本工作单产出</td></tr>
+    <tr><td>quality_gate.json</td><td><code>iter_001/quality_gate.json</code></td><td><span class="pill wait">待产出</span></td><td>GATE 阶段产出</td></tr>
+    <tr><td>analysis.json</td><td><code>iter_001/analysis.json</code></td><td><span class="pill weak">仅失败时</span></td><td>用例失败进 DIAGNOSE 才产出</td></tr>
+  </tbody>
+</table>
+
+<div class="callout ok">
+  <span class="tag">fusion 关键差异</span>
+  fusion 算子<strong>跳过 CPU golden 推导</strong>（<code>atc-cpu-golden-derivation</code> skill 天然无操作）。CPU 参考由 ATK dist <code>--name cpu</code> 后端在 step1 自行产出，无需 torch 侧推导。故本工作单从 real-run 直接开始。
+</div>
+
+<!-- ===================== 1 ===================== -->
+<h2 id="preflight"><span class="n">1</span>前置检查</h2>
+<p>real-run 启动前必须确认这些条件，否则 runner 会 <code>_bail</code> 短路报错（<code>executer/runner.py:1178-1199</code>）。逐项勾选确认。</p>
+
+<div class="step" id="pf1">
+  <label><input type="checkbox" data-id="pf1"><span class="si">1.1 servers.json 声明 <code>supports_fusion=true</code></span></label>
+  <div class="body">
+    <p>fusion 策略硬性要求。缺失时 runner 报 <code>"fusion 策略需要 servers.json 声明 supports_fusion=true"</code> 并停止，禁止静默回退。</p>
+  </div>
+</div>
+<div class="step" id="pf2">
+  <label><input type="checkbox" data-id="pf2"><span class="si">1.2 servers.json 配置 <code>fusion_devices=[card1,card2]</code></span></label>
+  <div class="body">
+    <p>长度 2 的非负整数数组。当前 run 日志显示已用 <code>devices=[0,1]</code>，确认配置就绪。校验不通过会报 <code>"fusion 策略需要 servers.json 配置 fusion_devices (长度 2 非负整数数组)"</code>。</p>
+  </div>
+</div>
+<div class="step" id="pf3">
+  <label><input type="checkbox" data-id="pf3"><span class="si">1.3 <code>--num</code> 用例数已确定（=100）</span></label>
+  <div class="body">
+    <p>透传 atk <code>-e {num}</code>。当前 run <code>case_count=100</code>。缺失会报 <code>"fusion 策略需要 --num (本次实际执行用例数)"</code>。</p>
+  </div>
+</div>
+<div class="step" id="pf4">
+  <label><input type="checkbox" data-id="pf4"><span class="si">1.4 generate 产物就绪（cases_executor.py + cases_expanded.json）</span></label>
+  <div class="body">
+    <p>real 模式<strong>不重生成</strong>，iter_dir 缺 generate 产物会短路。本 run 两者均已在 <code>iter_001/</code>，已确认。手动自检：</p>
+    <div class="cmd">
+      <div class="cmd-label"># 在项目根目录</div>
+      <pre><code>ls -la runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases_executor.py runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases_expanded.json</code></pre>
+    </div>
+  </div>
+</div>
+<div class="step" id="pf5">
+  <label><input type="checkbox" data-id="pf5"><span class="si">1.5 fusion 算子无 dummy 标记（自检）</span></label>
+  <div class="body">
+    <p>fusion .tpl 应已是真实实现，grep 应<strong>无命中</strong>。若有命中说明生成器回退到 dummy 模板，real-run 会产出无效 CPU 参考。</p>
+    <div class="cmd">
+      <pre><code>grep -nE "_dummy_output|FALLBACK|TODO: CPU_GOLDEN" runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases_executor.py</code></pre>
+    </div>
+  </div>
+</div>
+<div class="step" id="pf6">
+  <label><input type="checkbox" data-id="pf6"><span class="si">1.6 执行机能 SSH 连通 + CANN 环境可用</span></label>
+  <div class="body">
+    <p>从 <code>execution.log</code> 反推：服务器 <code>218.106.157.54</code>，env_init 为 <code>source /usr/local/Ascend/cann-9.0.0/set_env.sh && export TORCH_DEVICE_BACKEND_AUTOLOAD=0</code>。登录凭据见 <code>servers.json</code>。可先用 generate 模式（不连 SSH）验证本地链路，再 real。</p>
+  </div>
+</div>
+
+<!-- ===================== 2 ===================== -->
+<h2 id="exec"><span class="n">2</span>执行 fusion 4 步</h2>
+<p>两种方式任选其一。<strong>2.A 推荐</strong>：一条 <code>execute_cases.py</code> 命令自动完成上传 + 4 步 atk + 路径门禁 + 写 <code>execution_result.json</code>。<strong>2.B 手动分步</strong>：当全自动命令在某步失败、想单独重跑某步或看远程产物时使用。</p>
+
+<div class="callout warn">
+  <span class="tag">为何上次中断</span>
+  <code>execution.log</code> 显示 11:35:53 启动 real-run，11:35:55 打印 step1 命令后日志中断——无 step1 的 exit/dir_check，也无 step2/3/4。说明 step1 的 atk 远程执行（100 用例 dist）未返回或被中断，<code>execution_result.json</code> 未落盘。重跑前可先 <code>tail</code> 旧日志确认是否真无后续。
+</div>
+
+<h3 id="exec-auto"><span class="phase">2.A</span>一条命令全自动（推荐）</h3>
+<p>该命令会：选平台（Atlas A2）→ SFTP 上传 cases_expanded.json + cases_executor.py → 依次跑 step1~4 → 每步路径门禁 → 写 <code>execution_result.json</code> + 追加 <code>execution.log</code>。成败只看 step1/2/3 执行与路径门禁，step4 精度对比<strong>记录性不入成败</strong>。</p>
+
+<div class="step" id="run-auto">
+  <label><input type="checkbox" data-id="run-auto"><span class="si">2.A.1 执行 real-run（fusion 4 步）</span></label>
+  <div class="body">
+    <p class="small">前置：已激活 <code>.venv</code>（Git Bash: <code>source .venv/Scripts/activate</code>；PowerShell: <code>.\.venv\Scripts\Activate.ps1</code>），工作目录为项目根。</p>
+    <div class="cmd">
+      <div class="cmd-label"># 单行版（Git Bash 直接粘贴运行）</div>
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>python scripts/execute_cases.py --mode real --strategy fusion --num 100 --cases runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases.json --output runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/execution_result.json --doc runs/aclnnAlltoAllMatmul-20260722-105637-736731/inputs/aclnnAlltoAllMatmul.md --operator aclnnAlltoAllMatmul --server-config servers.json --run-id aclnnAlltoAllMatmul-20260722-105637-736731</code></pre>
+    </div>
+    <div class="cmd">
+      <div class="cmd-label"># 多行版（同上，易读）</div>
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>python scripts/execute_cases.py --mode real --strategy fusion --num 100 \
+  --cases   runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases.json \
+  --output   runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/execution_result.json \
+  --doc      runs/aclnnAlltoAllMatmul-20260722-105637-736731/inputs/aclnnAlltoAllMatmul.md \
+  --operator aclnnAlltoAllMatmul \
+  --server-config servers.json \
+  --run-id    aclnnAlltoAllMatmul-20260722-105637-736731</code></pre>
+    </div>
+    <div class="kv">
+      <div class="k">预期 stdout</div><div class="v"><code>{"status":"success","mode":"real","passed":100,"failed":0,"total":100}</code>（全过）或 <code>passed=0,failed=100</code>（任一步失败）</div>
+      <div class="k">产物</div><div class="v"><code>iter_001/execution_result.json</code> + <code>iter_001/execution.log</code>（追加）+ <code>iter_001/execution_logs/</code>（ATK 远程产物下载）+ <code>iter_001/fusion_accuracy_load_report/</code>（step4 xlsx）</div>
+      <div class="k">耗时</div><div class="v">100 用例 × 4 步 dist，视 NPU 与网络，通常数分钟到数十分钟。SSH <code>atk_timeout</code> 内未返回会标 timeout。</div>
+    </div>
+  </div>
+</div>
+
+<div class="step" id="run-auto-check">
+  <label><input type="checkbox" data-id="run-auto-check"><span class="si">2.A.2 确认产物落盘</span></label>
+  <div class="body">
+    <div class="cmd">
+      <pre><code>ls -la runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/execution_result.json runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/execution_logs/</code></pre>
+    </div>
+    <p class="small">若 <code>execution_result.json</code> 仍不存在 → 回看 <code>execution.log</code> 末尾 <code>===== execute done =====</code> 是否打印；未打印说明进程被中断或 SSH 超时，转 2.B 手动分步定位。</p>
+  </div>
+</div>
+
+<h3 id="exec-manual"><span class="phase">2.B</span>手动分步（诊断 / 单步重跑）</h3>
+<p>当 2.A 失败或想看某步远程产物时用。需自己 SSH 登录执行机（凭据见 <code>servers.json</code>），远程路径已从 <code>execution.log</code>/<code>generate_result.json</code> 反推填实。</p>
+
+<div class="kv">
+  <div class="k">env_init</div><div class="v"><code>source /usr/local/Ascend/cann-9.0.0/set_env.sh && export TORCH_DEVICE_BACKEND_AUTOLOAD=0</code></div>
+  <div class="k">远程 cases</div><div class="v"><code>/data/atk-space/cases/aclnnAlltoAllMatmul_cases_expanded.json</code></div>
+  <div class="k">远程 executor</div><div class="v"><code>/data/atk-space/cases/aclnnAlltoAllMatmul_executor.py</code></div>
+  <div class="k">远程工作目录</div><div class="v"><code>/data/atk-space/runs</code>（atk 在此目录运行，<code>--save_data output</code> 在此生成 <code>case_{time}/output/...</code>）</div>
+  <div class="k">devices</div><div class="v"><code>0,1</code>（<code>fusion_devices</code>）</div>
+  <div class="k">num</div><div class="v"><code>100</code></div>
+</div>
+
+<div class="step" id="m-upload">
+  <label><input type="checkbox" data-id="m-upload"><span class="si">2.B.0 上传产物到执行机</span></label>
+  <div class="body">
+    <p class="small">2.A 已自动上传；手动分步需先把两个文件传到远程。可用 sftp（或 servers.json 配置的 transfer_mode），单连接一次传两个文件；命令经 stdin 喂给 sftp，密码仍从控制台读，与批命令不冲突。按你的终端选下方对应版本。</p>
+    <div class="cmd">
+      <div class="cmd-label"># PowerShell（here-string 管道；结尾 <code>"@</code> 必须顶格无缩进）</div>
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>@"
+put runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases_expanded.json /data/atk-space/cases/aclnnAlltoAllMatmul_cases_expanded.json
+put runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases_executor.py   /data/atk-space/cases/aclnnAlltoAllMatmul_executor.py
+"@ | sftp &lt;user&gt;@&lt;host&gt;</code></pre>
+    </div>
+    <div class="cmd">
+      <div class="cmd-label"># Git Bash（here-doc，<code>&lt;&lt;'EOF'</code>）</div>
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>sftp &lt;user&gt;@&lt;host&gt; &lt;&lt;'EOF'
+put runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases_expanded.json /data/atk-space/cases/aclnnAlltoAllMatmul_cases_expanded.json
+put runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases_executor.py   /data/atk-space/cases/aclnnAlltoAllMatmul_executor.py
+EOF</code></pre>
+    </div>
+  </div>
+</div>
+
+<div class="step" id="m1">
+  <label><input type="checkbox" data-id="m1"><span class="si">2.B.1 step1 — CPU 标杆（dist + gloo）</span></label>
+  <div class="body">
+    <div class="cmd">
+      <div class="cmd-label"># SSH 登录执行机后运行</div>
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>cd /data/atk-space/runs && source /usr/local/Ascend/cann-9.0.0/set_env.sh && export TORCH_DEVICE_BACKEND_AUTOLOAD=0 && atk node --backend dist --name cpu --devices 0,1 --dist_backend gloo task -c /data/atk-space/cases/aclnnAlltoAllMatmul_cases_expanded.json -p /data/atk-space/cases/aclnnAlltoAllMatmul_executor.py --save_data output -mt 1 -e 100 --task accuracy</code></pre>
+    </div>
+    <div class="kv">
+      <div class="k">产出路径</div><div class="v"><code>/data/atk-space/runs/case_{t1}/output/dist_cpu/cases/0/rank_0</code> 与 <code>.../rank_1</code>，两者均须非空</div>
+      <div class="k">dist_backend</div><div class="v"><code>gloo</code>（CPU 分布式通信后端）；<code>--name cpu</code> 决定子目录名 <code>dist_cpu</code></div>
+    </div>
+    <p><strong>路径门禁</strong>（rank_0/rank_1 非空，任一空 → 失败）：</p>
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>T1=$(ls -1td /data/atk-space/runs/case_* | head -1) && echo "out_t1=$T1" && for r in rank_0 rank_1; do n=$(find "$T1/output/dist_cpu/cases/0/$r" -type f 2>/dev/null | head -1 | wc -l); echo "$r files=$n"; done</code></pre>
+    </div>
+  </div>
+</div>
+
+<div class="step" id="m2">
+  <label><input type="checkbox" data-id="m2"><span class="si">2.B.2 step2 — NPU 级联标杆（dist + hccl + is_bm）</span></label>
+  <div class="body">
+    <div class="callout warn"><span class="tag">时序</span>step1 跑完<strong>立即</strong>抓 <code>out_t1</code>（上面的 <code>$T1</code>），否则 step2 的新 <code>case_{t2}</code> 会盖过 mtime、<code>find_latest</code> 取错目录。手动分步务必先记下 <code>$T1</code> 再跑 step2。</div>
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>cd /data/atk-space/runs && source /usr/local/Ascend/cann-9.0.0/set_env.sh && export TORCH_DEVICE_BACKEND_AUTOLOAD=0 && atk node --backend dist --name npu_bm --devices 0,1 --dist_backend hccl --is_bm true task -c /data/atk-space/cases/aclnnAlltoAllMatmul_cases_expanded.json -p /data/atk-space/cases/aclnnAlltoAllMatmul_executor.py --save_data output -mt 1 -e 100 --task accuracy</code></pre>
+    </div>
+    <div class="kv">
+      <div class="k">产出路径</div><div class="v"><code>/data/atk-space/runs/case_{t2}/output/dist_npu_bm/cases/0/rank_0</code> 与 <code>.../rank_1</code></div>
+      <div class="k">dist_backend</div><div class="v"><code>hccl</code>（NPU 集合通信后端）；<code>--is_bm true</code> 级联标杆模式</div>
+    </div>
+    <p><strong>路径门禁</strong>：</p>
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>T2=$(ls -1td /data/atk-space/runs/case_* | head -1) && echo "out_t2=$T2" && for r in rank_0 rank_1; do n=$(find "$T2/output/dist_npu_bm/cases/0/$r" -type f 2>/dev/null | head -1 | wc -l); echo "$r files=$n"; done</code></pre>
+    </div>
+  </div>
+</div>
+
+<div class="step" id="m3">
+  <label><input type="checkbox" data-id="m3"><span class="si">2.B.3 step3 — 改名 dist_cpu → cpu_benchmark</span></label>
+  <div class="body">
+    <p>用 step1 缓存的 <code>$T1</code>（<strong>不是</strong>再取最新，此时最新已是 <code>$T2</code>）。</p>
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>mv "$T1/output/dist_cpu" "$T1/output/cpu_benchmark" && echo "rename ok"</code></pre>
+    </div>
+    <p class="small">改名是为 step4 的 <code>--output_path</code> 能精确指向 step2 目录、避免被取最新逻辑覆盖。mv 非 0 即失败。</p>
+  </div>
+</div>
+
+<div class="step" id="m4">
+  <label><input type="checkbox" data-id="m4"><span class="si">2.B.4 step4 — 精度对比（accuracy_load，记录性不入成败）</span></label>
+  <div class="body">
+    <p>用 step2 缓存的 <code>$T2</code> 作为 <code>--output_path</code>。</p>
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>cd /data/atk-space/runs && source /usr/local/Ascend/cann-9.0.0/set_env.sh && export TORCH_DEVICE_BACKEND_AUTOLOAD=0 && atk node --backend pyaclnn --is_dist true --task accuracy --devices 0,1 node --backend dist --output_path "$T2/output" --name npu_bm --devices 0,1 --task accuracy_load task -c /data/atk-space/cases/aclnnAlltoAllMatmul_cases_expanded.json -p /data/atk-space/cases/aclnnAlltoAllMatmul_executor.py --save_data output -mt 1 -e 100</code></pre>
+    </div>
+    <div class="kv">
+      <div class="k">产物</div><div class="v"><code>$T2/report/*.xlsx</code>（精度对比结果，含 <code>max_re_ratio / avg_re_ratio / root_mean_squared_ratio</code>）</div>
+      <div class="k">成败</div><div class="v"><strong>不入 status / passed / failed</strong>，仅记入 <code>comparison_result</code></div>
+    </div>
+  </div>
+</div>
+
+<div class="callout danger">
+  <span class="tag">门禁纪律</span>
+  step1/step2 路径门禁失败必须如实判定失败，<strong>不得</strong>降级为普通 case fail 或跳过进 step4。任一步失败即终止 4 步流程，<code>passed=0/failed=100/status=failed</code>。网络/认证/环境/框架故障写入 <code>engine_error</code>，不要伪装成 case fail。
+</div>
+
+<div class="callout warn">
+  <span class="tag">手动分步的代价</span>
+  2.B 跑完后<strong>不会自动生成</strong> <code>execution_result.json</code>（那是 <code>execute_cases.py</code> 的职责）。手动分步仅用于诊断；最终仍建议回到 2.A 跑一次以产出合规产物供 GATE 校验。若坚持纯手动，需自行按 <code>executer/models.py</code> 的 <code>ExecutionResult</code> 结构手写 <code>execution_result.json</code>（含 <code>fusion_phases[].dir_check_passed=true</code>），否则 §3 校验不通过。
+</div>
+
+<!-- ===================== 3 ===================== -->
+<h2 id="validate"><span class="n">3</span>校验 execution_result.json</h2>
+<p>执行结束后立即跑结构校验。fusion 时校验项：必填 <code>status/mode/passed/failed/total/records/engine_error</code>、<code>passed+failed==total</code>、<code>fusion_phases</code> 非空且 <code>cpu_benchmark/npu_cascaded</code> 的 <code>dir_check_passed</code> 全真；<code>comparison_result</code> 可选不校验阈值。<span class="filetag">scripts/validate_artifacts.py:521-552</span></p>
+
+<div class="step" id="val1">
+  <label><input type="checkbox" data-id="val1"><span class="si">3.1 校验 execution 产物</span></label>
+  <div class="body">
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>python scripts/validate_artifacts.py execution runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/execution_result.json</code></pre>
+    </div>
+    <div class="kv">
+      <div class="k">期望输出</div><div class="v"><code>{"valid": true, "errors": []}</code></div>
+      <div class="k">失败样例</div><div class="v"><code>"fusion: phase cpu_benchmark dir_check_passed 必须为 true"</code> → step1 路径门禁未过，回 §2 重跑 step1</div>
+    </div>
+  </div>
+</div>
+
+<div class="step" id="val2">
+  <label><input type="checkbox" data-id="val2"><span class="si">3.2 回看 execution.log 确认 4 步完整</span></label>
+  <div class="body">
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>grep -nE "fusion step|execute (start|done)|dir_check" runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/execution.log</code></pre>
+    </div>
+    <p class="small">正常应看到 <code>step1 cpu_benchmark</code> → <code>step1 dir_check rank_0=True rank_1=True</code> → <code>step2 npu_cascaded</code> → <code>step2 dir_check ...</code> → <code>step3 rename</code> → <code>step4 accuracy_load</code> → <code>===== execute done ... status=success =====</code>。</p>
+  </div>
+</div>
+
+<!-- ===================== 4 ===================== -->
+<h2 id="gate"><span class="n">4</span>GATE 质量门禁</h2>
+<p>输入本轮全部已生成产物，执行结构校验 + 跨文件一致性检查，输出 <code>quality_gate.json</code> 与唯一 <code>next_state</code>。<strong>门禁 Agent 不修复其他 Agent 的产物</strong>，避免职责串味。</p>
+
+<div class="callout">
+  <span class="tag">手动执行 GATE 的两种方式</span>
+  <strong>(a) 委派 quality-reviewer Agent</strong>（推荐，产出合规 <code>quality_gate.json</code>）：在 Claude Code 里 <code>quality-reviewer</code> 读 iter_001 全部产物判定。<strong>(b) 手动跑校验脚本自判</strong>：本工作单 §3 已跑 execution 校验，再补 constraints/cases/executor 校验，自己据 <code>blocking_issues</code> 决定是否放行。
+</div>
+
+<div class="step" id="gate1">
+  <label><input type="checkbox" data-id="gate1"><span class="si">4.1 全产物结构校验（手动自判）</span></label>
+  <div class="body">
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>python scripts/validate_artifacts.py constraints  runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/constraints.json
+python scripts/validate_artifacts.py cases        runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases.json
+python scripts/validate_artifacts.py execution    runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/execution_result.json
+python scripts/validate_artifacts.py executor    runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/cases_executor.py</code></pre>
+    </div>
+    <p class="small">四项全 <code>valid:true</code> 才进 next_state 判定。任一不过 → <code>blocking_issues</code> 非空 → status=blocked，不得进入 DIAGNOSE。</p>
+  </div>
+</div>
+
+<div class="step" id="gate2">
+  <label><input type="checkbox" data-id="gate2"><span class="si">4.2 委派 quality-reviewer Agent 产出 quality_gate.json</span></label>
+  <div class="body">
+    <p>在 Claude Code 对话框委派（产物：<code>iter_001/quality_gate.json</code>）：</p>
+    <div class="cmd">
+      <div class="cmd-label"># 粘贴到 Claude Code 对话框（不是终端，是委派提示）</div>
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>委派 quality-reviewer agent 对 runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001 执行只读质量门禁，读全产物并产出 quality_gate.json（含 status/checks/blocking_issues/next_state）。</code></pre>
+    </div>
+    <p class="small">或直接输入 <code>/validate-run</code> 调用对应 skill。注意 quality-reviewer <strong>不修复</strong>其他 Agent 产物。</p>
+  </div>
+</div>
+
+<div class="step" id="gate3">
+  <label><input type="checkbox" data-id="gate3"><span class="si">4.3 读 next_state 决定走向</span></label>
+  <div class="body">
+    <table>
+      <thead><tr><th>execution 结果</th><th>quality_gate.next_state</th><th>动作</th></tr></thead>
+      <tbody>
+        <tr><td>success（passed=100）</td><td>SUCCESS</td><td>本轮完成，流程结束</td></tr>
+        <tr><td>failed / 有用例失败</td><td>DIAGNOSE</td><td>进 §5 诊断根因</td></tr>
+        <tr><td>产物不合法</td><td>BLOCKED</td><td>修产物后重跑校验，不得越过门禁</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ===================== 5 ===================== -->
+<h2 id="diagnose"><span class="n">5</span>失败诊断 DIAGNOSE</h2>
+<p>仅当 GATE 判 <code>next_state=DIAGNOSE</code>（用例失败）时进入。failure-analyst 用新上下文只读落盘证据，产出 <code>analysis.json</code>，<code>root_cause ∈ {constraint_extraction, generator_bug, executor_bug}</code>。</p>
+
+<div class="callout warn">
+  <span class="tag">fusion 成败语义</span>
+  fusion 的 <code>passed/failed</code> <strong>只反映执行成败</strong>（atk exit + 路径门禁），<strong>不</strong>反映精度。故这里"用例失败"= step1/2/3 任一执行失败或路径门禁未过。step4 精度超阈不会进 DIAGNOSE。
+</div>
+
+<div class="step" id="dg1">
+  <label><input type="checkbox" data-id="dg1"><span class="si">5.1 收集诊断证据</span></label>
+  <div class="body">
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>python scripts/validate_artifacts.py analysis runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/analysis.json</code></pre>
+    </div>
+    <p>诊断输入：算子文档快照 + constraints.json + cases.json + cases_expanded.json + execution_result.json + execution.log。先看日志定位失败步：</p>
+    <div class="cmd">
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>grep -nE "fusion step.*failed|FAILED|exit=[^0]|error|Error" runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001/execution.log</code></pre>
+    </div>
+  </div>
+</div>
+
+<div class="step" id="dg2">
+  <label><input type="checkbox" data-id="dg2"><span class="si">5.2 委派 failure-analyst Agent 产出 analysis.json</span></label>
+  <div class="body">
+    <p>在 Claude Code 对话框委派：</p>
+    <div class="cmd">
+      <div class="cmd-label"># 粘贴到 Claude Code 对话框（委派提示，非终端命令）</div>
+      <button class="copy" onclick="copyCmd(this)">复制</button>
+      <pre><code>委派 failure-analyst agent 诊断 runs/aclnnAlltoAllMatmul-20260722-105637-736731/iter_001 的失败根因，只读落盘证据，产出 analysis.json（root_cause ∈ constraint_extraction/generator_bug/executor_bug）。</code></pre>
+    </div>
+    <p class="small">或直接输入 <code>/diagnose-failure</code> 调用对应 skill。本 run 无 <code>operator_src_snapshot</code>，不触发 source-analyst 域。</p>
+  </div>
+</div>
+
+<div class="step" id="dg3">
+  <label><input type="checkbox" data-id="dg3"><span class="si">5.3 按 root_cause 分流</span></label>
+  <div class="body">
+    <table>
+      <thead><tr><th>root_cause</th><th>含义</th><th>下一步</th></tr></thead>
+      <tbody>
+        <tr><td>constraint_extraction</td><td>约束提取问题</td><td>补充优先（source_evidence / supplement_additions）→ re-EXTRACT+SUPPLEMENT+GENERATE+EXECUTE；补充无可提取才回退 <code>prompt-optimizer</code> 生成 prompt_v2，下轮 <code>current_iteration &lt; max_iterations(3)</code></td></tr>
+        <tr><td>generator_bug</td><td>生成器代码 bug</td><td><span class="pill no">立即止损</span> STOP_GENERATOR_BUG，不自动改代码</td></tr>
+        <tr><td>executor_bug</td><td>执行适配层 bug</td><td><span class="pill no">立即止损</span> STOP_EXECUTOR_BUG，不自动重试远端</td></tr>
+      </tbody>
+    </table>
+    <p class="small">fusion 多见 executor_bug（SSH/ATK/路径门禁）或 constraint_extraction（融合约束不全）；generator_bug 罕见。本 run 无 <code>operator_src_snapshot</code>，故 DIAGNOSE 不触发 source-analyst 域。</p>
+  </div>
+</div>
+
+<!-- ===================== 6 ===================== -->
+<h2 id="terminal"><span class="n">6</span>终态判定与下一步</h2>
+<table>
+  <thead><tr><th>终态</th><th>触发条件</th><th>本 run 后续</th></tr></thead>
+  <tbody>
+    <tr><td><span class="pill yes">SUCCESS</span></td><td>GATE 全通过、execution success</td><td>本算子迭代完成。可清理或归档 <code>runs/...-736731.zip</code>。</td></tr>
+    <tr><td><span class="pill weak">DIAGNOSE→下轮</span></td><td>root_cause=constraint_extraction 且 <code>current_iteration(1) &lt; max_iterations(3)</code></td><td>补充或优化 prompt 后进 iter_002（re-EXTRACT 起）。</td></tr>
+    <tr><td><span class="pill no">STOP_GENERATOR_BUG</span></td><td>root_cause=generator_bug</td><td>止损，人工修 <code>agent/generators/</code>。</td></tr>
+    <tr><td><span class="pill no">STOP_EXECUTOR_BUG</span></td><td>root_cause=executor_bug</td><td>止损，人工修 <code>executer/</code> 或 servers.json。</td></tr>
+    <tr><td><span class="pill wait">MAX_ITERATIONS</span></td><td>到 3 轮仍未 SUCCESS</td><td>迭代耗尽，归档复盘。</td></tr>
+    <tr><td><span class="pill no">BLOCKED</span></td><td>产物不合法、门禁阻断</td><td>修产物重跑校验。</td></tr>
+  </tbody>
+</table>
+
+<div class="callout ok">
+  <span class="tag">收尾</span>
+  每次状态迁移都应更新 <code>run_state.json</code>（手动执行时需自行回写 <code>state</code> 与 <code>history</code>，编排器自动执行时由其完成）。产物目录是唯一真相源，任何 Agent 都不依赖聊天历史恢复事实。
+</div>
+
+<div class="footer">
+  本工作单由 Claude 基于当前 run 落盘产物与 <code>executer/runner.py</code>、<code>scripts/execute_cases.py</code>、<code>execute-cases</code> skill、<code>scheme.html</code> 生成。命令路径已按 <code>aclnnAlltoAllMatmul-20260722-105637-736731/iter_001</code> 填实；若换 run，请用 <code>execute_cases.py --help</code> 重新生成。<br>
+  进度与勾选状态保存在本机 localStorage，不外传。
+</div>
+
+</div>
+
+<script>
+function copyCmd(btn){
+  var pre=btn.parentElement.querySelector('pre code')||btn.parentElement.querySelector('pre');
+  var text=pre.innerText.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+  navigator.clipboard.writeText(text).then(function(){
+    var old=btn.textContent; btn.textContent='已复制 ✓'; btn.classList.add('ok');
+    setTimeout(function(){btn.textContent=old;btn.classList.remove('ok');},1500);
+  });
+}
+(function(){
+  var KEY='executor_checklist_v1';
+  var boxes=document.querySelectorAll('input[type=checkbox][data-id]');
+  var saved={};
+  try{saved=JSON.parse(localStorage.getItem(KEY)||'{}');}catch(e){}
+  boxes.forEach(function(cb){
+    var id=cb.dataset.id;
+    if(saved[id]){cb.checked=true;cb.closest('.step').classList.add('done');}
+    cb.addEventListener('change',function(){
+      saved[cb.dataset.id]=cb.checked;
+      localStorage.setItem(KEY,JSON.stringify(saved));
+      cb.closest('.step').classList.toggle('done',cb.checked);
+      updateBar();
+    });
+  });
+  function updateBar(){
+    var total=boxes.length,done=0;
+    boxes.forEach(function(cb){if(cb.checked)done++;});
+    var pct=total?Math.round(done/total*100):0;
+    document.getElementById('bar').style.width=pct+'%';
+  }
+  updateBar();
+})();
+</script>
+</body>
+</html>
