@@ -687,6 +687,30 @@ def _cleanup_log_handler(handler: logging.FileHandler | None) -> None:
         except Exception:
             pass  # best-effort cleanup
 
+async def _downlaod_fusion_logs(
+    conn: asyncssh.SSHClientConnection,
+    phase_output_dir: str | None,
+    local_log_dir: Path,
+    phase_name:str,
+    transfer_mode: str,
+):
+    """Download fusion phase logs from the remote host to local log dir.
+   
+   Creates ``local_log_dir/{phase_name}/`` and downloads the log there.
+   Silently skips if ``phase_output_dir`` is None or log is missing.   
+    """
+    if not phase_output_dir:
+        return
+    remote_log_path = f"{phase_output_dir}/log/atk.log"
+    local_phase_dir = local_log_dir / phase_name
+    local_log_path = local_phase_dir / "atk.log"
+    
+    try:
+        local_phase_dir.mkdir(parents=True, exist_ok=True)
+        await download_file(conn, remote_log_path, local_log_path, transfer_mode=transfer_mode,)
+        logger.info("[fusion log] downloaded %s -> %s", remote_log_path, local_log_path)
+    except Exception as e:
+        logger.warning("[fusion log] failed to download %s for phase %s: %s", remote_log_path, phase_name, e)
 
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
@@ -1339,6 +1363,7 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
                         f"exit={r1.exit_code} out_t1={out_t1} "
                         f"rank_0={ok0} rank_1={ok1}"
                     )
+                await _downlaod_fusion_logs(conn, out_t1, cache_dir, "cpu_benchmark", transfer_mode)
 
         # ── Step 2: NPU 级联标杆 (dist + hccl + is_bm) ──────────────
         if failed_phase is None:
@@ -1402,6 +1427,7 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
                         f"exit={r2.exit_code} out_t2={out_t2} "
                         f"rank_0={ok0b} rank_1={ok1b}"
                     )
+                await _downlaod_fusion_logs(conn, out_t2, cache_dir, "npu_cascaded", transfer_mode)
 
         # ── Step 3: rename dist_cpu → cpu_benchmark ─────────────────
         if failed_phase is None and out_t1:
