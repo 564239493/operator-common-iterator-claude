@@ -60,9 +60,23 @@ python scripts/cca_translate_cli.py reconcile \
 一个 fn-*.md 跑一次 reconcile；多个子函数各跑一次，汇总 code_only 候选。
 
 ### 4. 翻译 guard → Python-bool（我是 LLM，按 prompt 翻）
-严格遵循本 skill 目录下的 **`translate_guard.md`**：词汇表用 cca 树里的 `eqclass-hint.md`
-（Tensor.shape/dtype/ndim/is_null、List len、DType 枚举），sound-by-construction（显式合取前提、
-枚举全名、不漏判空）。每条产一个 IR 对象：
+严格遵循本 skill 目录下的 **`translate_guard.md`**——其「词汇表」「建模规则」是**与 Z3 求解器
+（`agent/generators/param_constraint_solve/`）实测对齐过的**，不是随意词汇，务必逐条遵守。
+关键红线（违反则约束被求解器 `[FAIL]` 静默丢弃，生成的用例会违反约束意图）：
+
+- **函数仅** `len/all/any/max/min/sum/prod`；**不** `is_null`/`ndim`/`dim`/`dtype()`。元素 ndim 写 `len(t.shape)`。
+- **属性仅** `.shape/.dtype/.format/.range_value`（TensorList 另有 `.length`），无 `.ndim`。
+- **变量名只能是 constraints.json `inputs` 里的入参**。`platform_arch`/`soc`/`m_nonzero`/`n_nonzero`/
+  `k_axis`/`transposeX`/`transposeWeight`/`xDtype` 等平台/计算中间量**不是入参**，禁止裸名出现，
+  否则 `get_or_create_var` 抛 `Unsupported dtype: 'None'` → `[FAIL]` 丢弃。这类高层语义保
+  `stub=true` + `expr="TODO_..."`（`build-final` 自动跳过，不并入 z3 桶），note 写明缺什么。
+- **TensorList 各元素共享 `elem_shape`**：“每个元素 ndim∈[a,b]”写 `len(x.shape) in [a,b]`，
+  **不要** `all(ndim(t)... for t in x)`（生成器循环变量不绑成元素代理，`t.shape` 取不到）。
+- **DType 比较用字符串字面量**（`x[0].dtype == "int8"`，规范名见 `DataMatchMap.DTYPE_SPECS`），
+  **禁止裸名** `== INT8`。
+- optional 判空用 `param is None`/`is not None`（编码为 `is_present`），**不**用 `is_null(...)`。
+
+每条产一个 IR 对象：
 ```jsonc
 {"branch_ref":"...","category":"constraints_in_parameters|error_branches|ub_branches|normalize_rules|unreachable",
  "expr_type":"...","expr":"<Python-bool>","relation_params":[...],
@@ -80,12 +94,14 @@ python scripts/cca_translate_cli.py reconcile \
 - “带 category”：`{items:[{category:"...", ...}]}`，每条带 `category` 字段。
 小步快跑：一个函数或一组分支翻译完即落盘一个批次文件（`cca_batchN.json`）。
 
-### 5. 自检（固化）
+### 5. 自检（固化，仅语法）
 ```bash
 python scripts/cca_translate_cli.py check --batch "$BATCH1" --batch "$BATCH2" ... [--out "$CHECK_JSON"]
 ```
 每条非 stub / 非 TODO 的 expr 必须 `ast.parse(expr, mode="eval")` 通过。有失败 → 修，再跑。
 退出码 0=全过，1=有失败，2=异常。
+**注意：`check` 只查 Python 语法，不查 Z3 可编码性**——`is_null`/`platform_arch`/`m_nonzero`
+都能过 `check` 却被求解器 `[FAIL]` 丢弃。是否真能编码必须靠第 7 步实跑求解器。
 
 ### 6. 合并批次 → 最终文件
 ```bash
@@ -98,16 +114,33 @@ python scripts/cca_translate_cli.py build-final \
 `build-final` 把补充的**成功路径**约束按原字段
 `{expr_type,expr,relation_params,src_text,origin}` 并入目标产品桶（`origin="code"`，
 `verdict`/`note` 折进 `src_text` 便于追溯），`expr` 去重；UB/normalize/error/unreachable/stubs
-作**额外顶层键**保留（不丢信息）。其余产品/顶层字段（inputs/outputs/return_info/…）原样不动。
+作**额外顶层键**保留（不丢信息；`stub=true` 或 `TODO_` 前缀的**不并入** z3 桶）。
+其余产品/顶层字段（inputs/outputs/return_info/…）原样不动。
 **输出与文档 constraints.json 同格式**（dict 按平台分桶则并入指定 product；扁平 list 则并入列表）。
+
+### 7. Z3 求解器实测（必做，硬门禁）
+`check`（第 5 步）只做 `ast.parse`，**不能**保证求解器能编码。合并后必须实跑生成器验证：
+```bash
+python scripts/generate_cases.py --constraints "$OUTPUT" \
+  --output "$ITER_DIR/cases_check.json" --count 1 --iter-dir "$ITER_DIR"
+```
+检查日志/输出**无 `[FAIL] ...` 行**。`[FAIL]` = 该约束被 `add_constraint` 静默丢弃
+（不进 solver），生成的用例会违反约束意图 → **必修**：回第 4 步按 `translate_guard.md`
+红线改 expr，再 `check → build-final → 本步`，直到 0 `[FAIL]`。
+`[PostCheck] expr eval error (fail-open, 不阻断)` 是另一类预存告警，连 doc 原 expr 也会命中，
+非阻断、非本步骤引入，可忽略。
+验证产生的 `cases_check.json`/`cases_*.json`/`jsonl_checkpoints`/`generation*.log` 是临时产物，验完删。
 
 ## 规则
 
 - 小步快跑：每批翻译（一个函数或一组分支）即落盘 + `check` 自检。
-- 异常不吞：解析失败、`ast` 自检失败直接抛 / 退出码非 0。
+- 异常不吞：解析失败、`ast` 自检失败、Z3 求解器 `[FAIL]` 直接抛 / 退出码非 0；`[FAIL]` 不修不放过。
+- **求解器红线**：变量名只能是 `inputs` 入参；函数仅 `len/all/any/max/min/sum/prod`；无 `is_null`/`ndim`；
+  DType 用字符串字面量；平台/计算中间量保 stub。详见 `translate_guard.md`。
 - UB 不喂 z3：`ub_branches` 一律 `not_for_solver=true`。
 - 不可达跳过：防生成不可能用例。
-- 语义最终人 review：AST 只查语法；翻译漏合取项/边界写反要人看。
+- 语义最终人 review + 求解器实测双门：AST 只查语法（不够）；翻译漏合取项/边界写反要人看，
+  且**必须**跑第 7 步求解器确认 0 `[FAIL]`。
 - 不假设固定路径：`CCA_DIR` / `DOC_CONSTRAINTS` / `PRODUCT` / `OUTPUT` 全部由调用方传入；
   本 skill 与 `scripts/cca_translate_cli.py` 内不得出现写死的算子路径或绝对路径。
 
@@ -118,4 +151,4 @@ python scripts/cca_translate_cli.py build-final \
 - `samples/v5_constraints_final.json`：V5 合并原文档 constraints.json 的最终文件
   (保原字段 shape，origin="code" 标注)
 - `samples/v5_supplemented_sample.json`：分批翻译过程样例
-- `translate_guard.md`：翻译 prompt（词汇表 + few-shot），第 4 步严格遵循
+- `translate_guard.md`：翻译 prompt（词汇表 + few-shot + 求解器红线），第 4 步严格遵循

@@ -2,8 +2,8 @@
 
 > 用途：把 cca `fn-*.md` 的 `## 行为划分` 里每条 `(guard, outcome)` 翻译成生成器可消费的
 > Python-bool `expr`，并判定与 doc-json 的 ✅/⚠️/❌。本 prompt 是 Recon-2b 的可复用模板。
-> 词汇表与建模规则取自 cca 分析树里的 `eqclass-hint.md`，few-shot 取自
-> `samples/v5_constraints_supplemented.json`。
+> 词汇表与建模规则**必须与 Z3 求解器实际支持一致**（见下「词汇表」），否则约束被 `[FAIL]` 静默丢弃。
+> few-shot 取自 `samples/v5_constraints_supplemented.json`。
 
 ---
 
@@ -40,23 +40,47 @@
 - `code_stricter_replace`：同一关系但代码更严/边界不同（如 doc 允许某值、代码排除），以代码为准。
 - `supplement`：doc-json 无对应条目，代码新增。
 
-## 词汇表（翻译产出用这些，不裸用指针/内存）
+## 词汇表（必须与 Z3 求解器实际支持一致；否则约束被 `[FAIL]` 静默丢弃）
 
-- **scalar**：int/float/bool/枚举。
-- **Tensor**：`t.shape : List<int>`、`t.dtype`、`ndim(t):=len(t.shape)`、`dim(t,i):=t.shape[i]`、`is_null(t)`。
+> 求解器（`expression_preprocess_utils.py` 的 `ASTtoZ3Converter` + `z3_expression_solver_utils.py`）
+> 实际只支持下面这些。**`check` 只做 `ast.parse`（纯语法）**，`is_null`/`platform_arch`/`m_nonzero`
+> 都能过 `check` 却被求解器 `[FAIL]` 丢弃——故翻译完必须实跑 `generate_cases.py` 验证（见「执行要求」）。
+
+- **支持的函数（仅这 7 个 + 量词）**：`len / all / any / max / min / sum / prod`。
+  **不支持** `is_null`/`ndim`/`dim`/`dtype()` 等任何别的函数名——写了即 `[FAIL]`。
+- **属性（仅这些）**：Tensor/TensorList 的 `.shape` / `.dtype` / `.format` / `.range_value`；
+  TensorList 另有 `.length`。**没有 `.ndim`**——元素 ndim 写 `len(t.shape)`。
+- **scalar**：int/float/bool/枚举；int 标量取值用 `.range_value`（见下「int 标量参数取值用 .range_value」）。
 - **List<T>**：`len(l)`、`l[i]`、`max/min/sum`。
-- **DType 枚举**：`INT8/INT4/FLOAT16/BFLOAT16/FLOAT/UINT64/INT64/INT32/...`（源码 `DT_*` 去 `DT_` 前缀）。
-- **求值函数**：`len/max/min/sum` · `ndim/dim/dtype/is_null` · 算术 `+-*/%` · 比较 · 逻辑 `and/or/not` · 集合 `in` · 有界量词 `all(i for i in range(len(xs)))`/`any(...)`。
+- **DType 枚举比较**：用**字符串字面量**且为规范名
+  `int4/int8/int16/int32/int64/uint4/uint8/uint16/uint32/uint64/bf16/fp16/fp32/fp64/double/float/bool/string/...`
+  （见 `DataMatchMap.DTYPE_SPECS`）：写 `x[0].dtype == "int8"`。**禁止裸名** `== INT8`——
+  预处理器（`ACL_DTYPE_TRANSFER_TENSOR_MAP`）只把 `INT8` 正则替换成 `int8`，仍是未声明裸名 → KeyError。
+- **算术/逻辑/集合**：`+-*/%` · 比较 `==/!=/</<=/>/>=/in/not in` · `and/or/not` ·
+  有界量词 `all(... for ... in range(...))` / `any(...)`。
 
 ## 建模规则（sound-by-construction，关键）
 
-- 指针→张量用属性/函数（`ndim(x)`、`x.dtype`），不建模内存地址。
-- 张量列表→`List<Tensor>`，用 `len(xs)`/`xs[i]`。
-- **判空**：能抽象成 Tensor/List 用 `is_null(t)`/`len(l)==0`；够不着的裸指针保 `ptr is not None`，**不漏**。
-- **后一分支隐含前面判空/边界已过**——把前提**显式合取进 expr**（如 `not is_null(x) and ndim(x)>=2 and ...`），别丢。
+- 指针→张量用属性（`x.dtype`、`x.shape`），不建模内存地址。**元素 ndim 写 `len(t.shape)`，不要写 `ndim(t)`（求解器无此函数）**。
+- 张量列表（TensorList）→用 `len(xs)`（= `.length`）、`xs[i]`（首元素 `x[0]` 是元素代理，可 `.shape/.dtype/.format/.range_value`）。
+  **各元素共享 `elem_shape`**，故“每个元素 ndim∈[a,b]”写 `len(x.shape) in [a,b]`，
+  **不要**写 `all(ndim(t) in [a,b] for t in x)`——生成器循环变量**不**绑成元素代理，
+  `all/any` 内的 `t.shape`/`t.dtype` 取不到元素属性，会报错或静默失效。
+- **判空/存在性**：optional 入参用 `param is None` / `param is not None`（编码为 `is_present` 布尔）；
+  列表空用 `len(l) == 0`。**不要用 `is_null(...)`（求解器无此函数，会 `[FAIL]`）**。
+- **后一分支隐含前面判空/边界已过**——把前提**显式合取进 expr**
+  （如 `x is not None and len(x.shape) >= 2 and ...`），别丢。
+- **变量名只能是 constraints.json `inputs` 里声明的入参**。求解器对每个裸名调 `get_or_create_var`，
+  未声明名按 `tensor` + `dtype=None` 建模 → `_infer_element_sort` 抛 `Unsupported dtype: 'None'`
+  → `add_constraint` 记 `[FAIL]` 并**静默丢弃该约束**（不进 solver），生成的用例会违反该约束意图。因此：
+  - **禁止**出现非入参的裸名：`platform_arch`/`soc`/`arch`/`npu_arch`（平台不是入参，无 `.range_value`）、
+    `m_nonzero`/`n_nonzero`/`k_axis`/`transposeX`/`transposeWeight`/`xDtype`（运行时计算中间量）等。
+  - 这类平台/计算中间量依赖的高层语义 → 保 `stub=true` + `expr="TODO_..."`（`build-final` 自动跳过 stub/TODO，
+    不并入 z3 桶），note 写明缺什么（如“constraints.json 无 platform 输入参数，需按 product→arch 特化后方可入 z3”）。
 - **枚举/具名常量用源码全名**：`GMMActType::GMM_ACT_TYPE_GELU_ERR_FUNC` → 写 `GMM_ACT_TYPE_GELU_ERR_FUNC`，不缩写。
 - groupType 映射：`NO_SPLIT=-1, SPLIT_M=0, SPLIT_K=2`（文档“-1 不分组/0 m轴/2 k轴”）。
-- 平台：`NpuArch::DAV_xxxx` → `platform_arch == DAV_xxxx`（由 soc 派生）。
+- 平台：`NpuArch::DAV_xxxx` 是**平台条件**，不是入参——**不要**写成 `platform_arch == DAV_xxxx`
+  进 z3 桶；按上一条保 stub（除非 constraints.json 显式有 platform/soc 入参）。
 - **int 标量参数取值用 `.range_value`**：跨参 expr 引用 int 型标量参数（如 `actType`、`groupType`、
   `splitItem`）的取值时**必须**用 `<param>.range_value`（如 `actType.range_value in [0,1,2,4,5]`、
   `groupType.range_value == -1`），与本仓库 `constraints.json` 的 expr 规范一致；**禁止**裸名
@@ -64,7 +88,7 @@
 - **跨 sort 比较展开析取**：凡涉及「int 枚举码 attr 与 `tensor.dtype` 比较」的约束，**必须**展开成
   显式析取 `(attr==<int码> and tensor.dtype=="<DType名>")` 的析取，**禁止**直接写
   `attr == tensor.dtype`（Z3 sort mismatch，整条守卫会被 `add_constraint` 丢弃）。
-  DType 名用大写规范名（预处理自动映成 Z3 DType enum 常量）。
+  DType 名用**字符串字面量**且为 `DTYPE_SPECS` 规范名（如 `"int8"`/`"bf16"`），不要裸名。
 
 ## few-shot 示例
 
@@ -95,10 +119,22 @@
 输出：
 ```json
 {"branch_ref":"行为划分第3条","category":"ub_branches","expr_type":"value_dependency",
- "expr":"weight[0].dtype == INT32 and any(ndim(w) == 0 for w in weight)",
+ "expr":"weight[0].dtype == \"int32\" and len(weight.shape) == 0",
  "relation_params":["weight"],"outcome":"ub","verdict":"supplement","not_for_solver":true,
  "src_text":"cca 第3条: weight INT32 且有元素 GetDimNum()==0 → UnpackB32ToB4 越界",
- "note":"前置被破坏才触发，不喂 z3；UB 类 doc 完全无。"}
+ "note":"前置被破坏才触发，不喂 z3；UB 类 doc 完全无。dtype 用字符串字面量；TensorList 各元素共享 elem_shape，‘有元素 ndim==0’即 len(weight.shape)==0。"}
+```
+
+### 例4（❌ stub：够不着的高层语义，别硬编码进 z3）
+输入：cca L61 `groupListType != SPARSE_M ∨ (NpuArch∈{DAV_2201,DAV_3510} ∧ groupType==SPLIT_M)`，outcome=success。constraints.json 无 platform/soc 入参。
+输出：
+```json
+{"branch_ref":"cca L61 groupListType×arch(SPARSE_M)","category":"constraints_in_parameters",
+ "expr_type":"value_dependency",
+ "expr":"TODO_sparse_m_platform(groupListType, groupType, platform_arch)",
+ "relation_params":["groupListType","groupType"],"outcome":"success","verdict":"supplement","stub":true,
+ "src_text":"cca L61: groupListType != SPARSE_M ∨ (NpuArch∈{DAV_2201,DAV_3510} ∧ groupType==SPLIT_M)",
+ "note":"STUB：groupListType==2(SPARSE_M) 需特定 arch。constraints.json 无 platform/soc 入参，Z3 无法声明 platform_arch（get_or_create_var 抛 Unsupported dtype:None）。需按 product→arch 映射特化后方可入 z3，TODO。"}
 ```
 
 ## 执行要求
@@ -107,3 +143,9 @@
 2. **保留 ¬/∧/∨ 的否定结构**：cca 写 `¬(A ∧ B)` 就译 `not (A and B)`，可后续德摩根，但先对齐原文。
 3. **拿不准就标 `verdict=supplement` + note 说明存疑**，别强行判 consistent。
 4. 输出**纯 JSON 数组**（或“已分桶”对象），每元素如上 schema；不要输出别的文字。
+5. **Z3 求解器实测是唯一硬门禁**：`check` 只做 `ast.parse`（纯语法），`is_null`/`platform_arch`/`m_nonzero`
+   等都能过 `check` 却被求解器 `[FAIL]` 静默丢弃。故每批落盘后、以及 `build-final` 合并后，必须实跑：
+   `python scripts/generate_cases.py --constraints <最终 constraints.json> --output <iter>/cases_check.json --count 1 --iter-dir <iter>`
+   检查日志**无 `[FAIL]` 行**。`[FAIL]` = 该约束被 `add_constraint` 丢弃（不进 solver），生成的用例会违反约束意图，**必修**。
+   （`[PostCheck] expr eval error (fail-open, 不阻断)` 是另一类预存告警，连 doc 原 expr 也会命中，非阻断、非本步骤引入，可忽略。）
+   有 `[FAIL]` → 回“翻译 guard”按「词汇表」「变量名只能是入参」规则改 expr，再 `check → build-final → 本步`，直到 0 `[FAIL]`。
