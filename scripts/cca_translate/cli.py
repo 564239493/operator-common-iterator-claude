@@ -5,6 +5,7 @@
 - parse       : 解析 fn-*.md「## 行为划分」→ 分支树 IR(JSON)
 - reconcile   : 文档 constraints.json(某产品) vs fn-*.md 行为划分 → 参数共现缺口
 - check       : 对翻译批次做 ast.parse 语法自检（非 stub / 非 TODO 的 expr 必过）
+- verify-coverage : 前提保留自检(advisory)——guard 值比较前提是否被 code-expr 保留
 - build-final : 原 constraints.json + 翻译批次 → 最终 constraints.json(保持原格式)
 
 所有子命令均不假设固定路径，路径由 --cca-dir / --fn-md / --doc-constraints /
@@ -24,6 +25,7 @@ from pathlib import Path
 
 from .cca_parse import count_branches, parse_behavior_partition
 from .reconcile import reconcile
+from .verify_coverage import verify as verify_coverage
 
 logger = logging.getLogger("cca_translate.cli")
 
@@ -213,6 +215,37 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+# ============================ verify-coverage ============================
+
+def _cmd_verify_coverage(args: argparse.Namespace) -> int:
+    """前提保留自检（advisory）。
+
+    对每条 IR 分支的「入参值比较」前提参数，检查是否被链到该分支的 code-expr
+    保留；列出未保留项供人复核。advisory：始终 exit 0，不阻断。
+    """
+    parse_ir = _load_json(args.parse_ir)
+    batches = [_load_json(b) for b in args.batch]
+    doc = _load_json(args.doc_constraints) if args.doc_constraints else None
+    report = verify_coverage(parse_ir, batches, doc, args.product)
+    if args.out:
+        _dump_json(report, args.out)
+    else:
+        fs = report["findings"]
+        logger.info("verify-coverage: %d 条带前提分支，%d 条需复核 (advisory)",
+                    report["branches_with_premises"], len(fs))
+        for f in fs:
+            logger.warning(
+                "⚠ 前提未保留 [branch %s callee=%s outcome=%s] premise=%s "
+                "uncovered_in_code_expr=%s\n  guard: %s\n  %s",
+                f["branch_path"], f.get("callee"), f.get("outcome_kind"),
+                f["premise_params"],
+                [(a["param"], "doc-covered" if a["doc_covered"] else "NOT-in-doc")
+                 for a in f["uncovered_in_code_expr"]],
+                f["guard_excerpt"], f["hint"],
+            )
+    return 0
+
+
 # ============================ build-final ============================
 
 def _cmd_build_final(args: argparse.Namespace) -> int:
@@ -263,6 +296,18 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--batch", required=True, action="append", help="翻译批次 JSON（可多次）")
     pc.add_argument("--out", default=None, help="自检报告 JSON 路径（缺省只打日志）")
     pc.set_defaults(func=_cmd_check)
+
+    # verify-coverage
+    pv = sub.add_parser("verify-coverage",
+                       help="前提保留自检（advisory）：guard 值比较前提是否被 code-expr 保留")
+    pv.add_argument("--parse-ir", required=True, help="parse 子命令产出的 IR JSON")
+    pv.add_argument("--batch", required=True, action="append", help="翻译批次 JSON（可多次）")
+    pv.add_argument("--doc-constraints", default=None,
+                    help="文档 constraints.json（用于取入参名 + 标注 doc 覆盖；缺省则仅按 IR 兜底）")
+    pv.add_argument("--product", default=None,
+                    help="产品键（doc-constraints 为按平台分桶时必填，用于 doc 覆盖标注）")
+    pv.add_argument("--out", default=None, help="自检报告 JSON 路径（缺省只打日志）")
+    pv.set_defaults(func=_cmd_verify_coverage)
 
     # build-final
     pb = sub.add_parser("build-final", help="原 constraints.json + 批次 → 最终 constraints.json")

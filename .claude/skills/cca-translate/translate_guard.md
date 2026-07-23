@@ -14,7 +14,7 @@
 
 ```jsonc
 {
-  "branch_ref": "cca 行号/分支序号",
+  "branch_ref": "cca 分支路径(IR DFS 序) + 行号/分支序号",
   "category": "constraints_in_parameters | error_branches | ub_branches | normalize_rules | unreachable",
   "expr_type": "self_value_enum | self_value_range | value_dependency | shape_value_dependency | presence_dependency | ...",
   "expr": "<Python-bool，用下述词汇>",
@@ -63,13 +63,27 @@
 
 - 指针→张量用属性（`x.dtype`、`x.shape`），不建模内存地址。**元素 ndim 写 `len(t.shape)`，不要写 `ndim(t)`（求解器无此函数）**。
 - 张量列表（TensorList）→用 `len(xs)`（= `.length`）、`xs[i]`（首元素 `x[0]` 是元素代理，可 `.shape/.dtype/.format/.range_value`）。
-  **各元素共享 `elem_shape`**，故“每个元素 ndim∈[a,b]”写 `len(x.shape) in [a,b]`，
+  **各元素共享 `elem_shape`**，故“每个元素 ndim∈[a,b]”写 `a <= len(x.shape) <= b`（区间用链式比较；
+  **`in [a,b]` 是二元素列表成员判定，非区间**，不要用），
   **不要**写 `all(ndim(t) in [a,b] for t in x)`——生成器循环变量**不**绑成元素代理，
   `all/any` 内的 `t.shape`/`t.dtype` 取不到元素属性，会报错或静默失效。
 - **判空/存在性**：optional 入参用 `param is None` / `param is not None`（编码为 `is_present` 布尔）；
   列表空用 `len(l) == 0`。**不要用 `is_null(...)`（求解器无此函数，会 `[FAIL]`）**。
 - **后一分支隐含前面判空/边界已过**——把前提**显式合取进 expr**
   （如 `x is not None and len(x.shape) >= 2 and ...`），别丢。
+- **门控/条件守卫检查必须保留前提为析取逃逸（关键，违反即过约束）**：当代码形如
+  `if (cond) { CHECK(predicate) }`——某 CHECK 仅在特定参数取值下才执行——cca guard 会含
+  **外层 if 守卫合取项**（如 `groupType != gmm::SPLIT_K`）。把该失败分支翻成成功路径约束时，
+  **禁止**只取 `predicate` 内层谓词而丢弃守卫合取项；必须写成析取逃逸
+  `not cond or <predicate>`（cond 不成立→该约束不适用→析取真）。cond 取反时按枚举值：
+  `groupType != SPLIT_K` → 守卫为「groupType==SPLIT_K(2) 时跳过」→ 翻成
+  `groupType.range_value == 2 or <predicate>`。**丢前提=约束变严**：Z3 仍可满足、仍 0 `[FAIL]`，
+  求解器门禁查不到（过约束盲区），只能靠 `verify-coverage` 与人 review 兜底。
+- **多层调用链前提是累积合取**：入口 `aclnnFoo` → 中间 `Common` → 末层 `CheckEmptyTensor`，
+  每层调用点的 `if(cond)` 都会在 cca 内联展开后**累积进同一条 guard** 的合取项（cca 已替你内联，
+  guard 文本里 `x != nullptr`(入口 CheckNotNull 层) ∧ `groupType != SPLIT_K`(Common 层 if) ∧ 末层谓词）。
+  故“前提”= guard 里**所有**入参值比较合取项的并集，逐项决定「保留为析取逃逸」还是「doc 已覆盖为值集」。
+  末层若 cca 未展开（标“旧版本事实/取自…”，可信度 中）→ 够不着，保 stub，别硬编。
 - **变量名只能是 constraints.json `inputs` 里声明的入参**。求解器对每个裸名调 `get_or_create_var`，
   未声明名按 `tensor` + `dtype=None` 建模 → `_infer_element_sort` 抛 `Unsupported dtype: 'None'`
   → `add_constraint` 记 `[FAIL]` 并**静默丢弃该约束**（不进 solver），生成的用例会违反该约束意图。因此：
@@ -137,6 +151,24 @@
  "note":"STUB：groupListType==2(SPARSE_M) 需特定 arch。constraints.json 无 platform/soc 入参，Z3 无法声明 platform_arch（get_or_create_var 抛 Unsupported dtype:None）。需按 product→arch 映射特化后方可入 z3，TODO。"}
 ```
 
+### 例5（⚠️ 门控守卫前提必须保留为析取逃逸——本 skill 头号易错点）
+输入：cca Common 内联 CheckEmptyTensor 失败分支，guard =
+`x != nullptr ∧ weight != nullptr ∧ groupType != gmm::SPLIT_K ∧ (存在 i 使 (*x)[i]==nullptr 或 GetViewShape().GetDimNum()∉[2,6])`，
+outcome=定义错误。源码 `aclnn_grouped_matmul.cpp:2419` 为 `if(groupType != gmm::SPLIT_K) { CHECK_COND(CheckEmptyTensor(x,weight)==...); }`。
+**错误翻法**（丢前提，过约束，Z3 仍 0 `[FAIL]` 查不到）：
+```jsonc
+// ❌ "expr":"2 <= len(x.shape) <= 6"   // 丢了 groupType != SPLIT_K，SPLIT_K 时也强加 ndim
+```
+**正确翻法**（保留 call-site if 守卫为析取逃逸）：
+```json
+{"branch_ref":"cca Common 内联 CheckEmptyTensor L2419+L71","category":"constraints_in_parameters",
+ "expr_type":"shape_value_dependency",
+ "expr":"groupType.range_value == 2 or 2 <= len(x.shape) <= 6",
+ "relation_params":["x","groupType"],"outcome":"success","verdict":"supplement",
+ "src_text":"cca Common 内联 L2419(if(groupType!=SPLIT_K))+L71 CheckEmptyTensor: groupType!=SPLIT_K ∧ 存在 i 使 (*x)[i]==nullptr 或 DimNum()∉[2,6] → 定义错误",
+ "note":"代码 2419 行仅 groupType!=SPLIT_K(2) 时才调 CheckEmptyTensor；故 groupType==2 时无 ndim 要求(析取真)，其余要求 x 元素 ndim∈[2,6]。call-site if 守卫必须保留为析取逃逸，否则 SPLIT_K 用例被过约束。"}
+```
+
 ## 执行要求
 
 1. **逐条 guard 都要产出一个对象**，不漏；嵌套子分支也各自产出。
@@ -149,3 +181,7 @@
    检查日志**无 `[FAIL]` 行**。`[FAIL]` = 该约束被 `add_constraint` 丢弃（不进 solver），生成的用例会违反约束意图，**必修**。
    （`[PostCheck] expr eval error (fail-open, 不阻断)` 是另一类预存告警，连 doc 原 expr 也会命中，非阻断、非本步骤引入，可忽略。）
    有 `[FAIL]` → 回“翻译 guard”按「词汇表」「变量名只能是入参」规则改 expr，再 `check → build-final → 本步`，直到 0 `[FAIL]`。
+6. **过约束盲区靠 `verify-coverage` 兜底**：丢前提=约束变严，Z3 仍 0 `[FAIL]` 查不到。故每批落盘后必须跑
+   `python scripts/cca_translate_cli.py verify-coverage --parse-ir <IR> --batch <批> --doc-constraints <doc> --product <产品>`
+   逐条复核 ⚠「前提未保留」：若是 call-site if 守卫（如 `groupType != SPLIT_K`）→ 必补析取逃逸；
+   若是 callee 自身值集校验且 doc 已覆盖（标 doc-covered）→ 确认一致即可。advisory 不阻断，但每条 ⚠ 必须有结论。
