@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,6 +104,11 @@ async def connect(
                 username=endpoint.username,
                 password=endpoint.password,
                 known_hosts=None,
+                # 跳过读 ~/.ssh/config：Windows 默认 locale(gbk) 下 asyncssh
+                # config.py 用 gbk 解码该文件，非 ASCII 字节触发 UnicodeDecodeError
+                # (见 exec-asyncssh-ssh-config-gbk-bug)。连接参数全由 servers.json
+                # 显式提供，不依赖 ~/.ssh/config；os.devnull=Windows nul/POSIX /dev/null。
+                config=os.devnull,
             ),
             timeout=timeout,
         )
