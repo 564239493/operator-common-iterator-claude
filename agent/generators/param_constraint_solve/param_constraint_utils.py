@@ -592,6 +592,48 @@ class ParamConstraintUtils(CommonDispatcher):
         else:
             constraint_exprs.extend(length_static_value_expr_list)
 
+    def _has_is_none_only(self, param_name: str) -> bool:
+        """检查参数在约束表达式中是否仅出现在 is None 的左操作数位置"""
+        found_in_none_only = True
+        has_any_ref = False
+
+        for constraint in self.inter_param_constraints:
+            expr_text = constraint.expr
+            if not expr_text:
+                continue
+            try:
+                tree = ast.parse(expr_text.strip(), mode='eval')
+            except SyntaxError:
+                cur_is_none = bool(re.search(rf'\b{re.escape(param_name)}\s+is\s+None\b', expr_text))
+                cur_not_none = bool(re.search(rf'\b{re.escape(param_name)}\s+is\s+not\s+None\b', expr_text))
+                if cur_is_none or cur_not_none:
+                    has_any_ref = True
+                if cur_not_none:
+                    found_in_none_only = False
+                continue
+
+            total_refs = 0
+            is_none_refs = 0
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and node.id == param_name:
+                    total_refs += 1
+                if (isinstance(node, ast.Compare)
+                        and len(node.ops) == 1
+                        and isinstance(node.ops[0], ast.Is)
+                        and len(node.comparators) == 1
+                        and isinstance(node.comparators[0], ast.Constant)
+                        and node.comparators[0].value is None
+                        and isinstance(node.left, ast.Name)
+                        and node.left.id == param_name):
+                    is_none_refs += 1
+
+            if total_refs > 0:
+                has_any_ref = True
+            if total_refs > is_none_refs:
+                found_in_none_only = False
+
+        return has_any_ref and found_in_none_only
+
     def analysis_param_is_present(self, builder: Z3ConstraintBuilder):
         """
         遍历所有表达式，收集每个参数的存在情况，如果某个参数只出现过 xxx is None的条件，则认为其is_present属性只能设置为False，如果既出现过is None, 也出现过 is not None, 则认为其iS_present属性为True, 另外，如果参数的allowed_range_value中只有null,则认为其is_present也只能取False
@@ -599,6 +641,10 @@ class ParamConstraintUtils(CommonDispatcher):
         force_false_params = set()
 
         for param_name in self.case_input_map:
+            # 必选参数不许检查，直接视为需要存在
+            param_combination_data = self.param_combinations.get(param_name)
+            if param_combination_data is not None and not param_combination_data.is_optional:
+                continue
             # 1. allowed_range_value 只能取 None（如 [null]）
             param_ori_data = (
                 self.operator_rule_data.inputs.get(param_name)
@@ -613,26 +659,14 @@ class ParamConstraintUtils(CommonDispatcher):
                         and isinstance(rv, list) and all(v is None for v in rv)):
                     force_false_params.add(param_name)
                     continue
-            has_is_none = False
-            has_is_not_none = False
-            for constraint in self.inter_param_constraints:
-                expr_text = constraint.expr
-                if re.search(rf'\b{re.escape(param_name)}\s+is\s+None\b', expr_text):
-                    has_is_none = True
-                if re.search(rf'\b{re.escape(param_name)}\s+is\s+not\s+None\b', expr_text):
-                    has_is_not_none = True
-
-            if has_is_none and not has_is_not_none:
+            if self._has_is_none_only(param_name):
                 force_false_params.add(param_name)
-
         for param_name in self.case_input_map:
             if param_name in force_false_params:
                 builder.solver.add(z3.Not(builder.var_map[param_name].is_present))
                 continue
             param_combination_data = self.param_combinations.get(param_name)
             if param_combination_data is None:
-                continue
-            if param_combination_data.is_optional:
                 continue
             builder.solver.add(builder.var_map[param_name].is_present)
 
