@@ -1,0 +1,5503 @@
+{
+  "operator_name": "aclnnGroupedMatmulV5",
+  "function_explanation": "实现分组矩阵乘计算。y_i[m_i,n_i]=x_i[m_i,k_i] * weight_i[k_i,n_i], i=1...g，其中g为分组个数。当前支持m轴和k轴分组。基础计算公式为 y_i=x_i*weight_i+bias_i。",
+  "product_support": [
+    "Ascend 950PR/Ascend 950DT",
+    "Atlas A3 训练系列产品/Atlas A3 推理系列产品",
+    "Atlas A2 训练系列产品/Atlas A2 推理系列产品",
+    "Atlas 推理系列产品"
+  ],
+  "function_signature": "aclnnStatus aclnnGroupedMatmulV5GetWorkspaceSize(const aclTensorList *x, const aclTensorList *weight, const aclTensorList *biasOptional, const aclTensorList *scaleOptional, const aclTensorList *offsetOptional, const aclTensorList *antiquantScaleOptional, const aclTensorList *antiquantOffsetOptional, const aclTensorList *perTokenScaleOptional, const aclTensor *groupListOptional, const aclTensorList *activationInputOptional, const aclTensorList *activationQuantScaleOptional, const aclTensorList *activationQuantOffsetOptional, int64_t splitItem, int64_t groupType, int64_t groupListType, int64_t actType, aclIntArray *tuningConfigOptional, aclTensorList *out, aclTensorList *activationFeatureOutOptional, aclTensorList *dynQuantScaleOutOptional, uint64_t *workspaceSize, aclOpExecutor **executor)",
+  "deterministic_computing": {
+    "Ascend 950PR/Ascend 950DT": {
+      "value": "true",
+      "src_text": "aclnnGroupedMatmulV5默认确定性实现。",
+      "type": null
+    },
+    "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+      "value": "true",
+      "src_text": "aclnnGroupedMatmulV5默认确定性实现。",
+      "type": null
+    },
+    "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+      "value": "true",
+      "src_text": "aclnnGroupedMatmulV5默认确定性实现。",
+      "type": null
+    },
+    "Atlas 推理系列产品": {
+      "value": "true",
+      "src_text": "aclnnGroupedMatmulV5默认确定性实现。",
+      "type": null
+    }
+  },
+  "inputs": {
+    "x": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "公式中的输入x。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT8",
+            "BFLOAT16",
+            "FLOAT8_E5M2",
+            "FLOAT8_E4M3FN",
+            "HFLOAT8",
+            "FLOAT4_E2M1"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            6
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "公式中的输入x。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT8",
+            "INT4",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            6
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "公式中的输入x。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT8",
+            "INT4",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            6
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "公式中的输入x。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT8",
+            "INT4",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            6
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "weight": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "公式中的weight。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT8",
+            "INT4",
+            "BFLOAT16",
+            "FLOAT8_E5M2",
+            "FLOAT8_E4M3FN",
+            "HFLOAT8",
+            "FLOAT4_E2M1"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "公式中的weight。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT8",
+            "INT4",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "公式中的weight。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT8",
+            "INT4",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "公式中的weight。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT8",
+            "INT4",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT16、INT8、INT4、BFLOAT16等"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "biasOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "公式中的bias。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT32",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            2
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "公式中的bias。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT32"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            2
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "公式中的bias。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT32"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            2
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "公式中的bias。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT32"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            2
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "scaleOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表量化参数中的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "一般情况下，长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "UINT64",
+            "BFLOAT16",
+            "FLOAT8_E8M0",
+            "INT64"
+          ],
+          "src_text": "FLOAT、UINT64、BFLOAT16、FLOAT8_E8M0、INT64"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            4
+          ],
+          "src_text": "FLOAT、UINT64、BFLOAT16、FLOAT8_E8M0、INT64"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表量化参数中的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "一般情况下，长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "UINT64",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、UINT64、BFLOAT16、FLOAT8_E8M0、INT64"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            4
+          ],
+          "src_text": "FLOAT、UINT64、BFLOAT16、FLOAT8_E8M0、INT64"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表量化参数中的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "一般情况下，长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "UINT64",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、UINT64、BFLOAT16、FLOAT8_E8M0、INT64"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            4
+          ],
+          "src_text": "FLOAT、UINT64、BFLOAT16、FLOAT8_E8M0、INT64"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表量化参数中的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "一般情况下，长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "UINT64",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、UINT64、BFLOAT16、FLOAT8_E8M0、INT64"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            4
+          ],
+          "src_text": "FLOAT、UINT64、BFLOAT16、FLOAT8_E8M0、INT64"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "offsetOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表量化参数中的偏移量。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32"
+          ],
+          "src_text": "FLOAT"
+        },
+        "dimensions": {
+          "value": [
+            3,
+            3
+          ],
+          "src_text": "FLOAT"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表量化参数中的偏移量。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32"
+          ],
+          "src_text": "FLOAT"
+        },
+        "dimensions": {
+          "value": [
+            3,
+            3
+          ],
+          "src_text": "FLOAT"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表量化参数中的偏移量。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32"
+          ],
+          "src_text": "FLOAT"
+        },
+        "dimensions": {
+          "value": [
+            3,
+            3
+          ],
+          "src_text": "FLOAT"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表量化参数中的偏移量。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32"
+          ],
+          "src_text": "FLOAT"
+        },
+        "dimensions": {
+          "value": [
+            3,
+            3
+          ],
+          "src_text": "FLOAT"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "antiquantScaleOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表伪量化参数中的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT16",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表伪量化参数中的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT16",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表伪量化参数中的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT16",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表伪量化参数中的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT16",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "antiquantOffsetOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表伪量化参数中的偏移量。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT16",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表伪量化参数中的偏移量。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT16",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表伪量化参数中的偏移量。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT16",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表伪量化参数中的偏移量。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "长度与weight相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT16",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT16、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "perTokenScaleOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表量化参数中的由x量化引入的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "一般情况下，只支持1维且长度与x的M相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT8_E8M0"
+          ],
+          "src_text": "FLOAT、FLOAT8_E8M0"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT8_E8M0"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表量化参数中的由x量化引入的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "一般情况下，只支持1维且长度与x的M相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32"
+          ],
+          "src_text": "FLOAT、FLOAT8_E8M0"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT8_E8M0"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表量化参数中的由x量化引入的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "一般情况下，只支持1维且长度与x的M相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32"
+          ],
+          "src_text": "FLOAT、FLOAT8_E8M0"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT8_E8M0"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表量化参数中的由x量化引入的缩放因子。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "一般情况下，只支持1维且长度与x的M相同",
+          "type": null
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32"
+          ],
+          "src_text": "FLOAT、FLOAT8_E8M0"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT8_E8M0"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "groupListOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表输入和输出分组轴方向的matmul大小分布。",
+        "type": {
+          "value": "aclTensor",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "INT64"
+          ],
+          "src_text": "INT64"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            2
+          ],
+          "src_text": "INT64"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表输入和输出分组轴方向的matmul大小分布。",
+        "type": {
+          "value": "aclTensor",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "INT64"
+          ],
+          "src_text": "INT64"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            2
+          ],
+          "src_text": "INT64"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表输入和输出分组轴方向的matmul大小分布。",
+        "type": {
+          "value": "aclTensor",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "INT64"
+          ],
+          "src_text": "INT64"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            2
+          ],
+          "src_text": "INT64"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表输入和输出分组轴方向的matmul大小分布。",
+        "type": {
+          "value": "aclTensor",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": true,
+          "src_text": "√"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "INT64"
+          ],
+          "src_text": "INT64"
+        },
+        "dimensions": {
+          "value": [
+            1,
+            2
+          ],
+          "src_text": "INT64"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "activationInputOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表激活函数的反向输入，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表激活函数的反向输入，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表激活函数的反向输入，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表激活函数的反向输入，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "activationQuantScaleOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "activationQuantOffsetOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "splitItem": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表输出是否要做tensor切分。0/1代表输出为多tensor；2/3代表输出为单tensor。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "src_text": "0/1代表输出为多tensor；2/3代表输出为单tensor",
+          "type": "enum"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表输出是否要做tensor切分。0/1代表输出为多tensor；2/3代表输出为单tensor。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "src_text": "0/1代表输出为多tensor；2/3代表输出为单tensor",
+          "type": "enum"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表输出是否要做tensor切分。0/1代表输出为多tensor；2/3代表输出为单tensor。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "src_text": "0/1代表输出为多tensor；2/3代表输出为单tensor",
+          "type": "enum"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表输出是否要做tensor切分。0/1代表输出为多tensor；2/3代表输出为单tensor。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "src_text": "0/1代表输出为多tensor；2/3代表输出为单tensor",
+          "type": "enum"
+        }
+      }
+    },
+    "groupType": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表需要分组的轴。-1：不分组，0：m轴分组，2：k轴分组。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            -1,
+            0,
+            2
+          ],
+          "src_text": "枚举值-1、0、2",
+          "type": "enum"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表需要分组的轴。-1：不分组，0：m轴分组，2：k轴分组。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            -1,
+            0,
+            2
+          ],
+          "src_text": "枚举值-1、0、2",
+          "type": "enum"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表需要分组的轴。-1：不分组，0：m轴分组，2：k轴分组。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            -1,
+            0,
+            2
+          ],
+          "src_text": "枚举值-1、0、2",
+          "type": "enum"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表需要分组的轴。-1：不分组，0：m轴分组，2：k轴分组。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            -1,
+            0,
+            2
+          ],
+          "src_text": "枚举值-1、0、2",
+          "type": "enum"
+        }
+      }
+    },
+    "groupListType": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表groupList输入的分组方式。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            [
+              0,
+              2
+            ]
+          ],
+          "src_text": "取值范围0-2",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表groupList输入的分组方式。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            [
+              0,
+              2
+            ]
+          ],
+          "src_text": "取值范围0-2",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表groupList输入的分组方式。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            [
+              0,
+              2
+            ]
+          ],
+          "src_text": "取值范围0-2",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表groupList输入的分组方式。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            [
+              0,
+              2
+            ]
+          ],
+          "src_text": "取值范围0-2",
+          "type": "range"
+        }
+      }
+    },
+    "actType": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "代表激活函数类型。0:NONE,1:RELU,2:GELU_TANH,3:GELU_ERR_FUNC,4:FAST_GELU,5:SILU。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            [
+              0,
+              5
+            ]
+          ],
+          "src_text": "取值范围为0-5",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "代表激活函数类型。0:NONE,1:RELU,2:GELU_TANH,3:GELU_ERR_FUNC,4:FAST_GELU,5:SILU。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            [
+              0,
+              5
+            ]
+          ],
+          "src_text": "取值范围为0-5",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "代表激活函数类型。0:NONE,1:RELU,2:GELU_TANH,3:GELU_ERR_FUNC,4:FAST_GELU,5:SILU。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            [
+              0,
+              5
+            ]
+          ],
+          "src_text": "取值范围为0-5",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "代表激活函数类型。0:NONE,1:RELU,2:GELU_TANH,3:GELU_ERR_FUNC,4:FAST_GELU,5:SILU。",
+        "type": {
+          "value": "int64_t",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": "N/A",
+        "dtype": {
+          "value": [
+            "int64_t"
+          ],
+          "src_text": "int64_t"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "int64_t"
+        },
+        "allowed_range_value": {
+          "value": [
+            [
+              0,
+              5
+            ]
+          ],
+          "src_text": "取值范围为0-5",
+          "type": "range"
+        }
+      }
+    },
+    "tuningConfigOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "调优参数（Ascend 950PR不支持此参数）。第一个数代表各个专家处理的token数的预期值；第二个数代表A8W4可选开启weight先转置的NZ格式；第三个数代表允许额外使用的内存空间。",
+        "type": {
+          "value": "aclIntArray",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            3,
+            3
+          ],
+          "src_text": "数组长度3",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "int"
+          ],
+          "src_text": "INT64"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "INT64"
+        },
+        "allowed_range_value": {
+          "value": [
+            null
+          ],
+          "src_text": "Ascend 950PR不支持此参数，必须为nullptr",
+          "type": "enum"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "调优参数。第一个数代表各个专家处理的token数的预期值；第二个数代表A8W4可选开启weight先转置的NZ格式；第三个数代表允许额外使用的内存空间。",
+        "type": {
+          "value": "aclIntArray",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            3,
+            3
+          ],
+          "src_text": "数组长度3（第一/第二/第三个元素）",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "int"
+          ],
+          "src_text": "INT64"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "INT64"
+        },
+        "allowed_range_value": {
+          "value": [
+            null,
+            [
+              -1
+            ]
+          ],
+          "src_text": "兼容历史版本，用户如不使用该参数，不传（即为nullptr）即可；第三个元素可设为-1",
+          "type": "enum"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "调优参数。第一个数代表各个专家处理的token数的预期值；第二个数代表A8W4可选开启weight先转置的NZ格式；第三个数代表允许额外使用的内存空间。",
+        "type": {
+          "value": "aclIntArray",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            3,
+            3
+          ],
+          "src_text": "数组长度3（第一/第二/第三个元素）",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "int"
+          ],
+          "src_text": "INT64"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "INT64"
+        },
+        "allowed_range_value": {
+          "value": [
+            null,
+            [
+              -1
+            ]
+          ],
+          "src_text": "兼容历史版本，用户如不使用该参数，不传（即为nullptr）即可；第三个元素可设为-1",
+          "type": "enum"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "调优参数。第一个数代表各个专家处理的token数的预期值；第二个数代表A8W4可选开启weight先转置的NZ格式；第三个数代表允许额外使用的内存空间。",
+        "type": {
+          "value": "aclIntArray",
+          "src_text": ""
+        },
+        "format": "N/A",
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            3,
+            3
+          ],
+          "src_text": "数组长度3（第一/第二/第三个元素）",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "int"
+          ],
+          "src_text": "INT64"
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": "INT64"
+        },
+        "allowed_range_value": {
+          "value": [
+            null,
+            [
+              -1
+            ]
+          ],
+          "src_text": "兼容历史版本，用户如不使用该参数，不传（即为nullptr）即可；第三个元素可设为-1",
+          "type": "enum"
+        }
+      }
+    }
+  },
+  "outputs": {
+    "out": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "公式中的输出y。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": false,
+          "src_text": "×"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT32",
+            "INT8",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、INT8、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、INT8、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "公式中的输出y。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": false,
+          "src_text": "×"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT32",
+            "INT8",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、INT8、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、INT8、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "公式中的输出y。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": false,
+          "src_text": "×"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT32",
+            "INT8",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、INT8、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、INT8、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "公式中的输出y。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [
+            "ND"
+          ],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": false,
+          "src_text": "输入"
+        },
+        "is_support_discontinuous": {
+          "value": false,
+          "src_text": "×"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [
+            [
+              1,
+              128
+            ],
+            [
+              1,
+              1024
+            ]
+          ],
+          "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+          "type": "range"
+        },
+        "dtype": {
+          "value": [
+            "FLOAT32",
+            "FLOAT16",
+            "INT32",
+            "INT8",
+            "BFLOAT16"
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、INT8、BFLOAT16"
+        },
+        "dimensions": {
+          "value": [
+            2,
+            3
+          ],
+          "src_text": "FLOAT、FLOAT16、INT32、INT8、BFLOAT16"
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "activationFeatureOutOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "激活函数的输入数据，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "激活函数的输入数据，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "激活函数的输入数据，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "激活函数的输入数据，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    },
+    "dynQuantScaleOutOptional": {
+      "Ascend 950PR/Ascend 950DT": {
+        "description": "动态量化scale输出，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A3 训练系列产品/Atlas A3 推理系列产品": {
+        "description": "动态量化scale输出，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas A2 训练系列产品/Atlas A2 推理系列产品": {
+        "description": "动态量化scale输出，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      },
+      "Atlas 推理系列产品": {
+        "description": "动态量化scale输出，当前只支持传入nullptr。",
+        "type": {
+          "value": "aclTensorList",
+          "src_text": ""
+        },
+        "format": {
+          "value": [],
+          "src_text": ""
+        },
+        "is_optional": {
+          "value": true,
+          "src_text": "可选输入"
+        },
+        "is_support_discontinuous": {
+          "value": "N/A",
+          "src_text": "N/A"
+        },
+        "is_operator_param": {
+          "value": true,
+          "src_text": ""
+        },
+        "array_length": {
+          "value": [],
+          "src_text": "当前只支持传入nullptr",
+          "type": null
+        },
+        "dtype": {
+          "value": [],
+          "src_text": ""
+        },
+        "dimensions": {
+          "value": [],
+          "src_text": ""
+        },
+        "allowed_range_value": {
+          "value": [],
+          "src_text": "",
+          "type": "range"
+        }
+      }
+    }
+  },
+  "constraints_in_parameters": {
+    "Ascend 950PR/Ascend 950DT": [
+      {
+        "expr_type": "self_value_enum",
+        "expr": "splitItem.range_value in [0, 1, 2, 3]",
+        "relation_params": [
+          "splitItem"
+        ],
+        "src_text": "0/1代表输出为多tensor；2/3代表输出为单tensor",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_enum",
+        "expr": "groupType.range_value in [-1, 0, 2]",
+        "relation_params": [
+          "groupType"
+        ],
+        "src_text": "枚举值-1、0、2",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_range",
+        "expr": "0 <= groupListType.range_value <= 2",
+        "relation_params": [
+          "groupListType"
+        ],
+        "src_text": "取值范围0-2",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_range",
+        "expr": "0 <= actType.range_value <= 5",
+        "relation_params": [
+          "actType"
+        ],
+        "src_text": "取值范围为0-5",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(biasOptional is None) or (len(biasOptional) == len(weight))",
+        "relation_params": [
+          "biasOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(scaleOptional is None) or (len(scaleOptional) == len(weight))",
+        "relation_params": [
+          "scaleOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(offsetOptional is None) or (len(offsetOptional) == len(weight))",
+        "relation_params": [
+          "offsetOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantScaleOptional is None) or (len(antiquantScaleOptional) == len(weight))",
+        "relation_params": [
+          "antiquantScaleOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantOffsetOptional is None) or (len(antiquantOffsetOptional) == len(weight))",
+        "relation_params": [
+          "antiquantOffsetOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(perTokenScaleOptional is None) or (len(perTokenScaleOptional) == 1)",
+        "relation_params": [
+          "perTokenScaleOptional"
+        ],
+        "src_text": "一般情况下，只支持1维且长度与x的M相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(perTokenScaleOptional is None) or (len(x) == 1 and len(weight) == 1 and len(out) == 1)",
+        "relation_params": [
+          "perTokenScaleOptional",
+          "x",
+          "weight",
+          "out"
+        ],
+        "src_text": "仅支持x、weight、out均为单tensor（TensorList长度为1）场景",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationInputOptional is None",
+        "relation_params": [
+          "activationInputOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationQuantScaleOptional is None",
+        "relation_params": [
+          "activationQuantScaleOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationQuantOffsetOptional is None",
+        "relation_params": [
+          "activationQuantOffsetOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [2, 3]) or (len(out) == 1)",
+        "relation_params": [
+          "splitItem",
+          "out"
+        ],
+        "src_text": "splitItem为2、3的场景，out长度不等于1",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [0, 1]) or (len(out) == len(weight))",
+        "relation_params": [
+          "splitItem",
+          "out",
+          "weight"
+        ],
+        "src_text": "splitItem为0、1的场景，out长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [0, 1]) or (groupListOptional is None) or (len(groupListOptional) == len(weight))",
+        "relation_params": [
+          "splitItem",
+          "groupListOptional",
+          "weight"
+        ],
+        "src_text": "splitItem为0、1的场景，groupListOptional长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not(groupListType.range_value == 2) or (len(groupListOptional.shape) == 2 and groupListOptional.shape[1] == 2))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "groupListType为2时要求groupListOptional shape为[E, 2]",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not(groupListType.range_value in [0, 1]) or (len(groupListOptional.shape) == 1))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "groupListType为0时为非负单调非递减数列，为1时为非负数列（1维）",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "x.shape[-1] < 65536",
+        "relation_params": [
+          "x"
+        ],
+        "src_text": "x和weight中每一组tensor的最后一维大小都应小于65536",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "weight.shape[-1] < 65536",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "x和weight中每一组tensor的最后一维大小都应小于65536",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "(tuningConfigOptional is None) or (all(v >= 0 for v in tuningConfigOptional) and all(v <= x.shape[0] for v in tuningConfigOptional))",
+        "relation_params": [
+          "tuningConfigOptional",
+          "x"
+        ],
+        "src_text": "tuningConfigOptional的元素为负数，或者大于x的行数m",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "(biasOptional is None) or (len(biasOptional) == len(weight))",
+        "relation_params": [
+          "biasOptional",
+          "weight"
+        ],
+        "src_text": "若bias不为空，bias的长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_shape_axis_value",
+        "expr": "len(weight) >= 1",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "weight的长度不在支持范围",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_shape_axis_value",
+        "expr": "len(out) >= 1",
+        "relation_params": [
+          "out"
+        ],
+        "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantScaleOptional is None) == (antiquantOffsetOptional is None)",
+        "relation_params": [
+          "antiquantScaleOptional",
+          "antiquantOffsetOptional"
+        ],
+        "src_text": "伪量化参数中的缩放因子与偏移量共存",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "tuningConfigOptional is None",
+        "relation_params": [
+          "tuningConfigOptional"
+        ],
+        "src_text": "Ascend 950PR不支持tuningConfigOptional参数",
+        "origin": "doc"
+      }
+    ],
+    "Atlas A3 训练系列产品/Atlas A3 推理系列产品": [
+      {
+        "expr_type": "self_value_enum",
+        "expr": "splitItem.range_value in [0, 1, 2, 3]",
+        "relation_params": [
+          "splitItem"
+        ],
+        "src_text": "0/1代表输出为多tensor；2/3代表输出为单tensor",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_enum",
+        "expr": "groupType.range_value in [-1, 0, 2]",
+        "relation_params": [
+          "groupType"
+        ],
+        "src_text": "枚举值-1、0、2",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_range",
+        "expr": "0 <= groupListType.range_value <= 2",
+        "relation_params": [
+          "groupListType"
+        ],
+        "src_text": "取值范围0-2",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_range",
+        "expr": "0 <= actType.range_value <= 5",
+        "relation_params": [
+          "actType"
+        ],
+        "src_text": "取值范围为0-5",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(biasOptional is None) or (len(biasOptional) == len(weight))",
+        "relation_params": [
+          "biasOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(scaleOptional is None) or (len(scaleOptional) == len(weight))",
+        "relation_params": [
+          "scaleOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(offsetOptional is None) or (len(offsetOptional) == len(weight))",
+        "relation_params": [
+          "offsetOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantScaleOptional is None) or (len(antiquantScaleOptional) == len(weight))",
+        "relation_params": [
+          "antiquantScaleOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantOffsetOptional is None) or (len(antiquantOffsetOptional) == len(weight))",
+        "relation_params": [
+          "antiquantOffsetOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(perTokenScaleOptional is None) or (len(perTokenScaleOptional) == 1)",
+        "relation_params": [
+          "perTokenScaleOptional"
+        ],
+        "src_text": "一般情况下，只支持1维且长度与x的M相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(perTokenScaleOptional is None) or (len(x) == 1 and len(weight) == 1 and len(out) == 1)",
+        "relation_params": [
+          "perTokenScaleOptional",
+          "x",
+          "weight",
+          "out"
+        ],
+        "src_text": "仅支持x、weight、out均为单tensor（TensorList长度为1）场景",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationInputOptional is None",
+        "relation_params": [
+          "activationInputOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationQuantScaleOptional is None",
+        "relation_params": [
+          "activationQuantScaleOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationQuantOffsetOptional is None",
+        "relation_params": [
+          "activationQuantOffsetOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [2, 3]) or (len(out) == 1)",
+        "relation_params": [
+          "splitItem",
+          "out"
+        ],
+        "src_text": "splitItem为2、3的场景，out长度不等于1",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [0, 1]) or (len(out) == len(weight))",
+        "relation_params": [
+          "splitItem",
+          "out",
+          "weight"
+        ],
+        "src_text": "splitItem为0、1的场景，out长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [0, 1]) or (groupListOptional is None) or (len(groupListOptional) == len(weight))",
+        "relation_params": [
+          "splitItem",
+          "groupListOptional",
+          "weight"
+        ],
+        "src_text": "splitItem为0、1的场景，groupListOptional长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not(groupListType.range_value == 2) or (len(groupListOptional.shape) == 2 and groupListOptional.shape[1] == 2))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "groupListType为2时要求groupListOptional shape为[E, 2]",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not(groupListType.range_value in [0, 1]) or (len(groupListOptional.shape) == 1))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "groupListType为0时为非负单调非递减数列，为1时为非负数列（1维）",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "x.shape[-1] < 65536",
+        "relation_params": [
+          "x"
+        ],
+        "src_text": "x和weight中每一组tensor的最后一维大小都应小于65536",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "weight.shape[-1] < 65536",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "x和weight中每一组tensor的最后一维大小都应小于65536",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "(tuningConfigOptional is None) or (all(v >= 0 for v in tuningConfigOptional) and all(v <= x.shape[0] for v in tuningConfigOptional))",
+        "relation_params": [
+          "tuningConfigOptional",
+          "x"
+        ],
+        "src_text": "tuningConfigOptional的元素为负数，或者大于x的行数m",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "(biasOptional is None) or (len(biasOptional) == len(weight))",
+        "relation_params": [
+          "biasOptional",
+          "weight"
+        ],
+        "src_text": "若bias不为空，bias的长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_shape_axis_value",
+        "expr": "len(weight) >= 1",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "weight的长度不在支持范围",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_shape_axis_value",
+        "expr": "len(out) >= 1",
+        "relation_params": [
+          "out"
+        ],
+        "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantScaleOptional is None) == (antiquantOffsetOptional is None)",
+        "relation_params": [
+          "antiquantScaleOptional",
+          "antiquantOffsetOptional"
+        ],
+        "src_text": "伪量化参数中的缩放因子与偏移量共存",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(tuningConfigOptional is None) or (all(v >= 0 for v in tuningConfigOptional))",
+        "relation_params": [
+          "tuningConfigOptional"
+        ],
+        "src_text": "tuningConfigOptional的元素为负数时报错",
+        "origin": "doc"
+      }
+    ],
+    "Atlas A2 训练系列产品/Atlas A2 推理系列产品": [
+      {
+        "expr_type": "self_value_enum",
+        "expr": "splitItem.range_value in [0, 1, 2, 3]",
+        "relation_params": [
+          "splitItem"
+        ],
+        "src_text": "0/1代表输出为多tensor；2/3代表输出为单tensor",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_enum",
+        "expr": "groupType.range_value in [-1, 0, 2]",
+        "relation_params": [
+          "groupType"
+        ],
+        "src_text": "枚举值-1、0、2",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_range",
+        "expr": "0 <= groupListType.range_value <= 2",
+        "relation_params": [
+          "groupListType"
+        ],
+        "src_text": "取值范围0-2",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_range",
+        "expr": "0 <= actType.range_value <= 5",
+        "relation_params": [
+          "actType"
+        ],
+        "src_text": "取值范围为0-5",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(biasOptional is None) or (len(biasOptional) == len(weight))",
+        "relation_params": [
+          "biasOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(scaleOptional is None) or (len(scaleOptional) == len(weight))",
+        "relation_params": [
+          "scaleOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(offsetOptional is None) or (len(offsetOptional) == len(weight))",
+        "relation_params": [
+          "offsetOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantScaleOptional is None) or (len(antiquantScaleOptional) == len(weight))",
+        "relation_params": [
+          "antiquantScaleOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantOffsetOptional is None) or (len(antiquantOffsetOptional) == len(weight))",
+        "relation_params": [
+          "antiquantOffsetOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(perTokenScaleOptional is None) or (len(perTokenScaleOptional) == 1)",
+        "relation_params": [
+          "perTokenScaleOptional"
+        ],
+        "src_text": "一般情况下，只支持1维且长度与x的M相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(perTokenScaleOptional is None) or (len(x) == 1 and len(weight) == 1 and len(out) == 1)",
+        "relation_params": [
+          "perTokenScaleOptional",
+          "x",
+          "weight",
+          "out"
+        ],
+        "src_text": "仅支持x、weight、out均为单tensor（TensorList长度为1）场景",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationInputOptional is None",
+        "relation_params": [
+          "activationInputOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationQuantScaleOptional is None",
+        "relation_params": [
+          "activationQuantScaleOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationQuantOffsetOptional is None",
+        "relation_params": [
+          "activationQuantOffsetOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [2, 3]) or (len(out) == 1)",
+        "relation_params": [
+          "splitItem",
+          "out"
+        ],
+        "src_text": "splitItem为2、3的场景，out长度不等于1",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [0, 1]) or (len(out) == len(weight))",
+        "relation_params": [
+          "splitItem",
+          "out",
+          "weight"
+        ],
+        "src_text": "splitItem为0、1的场景，out长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [0, 1]) or (groupListOptional is None) or (len(groupListOptional) == len(weight))",
+        "relation_params": [
+          "splitItem",
+          "groupListOptional",
+          "weight"
+        ],
+        "src_text": "splitItem为0、1的场景，groupListOptional长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not(groupListType.range_value == 2) or (len(groupListOptional.shape) == 2 and groupListOptional.shape[1] == 2))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "groupListType为2时要求groupListOptional shape为[E, 2]",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not(groupListType.range_value in [0, 1]) or (len(groupListOptional.shape) == 1))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "groupListType为0时为非负单调非递减数列，为1时为非负数列（1维）",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "x.shape[-1] < 65536",
+        "relation_params": [
+          "x"
+        ],
+        "src_text": "x和weight中每一组tensor的最后一维大小都应小于65536",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "weight.shape[-1] < 65536",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "x和weight中每一组tensor的最后一维大小都应小于65536",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "(tuningConfigOptional is None) or (all(v >= 0 for v in tuningConfigOptional) and all(v <= x.shape[0] for v in tuningConfigOptional))",
+        "relation_params": [
+          "tuningConfigOptional",
+          "x"
+        ],
+        "src_text": "tuningConfigOptional的元素为负数，或者大于x的行数m",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "(biasOptional is None) or (len(biasOptional) == len(weight))",
+        "relation_params": [
+          "biasOptional",
+          "weight"
+        ],
+        "src_text": "若bias不为空，bias的长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_shape_axis_value",
+        "expr": "len(weight) >= 1",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "weight的长度不在支持范围",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_shape_axis_value",
+        "expr": "len(out) >= 1",
+        "relation_params": [
+          "out"
+        ],
+        "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantScaleOptional is None) == (antiquantOffsetOptional is None)",
+        "relation_params": [
+          "antiquantScaleOptional",
+          "antiquantOffsetOptional"
+        ],
+        "src_text": "伪量化参数中的缩放因子与偏移量共存",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(tuningConfigOptional is None) or (all(v >= 0 for v in tuningConfigOptional))",
+        "relation_params": [
+          "tuningConfigOptional"
+        ],
+        "src_text": "tuningConfigOptional的元素为负数时报错",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_enum",
+        "expr": "actType.range_value in [0, 1, 2, 4, 5]",
+        "relation_params": [
+          "actType"
+        ],
+        "src_text": "cca L61: actType>=0 ∧ (actType==NONE ∨ (actType!=GELU_ERR_FUNC ∧ actType<END_ACT_TYPE_ENUM)) | verdict=code_stricter_replace | note=doc-json[3] 写 0<=actType<=5，但 actType==3(GELU_ERR_FUNC) 不支持（doc md 约束说明亦标注‘不支持’）。以代码为准：排除 3。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not (splitItem.range_value in [2, 3] and groupType.range_value == -1)",
+        "relation_params": [
+          "splitItem",
+          "groupType"
+        ],
+        "src_text": "cca L61: ¬(splitItem ∈ {2,3} ∧ groupType == NO_SPLIT) | verdict=supplement | note=doc-json[14] 有 splitItem∈{2,3}→len(out)==1，但缺 splitItem×groupType 这条交叉；cca 补。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not (groupListType.range_value == 2) or (platform_arch in [DAV_2201, DAV_3510] and groupType.range_value == 0)",
+        "relation_params": [
+          "groupListType",
+          "groupType"
+        ],
+        "src_text": "cca L61: groupListType != SPARSE_M ∨ (NpuArch∈{DAV_2201,DAV_3510} ∧ groupType==SPLIT_M) | verdict=supplement | note=groupListType==2(SPARSE_M) 需特定 arch(SPLIT_M 上 DAV_2201/3510)；doc-json 无此平台×groupType 交叉。platform_arch 由 soc 派生。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "platform_arch != DAV_2002 or (len(x) == 1 and len(out) == 1 and len(weight) == 1 and groupType.range_value == 0)",
+        "relation_params": [
+          "x",
+          "out",
+          "weight",
+          "groupType"
+        ],
+        "src_text": "cca L61: NpuArch != DAV_2002 ∨ (x/out/weight Size==1 ∧ groupType==0) | verdict=supplement | note=DAV_2002 上仅允许单 tensor 且 groupType==0；doc-json 无。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not (groupListType.range_value == 2) or (len(groupListOptional.shape) == 2)) and (not (groupListType.range_value in [0, 1]) or (len(groupListOptional.shape) == 1))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "cca L61: groupListOptional==nullptr ∨ ndim==(groupListType==SPARSE_M ? 2 : 1); doc-json[17][18] | verdict=consistent | note=groupListOptional ndim 随 groupListType：SPARSE_M→2维，其余→1维。doc-json[17][18] 已覆盖，保留。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "all((not is_null(t)) and (ndim(t) in [2, 6]) for t in x)",
+        "relation_params": [
+          "x"
+        ],
+        "src_text": "cca L71: 存在下标 i∈[0,x->Size()) 使 (*x)[i]==nullptr 或其 GetViewShape().GetDimNum()∉[2,6] → 定义错误 | verdict=supplement | note=合法输入要求 x 各元素非空且 ndim∈[2,6]；doc-json 27 条无 x/weight ndim 约束，补。失败方向→定义错误(INVALID)。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "all((not is_null(t)) and (ndim(t) >= 2) for t in weight)",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "cca L71: 存在下标 j∈[0,weight->Size()) 使 (*weight)[j]==nullptr 或其 GetViewShape().GetDimNum()<2 → 定义错误 | verdict=supplement | note=weight 各元素非空且 ndim>=2；doc-json 无，补。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "len(x) <= 128 and len(weight) <= 128",
+        "relation_params": [
+          "x",
+          "weight"
+        ],
+        "src_text": "cca L89: x->Size()/weight->Size() 表示的分组数不超过 128 | verdict=supplement | note=分组数上限 128；doc-json 无，补。注：不同 groupType 下 Size 语义略有差异，先取最直白解释，存疑。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "not (m_nonzero and n_nonzero) or all(dim(t, k_axis) > 0 for t in x)",
+        "relation_params": [
+          "x",
+          "weight"
+        ],
+        "src_text": "cca Common#3: x 各元素 M 维乘积非全0 且 weight 各元素 N 维非全0 且 x 存在某元素 K 维为0 → 定义错误 | verdict=supplement | note=M/N 全非零时 x 的 K 维必须全非零。M/N/K 轴依赖 transpose 与 groupType，存疑待对 CheckEmptyTensor 源码细化。失败方向→定义错误(INVALID)。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "dtype_value_dependency",
+        "expr": "x[0].dtype == INT8 and weight[0].dtype == INT4",
+        "relation_params": [
+          "x",
+          "weight"
+        ],
+        "src_text": "cca CheckFunctionParams: gmmParams.xDtype==DT_INT8 ∧ weightDtype==DT_INT4 (A8W4) | verdict=supplement | note=A8W4 场景(x INT8 / weight INT4)；doc A8W4 表对应。子检查 CheckMatmulDataType 等更深，pending。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "dtype_value_dependency",
+        "expr": "x[0].dtype == INT4 and weight[0].dtype == INT4",
+        "relation_params": [
+          "x",
+          "weight"
+        ],
+        "src_text": "cca CheckFunctionParams: xDtype==DT_INT4 ∧ weightDtype==DT_INT4 (A4W4) | verdict=supplement | note=A4W4 场景。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "dtype_value_dependency",
+        "expr": "x[0].dtype == INT8 and weight[0].dtype == INT8",
+        "relation_params": [
+          "x",
+          "weight"
+        ],
+        "src_text": "cca CheckFunctionParams: xDtype==DT_INT8 ∧ weightDtype==DT_INT8 (A8W8) | verdict=supplement | note=A8W8 场景；doc A8W8 表对应。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "dtype_value_dependency",
+        "expr": "x[0].dtype in [BFLOAT16, FLOAT16] and weight[0].dtype in [INT8, INT4]",
+        "relation_params": [
+          "x",
+          "weight"
+        ],
+        "src_text": "cca CheckFunctionParams: xDtype∈{BF16,FP16} ∧ weightDtype∈{DT_INT8,...} (antiquant) | verdict=supplement | note=伪量化场景。doc 伪量化表对应。",
+        "origin": "code"
+      },
+      {
+        "expr_type": "dtype_value_dependency",
+        "expr": "x[0].dtype == weight[0].dtype and x[0].dtype in [BFLOAT16, FLOAT16]",
+        "relation_params": [
+          "x",
+          "weight"
+        ],
+        "src_text": "cca CheckFunctionParams: xDtype==weightDtype ∧ xDtype∈{BF16,FP16,...} (非量化同型) | verdict=supplement | note=非量化同 dtype 场景。",
+        "origin": "code"
+      }
+    ],
+    "Atlas 推理系列产品": [
+      {
+        "expr_type": "self_value_enum",
+        "expr": "splitItem.range_value in [0, 1, 2, 3]",
+        "relation_params": [
+          "splitItem"
+        ],
+        "src_text": "0/1代表输出为多tensor；2/3代表输出为单tensor",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_enum",
+        "expr": "groupType.range_value in [-1, 0, 2]",
+        "relation_params": [
+          "groupType"
+        ],
+        "src_text": "枚举值-1、0、2",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_range",
+        "expr": "0 <= groupListType.range_value <= 2",
+        "relation_params": [
+          "groupListType"
+        ],
+        "src_text": "取值范围0-2",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_value_range",
+        "expr": "0 <= actType.range_value <= 5",
+        "relation_params": [
+          "actType"
+        ],
+        "src_text": "取值范围为0-5",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(biasOptional is None) or (len(biasOptional) == len(weight))",
+        "relation_params": [
+          "biasOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(scaleOptional is None) or (len(scaleOptional) == len(weight))",
+        "relation_params": [
+          "scaleOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(offsetOptional is None) or (len(offsetOptional) == len(weight))",
+        "relation_params": [
+          "offsetOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantScaleOptional is None) or (len(antiquantScaleOptional) == len(weight))",
+        "relation_params": [
+          "antiquantScaleOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantOffsetOptional is None) or (len(antiquantOffsetOptional) == len(weight))",
+        "relation_params": [
+          "antiquantOffsetOptional",
+          "weight"
+        ],
+        "src_text": "长度与weight相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(perTokenScaleOptional is None) or (len(perTokenScaleOptional) == 1)",
+        "relation_params": [
+          "perTokenScaleOptional"
+        ],
+        "src_text": "一般情况下，只支持1维且长度与x的M相同",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(perTokenScaleOptional is None) or (len(x) == 1 and len(weight) == 1 and len(out) == 1)",
+        "relation_params": [
+          "perTokenScaleOptional",
+          "x",
+          "weight",
+          "out"
+        ],
+        "src_text": "仅支持x、weight、out均为单tensor（TensorList长度为1）场景",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationInputOptional is None",
+        "relation_params": [
+          "activationInputOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationQuantScaleOptional is None",
+        "relation_params": [
+          "activationQuantScaleOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "activationQuantOffsetOptional is None",
+        "relation_params": [
+          "activationQuantOffsetOptional"
+        ],
+        "src_text": "当前只支持传入nullptr",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [2, 3]) or (len(out) == 1)",
+        "relation_params": [
+          "splitItem",
+          "out"
+        ],
+        "src_text": "splitItem为2、3的场景，out长度不等于1",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [0, 1]) or (len(out) == len(weight))",
+        "relation_params": [
+          "splitItem",
+          "out",
+          "weight"
+        ],
+        "src_text": "splitItem为0、1的场景，out长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "not(splitItem.range_value in [0, 1]) or (groupListOptional is None) or (len(groupListOptional) == len(weight))",
+        "relation_params": [
+          "splitItem",
+          "groupListOptional",
+          "weight"
+        ],
+        "src_text": "splitItem为0、1的场景，groupListOptional长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not(groupListType.range_value == 2) or (len(groupListOptional.shape) == 2 and groupListOptional.shape[1] == 2))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "groupListType为2时要求groupListOptional shape为[E, 2]",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "(groupListOptional is None) or (not(groupListType.range_value in [0, 1]) or (len(groupListOptional.shape) == 1))",
+        "relation_params": [
+          "groupListOptional",
+          "groupListType"
+        ],
+        "src_text": "groupListType为0时为非负单调非递减数列，为1时为非负数列（1维）",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "x.shape[-1] < 65536",
+        "relation_params": [
+          "x"
+        ],
+        "src_text": "x和weight中每一组tensor的最后一维大小都应小于65536",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "shape_value_dependency",
+        "expr": "weight.shape[-1] < 65536",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "x和weight中每一组tensor的最后一维大小都应小于65536",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "(tuningConfigOptional is None) or (all(v >= 0 for v in tuningConfigOptional) and all(v <= x.shape[0] for v in tuningConfigOptional))",
+        "relation_params": [
+          "tuningConfigOptional",
+          "x"
+        ],
+        "src_text": "tuningConfigOptional的元素为负数，或者大于x的行数m",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "value_dependency",
+        "expr": "(biasOptional is None) or (len(biasOptional) == len(weight))",
+        "relation_params": [
+          "biasOptional",
+          "weight"
+        ],
+        "src_text": "若bias不为空，bias的长度不等于weight的长度",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_shape_axis_value",
+        "expr": "len(weight) >= 1",
+        "relation_params": [
+          "weight"
+        ],
+        "src_text": "weight的长度不在支持范围",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "self_shape_axis_value",
+        "expr": "len(out) >= 1",
+        "relation_params": [
+          "out"
+        ],
+        "src_text": "tensorList长度支持[1, 128]或者[1, 1024]",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(antiquantScaleOptional is None) == (antiquantOffsetOptional is None)",
+        "relation_params": [
+          "antiquantScaleOptional",
+          "antiquantOffsetOptional"
+        ],
+        "src_text": "伪量化参数中的缩放因子与偏移量共存",
+        "origin": "doc"
+      },
+      {
+        "expr_type": "presence_dependency",
+        "expr": "(tuningConfigOptional is None) or (all(v >= 0 for v in tuningConfigOptional))",
+        "relation_params": [
+          "tuningConfigOptional"
+        ],
+        "src_text": "tuningConfigOptional的元素为负数时报错",
+        "origin": "doc"
+      }
+    ]
+  },
+  "return_info": [
+    {
+      "return_value": "ACLNN_ERR_PARAM_NULLPTR",
+      "error_code": 161001,
+      "description": [
+        "传入参数是必选输入、输出或者必选属性，且是空指针。",
+        "传入参数weight的元素存在空指针。",
+        "传入参数x的元素为空指针，且传出参数out的元素不为空指针。",
+        "传入参数x的元素不为空指针，且传出参数out的元素为空指针。"
+      ]
+    },
+    {
+      "return_value": "ACLNN_ERR_PARAM_INVALID",
+      "error_code": 161002,
+      "description": [
+        "x、weight、biasOptional、scaleOptional、offsetOptional、antiquantScaleOptional、antiquantOffsetOptional、groupListOptional、out的数据类型和数据格式不在支持的范围内。",
+        "weight的长度不在支持范围。",
+        "若bias不为空，bias的长度不等于weight的长度。",
+        "groupListOptional维度不符合要求。",
+        "splitItem为2、3的场景，out长度不等于1。",
+        "splitItem为0、1的场景，out长度不等于weight的长度，groupListOptional长度不等于weight的长度。",
+        "传入参数tuningConfigOptional的元素为负数，或者大于x的行数m。"
+      ]
+    }
+  ],
+  "dtype_support_description": {
+    "Ascend 950PR/Ascend 950DT": [
+      {
+        "x": "FLOAT32",
+        "weight": "FLOAT32",
+        "biasOptional": "FLOAT32",
+        "out": "FLOAT32"
+      },
+      {
+        "x": "BFLOAT16",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      },
+      {
+        "x": "FLOAT32",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      },
+      {
+        "x": "FLOAT16",
+        "weight": "FLOAT16",
+        "biasOptional": "FLOAT16",
+        "out": "FLOAT16"
+      },
+      {
+        "x": "FLOAT32",
+        "weight": "FLOAT16",
+        "biasOptional": "FLOAT16",
+        "out": "FLOAT16"
+      },
+      {
+        "x": "FLOAT16",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      }
+    ],
+    "Atlas A3 训练系列产品/Atlas A3 推理系列产品": [
+      {
+        "x": "FLOAT32",
+        "weight": "FLOAT32",
+        "biasOptional": "FLOAT32",
+        "out": "FLOAT32"
+      },
+      {
+        "x": "BFLOAT16",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      },
+      {
+        "x": "FLOAT32",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      },
+      {
+        "x": "FLOAT16",
+        "weight": "FLOAT16",
+        "biasOptional": "FLOAT16",
+        "out": "FLOAT16"
+      },
+      {
+        "x": "FLOAT32",
+        "weight": "FLOAT16",
+        "biasOptional": "FLOAT16",
+        "out": "FLOAT16"
+      },
+      {
+        "x": "FLOAT16",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      }
+    ],
+    "Atlas A2 训练系列产品/Atlas A2 推理系列产品": [
+      {
+        "x": "FLOAT32",
+        "weight": "FLOAT32",
+        "biasOptional": "FLOAT32",
+        "out": "FLOAT32"
+      },
+      {
+        "x": "BFLOAT16",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      },
+      {
+        "x": "FLOAT32",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      },
+      {
+        "x": "FLOAT16",
+        "weight": "FLOAT16",
+        "biasOptional": "FLOAT16",
+        "out": "FLOAT16"
+      },
+      {
+        "x": "FLOAT32",
+        "weight": "FLOAT16",
+        "biasOptional": "FLOAT16",
+        "out": "FLOAT16"
+      },
+      {
+        "x": "FLOAT16",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      }
+    ],
+    "Atlas 推理系列产品": [
+      {
+        "x": "FLOAT32",
+        "weight": "FLOAT32",
+        "biasOptional": "FLOAT32",
+        "out": "FLOAT32"
+      },
+      {
+        "x": "BFLOAT16",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      },
+      {
+        "x": "FLOAT32",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      },
+      {
+        "x": "FLOAT16",
+        "weight": "FLOAT16",
+        "biasOptional": "FLOAT16",
+        "out": "FLOAT16"
+      },
+      {
+        "x": "FLOAT32",
+        "weight": "FLOAT16",
+        "biasOptional": "FLOAT16",
+        "out": "FLOAT16"
+      },
+      {
+        "x": "FLOAT16",
+        "weight": "BFLOAT16",
+        "biasOptional": "BFLOAT16",
+        "out": "BFLOAT16"
+      }
+    ]
+  },
+  "format_support_description": {},
+  "error_branches": [
+    {
+      "expr_type": "presence_dependency",
+      "expr": "x is None or weight is None or out is None or len(x) == 0 or len(weight) == 0 or len(out) == 0",
+      "relation_params": [
+        "x",
+        "weight",
+        "out"
+      ],
+      "error_code": "ACLNN_ERR_PARAM_NULLPTR",
+      "src_text": "cca 行为划分 第1条: CheckNotNull 未成功",
+      "outcome": "defined_error",
+      "note": "空指针/空列表 → 161001。doc-json 无错误码分支，此为负例边界。"
+    },
+    {
+      "branch_ref": "cca CheckFunctionParams L~catch-all",
+      "expr_type": "dtype_value_dependency",
+      "expr": "not (x[0].dtype == INT8 and weight[0].dtype == INT4) and not (x[0].dtype == INT4 and weight[0].dtype == INT4) and not (x[0].dtype == INT8 and weight[0].dtype == INT8) and not (x[0].dtype in [BFLOAT16, FLOAT16] and weight[0].dtype in [INT8, INT4]) and not (x[0].dtype == weight[0].dtype and x[0].dtype in [BFLOAT16, FLOAT16])",
+      "relation_params": [
+        "x",
+        "weight"
+      ],
+      "error_code": "ACLNN_ERR_PARAM_INVALID",
+      "outcome": "defined_error",
+      "verdict": "supplement",
+      "src_text": "cca CheckFunctionParams 末条: (xDtype,weightDtype) 不落在 A8W4/A4W4/A8W8/antiquant/非量化同型 任一 → 定义错误",
+      "note": "不支持的 dtype 组合 → 161002。这是场景分派的 catch-all 边界。"
+    }
+  ],
+  "ub_branches": [
+    {
+      "expr_type": "value_dependency",
+      "expr": "weight[0].dtype == INT32 and any(w.ndim == 0 for w in weight)",
+      "relation_params": [
+        "weight"
+      ],
+      "ub_site": "UnpackB32ToB4(weight, \"weight\")",
+      "src_text": "cca 行为划分 第3条: weight INT32 且有元素 GetDimNum()==0 → 维度下标无符号下溢越界写",
+      "outcome": "ub",
+      "not_for_solver": true,
+      "note": "前置被破坏才触发，不喂 z3；Oracle/健壮性参考。"
+    },
+    {
+      "branch_ref": "cca 行为划分第5条 L55",
+      "expr_type": "value_dependency",
+      "expr": "x[0].dtype == INT32 and any(ndim(t) == 0 for t in x)",
+      "relation_params": [
+        "x"
+      ],
+      "outcome": "ub",
+      "verdict": "supplement",
+      "not_for_solver": true,
+      "src_text": "cca 第5条: (*x)[0]->GetDataType()==DT_INT32 ∧ x 中存在元素 GetViewShape().GetDimNum()==0 → UnpackB32ToB4(x,...) 越界写",
+      "note": "x 的 INT32→int4/fp4 改写前置被破坏时 UB；与 weight 版同理。不喂 z3。"
+    },
+    {
+      "branch_ref": "cca 行为划分 Common 内联 L83",
+      "expr_type": "presence_dependency",
+      "expr": "scaleOptional is not None and any(is_null(s) for s in scaleOptional)",
+      "relation_params": [
+        "scaleOptional"
+      ],
+      "outcome": "ub",
+      "verdict": "supplement",
+      "not_for_solver": true,
+      "src_text": "cca L83: scaleOptional != nullptr ∧ 存在 i 使 (*scaleOptional)[i]==nullptr → (*scaleOptional)[i]->GetDataType() 空指针解引用",
+      "note": "scaleOptional 列表内空元素 → 解引用 UB；不喂 z3。"
+    },
+    {
+      "branch_ref": "cca Common 内联#4 L74",
+      "expr_type": "value_dependency",
+      "expr": "groupType.range_value != 2 and (len(x) == 0 or len(weight) == 0)",
+      "relation_params": [
+        "groupType",
+        "x",
+        "weight"
+      ],
+      "outcome": "ub",
+      "verdict": "supplement",
+      "not_for_solver": true,
+      "src_text": "cca Common#4: groupType==SPLIT_K ∨ (CheckEmptyTensor ok) ∧ (x->Size()==0 ∨ weight->Size()==0) → UB(CheckTransposeStatus 越界)",
+      "note": "cca 标 UB(未标不可达)；但 CheckNotNull 已保证 Size>=1，正常路径下亦不可达。groupType==2即SPLIT_K 时 CheckEmptyTensor 被跳过，存疑是否 SPLIT_K 允许空列表。不喂 z3。"
+    }
+  ],
+  "normalize_rules": [
+    {
+      "when": "weight[0].dtype == INT32",
+      "rewrite": "weight 各元素 dtype 改为 (原 DT_FLOAT→DT_FLOAT4_E2M1 否则 DT_INT4)；NZ 格式元素对应维度 ×8",
+      "src_text": "cca 行为划分 第4条 + Post 副作用",
+      "note": "UnpackB32ToB4 原地改写，校验失败也不回滚。"
+    },
+    {
+      "when": "scaleOptional is not None and any(s.dtype == INT64 for s in scaleOptional)",
+      "rewrite": "INT64 元素 SetDataType(UINT64)",
+      "src_text": "cca 行为划分 Common 分支(scaleOptional 原地改写); Post 副作用",
+      "note": "绕过 const 的原地修改，不可撤销。"
+    },
+    {
+      "when": "CheckParam 成功后",
+      "rewrite": "splitItem∈{0,1} 按 len(x)==len(out) 归一为 X_Y_SEPARATED/Y_SEPARATED；splitItem∈{2,3} 按 len(x)==1 归一为 NO_SEPARATED/X_SEPARATED",
+      "src_text": "cca 行为划分 Common CorrectSplitItem 分支",
+      "note": "CorrectSplitItem 归一化，具化器产出用例时用归一后值。"
+    },
+    {
+      "branch_ref": "cca Common 内联#8 ResetEmptyTensor L87",
+      "expr_type": "presence_dependency",
+      "expr": "true",
+      "relation_params": [],
+      "when": "gmmParams 构造后(CheckTransposeStatus 成功后)",
+      "rewrite": "biasOptional/scaleOptional/offsetOptional/antiquantScaleOptional/antiquantOffsetOptional/perTokenScaleOptional/activationInputOptional/activationQuantScaleOptional/activationQuantOffsetOptional/activationFeatureOutOptional/dynQuantScaleOutOptional 中‘非空但代表空 tensor(长度0的1维0元素)’的字段重绑为 None",
+      "outcome": "normalize",
+      "verdict": "supplement",
+      "src_text": "cca Common#8: ResetEmptyTensor(gmmParams) 恒成功，占位置空规整",
+      "note": "具化器产出用例时需对齐此规整(空 tensor 字段当 None)。"
+    }
+  ],
+  "unreachable": [
+    {
+      "expr": "len(weight) == 0",
+      "src_text": "cca 行为划分 第2条: CheckNotNull 成功 ∧ weight->Size()==0",
+      "note": "CheckNotNull 已保证 weight 非空，此分支逻辑不可达（冗余防御），跳过。"
+    },
+    {
+      "branch_ref": "cca Common 内联#1 L65",
+      "expr_type": "presence_dependency",
+      "expr": "x is None",
+      "relation_params": [
+        "x"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#1: x==nullptr → UB(x->Size() 空解引用)，不可达(CheckNotNull 已保证 x!=nullptr)",
+      "note": "外层 CheckNotNull 已保证 x 非空，本分支不可达；标 unreachable 防生成不可能用例。doc-json 无不可达概念。"
+    },
+    {
+      "branch_ref": "cca Common 内联#2 L68",
+      "expr_type": "presence_dependency",
+      "expr": "weight is None",
+      "relation_params": [
+        "weight"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#2: x!=nullptr ∧ weight==nullptr → UB(weight->Size())，不可达",
+      "note": "CheckNotNull 已保证 weight 非空，不可达。"
+    },
+    {
+      "branch_ref": "cca Common 内联#5 L77",
+      "expr_type": "presence_dependency",
+      "expr": "is_null(x[0]) or is_null(weight[0])",
+      "relation_params": [
+        "x",
+        "weight"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#5: Size>=1 ∧ ((*x)[0]==nullptr ∨ (*weight)[0]==nullptr) → 定义错误，不可达",
+      "note": "CheckNotNull 已保证首元素非空，不可达。"
+    },
+    {
+      "branch_ref": "cca Common 内联#10 L92",
+      "expr_type": "value_dependency",
+      "expr": "splitItem.range_value in [0, 1] and out is None",
+      "relation_params": [
+        "splitItem",
+        "out"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#10: splitItem∈{0,1} ∧ out==nullptr → UB(CorrectSplitItem y->Size())，不可达",
+      "note": "CheckNotNull 已保证 out 非空，不可达。"
+    },
+    {
+      "branch_ref": "cca Common 内联#11 L95",
+      "expr_type": "value_dependency",
+      "expr": "splitItem.range_value in [2, 3] and x is None",
+      "relation_params": [
+        "splitItem",
+        "x"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#11: splitItem∈{2,3} ∧ x==nullptr → UB(CorrectSplitItem x->Size())，不可达",
+      "note": "CheckNotNull 已保证 x 非空，不可达。"
+    }
+  ],
+  "stubs": [
+    {
+      "branch_ref": "cca Common 内联#9 CheckParam L89",
+      "category": "constraints_in_parameters",
+      "expr_type": "value_dependency",
+      "expr": "TODO_scenario_combo(x[0].dtype, weight[0].dtype, groupType, splitItem, transposeX, transposeWeight, platform_arch)",
+      "relation_params": [
+        "x",
+        "weight",
+        "groupType",
+        "splitItem"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "stub": true,
+      "src_text": "cca Common#9: (xDtype, weight dtype, groupType, splitItem, transposeX, transposeWeight) 落在 CheckFunctionParams/CheckParamDifferentGroupType 针对 V5 支持的某场景分支 且 shape/dtype/平台约束成立",
+      "note": "STUB：完整场景 dtype/shape 组合需 CheckFunctionParams/CheckParamDifferentGroupType 子分析(其它 fn-*.md)，本入口未展开。这是文档 A8W8/A8W4 表的代码对应，TODO 翻译。"
+    },
+    {
+      "branch_ref": "cca Common 内联#12 GetGMMResultByL0Api L99",
+      "category": "constraints_in_parameters",
+      "expr_type": "value_dependency",
+      "expr": "TODO_get_gmm_result_by_l0_api_preconditions",
+      "relation_params": [
+        "x",
+        "weight",
+        "out",
+        "groupType"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "stub": true,
+      "src_text": "cca Common#12: CheckParam 成功 ∧ (splitItem∉{0,1} ∨ out!=nullptr) → 成功(转发 GetGMMResultByL0Api)",
+      "note": "STUB：CorrectSplitItem 归一化(见 batch1 normalize)后转发 GetGMMResultByL0Api，其前置需该函数子分析，TODO。"
+    },
+    {
+      "branch_ref": "cca Common 内联#12 GetGMMResultByL0Api L2792",
+      "category": "constraints_in_parameters",
+      "expr_type": "value_dependency",
+      "expr": "TODO_get_gmm_result_by_l0_api_preconditions",
+      "relation_params": [
+        "x",
+        "weight",
+        "out",
+        "groupType"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "stub": true,
+      "src_text": "cca GetGMMResultByL0Api: CREATE_EXECUTOR/weight[0]合法/arch×dtype 等 launch 前置",
+      "note": "GetGMMResultByL0Api 是内部 launch 前置(CREATE_EXECUTOR、weight[0]合法、arch×dtype)，输入已在上游 CheckParam 校验；无新增用户输入约束，保 stub 不喂 z3。"
+    }
+  ],
+  "reconciliation_log": [
+    {
+      "id": "groupType-set",
+      "doc_ref": "[1]",
+      "cca_ref": "L61",
+      "verdict": "✅",
+      "note": "取值集等价"
+    },
+    {
+      "id": "actType-exclude-3",
+      "doc_ref": "[3]",
+      "cca_ref": "L61",
+      "verdict": "⚠️",
+      "note": "doc 允许 3，代码排除 3；以代码为准替换"
+    },
+    {
+      "id": "splitItem-x-groupType",
+      "doc_ref": null,
+      "cca_ref": "L61",
+      "verdict": "❌补充",
+      "note": "交叉约束 doc 缺"
+    },
+    {
+      "id": "sparse-m-arch",
+      "doc_ref": null,
+      "cca_ref": "L61",
+      "verdict": "❌补充",
+      "note": "SPARSE_M 平台×groupType 交叉 doc 缺"
+    },
+    {
+      "id": "dav2002-cross",
+      "doc_ref": null,
+      "cca_ref": "L61",
+      "verdict": "❌补充",
+      "note": "DAV_2002 单tensor×groupType doc 缺"
+    },
+    {
+      "id": "groupList-ndim",
+      "doc_ref": "[17][18]",
+      "cca_ref": "L61",
+      "verdict": "✅",
+      "note": "ndim×groupListType 已覆盖"
+    },
+    {
+      "id": "unpack-ub",
+      "doc_ref": null,
+      "cca_ref": "第3条",
+      "verdict": "❌补充(UB类)",
+      "note": "UB 类 doc 完全无，单列 ub_branches"
+    },
+    {
+      "id": "scale-normalize",
+      "doc_ref": null,
+      "cca_ref": "Post副作用",
+      "verdict": "❌补充(副作用)",
+      "note": "副作用 doc 无，单列 normalize_rules"
+    }
+  ]
+}

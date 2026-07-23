@@ -1,0 +1,121 @@
+{
+  "_comment": "V5 补充约束样例（首批，手工翻译 cca → doc-json schema）。仅覆盖 CheckCommonParam 前置 + UB + normalize 一小批，用于 review schema。src 指向 cca fn-*.md 行号或 doc-json 条目下标。",
+  "operator_name": "aclnnGroupedMatmulV5",
+  "product": "Atlas A2 训练系列产品/Atlas A2 推理系列产品",
+  "constraints_in_parameters": [
+    {
+      "expr_type": "self_value_enum",
+      "expr": "groupType.range_value in [-1, 0, 2]",
+      "relation_params": ["groupType"],
+      "src_text": "doc-json[1]; cca L61: groupType ∈ {SPLIT_M, SPLIT_K, NO_SPLIT} 且 != SPLIT_N",
+      "outcome": "success",
+      "verdict": "consistent",
+      "note": "doc {0=m轴,2=k轴,-1=不分组} 与 cca {SPLIT_M,SPLIT_K,NO_SPLIT} 等价，SPLIT_N 被排除；保留。"
+    },
+    {
+      "expr_type": "self_value_enum",
+      "expr": "actType.range_value in [0, 1, 2, 4, 5]",
+      "relation_params": ["actType"],
+      "src_text": "cca L61: actType>=0 ∧ (actType==NONE ∨ (actType!=GELU_ERR_FUNC ∧ actType<END_ACT_TYPE_ENUM))",
+      "outcome": "success",
+      "verdict": "code_stricter_replace",
+      "note": "doc-json[3] 写 0<=actType<=5，但 actType==3(GELU_ERR_FUNC) 不支持（doc md 约束说明亦标注‘不支持’）。以代码为准：排除 3。"
+    },
+    {
+      "expr_type": "value_dependency",
+      "expr": "not (splitItem.range_value in [2, 3] and groupType.range_value == -1)",
+      "relation_params": ["splitItem", "groupType"],
+      "src_text": "cca L61: ¬(splitItem ∈ {2,3} ∧ groupType == NO_SPLIT)",
+      "outcome": "success",
+      "verdict": "supplement",
+      "note": "doc-json[14] 有 splitItem∈{2,3}→len(out)==1，但缺 splitItem×groupType 这条交叉；cca 补。"
+    },
+    {
+      "expr_type": "value_dependency",
+      "expr": "not (groupListType.range_value == 2) or (platform_arch in [DAV_2201, DAV_3510] and groupType.range_value == 0)",
+      "relation_params": ["groupListType", "groupType"],
+      "src_text": "cca L61: groupListType != SPARSE_M ∨ (NpuArch∈{DAV_2201,DAV_3510} ∧ groupType==SPLIT_M)",
+      "outcome": "success",
+      "verdict": "supplement",
+      "note": "groupListType==2(SPARSE_M) 需特定 arch(SPLIT_M 上 DAV_2201/3510)；doc-json 无此平台×groupType 交叉。platform_arch 由 soc 派生。"
+    },
+    {
+      "expr_type": "value_dependency",
+      "expr": "platform_arch != DAV_2002 or (len(x) == 1 and len(out) == 1 and len(weight) == 1 and groupType.range_value == 0)",
+      "relation_params": ["x", "out", "weight", "groupType"],
+      "src_text": "cca L61: NpuArch != DAV_2002 ∨ (x/out/weight Size==1 ∧ groupType==0)",
+      "outcome": "success",
+      "verdict": "supplement",
+      "note": "DAV_2002 上仅允许单 tensor 且 groupType==0；doc-json 无。"
+    },
+    {
+      "expr_type": "shape_value_dependency",
+      "expr": "(groupListOptional is None) or (not (groupListType.range_value == 2) or (len(groupListOptional.shape) == 2)) and (not (groupListType.range_value in [0, 1]) or (len(groupListOptional.shape) == 1))",
+      "relation_params": ["groupListOptional", "groupListType"],
+      "src_text": "cca L61: groupListOptional==nullptr ∨ ndim==(groupListType==SPARSE_M ? 2 : 1); doc-json[17][18]",
+      "outcome": "success",
+      "verdict": "consistent",
+      "note": "groupListOptional ndim 随 groupListType：SPARSE_M→2维，其余→1维。doc-json[17][18] 已覆盖，保留。"
+    }
+  ],
+  "error_branches": [
+    {
+      "expr_type": "presence_dependency",
+      "expr": "x is None or weight is None or out is None or len(x) == 0 or len(weight) == 0 or len(out) == 0",
+      "relation_params": ["x", "weight", "out"],
+      "error_code": "ACLNN_ERR_PARAM_NULLPTR",
+      "src_text": "cca 行为划分 第1条: CheckNotNull 未成功",
+      "outcome": "defined_error",
+      "note": "空指针/空列表 → 161001。doc-json 无错误码分支，此为负例边界。"
+    }
+  ],
+  "ub_branches": [
+    {
+      "expr_type": "value_dependency",
+      "expr": "weight[0].dtype == INT32 and any(w.ndim == 0 for w in weight)",
+      "relation_params": ["weight"],
+      "ub_site": "UnpackB32ToB4(weight, \"weight\")",
+      "src_text": "cca 行为划分 第3条: weight INT32 且有元素 GetDimNum()==0 → 维度下标无符号下溢越界写",
+      "outcome": "ub",
+      "not_for_solver": true,
+      "note": "前置被破坏才触发，不喂 z3；Oracle/健壮性参考。"
+    }
+  ],
+  "normalize_rules": [
+    {
+      "when": "weight[0].dtype == INT32",
+      "rewrite": "weight 各元素 dtype 改为 (原 DT_FLOAT→DT_FLOAT4_E2M1 否则 DT_INT4)；NZ 格式元素对应维度 ×8",
+      "src_text": "cca 行为划分 第4条 + Post 副作用",
+      "note": "UnpackB32ToB4 原地改写，校验失败也不回滚。"
+    },
+    {
+      "when": "scaleOptional is not None and any(s.dtype == INT64 for s in scaleOptional)",
+      "rewrite": "INT64 元素 SetDataType(UINT64)",
+      "src_text": "cca 行为划分 Common 分支(scaleOptional 原地改写); Post 副作用",
+      "note": "绕过 const 的原地修改，不可撤销。"
+    },
+    {
+      "when": "CheckParam 成功后",
+      "rewrite": "splitItem∈{0,1} 按 len(x)==len(out) 归一为 X_Y_SEPARATED/Y_SEPARATED；splitItem∈{2,3} 按 len(x)==1 归一为 NO_SEPARATED/X_SEPARATED",
+      "src_text": "cca 行为划分 Common CorrectSplitItem 分支",
+      "note": "CorrectSplitItem 归一化，具化器产出用例时用归一后值。"
+    }
+  ],
+  "unreachable": [
+    {
+      "expr": "len(weight) == 0",
+      "src_text": "cca 行为划分 第2条: CheckNotNull 成功 ∧ weight->Size()==0",
+      "note": "CheckNotNull 已保证 weight 非空，此分支逻辑不可达（冗余防御），跳过。"
+    }
+  ],
+  "reconciliation_log": [
+    {"id": "groupType-set", "doc_ref": "[1]", "cca_ref": "L61", "verdict": "✅", "note": "取值集等价"},
+    {"id": "actType-exclude-3", "doc_ref": "[3]", "cca_ref": "L61", "verdict": "⚠️", "note": "doc 允许 3，代码排除 3；以代码为准替换"},
+    {"id": "splitItem-x-groupType", "doc_ref": null, "cca_ref": "L61", "verdict": "❌补充", "note": "交叉约束 doc 缺"},
+    {"id": "sparse-m-arch", "doc_ref": null, "cca_ref": "L61", "verdict": "❌补充", "note": "SPARSE_M 平台×groupType 交叉 doc 缺"},
+    {"id": "dav2002-cross", "doc_ref": null, "cca_ref": "L61", "verdict": "❌补充", "note": "DAV_2002 单tensor×groupType doc 缺"},
+    {"id": "groupList-ndim", "doc_ref": "[17][18]", "cca_ref": "L61", "verdict": "✅", "note": "ndim×groupListType 已覆盖"},
+    {"id": "unpack-ub", "doc_ref": null, "cca_ref": "第3条", "verdict": "❌补充(UB类)", "note": "UB 类 doc 完全无，单列 ub_branches"},
+    {"id": "scale-normalize", "doc_ref": null, "cca_ref": "Post副作用", "verdict": "❌补充(副作用)", "note": "副作用 doc 无，单列 normalize_rules"}
+  ]
+}

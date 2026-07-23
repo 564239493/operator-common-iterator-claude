@@ -1,0 +1,394 @@
+{
+  "operator_name": "aclnnGroupedMatmulV5",
+  "product": "Atlas A2 训练系列产品/Atlas A2 推理系列产品",
+  "constraints_in_parameters": [
+    {
+      "expr_type": "self_value_enum",
+      "expr": "groupType.range_value in [-1, 0, 2]",
+      "relation_params": [
+        "groupType"
+      ],
+      "src_text": "doc-json[1]; cca L61: groupType ∈ {SPLIT_M, SPLIT_K, NO_SPLIT} 且 != SPLIT_N",
+      "outcome": "success",
+      "verdict": "consistent",
+      "note": "doc {0=m轴,2=k轴,-1=不分组} 与 cca {SPLIT_M,SPLIT_K,NO_SPLIT} 等价，SPLIT_N 被排除；保留。"
+    },
+    {
+      "expr_type": "self_value_enum",
+      "expr": "actType.range_value in [0, 1, 2, 4, 5]",
+      "relation_params": [
+        "actType"
+      ],
+      "src_text": "cca L61: actType>=0 ∧ (actType==NONE ∨ (actType!=GELU_ERR_FUNC ∧ actType<END_ACT_TYPE_ENUM))",
+      "outcome": "success",
+      "verdict": "code_stricter_replace",
+      "note": "doc-json[3] 写 0<=actType<=5，但 actType==3(GELU_ERR_FUNC) 不支持（doc md 约束说明亦标注‘不支持’）。以代码为准：排除 3。"
+    },
+    {
+      "expr_type": "value_dependency",
+      "expr": "not (splitItem.range_value in [2, 3] and groupType.range_value == -1)",
+      "relation_params": [
+        "splitItem",
+        "groupType"
+      ],
+      "src_text": "cca L61: ¬(splitItem ∈ {2,3} ∧ groupType == NO_SPLIT)",
+      "outcome": "success",
+      "verdict": "supplement",
+      "note": "doc-json[14] 有 splitItem∈{2,3}→len(out)==1，但缺 splitItem×groupType 这条交叉；cca 补。"
+    },
+    {
+      "expr_type": "value_dependency",
+      "expr": "not (groupListType.range_value == 2) or (platform_arch in [DAV_2201, DAV_3510] and groupType.range_value == 0)",
+      "relation_params": [
+        "groupListType",
+        "groupType"
+      ],
+      "src_text": "cca L61: groupListType != SPARSE_M ∨ (NpuArch∈{DAV_2201,DAV_3510} ∧ groupType==SPLIT_M)",
+      "outcome": "success",
+      "verdict": "supplement",
+      "note": "groupListType==2(SPARSE_M) 需特定 arch(SPLIT_M 上 DAV_2201/3510)；doc-json 无此平台×groupType 交叉。platform_arch 由 soc 派生。"
+    },
+    {
+      "expr_type": "value_dependency",
+      "expr": "platform_arch != DAV_2002 or (len(x) == 1 and len(out) == 1 and len(weight) == 1 and groupType.range_value == 0)",
+      "relation_params": [
+        "x",
+        "out",
+        "weight",
+        "groupType"
+      ],
+      "src_text": "cca L61: NpuArch != DAV_2002 ∨ (x/out/weight Size==1 ∧ groupType==0)",
+      "outcome": "success",
+      "verdict": "supplement",
+      "note": "DAV_2002 上仅允许单 tensor 且 groupType==0；doc-json 无。"
+    },
+    {
+      "expr_type": "shape_value_dependency",
+      "expr": "(groupListOptional is None) or (not (groupListType.range_value == 2) or (len(groupListOptional.shape) == 2)) and (not (groupListType.range_value in [0, 1]) or (len(groupListOptional.shape) == 1))",
+      "relation_params": [
+        "groupListOptional",
+        "groupListType"
+      ],
+      "src_text": "cca L61: groupListOptional==nullptr ∨ ndim==(groupListType==SPARSE_M ? 2 : 1); doc-json[17][18]",
+      "outcome": "success",
+      "verdict": "consistent",
+      "note": "groupListOptional ndim 随 groupListType：SPARSE_M→2维，其余→1维。doc-json[17][18] 已覆盖，保留。"
+    },
+    {
+      "branch_ref": "cca 行为划分 Common 内联(CheckEmptyTensor) L71",
+      "expr_type": "shape_value_dependency",
+      "expr": "all((not is_null(t)) and (ndim(t) in [2, 6]) for t in x)",
+      "relation_params": [
+        "x"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "src_text": "cca L71: 存在下标 i∈[0,x->Size()) 使 (*x)[i]==nullptr 或其 GetViewShape().GetDimNum()∉[2,6] → 定义错误",
+      "note": "合法输入要求 x 各元素非空且 ndim∈[2,6]；doc-json 27 条无 x/weight ndim 约束，补。失败方向→定义错误(INVALID)。"
+    },
+    {
+      "branch_ref": "cca 行为划分 Common 内联(CheckEmptyTensor) L71",
+      "expr_type": "shape_value_dependency",
+      "expr": "all((not is_null(t)) and (ndim(t) >= 2) for t in weight)",
+      "relation_params": [
+        "weight"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "src_text": "cca L71: 存在下标 j∈[0,weight->Size()) 使 (*weight)[j]==nullptr 或其 GetViewShape().GetDimNum()<2 → 定义错误",
+      "note": "weight 各元素非空且 ndim>=2；doc-json 无，补。"
+    },
+    {
+      "branch_ref": "cca 行为划分 Common 内联 L89",
+      "expr_type": "value_dependency",
+      "expr": "len(x) <= 128 and len(weight) <= 128",
+      "relation_params": [
+        "x",
+        "weight"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "src_text": "cca L89: x->Size()/weight->Size() 表示的分组数不超过 128",
+      "note": "分组数上限 128；doc-json 无，补。注：不同 groupType 下 Size 语义略有差异，先取最直白解释，存疑。"
+    },
+    {
+      "branch_ref": "cca Common 内联#3 L71(K维部分)",
+      "expr_type": "shape_value_dependency",
+      "expr": "not (m_nonzero and n_nonzero) or all(dim(t, k_axis) > 0 for t in x)",
+      "relation_params": [
+        "x",
+        "weight"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "src_text": "cca Common#3: x 各元素 M 维乘积非全0 且 weight 各元素 N 维非全0 且 x 存在某元素 K 维为0 → 定义错误",
+      "note": "M/N 全非零时 x 的 K 维必须全非零。M/N/K 轴依赖 transpose 与 groupType，存疑待对 CheckEmptyTensor 源码细化。失败方向→定义错误(INVALID)。"
+    }
+  ],
+  "error_branches": [
+    {
+      "expr_type": "presence_dependency",
+      "expr": "x is None or weight is None or out is None or len(x) == 0 or len(weight) == 0 or len(out) == 0",
+      "relation_params": [
+        "x",
+        "weight",
+        "out"
+      ],
+      "error_code": "ACLNN_ERR_PARAM_NULLPTR",
+      "src_text": "cca 行为划分 第1条: CheckNotNull 未成功",
+      "outcome": "defined_error",
+      "note": "空指针/空列表 → 161001。doc-json 无错误码分支，此为负例边界。"
+    }
+  ],
+  "ub_branches": [
+    {
+      "expr_type": "value_dependency",
+      "expr": "weight[0].dtype == INT32 and any(w.ndim == 0 for w in weight)",
+      "relation_params": [
+        "weight"
+      ],
+      "ub_site": "UnpackB32ToB4(weight, \"weight\")",
+      "src_text": "cca 行为划分 第3条: weight INT32 且有元素 GetDimNum()==0 → 维度下标无符号下溢越界写",
+      "outcome": "ub",
+      "not_for_solver": true,
+      "note": "前置被破坏才触发，不喂 z3；Oracle/健壮性参考。"
+    },
+    {
+      "branch_ref": "cca 行为划分第5条 L55",
+      "expr_type": "value_dependency",
+      "expr": "x[0].dtype == INT32 and any(ndim(t) == 0 for t in x)",
+      "relation_params": [
+        "x"
+      ],
+      "outcome": "ub",
+      "verdict": "supplement",
+      "not_for_solver": true,
+      "src_text": "cca 第5条: (*x)[0]->GetDataType()==DT_INT32 ∧ x 中存在元素 GetViewShape().GetDimNum()==0 → UnpackB32ToB4(x,...) 越界写",
+      "note": "x 的 INT32→int4/fp4 改写前置被破坏时 UB；与 weight 版同理。不喂 z3。"
+    },
+    {
+      "branch_ref": "cca 行为划分 Common 内联 L83",
+      "expr_type": "presence_dependency",
+      "expr": "scaleOptional is not None and any(is_null(s) for s in scaleOptional)",
+      "relation_params": [
+        "scaleOptional"
+      ],
+      "outcome": "ub",
+      "verdict": "supplement",
+      "not_for_solver": true,
+      "src_text": "cca L83: scaleOptional != nullptr ∧ 存在 i 使 (*scaleOptional)[i]==nullptr → (*scaleOptional)[i]->GetDataType() 空指针解引用",
+      "note": "scaleOptional 列表内空元素 → 解引用 UB；不喂 z3。"
+    },
+    {
+      "branch_ref": "cca Common 内联#4 L74",
+      "expr_type": "value_dependency",
+      "expr": "groupType.range_value != 2 and (len(x) == 0 or len(weight) == 0)",
+      "relation_params": [
+        "groupType",
+        "x",
+        "weight"
+      ],
+      "outcome": "ub",
+      "verdict": "supplement",
+      "not_for_solver": true,
+      "src_text": "cca Common#4: groupType==SPLIT_K ∨ (CheckEmptyTensor ok) ∧ (x->Size()==0 ∨ weight->Size()==0) → UB(CheckTransposeStatus 越界)",
+      "note": "cca 标 UB(未标不可达)；但 CheckNotNull 已保证 Size>=1，正常路径下亦不可达。groupType==2即SPLIT_K 时 CheckEmptyTensor 被跳过，存疑是否 SPLIT_K 允许空列表。不喂 z3。"
+    }
+  ],
+  "normalize_rules": [
+    {
+      "when": "weight[0].dtype == INT32",
+      "rewrite": "weight 各元素 dtype 改为 (原 DT_FLOAT→DT_FLOAT4_E2M1 否则 DT_INT4)；NZ 格式元素对应维度 ×8",
+      "src_text": "cca 行为划分 第4条 + Post 副作用",
+      "note": "UnpackB32ToB4 原地改写，校验失败也不回滚。"
+    },
+    {
+      "when": "scaleOptional is not None and any(s.dtype == INT64 for s in scaleOptional)",
+      "rewrite": "INT64 元素 SetDataType(UINT64)",
+      "src_text": "cca 行为划分 Common 分支(scaleOptional 原地改写); Post 副作用",
+      "note": "绕过 const 的原地修改，不可撤销。"
+    },
+    {
+      "when": "CheckParam 成功后",
+      "rewrite": "splitItem∈{0,1} 按 len(x)==len(out) 归一为 X_Y_SEPARATED/Y_SEPARATED；splitItem∈{2,3} 按 len(x)==1 归一为 NO_SEPARATED/X_SEPARATED",
+      "src_text": "cca 行为划分 Common CorrectSplitItem 分支",
+      "note": "CorrectSplitItem 归一化，具化器产出用例时用归一后值。"
+    },
+    {
+      "branch_ref": "cca Common 内联#8 ResetEmptyTensor L87",
+      "expr_type": "presence_dependency",
+      "expr": "true",
+      "relation_params": [],
+      "when": "gmmParams 构造后(CheckTransposeStatus 成功后)",
+      "rewrite": "biasOptional/scaleOptional/offsetOptional/antiquantScaleOptional/antiquantOffsetOptional/perTokenScaleOptional/activationInputOptional/activationQuantScaleOptional/activationQuantOffsetOptional/activationFeatureOutOptional/dynQuantScaleOutOptional 中‘非空但代表空 tensor(长度0的1维0元素)’的字段重绑为 None",
+      "outcome": "normalize",
+      "verdict": "supplement",
+      "src_text": "cca Common#8: ResetEmptyTensor(gmmParams) 恒成功，占位置空规整",
+      "note": "具化器产出用例时需对齐此规整(空 tensor 字段当 None)。"
+    }
+  ],
+  "unreachable": [
+    {
+      "expr": "len(weight) == 0",
+      "src_text": "cca 行为划分 第2条: CheckNotNull 成功 ∧ weight->Size()==0",
+      "note": "CheckNotNull 已保证 weight 非空，此分支逻辑不可达（冗余防御），跳过。"
+    },
+    {
+      "branch_ref": "cca Common 内联#1 L65",
+      "expr_type": "presence_dependency",
+      "expr": "x is None",
+      "relation_params": [
+        "x"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#1: x==nullptr → UB(x->Size() 空解引用)，不可达(CheckNotNull 已保证 x!=nullptr)",
+      "note": "外层 CheckNotNull 已保证 x 非空，本分支不可达；标 unreachable 防生成不可能用例。doc-json 无不可达概念。"
+    },
+    {
+      "branch_ref": "cca Common 内联#2 L68",
+      "expr_type": "presence_dependency",
+      "expr": "weight is None",
+      "relation_params": [
+        "weight"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#2: x!=nullptr ∧ weight==nullptr → UB(weight->Size())，不可达",
+      "note": "CheckNotNull 已保证 weight 非空，不可达。"
+    },
+    {
+      "branch_ref": "cca Common 内联#5 L77",
+      "expr_type": "presence_dependency",
+      "expr": "is_null(x[0]) or is_null(weight[0])",
+      "relation_params": [
+        "x",
+        "weight"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#5: Size>=1 ∧ ((*x)[0]==nullptr ∨ (*weight)[0]==nullptr) → 定义错误，不可达",
+      "note": "CheckNotNull 已保证首元素非空，不可达。"
+    },
+    {
+      "branch_ref": "cca Common 内联#10 L92",
+      "expr_type": "value_dependency",
+      "expr": "splitItem.range_value in [0, 1] and out is None",
+      "relation_params": [
+        "splitItem",
+        "out"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#10: splitItem∈{0,1} ∧ out==nullptr → UB(CorrectSplitItem y->Size())，不可达",
+      "note": "CheckNotNull 已保证 out 非空，不可达。"
+    },
+    {
+      "branch_ref": "cca Common 内联#11 L95",
+      "expr_type": "value_dependency",
+      "expr": "splitItem.range_value in [2, 3] and x is None",
+      "relation_params": [
+        "splitItem",
+        "x"
+      ],
+      "outcome": "unreachable",
+      "verdict": "supplement",
+      "src_text": "cca Common#11: splitItem∈{2,3} ∧ x==nullptr → UB(CorrectSplitItem x->Size())，不可达",
+      "note": "CheckNotNull 已保证 x 非空，不可达。"
+    }
+  ],
+  "stubs": [
+    {
+      "branch_ref": "cca Common 内联#9 CheckParam L89",
+      "category": "constraints_in_parameters",
+      "expr_type": "value_dependency",
+      "expr": "TODO_scenario_combo(x[0].dtype, weight[0].dtype, groupType, splitItem, transposeX, transposeWeight, platform_arch)",
+      "relation_params": [
+        "x",
+        "weight",
+        "groupType",
+        "splitItem"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "stub": true,
+      "src_text": "cca Common#9: (xDtype, weight dtype, groupType, splitItem, transposeX, transposeWeight) 落在 CheckFunctionParams/CheckParamDifferentGroupType 针对 V5 支持的某场景分支 且 shape/dtype/平台约束成立",
+      "note": "STUB：完整场景 dtype/shape 组合需 CheckFunctionParams/CheckParamDifferentGroupType 子分析(其它 fn-*.md)，本入口未展开。这是文档 A8W8/A8W4 表的代码对应，TODO 翻译。"
+    },
+    {
+      "branch_ref": "cca Common 内联#12 GetGMMResultByL0Api L99",
+      "category": "constraints_in_parameters",
+      "expr_type": "value_dependency",
+      "expr": "TODO_get_gmm_result_by_l0_api_preconditions",
+      "relation_params": [
+        "x",
+        "weight",
+        "out",
+        "groupType"
+      ],
+      "outcome": "success",
+      "verdict": "supplement",
+      "stub": true,
+      "src_text": "cca Common#12: CheckParam 成功 ∧ (splitItem∉{0,1} ∨ out!=nullptr) → 成功(转发 GetGMMResultByL0Api)",
+      "note": "STUB：CorrectSplitItem 归一化(见 batch1 normalize)后转发 GetGMMResultByL0Api，其前置需该函数子分析，TODO。"
+    }
+  ],
+  "reconciliation_log": [
+    {
+      "id": "groupType-set",
+      "doc_ref": "[1]",
+      "cca_ref": "L61",
+      "verdict": "✅",
+      "note": "取值集等价"
+    },
+    {
+      "id": "actType-exclude-3",
+      "doc_ref": "[3]",
+      "cca_ref": "L61",
+      "verdict": "⚠️",
+      "note": "doc 允许 3，代码排除 3；以代码为准替换"
+    },
+    {
+      "id": "splitItem-x-groupType",
+      "doc_ref": null,
+      "cca_ref": "L61",
+      "verdict": "❌补充",
+      "note": "交叉约束 doc 缺"
+    },
+    {
+      "id": "sparse-m-arch",
+      "doc_ref": null,
+      "cca_ref": "L61",
+      "verdict": "❌补充",
+      "note": "SPARSE_M 平台×groupType 交叉 doc 缺"
+    },
+    {
+      "id": "dav2002-cross",
+      "doc_ref": null,
+      "cca_ref": "L61",
+      "verdict": "❌补充",
+      "note": "DAV_2002 单tensor×groupType doc 缺"
+    },
+    {
+      "id": "groupList-ndim",
+      "doc_ref": "[17][18]",
+      "cca_ref": "L61",
+      "verdict": "✅",
+      "note": "ndim×groupListType 已覆盖"
+    },
+    {
+      "id": "unpack-ub",
+      "doc_ref": null,
+      "cca_ref": "第3条",
+      "verdict": "❌补充(UB类)",
+      "note": "UB 类 doc 完全无，单列 ub_branches"
+    },
+    {
+      "id": "scale-normalize",
+      "doc_ref": null,
+      "cca_ref": "Post副作用",
+      "verdict": "❌补充(副作用)",
+      "note": "副作用 doc 无，单列 normalize_rules"
+    }
+  ]
+}
