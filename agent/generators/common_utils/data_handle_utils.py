@@ -131,16 +131,22 @@ class DataHandleUtil:
                                                                                       target_platform)
         if operator_constraint_data.outputs is None:
             return None
-        if (target_platform not in operator_constraint_data.constraints_in_parameters and
-                GlobalConfig.COMMON_PLATFORM not in operator_constraint_data.constraints_in_parameters):
-            logger.warning(
-                f"Platform '{target_platform}' and '{GlobalConfig.COMMON_PLATFORM}' not in constraints_in_parameters")
-        target_platform_constraint_data = operator_constraint_data.constraints_in_parameters.get(
-            target_platform, [])
-        common_constraint_data = operator_constraint_data.constraints_in_parameters.get(GlobalConfig.COMMON_PLATFORM,
-                                                                                        [])
-        target_platform_constraint_data.extend(common_constraint_data)
-        operator_constraint_data.constraints_in_parameters = target_platform_constraint_data
+        # constraints_in_parameters can be either Dict[str, List[...]] (keyed by platform)
+        # or a flat List[...] (not keyed by platform). Handle both forms.
+        if isinstance(operator_constraint_data.constraints_in_parameters, dict):
+            if (target_platform not in operator_constraint_data.constraints_in_parameters and
+                    GlobalConfig.COMMON_PLATFORM not in operator_constraint_data.constraints_in_parameters):
+                logger.warning(
+                    f"Platform '{target_platform}' and '{GlobalConfig.COMMON_PLATFORM}' not in constraints_in_parameters")
+            target_platform_constraint_data = list(operator_constraint_data.constraints_in_parameters.get(
+                target_platform, []))
+            common_constraint_data = list(operator_constraint_data.constraints_in_parameters.get(
+                GlobalConfig.COMMON_PLATFORM, []))
+            target_platform_constraint_data.extend(common_constraint_data)
+            operator_constraint_data.constraints_in_parameters = target_platform_constraint_data
+        else:
+            # constraints_in_parameters is a flat list (not keyed by platform) — use as-is
+            pass
         if (target_platform not in operator_constraint_data.dtype_support_description and
                 GlobalConfig.COMMON_PLATFORM not in operator_constraint_data.dtype_support_description):
             logger.warning(
@@ -212,10 +218,13 @@ class DataHandleUtil:
             if param_attribute.value == "N/A":
                 return None, None
             return param_attribute.value, param_attribute.type
-        else:
-            logger.info(
-                f"Param : '{param_name}', attribute : '{param_attribute_name}', is not relevant : '{param_attribute}'")
-            return None, None
+        if isinstance(param_attribute, str) and param_attribute != "N/A":
+            # Backward compatibility for constraints produced before
+            # normalize_constraints wrapped real fields as ValueWithSrcText.
+            return param_attribute, None
+        logger.info(
+            f"Param : '{param_name}', attribute : '{param_attribute_name}', is not relevant : '{param_attribute}'")
+        return None, None
 
     @staticmethod
     def get_range_data_boundary(dtype: str, range_data) -> List | None:

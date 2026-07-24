@@ -11,6 +11,25 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 > `scripts/select_torch_npu_prompt.py` 装配。只按快照中实际存在的章节工作；不得从另一
 > family 的 canonical prompt/模块补规则。
 
+## 输入隔离（强制）
+
+约束事实只能来自调度消息明确指定的以下输入：
+
+- 当前任务的 `run_state.json`；
+- 当前任务 `inputs/` 下的算子文档和提示词快照；
+- 当前项目的约束数据结构、规范化脚本和校验脚本（只用于理解结构及执行校验）。
+
+严禁将以下内容作为读取、搜索、复制或改写来源：
+
+- 当前任务以外的 `runs/**`，尤其是历史 `constraints.json`、supplement 和迭代产物；
+- `.claude/projects/**/memory/**`、用户级 memory、历史会话记录或其他 Agent 的记忆文件；
+- `scripts/_build*constraints.py`、`agent/**/_build*constraints.py` 等历史算子构建脚本；
+- 其他算子的约束文件，即使算子名称、参数或版本看起来相似。
+
+不得复制或局部修补历史 `constraints.json` 作为本轮提取结果。每个参数卡片和跨参数
+关系都必须根据本轮文档与本轮提示词重新生成并审查。若当前输入不足以确定约束，应
+保留为空或按提示词标注不确定性，不得从历史产物补齐。
+
 1. 逐节阅读文档，区分明确约束、示例和说明性文字。
 2. **模式判定**：先读取 `run_state.json.operator_family`。
    - `hs`：按当前海思 prompt 处理 Python `torch_npu.*` 函数原型；不得要求
@@ -44,7 +63,11 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
    `python scripts/normalize_constraints.py <iter-dir>/constraints.json`
 8. 执行：
    `python scripts/validate_artifacts.py constraints <iter-dir>/constraints.json`
-9. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因。
+9. 写入后逐项复核有限标量候选：原文出现“传入 A 或 B”“仅支持 A、B、C”“共有
+   N 种模式”等明确候选语义时，必须使用扁平 `enum`；不得使用 `range` 或
+   `[[A,B]]`。特别是 `src_text="传入0或1"` 必须为
+   `{"value":[0,1],"type":"enum"}`。
+10. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因。
 
 开始写文件前必须确认调度已将 run state 更新为 `EXTRACT`。成功后回报非空
 `constraints.json` 的绝对路径；不得只返回聊天中的摘要。

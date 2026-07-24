@@ -40,6 +40,40 @@ def _iter_relations(constraints: dict[str, Any]):
                 yield platform, index, item
 
 
+_NUMBER_TOKEN = r"[-+]?\d+(?:\.\d+)?"
+_FINITE_SCALAR_CHOICE_RE = re.compile(
+    rf"(?:"
+    rf"传入\s*{_NUMBER_TOKEN}\s*(?:或|和)\s*{_NUMBER_TOKEN}"
+    rf"|(?:仅|只|当前仅)?支持(?:值为|取值为|传入)?[^；。\n]*?"
+    rf"{_NUMBER_TOKEN}\s*(?:、|，|,|或|和)\s*{_NUMBER_TOKEN}"
+    rf"|(?:一共|共有)\s*\d+\s*种(?:模式|取值|场景)"
+    rf")"
+)
+
+
+def _validate_finite_scalar_enums(constraints: dict[str, Any]) -> list[str]:
+    """Reject clear finite-choice prose encoded as a numeric interval.
+
+    This is deliberately a narrow HS guard.  It catches extraction mistakes
+    such as ``传入0或1`` -> ``type=range, value=[[0,1]]`` without trying to
+    infer enums from ordinary interval prose such as ``取值范围为[0, 1]``.
+    """
+    errors: list[str] = []
+    for section, name, platform, attrs in _iter_attributes(constraints):
+        allowed = attrs.get("allowed_range_value")
+        if not isinstance(allowed, dict) or allowed.get("type") != "range":
+            continue
+        src_text = allowed.get("src_text", "")
+        if not isinstance(src_text, str) or not _FINITE_SCALAR_CHOICE_RE.search(src_text):
+            continue
+        errors.append(
+            f"{section}.{name}[{platform}].allowed_range_value encodes explicit "
+            f"finite scalar choices as range; use a flat enum value list "
+            f"(for example, '传入0或1' -> value=[0, 1], type='enum')"
+        )
+    return errors
+
+
 def _signature_names(signature: str) -> list[str]:
     start = signature.find("(")
     if start < 0:
@@ -326,12 +360,55 @@ def _validate_lightning_indexer_truth_table(
     return errors
 
 
+def _validate_quant_lightning_indexer_conditionals(
+    constraints: dict[str, Any],
+) -> list[str]:
+    """Reject layout branches that accidentally become global requirements."""
+    if constraints.get("operator_name") != (
+        "torch_npu.npu_quant_lightning_indexer"
+    ):
+        return []
+    errors: list[str] = []
+    for platform, index, relation in _iter_relations(constraints):
+        expr = str(relation.get("expr", ""))
+        try:
+            tree = ast.parse(expr, mode="eval").body
+        except SyntaxError:
+            continue
+        if not isinstance(tree, ast.BoolOp) or not isinstance(tree.op, ast.And):
+            continue
+        forces_layout = False
+        for node in tree.values:
+            if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                continue
+            left = ast.unparse(node.left)
+            right = ast.unparse(node.comparators[0])
+            if (
+                isinstance(node.ops[0], ast.Eq)
+                and left in {
+                    "layout_query.range_value", "layout_key.range_value",
+                }
+                and right.strip("'\"") in {"BSND", "TND", "PA_BSND"}
+            ):
+                forces_layout = True
+                break
+        if forces_layout:
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}] encodes a "
+                "layout-conditional rule as a global positive conjunction; "
+                "use implication '(layout != target) or (full_rule)', or one "
+                "OR expression covering every documented layout branch"
+            )
+    return errors
+
+
 def validate_hs_constraints(constraints: dict[str, Any]) -> list[str]:
     """Return blocking HS extraction errors; non-HS inputs pass through."""
     operator = str(constraints.get("operator_name", ""))
     if not operator.startswith(("torch_npu.", "torch.npu.")):
         return []
     errors: list[str] = []
+    errors.extend(_validate_finite_scalar_enums(constraints))
     input_names = list((constraints.get("inputs") or {}).keys())
     signature_names = _signature_names(str(constraints.get("function_signature", "")))
     missing = [name for name in signature_names if name not in input_names]
@@ -385,4 +462,8 @@ def validate_hs_constraints(constraints: dict[str, Any]) -> list[str]:
         errors.extend(_validate_kv_quant_truth_table(constraints))
     elif operator == "torch_npu.npu_lightning_indexer":
         errors.extend(_validate_lightning_indexer_truth_table(constraints))
+    elif operator == "torch_npu.npu_quant_lightning_indexer":
+        errors.extend(
+            _validate_quant_lightning_indexer_conditionals(constraints)
+        )
     return errors

@@ -54,10 +54,16 @@ def _clamp_range_to_dtype(dtype: str, lo: Any, hi: Any) -> tuple[Any, Any]:
     if bounds is None:
         return lo, hi
     try:
-        new_lo = None if lo is None else max(lo, bounds[0])
-        new_hi = None if hi is None else min(hi, bounds[1])
+        new_lo = (
+            None if lo is None else min(max(lo, bounds[0]), bounds[1])
+        )
+        new_hi = (
+            None if hi is None else min(max(hi, bounds[0]), bounds[1])
+        )
     except TypeError:
         return lo, hi
+    if new_lo is not None and new_hi is not None and new_lo > new_hi:
+        new_lo, new_hi = new_hi, new_lo
     return new_lo, new_hi
 
 HEADERS = (
@@ -80,6 +86,43 @@ HEADERS = (
     "priority",
     "remark",
 )
+
+# TTK consumes the flat tensor tuples in the order exposed by the target
+# torch.ops schema, not in the order used by the Python documentation.  Most
+# operators use the same order in both places.  FIA is a verified exception:
+# torch_npu 2.10.0.post2 exposes the split antiquant tensors before
+# block_table/query_padding_size/kv_padding_size, while the public Python
+# signature documents the padding group first.  Keeping this override beside
+# the converter makes the positional ABI explicit and lets the remote runner
+# verify it against the actual server before execution.
+_TTK_RUNTIME_TENSOR_ORDER_OVERRIDES = {
+    "torch_npu.npu_fused_infer_attention_score": [
+        "query",
+        "key",
+        "value",
+        "pse_shift",
+        "atten_mask",
+        "dequant_scale1",
+        "quant_scale1",
+        "dequant_scale2",
+        "quant_scale2",
+        "quant_offset2",
+        "antiquant_scale",
+        "antiquant_offset",
+        "key_antiquant_scale",
+        "key_antiquant_offset",
+        "value_antiquant_scale",
+        "value_antiquant_offset",
+        "block_table",
+        "query_padding_size",
+        "kv_padding_size",
+        "key_shared_prefix",
+        "value_shared_prefix",
+        "query_rope",
+        "key_rope",
+        "key_rope_antiquant_scale",
+    ],
+}
 
 
 def _tuple_repr(items: list[Any]) -> str:
@@ -201,7 +244,22 @@ def _ordered_input_tensor_names(constraints: dict[str, Any]) -> list[str]:
         type_value = type_field.get("value") if isinstance(type_field, dict) else type_field
         if type_value and "Tensor" in str(type_value):
             names.append(name)
-    return names
+    operator_name = str(constraints.get("operator_name") or "").strip()
+    runtime_order = _TTK_RUNTIME_TENSOR_ORDER_OVERRIDES.get(operator_name)
+    if runtime_order is None:
+        return names
+
+    documented = set(names)
+    expected = set(runtime_order)
+    if documented != expected:
+        missing = sorted(documented - expected)
+        unexpected = sorted(expected - documented)
+        raise ValueError(
+            f"{operator_name}: verified TTK runtime tensor order no longer "
+            f"matches constraints inputs; missing_from_override={missing}, "
+            f"not_in_constraints={unexpected}"
+        )
+    return list(runtime_order)
 
 
 def convert_case(case: dict[str, Any], platform: str = "",
@@ -312,19 +370,132 @@ def audit_common_case(case: dict[str, Any]) -> list[str]:
     return issues
 
 
+def _scalar_range_value(item: dict[str, Any], key: str = "range_values") -> Any:
+    """Extract a scalar from range_values, which may be a list when the
+    generator assigns an enum value (e.g. input_layout=[\"BSH\"])."""
+    value = item.get(key)
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
 def audit_fia_case(case: dict[str, Any]) -> list[str]:
     """FIA-specific semantic checks in addition to common safety checks."""
     by_name = {item.get("name"): item for item in case.get("inputs", [])}
     issues = audit_common_case(case)
-    layout = by_name.get("input_layout", {}).get("range_values")
-    if layout not in {"BSH", "BSND", "BNSD", "TND", "NSD", "BNSD_BSND"}:
+    layout = _scalar_range_value(by_name.get("input_layout", {}))
+    rank3_layouts = {
+        "BSH", "BSH_NBSD", "TND", "TND_NTD", "NTD_TND",
+    }
+    rank4_layouts = {
+        "BSND", "BNSD", "BNSD_BSND", "BSND_NBSD", "BNSD_NBSD",
+    }
+    supported_layouts = rank3_layouts | rank4_layouts
+    if layout not in supported_layouts:
         issues.append(f"input_layout: unsupported value {layout!r}")
-    for name in ("query", "key", "value"):
-        item = by_name.get(name, {})
-        rank = len(item.get("shape") or [])
-        if rank not in {3, 4}:
-            issues.append(f"{name}: rank {rank} is incompatible with BSH/BSND/BNSD layouts")
+    expected_rank = 3 if layout in rank3_layouts else 4
     query = by_name.get("query", {})
+    query_shape = list(query.get("shape") or [])
+    if layout in supported_layouts and len(query_shape) != expected_rank:
+        issues.append(
+            f"query: rank {len(query_shape)} is incompatible with {layout}; "
+            f"expected {expected_rank}"
+        )
+
+    block_table = by_name.get("block_table") or {}
+    block_shape = list(block_table.get("shape") or [])
+    block_present = bool(block_shape)
+    key_shape = list((by_name.get("key") or {}).get("shape") or [])
+    value_shape = list((by_name.get("value") or {}).get("shape") or [])
+    if key_shape != value_shape:
+        issues.append("key.shape must equal value.shape")
+    for name in ("query_padding_size", "kv_padding_size"):
+        item = by_name.get(name)
+        if item and not _is_absent_tensor(item) and item.get("shape") != [1]:
+            issues.append(
+                f"{name}: FIA runtime requires a single-element Tensor "
+                f"with shape [1], got {item.get('shape')!r}"
+            )
+    if not block_present and layout in supported_layouts:
+        for name, shape in (("key", key_shape), ("value", value_shape)):
+            if len(shape) != expected_rank:
+                issues.append(
+                    f"{name}: rank {len(shape)} must equal query rank "
+                    "when Page Attention is disabled"
+                )
+    elif block_present:
+        if len(block_shape) != 2:
+            issues.append("Page Attention block_table must be 2D")
+        actual_kv = by_name.get("actual_seq_lengths_kv") or {}
+        if not (
+            actual_kv.get("shape")
+            or actual_kv.get("length")
+            or actual_kv.get("range_values") not in (None, "null")
+        ):
+            issues.append("Page Attention requires actual_seq_lengths_kv")
+        block_size = _scalar_range_value(by_name.get("block_size") or {})
+        if not isinstance(block_size, int) or isinstance(block_size, bool) or block_size <= 0:
+            issues.append("Page Attention requires a positive integer block_size")
+        elif key_shape:
+            input_layout = layout.split("_", 1)[0]
+            if input_layout in {"BSH", "BSND"}:
+                if len(key_shape) != 3 or key_shape[1] != block_size:
+                    issues.append(
+                        "Page Attention BSH/BSND KV shape must be "
+                        "(blocknum, block_size, H)"
+                    )
+            elif input_layout in {"BNSD", "TND", "NTD"}:
+                valid_rank3 = len(key_shape) == 3 and key_shape[1] == block_size
+                valid_rank4 = len(key_shape) == 4 and key_shape[2] == block_size
+                if not (valid_rank3 or valid_rank4):
+                    issues.append(
+                        "Page Attention BNSD/TND KV shape must contain "
+                        "block_size on axis 1 (3D) or axis 2 (4D)"
+                    )
+
+    num_heads = _scalar_range_value(by_name.get("num_heads") or {})
+    query_d = None
+    if (
+        layout in {"BSH", "BSH_NBSD"}
+        and len(query_shape) == 3
+        and isinstance(num_heads, int)
+        and not isinstance(num_heads, bool)
+        and num_heads > 0
+    ):
+        hidden = query_shape[2]
+        if hidden % num_heads != 0:
+            issues.append("BSH query H must be divisible by num_heads")
+        else:
+            query_d = hidden // num_heads
+        num_kv_heads = _scalar_range_value(
+            by_name.get("num_key_value_heads") or {}
+        )
+        effective_kv_heads = (
+            num_kv_heads
+            if (
+                isinstance(num_kv_heads, int)
+                and not isinstance(num_kv_heads, bool)
+                and num_kv_heads > 0
+            )
+            else num_heads
+        )
+        for name, shape in (("key", key_shape), ("value", value_shape)):
+            if len(shape) == 3 and shape[2] % effective_kv_heads != 0:
+                issues.append(
+                    f"{name}: BSH H must be divisible by effective KV heads "
+                    f"({effective_kv_heads})"
+                )
+    elif layout in supported_layouts and query_shape:
+        query_d = query_shape[-1]
+    if isinstance(query_d, int) and not isinstance(query_d, bool):
+        if query_d > 512:
+            issues.append("query D must be <= 512")
+        qkv_dtypes = {
+            (by_name.get(name) or {}).get("dtype")
+            for name in ("query", "key", "value")
+        }
+        if "int8" in qkv_dtypes and query_d % 32 != 0:
+            issues.append("query D must be 32-aligned when int8 is involved")
     pse = by_name.get("pse_shift", {})
     if pse and query.get("dtype") != pse.get("dtype"):
         issues.append("pse_shift dtype must match query dtype")
@@ -346,8 +517,8 @@ def audit_kv_quant_ttk_case(case: dict[str, Any]) -> list[str]:
     """Reject content semantics that TTK's range-only CSV cannot guarantee."""
     by_name = {item.get("name"): item for item in case.get("inputs", [])}
     issues = audit_common_case(case)
-    layout_q = (by_name.get("layout_query") or {}).get("range_values")
-    layout_kv = (by_name.get("layout_kv") or {}).get("range_values")
+    layout_q = _scalar_range_value(by_name.get("layout_query") or {})
+    layout_kv = _scalar_range_value(by_name.get("layout_kv") or {})
     query_shape = (by_name.get("query") or {}).get("shape") or []
     key_shape = (by_name.get("key") or {}).get("shape") or []
 
@@ -429,6 +600,103 @@ def audit_kv_quant_ttk_case(case: dict[str, Any]) -> list[str]:
     return issues
 
 
+def audit_quant_lightning_indexer_ttk_case(
+    case: dict[str, Any],
+) -> list[str]:
+    """Check the range-only contracts that can otherwise crash the AICore."""
+    by_name = {
+        item.get("name"): item for item in case.get("inputs", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    issues = audit_common_case(case)
+    layout_q = _scalar_range_value(by_name.get("layout_query") or {})
+    layout_k = _scalar_range_value(by_name.get("layout_key") or {})
+    query_shape = list((by_name.get("query") or {}).get("shape") or [])
+    key_shape = list((by_name.get("key") or {}).get("shape") or [])
+
+    expected_q_rank = 4 if layout_q == "BSND" else 3
+    if layout_q in {"BSND", "TND"} and len(query_shape) != expected_q_rank:
+        issues.append(
+            f"query rank must be {expected_q_rank} for {layout_q}"
+        )
+    expected_k_rank = 3 if layout_k == "TND" else 4
+    if layout_k in {"BSND", "TND", "PA_BSND"} and len(key_shape) != expected_k_rank:
+        issues.append(f"key rank must be {expected_k_rank} for {layout_k}")
+    if query_shape and query_shape[-1] != 128:
+        issues.append("query D must be 128")
+    if key_shape and key_shape[-1] != 128:
+        issues.append("key D must be 128")
+    if query_shape and key_shape:
+        q_heads = query_shape[2] if layout_q == "BSND" else query_shape[1]
+        k_heads = key_shape[2] if layout_k != "TND" else key_shape[1]
+        if k_heads != 1 or q_heads != 64 * k_heads:
+            issues.append("Atlas A2/A3 requires N1/N2 == 64 and N2 == 1")
+
+    for name, source in (
+        ("weights", "query"),
+        ("query_dequant_scale", "query"),
+    ):
+        shape = list((by_name.get(name) or {}).get("shape") or [])
+        expected = query_shape[:-1]
+        if shape and expected and shape != expected:
+            issues.append(f"{name}.shape must equal {source}.shape[:-1]")
+    key_scale_shape = list(
+        (by_name.get("key_dequant_scale") or {}).get("shape") or []
+    )
+    if key_scale_shape and key_shape and key_scale_shape != key_shape[:-1]:
+        issues.append("key_dequant_scale.shape must equal key.shape[:-1]")
+
+    actual_q = by_name.get("actual_seq_lengths_query") or {}
+    actual_k = by_name.get("actual_seq_lengths_key") or {}
+    block_table = by_name.get("block_table") or {}
+    if layout_q == "TND":
+        if not (actual_q.get("shape") or []):
+            issues.append("TND requires actual_seq_lengths_query")
+        elif actual_q.get("shape") != [1]:
+            issues.append("range-only TND smoke requires B=1 query prefix sum")
+        elif actual_q.get("range_values") != query_shape[0]:
+            issues.append("TND query prefix sum must equal query T")
+    if layout_k in {"TND", "PA_BSND"} and not (actual_k.get("shape") or []):
+        issues.append(f"{layout_k} requires actual_seq_lengths_key")
+    if layout_k == "TND" and actual_k.get("shape") != [1]:
+        issues.append("range-only TND smoke requires B=1 key prefix sum")
+    if (
+        layout_k == "TND"
+        and actual_k.get("shape") == [1]
+        and actual_k.get("range_values") != key_shape[0]
+    ):
+        issues.append("TND key prefix sum must equal key T")
+    if layout_k == "PA_BSND":
+        block_shape = list(block_table.get("shape") or [])
+        if len(block_shape) != 2:
+            issues.append("PA_BSND block_table must be 2D")
+        expected_batch = query_shape[0] if layout_q == "BSND" else 1
+        if actual_k.get("shape") != [expected_batch]:
+            issues.append("PA_BSND actual_seq_lengths_key shape must equal B")
+        block_value = block_table.get("range_values")
+        block_values = (
+            block_value if isinstance(block_value, list) else [block_value]
+        )
+        block_count = key_shape[0] if key_shape else 0
+        if any(
+            isinstance(value, (int, float))
+            and not 0 <= value < block_count
+            for value in block_values
+        ):
+            issues.append("block_table contains an invalid block index")
+    for name in ("pre_tokens", "next_tokens"):
+        item = by_name.get(name) or {}
+        value = item.get("range_values")
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value != 9_223_372_036_854_775_807
+            or item.get("dtype") != "int64"
+        ):
+            issues.append(f"{name} must be exact INT64_MAX")
+    return issues
+
+
 def _set_tensor_case_value(
     by_name: dict[str, dict[str, Any]], name: str,
     *, shape: list[int], value: int,
@@ -441,6 +709,86 @@ def _set_tensor_case_value(
     item["range_values"] = value
     item["required"] = True
     return changed
+
+
+_QUANT_LIGHTNING_INDEXER_INPUT_ORDER = (
+    "query",
+    "key",
+    "weights",
+    "query_dequant_scale",
+    "key_dequant_scale",
+    "query_quant_mode",
+    "key_quant_mode",
+    "actual_seq_lengths_query",
+    "actual_seq_lengths_key",
+    "block_table",
+    "layout_query",
+    "layout_key",
+    "sparse_count",
+    "sparse_mode",
+    "pre_tokens",
+    "next_tokens",
+    "sparse_indices",
+)
+
+
+def _ensure_tensor_case_value(
+    case: dict[str, Any],
+    by_name: dict[str, dict[str, Any]],
+    name: str,
+    *,
+    shape: list[int],
+    value: int,
+    input_order: tuple[str, ...] = _QUANT_LIGHTNING_INDEXER_INPUT_ORDER,
+) -> tuple[bool, bool]:
+    """Set a tensor value, creating a missing conditional input in API order.
+
+    The generic generator omits optional tensors whose sampled ``is_present``
+    is false.  A later layout projection can make such a tensor mandatory, so
+    a set-only helper is insufficient.  Return ``(changed, created)`` to keep
+    the materialization audit explicit.
+    """
+    item = by_name.get(name)
+    created = item is None
+    if item is None:
+        item = {
+            "name": name,
+            "type": "tensor",
+            "required": True,
+            "dtype": "int32",
+            "shape": list(shape),
+            "range_values": value,
+            "length": None,
+            "format": "ND",
+            "backward": False,
+            "align_32B": None,
+            "outlier_values": None,
+        }
+        inputs = case.setdefault("inputs", [])
+        desired_index = input_order.index(name)
+        insert_at = len(inputs)
+        for index, candidate in enumerate(inputs):
+            candidate_name = candidate.get("name")
+            if (
+                candidate_name in input_order
+                and input_order.index(candidate_name) > desired_index
+            ):
+                insert_at = index
+                break
+        inputs.insert(insert_at, item)
+        by_name[name] = item
+        return True, True
+
+    changed = _set_tensor_case_value(
+        by_name, name, shape=shape, value=value,
+    )
+    if item.get("dtype") != "int32":
+        item["dtype"] = "int32"
+        changed = True
+    if item.get("format") != "ND":
+        item["format"] = "ND"
+        changed = True
+    return changed, created
 
 
 def materialize_sparse_attention_ttk_cases(
@@ -466,8 +814,8 @@ def materialize_sparse_attention_ttk_cases(
             if isinstance(item, dict) and item.get("name")
         }
         changes: list[str] = []
-        layout_q = (by_name.get("layout_query") or {}).get("range_values")
-        layout_kv = (by_name.get("layout_kv") or {}).get("range_values")
+        layout_q = _scalar_range_value(by_name.get("layout_query") or {})
+        layout_kv = _scalar_range_value(by_name.get("layout_kv") or {})
         query = by_name.get("query") or {}
         key = by_name.get("key") or {}
         query_shape = list(query.get("shape") or [])
@@ -593,6 +941,220 @@ def materialize_sparse_attention_ttk_cases(
     return repaired, {
         "operator": "torch_npu.npu_sparse_flash_attention",
         "mode": "range_only_functional_smoke_repair",
+        "safe_token_cap": safe_token_cap,
+        "changed_case_count": sum(bool(entry["changes"]) for entry in audit),
+        "audit": audit,
+    }
+
+
+def materialize_quant_lightning_indexer_ttk_cases(
+    cases: list[dict[str, Any]], *, safe_batch_cap: int = 4,
+    safe_token_cap: int = 128,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Make quant Lightning Indexer inputs safe for range-only TTK execution.
+
+    This keeps the generic case generator untouched.  Multi-batch TND prefix
+    sums and valid PageAttention mappings cannot be represented by a single
+    random range, so the functional smoke adapter uses B=1 for TND and a
+    fixed valid PA block 0.
+    """
+    repaired = deepcopy(cases)
+    audit: list[dict[str, Any]] = []
+    for index, case in enumerate(repaired):
+        api_name = case.get("name") or case.get("aclnn_name")
+        if api_name != "torch_npu.npu_quant_lightning_indexer":
+            audit.append({"id": case.get("id", index), "changes": []})
+            continue
+        by_name = {
+            item.get("name"): item for item in case.get("inputs", [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        changes: list[str] = []
+        layout_q = _scalar_range_value(by_name.get("layout_query") or {})
+        layout_k = _scalar_range_value(by_name.get("layout_key") or {})
+        if layout_q not in {"BSND", "TND"}:
+            layout_q = "BSND"
+            by_name["layout_query"]["range_values"] = layout_q
+            changes.append("layout_query repaired to BSND")
+        if layout_k not in {"BSND", "TND", "PA_BSND"}:
+            layout_k = layout_q
+            by_name["layout_key"]["range_values"] = layout_k
+            changes.append(f"layout_key repaired to {layout_k}")
+        if layout_k != "PA_BSND" and layout_k != layout_q:
+            layout_k = layout_q
+            by_name["layout_key"]["range_values"] = layout_k
+            changes.append("non-PA layout_key aligned with layout_query")
+
+        query = by_name.get("query") or {}
+        old_q = list(query.get("shape") or [])
+        if layout_q == "TND":
+            tokens = min(max(int(old_q[0]) if old_q else 1, 1), safe_token_cap)
+            query_shape = [tokens, 64, 128]
+            batch = 1
+        else:
+            batch = min(max(int(old_q[0]) if old_q else 1, 1), safe_batch_cap)
+            seq = min(
+                max(int(old_q[1]) if len(old_q) > 1 else 1, 1),
+                safe_token_cap,
+            )
+            query_shape = [batch, seq, 64, 128]
+        if query.get("shape") != query_shape:
+            query["shape"] = query_shape
+            changes.append(f"query.shape={query_shape}")
+        if query.get("range_values") != [-8, 8]:
+            query["range_values"] = [-8, 8]
+            changes.append("query int8 range=[-8,8]")
+
+        for name in ("weights", "query_dequant_scale"):
+            item = by_name.get(name)
+            if item:
+                target = query_shape[:-1]
+                if item.get("shape") != target:
+                    item["shape"] = list(target)
+                    changes.append(f"{name}.shape={target}")
+                if item.get("range_values") != 1:
+                    item["range_values"] = 1
+                    changes.append(f"{name} fixed to 1")
+
+        if layout_q == "TND":
+            changed, created = _ensure_tensor_case_value(
+                case, by_name, "actual_seq_lengths_query",
+                shape=[1], value=query_shape[0],
+            )
+            if changed:
+                action = "created" if created else "set"
+                changes.append(f"query exact B=1 prefix sum {action}")
+        else:
+            item = by_name.get("actual_seq_lengths_query")
+            if item and item.get("shape"):
+                if _set_tensor_case_value(
+                    by_name, "actual_seq_lengths_query",
+                    shape=[batch], value=query_shape[1],
+                ):
+                    changes.append("query seqlen bounded to S1")
+
+        key = by_name.get("key") or {}
+        old_k = list(key.get("shape") or [])
+        if layout_k == "PA_BSND":
+            block_count = max(batch, 1)
+            block_size = 16
+            key_shape = [block_count, block_size, 1, 128]
+            key_seq = block_size
+        elif layout_k == "TND":
+            key_seq = min(
+                max(int(old_k[0]) if old_k else 1, 1), safe_token_cap,
+            )
+            key_shape = [key_seq, 1, 128]
+        else:
+            key_seq = min(
+                max(int(old_k[1]) if len(old_k) > 1 else 1, 1),
+                safe_token_cap,
+            )
+            key_shape = [batch, key_seq, 1, 128]
+        if key.get("shape") != key_shape:
+            key["shape"] = key_shape
+            changes.append(f"key.shape={key_shape}")
+        if key.get("range_values") != [-8, 8]:
+            key["range_values"] = [-8, 8]
+            changes.append("key int8 range=[-8,8]")
+
+        key_scale = by_name.get("key_dequant_scale")
+        if key_scale:
+            target = key_shape[:-1]
+            if key_scale.get("shape") != target:
+                key_scale["shape"] = list(target)
+                changes.append(f"key_dequant_scale.shape={target}")
+            if key_scale.get("range_values") != 1:
+                key_scale["range_values"] = 1
+                changes.append("key_dequant_scale fixed to 1")
+
+        if layout_k in {"TND", "PA_BSND"}:
+            length_shape = [1] if layout_k == "TND" else [batch]
+            changed, created = _ensure_tensor_case_value(
+                case, by_name, "actual_seq_lengths_key",
+                shape=length_shape, value=key_seq,
+            )
+            if changed:
+                action = "created" if created else "set"
+                changes.append(f"key seqlen safely {action}")
+        else:
+            item = by_name.get("actual_seq_lengths_key")
+            if item and item.get("shape"):
+                if _set_tensor_case_value(
+                    by_name, "actual_seq_lengths_key",
+                    shape=[batch], value=key_seq,
+                ):
+                    changes.append("key seqlen bounded to S2")
+
+        block = by_name.get("block_table")
+        if layout_k == "PA_BSND":
+            changed, created = _ensure_tensor_case_value(
+                case, by_name, "block_table", shape=[batch, 1], value=0,
+            )
+            if changed:
+                action = "created" if created else "set"
+                changes.append(f"block_table {action} with valid block 0")
+        elif block and (block.get("shape") or block.get("range_values") not in (None, "null")):
+            block["shape"] = None
+            block["range_values"] = "null"
+            block["required"] = False
+            changes.append("non-PA block_table removed")
+
+        for name in ("query_quant_mode", "key_quant_mode"):
+            item = by_name.get(name)
+            value = _scalar_range_value(item or {})
+            if item and (
+                value != 0
+                or not isinstance(value, int)
+                or isinstance(value, bool)
+                or item.get("dtype") != "int32"
+            ):
+                item["range_values"] = 0
+                item["dtype"] = "int32"
+                changes.append(f"{name}=0")
+        for name in ("pre_tokens", "next_tokens"):
+            item = by_name.get(name)
+            if item and (
+                _scalar_range_value(item) != 9_223_372_036_854_775_807
+                or item.get("dtype") != "int64"
+            ):
+                item["range_values"] = 9_223_372_036_854_775_807
+                item["dtype"] = "int64"
+                changes.append(f"{name}=INT64_MAX")
+        sparse_count = by_name.get("sparse_count")
+        if sparse_count:
+            raw_count = _scalar_range_value(sparse_count)
+            try:
+                safe_count = min(max(int(raw_count), 1), 2048)
+            except (TypeError, ValueError, OverflowError):
+                safe_count = 2048
+            if (
+                raw_count != safe_count
+                or not isinstance(raw_count, int)
+                or isinstance(raw_count, bool)
+                or sparse_count.get("dtype") != "int32"
+            ):
+                sparse_count["range_values"] = safe_count
+                sparse_count["dtype"] = "int32"
+                changes.append(f"sparse_count={safe_count}")
+        sparse_mode = by_name.get("sparse_mode")
+        if sparse_mode:
+            raw_mode = _scalar_range_value(sparse_mode)
+            safe_mode = int(raw_mode) if raw_mode in (0, 3, 0.0, 3.0) else 0
+            if (
+                raw_mode != safe_mode
+                or not isinstance(raw_mode, int)
+                or isinstance(raw_mode, bool)
+                or sparse_mode.get("dtype") != "int32"
+            ):
+                sparse_mode["range_values"] = safe_mode
+                sparse_mode["dtype"] = "int32"
+                changes.append(f"sparse_mode={safe_mode}")
+        audit.append({"id": case.get("id", index), "changes": changes})
+    return repaired, {
+        "operator": "torch_npu.npu_quant_lightning_indexer",
+        "mode": "range_only_functional_smoke_repair",
+        "safe_batch_cap": safe_batch_cap,
         "safe_token_cap": safe_token_cap,
         "changed_case_count": sum(bool(entry["changes"]) for entry in audit),
         "audit": audit,
@@ -744,6 +1306,8 @@ def audit_case(case: dict[str, Any]) -> list[str]:
         "torch_npu.npu_sparse_flash_attention",
     }:
         return audit_kv_quant_ttk_case(case)
+    if api_name == "torch_npu.npu_quant_lightning_indexer":
+        return audit_quant_lightning_indexer_ttk_case(case)
     return audit_common_case(case)
 
 
@@ -804,6 +1368,7 @@ def convert_file(source: Path, destination: Path, platform: str = "",
         "semantically_clean_count": sum(not entry["issues"] for entry in audit),
         "audit": audit,
         "self_check_warnings": warnings,
+        "tensor_order": list(tensor_order or []),
         "content_generation_mode": "range_only",
         "content_generation_limitations": [
             "multi-element prefix sums require a literal tensor builder",

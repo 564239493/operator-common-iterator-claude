@@ -48,6 +48,7 @@ def resolve_ttk_plugin(operator_name: str, *, golden: bool = True) -> Path:
         "torch_npu.npu_kv_quant_sparse_flash_attention":
             "kv_quant_sparse_flash_attention_golden.py",
         "torch_npu.npu_lightning_indexer": "npu_lightning_indexer_golden.py",
+        "torch_npu.npu_quant_lightning_indexer": "npu_quant_lightning_indexer_golden.py",
         "torch_npu.npu_sparse_flash_attention": "sparse_flash_attention_golden.py",
     }
     source_name = sources.get(operator_name) if golden else None

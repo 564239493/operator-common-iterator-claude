@@ -31,9 +31,12 @@ This rewrite keeps everything inside this project:
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
+import hashlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +79,51 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    _atomic_write_text(
+        path, json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+
+
+def _artifact_fingerprints(iter_dir: Path, cases_path: Path) -> dict[str, Any]:
+    """Bind an execution result to the exact generated inputs it consumed."""
+    result: dict[str, Any] = {}
+    for name, path in (
+        ("constraints", iter_dir / "constraints.json"),
+        ("cases_json", iter_dir / "cases.json"),
+        ("cases_csv", cases_path),
+        ("generation_summary", iter_dir / "generation_summary.json"),
+    ):
+        if not path.is_file():
+            continue
+        content = path.read_bytes()
+        stat = path.stat()
+        result[name] = {
+            "path": str(path.resolve()),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(content),
+            "mtime_ns": stat.st_mtime_ns,
+        }
+    return result
+
+
+def _attempt_artifact_dir(iter_dir: Path, kind: str) -> Path:
+    """Keep repeated EXECUTE attempts isolated instead of mixing stale logs."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+    return iter_dir / f"{kind}_artifacts" / f"attempt_{stamp}"
 
 
 def _read_ttk_csv_identity(path: Path) -> tuple[str, str]:
@@ -158,6 +206,138 @@ def _resolve_generated_case_path(iter_dir: Path, raw_path: Any) -> Path | None:
     return next((candidate.resolve() for candidate in candidates if candidate.is_file()), None)
 
 
+def _execution_file_mapping(summary: dict[str, Any]) -> dict[str, Any]:
+    """Prefer adapter-materialized files while retaining old-run compatibility."""
+    execution_files = summary.get("per_platform_execution_files")
+    if isinstance(execution_files, dict):
+        return execution_files
+    raw_files = summary.get("per_platform_files")
+    return raw_files if isinstance(raw_files, dict) else {}
+
+
+def _validate_generation_contract(
+    iter_dir: Path,
+    summary: dict[str, Any],
+) -> None:
+    status_path = iter_dir / "generation_status.json"
+    status = _read_json_object(status_path)
+    if status is not None and status.get("state") != "complete":
+        raise RuntimeError(
+            "TTK generation is incomplete; rerun GENERATE before EXECUTE "
+            f"(status={status.get('state')!r})"
+        )
+
+    expected_parent = iter_dir.resolve()
+    for field in ("intermediate_model", "output"):
+        raw_path = summary.get(field)
+        if not raw_path:
+            continue
+        resolved = _resolve_generated_case_path(iter_dir, raw_path)
+        if resolved is not None and resolved.parent != expected_parent:
+            raise RuntimeError(
+                f"generation_summary.{field} points outside the current "
+                f"iteration: {resolved}"
+            )
+
+
+def _qli_csv_int64_issues(cases_path: Path) -> list[str]:
+    """Detect the exact float-rounding regression before remote execution."""
+    issues: list[str] = []
+    with cases_path.open(encoding="utf-8", newline="") as handle:
+        for row_index, row in enumerate(csv.DictReader(handle)):
+            if row.get("api_name") != "torch_npu.npu_quant_lightning_indexer":
+                continue
+            try:
+                attributes = ast.literal_eval(row.get("attributes") or "{}")
+            except (SyntaxError, ValueError) as exc:
+                issues.append(f"row {row_index}: malformed attributes ({exc})")
+                continue
+            for name in ("pre_tokens", "next_tokens"):
+                value = attributes.get(name)
+                if (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value != 9_223_372_036_854_775_807
+                ):
+                    issues.append(
+                        f"row {row_index}: {name} is not exact INT64_MAX "
+                        f"({value!r})"
+                    )
+    return issues
+
+
+def _ttk_e2e_refresh_reasons(
+    cases_path: Path,
+    selected_platform: str,
+) -> list[str]:
+    """Return reasons why canonical JSON/CSV must be rebuilt."""
+    iter_dir = cases_path.parent
+    summary = _read_json_object(iter_dir / "generation_summary.json")
+    if not summary:
+        raise RuntimeError("missing readable generation_summary.json")
+    _validate_generation_contract(iter_dir, summary)
+
+    execution_files = _execution_file_mapping(summary)
+    if selected_platform not in execution_files:
+        raise RuntimeError(
+            f"no execution-ready cases for platform {selected_platform!r}; "
+            f"available={list(execution_files)}"
+        )
+    source = _resolve_generated_case_path(
+        iter_dir, execution_files[selected_platform],
+    )
+    if source is None:
+        raise RuntimeError(
+            "selected execution-ready cases file is missing: "
+            f"{execution_files[selected_platform]!r}"
+        )
+
+    reasons: list[str] = []
+    if summary.get("selected_platform") != selected_platform:
+        reasons.append("selected platform changed")
+    canonical = iter_dir / "cases.json"
+    if not canonical.is_file():
+        reasons.append("canonical cases.json is missing")
+    elif canonical.read_bytes() != source.read_bytes():
+        reasons.append("canonical cases.json differs from selected execution file")
+    if not cases_path.is_file():
+        reasons.append("TTK CSV is missing")
+    elif cases_path.stat().st_mtime_ns < source.stat().st_mtime_ns:
+        reasons.append("TTK CSV is older than selected execution file")
+
+    hashes = summary.get("artifact_hashes")
+    if isinstance(hashes, dict):
+        expected = {
+            "selected_execution_file": source,
+            "cases_json": canonical,
+            "cases_csv": cases_path,
+        }
+        for name, path in expected.items():
+            recorded = hashes.get(name)
+            if path.is_file() and recorded and _sha256_file(path) != recorded:
+                reasons.append(f"{name} hash differs from generation summary")
+
+    if cases_path.is_file():
+        reasons.extend(_qli_csv_int64_issues(cases_path))
+    constraints = _read_json_object(iter_dir / "constraints.json")
+    if constraints:
+        from scripts.atc_to_ttk import _ordered_input_tensor_names
+
+        expected_tensor_order = _ordered_input_tensor_names(constraints)
+        conversion_audit = _read_json_object(
+            iter_dir / "ttk_conversion_audit.json"
+        )
+        recorded_tensor_order = (
+            conversion_audit.get("tensor_order")
+            if conversion_audit else None
+        )
+        if recorded_tensor_order != expected_tensor_order:
+            reasons.append(
+                "TTK CSV tensor order differs from current runtime ABI mapping"
+            )
+    return list(dict.fromkeys(reasons))
+
+
 def _retarget_ttk_e2e_csv(
     cases_path: Path,
     selected_platform: str,
@@ -168,19 +348,20 @@ def _retarget_ttk_e2e_csv(
     summary = _read_json_object(summary_path)
     if not summary:
         raise RuntimeError(f"missing readable generation summary: {summary_path}")
-    per_platform_files = summary.get("per_platform_files")
-    if not isinstance(per_platform_files, dict) or selected_platform not in per_platform_files:
+    _validate_generation_contract(iter_dir, summary)
+    execution_files = _execution_file_mapping(summary)
+    if selected_platform not in execution_files:
         raise RuntimeError(
-            f"no generated cases file for platform {selected_platform!r}; "
-            f"available={list(per_platform_files or {})}"
+            f"no execution-ready cases file for platform {selected_platform!r}; "
+            f"available={list(execution_files)}"
         )
     source = _resolve_generated_case_path(
-        iter_dir, per_platform_files[selected_platform]
+        iter_dir, execution_files[selected_platform]
     )
     if source is None:
         raise RuntimeError(
-            f"generated cases path is missing for platform {selected_platform!r}: "
-            f"{per_platform_files[selected_platform]!r}"
+            "execution-ready cases path is missing for platform "
+            f"{selected_platform!r}: {execution_files[selected_platform]!r}"
         )
     constraints_path = iter_dir / "constraints.json"
     constraints = _read_json_object(constraints_path)
@@ -188,34 +369,55 @@ def _retarget_ttk_e2e_csv(
         raise RuntimeError(f"missing readable constraints for TTK conversion: {constraints_path}")
 
     canonical_cases = iter_dir / "cases.json"
-    canonical_cases.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    _atomic_write_text(
+        canonical_cases, source.read_text(encoding="utf-8"),
+    )
     from scripts.atc_to_ttk import convert_file, _ordered_input_tensor_names
 
+    temporary_csv = cases_path.with_name(f".{cases_path.name}.tmp")
     conversion = convert_file(
         canonical_cases,
-        cases_path,
+        temporary_csv,
         selected_platform,
         _ordered_input_tensor_names(constraints),
     )
-    (iter_dir / "ttk_conversion_audit.json").write_text(
-        json.dumps(conversion, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    int64_issues = _qli_csv_int64_issues(temporary_csv)
+    if int64_issues:
+        raise RuntimeError(
+            "refusing to publish TTK CSV with invalid int64 attributes: "
+            + "; ".join(int64_issues[:5])
+        )
+    temporary_csv.replace(cases_path)
+    conversion["destination"] = str(cases_path)
+    _atomic_write_json(iter_dir / "ttk_conversion_audit.json", conversion)
     previous_platform = summary.get("selected_platform")
     summary.update({
         "selected_platform": selected_platform,
         "platform_selection_reason": "execute_server_config_match",
         "intermediate_model": str(canonical_cases),
+        "selected_execution_file": str(source),
         "output": str(cases_path),
         "total": conversion.get("case_count", summary.get("total")),
         "semantically_clean_count": conversion.get(
             "semantically_clean_count", summary.get("semantically_clean_count")
         ),
+        "artifact_hashes": {
+            "selected_execution_file": _sha256_file(source),
+            "cases_json": _sha256_file(canonical_cases),
+            "cases_csv": _sha256_file(cases_path),
+        },
     })
-    summary_path.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _atomic_write_json(summary_path, summary)
+    _atomic_write_json(iter_dir / "generation_status.json", {
+        "state": "complete",
+        "selected_platform": selected_platform,
+        "selected_execution_file": str(source),
+        "cases_json": str(canonical_cases),
+        "cases_csv": str(cases_path),
+        "artifact_hashes": summary["artifact_hashes"],
+    })
     return {
-        "retargeted": previous_platform != selected_platform,
+        "retargeted": True,
         "previous_platform": previous_platform,
         "selected_platform": selected_platform,
         "source": str(source),
@@ -517,7 +719,7 @@ def main() -> int:
             artifact_dir = (
                 resolve_input_path(args.artifact_dir)
                 if args.artifact_dir
-                else iter_dir / "ttk_aclnn_artifacts"
+                else _attempt_artifact_dir(iter_dir, "ttk_aclnn")
             )
             from scripts.execute_ttk_aclnn import run_aclnn
 
@@ -575,19 +777,24 @@ def main() -> int:
             "retargeted": False,
             "previous_platform": csv_platform,
             "selected_platform": selected_platform,
+            "refresh_reasons": [],
         }
-        if csv_platform != selected_platform:
-            try:
+        try:
+            refresh_reasons = _ttk_e2e_refresh_reasons(
+                cases_path, selected_platform,
+            )
+            if refresh_reasons:
                 retarget_info = _retarget_ttk_e2e_csv(cases_path, selected_platform)
-            except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-                _emit({
-                    "ok": False,
-                    "code": "TTK_PLATFORM_RETARGET_FAILED",
-                    "message": str(exc),
-                    "previous_platform": csv_platform,
-                    "selected_platform": selected_platform,
-                })
-                return 2
+                retarget_info["refresh_reasons"] = refresh_reasons
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            _emit({
+                "ok": False,
+                "code": "TTK_ARTIFACT_REFRESH_FAILED",
+                "message": str(exc),
+                "previous_platform": csv_platform,
+                "selected_platform": selected_platform,
+            })
+            return 2
 
         manifest_path = cases_path.parent / "golden_manifest.json"
         manifest = _read_json_object(manifest_path)
@@ -653,9 +860,18 @@ def main() -> int:
         with cases_path.open(encoding="utf-8", newline="") as handle:
             first = next(csv.DictReader(handle), {})
         operator_name = args.operator or first.get("api_name") or cases_path.stem
+        conversion_audit = _read_json_object(
+            iter_dir / "ttk_conversion_audit.json"
+        )
+        expected_tensor_order = (
+            conversion_audit.get("tensor_order")
+            if conversion_audit else None
+        )
+        if not isinstance(expected_tensor_order, list):
+            expected_tensor_order = None
         artifact_dir = (
             resolve_input_path(args.artifact_dir) if args.artifact_dir
-            else iter_dir / "ttk_artifacts"
+            else _attempt_artifact_dir(iter_dir, "ttk")
         )
         from executer.ttk_runner import run_ttk_remote
         result = run_ttk_remote(
@@ -666,10 +882,14 @@ def main() -> int:
             server=server,
             artifact_dir=artifact_dir,
             timeout=1800.0,
+            expected_tensor_order=expected_tensor_order,
         )
         result.update({
             "selected_platform": selected_platform,
             "platform_retarget": retarget_info,
+            "input_artifacts": _artifact_fingerprints(
+                iter_dir, cases_path
+            ),
         })
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

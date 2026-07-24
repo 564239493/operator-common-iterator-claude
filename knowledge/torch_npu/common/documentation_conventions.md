@@ -39,6 +39,11 @@
 - `None` 默认值表示调用层可省略；在某些场景“必须传入”应表达为条件 presence 关系，而不是把参数改成全局 required。
 - 末尾标量默认值必须保留在参数 `description`/相关 `src_text`；当前 schema 没有
   `default_value` 字段，不得自行新增。其合法取值仍由 `allowed_range_value` 或关系单独表达。
+- 标量文案“传入 A 或 B”“仅支持 A、B、C”“取值为 A/B/C”“N 种模式：
+  A、B、C……”描述的是有限离散候选，必须使用
+  `allowed_range_value.type="enum"`，并把候选直接写成 `value=[A,B,C]`。
+  即使候选是连续整数也不得改写成 `range`；标量 enum 也不得写成
+  `value=[[A,B]]`，该嵌套形式表示数组候选而非两个标量候选。
 - 当前生成器的 `allowed_range_value.type=range` 固定采用严格开区间。文档闭区间或半开
   区间必须用关系表达并令 allowed range 为空，不能用 `[[lo,hi]]` 近似。
 - 只有文档参数进入 `inputs`。B、S、N、D、T、block_num 等符号是 shape 轴变量，不得伪造成隐藏输入。

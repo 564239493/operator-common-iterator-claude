@@ -22,12 +22,75 @@ def _safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "operator"
 
 
+_RUNTIME_SCHEMA_MARKER = "__TTK_RUNTIME_TENSOR_ORDER__="
+
+
+def _torch_npu_op_name(operator_name: str) -> str | None:
+    """Return the torch.ops.npu packet name for a public torch_npu API."""
+    prefix = "torch_npu."
+    if not operator_name.startswith(prefix):
+        return None
+    op_name = operator_name[len(prefix):]
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", op_name):
+        return None
+    return op_name
+
+
+def _parse_runtime_tensor_order(stdout: str) -> list[str] | None:
+    """Parse the isolated JSON marker emitted by the remote schema probe."""
+    for line in stdout.splitlines():
+        if not line.startswith(_RUNTIME_SCHEMA_MARKER):
+            continue
+        try:
+            value = json.loads(line[len(_RUNTIME_SCHEMA_MARKER):])
+        except json.JSONDecodeError:
+            return None
+        if isinstance(value, list) and all(isinstance(name, str) for name in value):
+            return value
+        return None
+    return None
+
+
+def _tensor_order_mismatch(
+    expected: list[str] | None,
+    runtime: list[str] | None,
+) -> dict[str, Any] | None:
+    """Describe a structural positional mismatch, or return None."""
+    if not expected or not runtime or expected == runtime:
+        return None
+    first_difference = next(
+        (
+            index
+            for index, pair in enumerate(zip(expected, runtime))
+            if pair[0] != pair[1]
+        ),
+        min(len(expected), len(runtime)),
+    )
+    return {
+        "first_difference": first_difference,
+        "expected": expected,
+        "runtime": runtime,
+        "missing_from_runtime": [
+            name for name in expected if name not in set(runtime)
+        ],
+        "unexpected_in_runtime": [
+            name for name in runtime if name not in set(expected)
+        ],
+    }
+
+
 _NON_FUNCTIONAL_GOLDEN_RESULTS = {
     "COMPARE_FAILURE", "GOLDEN_FAILURE", "SUPPRESSED", "UNSUPPORTED",
 }
 _FUNCTIONAL_FAILURE_MARKERS = (
     "INPUT_GEN_FAILURE", "NO_OUTPUT", "GRAPH_EXEC_FAILURE",
     "NPU FUNCTION ERROR", "ACL API FAILED", "TRACEBACK", "EXCEPTION",
+    "NOTIMPLEMENTEDERROR", "THERE WERE NO TENSOR ARGUMENTS",
+    "RUNTIMEERROR", "TYPEERROR", "VALUEERROR",
+    "UNABLE TO CAST", "CAST ERROR DETAILS", "EXPECTED A VALUE OF TYPE",
+    # torch_npu argument/layout validation can stop before aclnn dispatch and
+    # only emit this OPS error (without a traceback or "NPU function error").
+    "ERR01003", "OPS INVALID VALUE",
     # Runtime/device failures can be reported without a Python traceback or
     # the generic "NPU function error" prefix.  They are execution failures,
     # never golden-comparison failures.
@@ -106,6 +169,7 @@ async def _run_remote(
     artifact_dir: Path,
     timeout: float,
     runtime_plugin_path: Path | None = None,
+    expected_tensor_order: list[str] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     ttk = server.get("ttk") or {}
@@ -126,8 +190,69 @@ async def _run_remote(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     endpoint = ServerEndpoint.from_server_row(server)
     conn = None
+    schema_probe: dict[str, Any] = {"status": "not_requested"}
     try:
         conn = await connect(endpoint)
+        op_name = _torch_npu_op_name(operator_name)
+        if expected_tensor_order and op_name:
+            probe_script = (
+                "import json,torch,torch_npu;"
+                f"s=getattr(torch.ops.npu,{op_name!r}).default._schema;"
+                "print("
+                f"{_RUNTIME_SCHEMA_MARKER!r}"
+                "+json.dumps([a.name for a in s.arguments "
+                "if 'Tensor' in str(a.type)]))"
+            )
+            probe_parts = []
+            if env_init:
+                probe_parts.append(
+                    f"source {shlex.quote(env_init)}"
+                    if " " not in env_init else env_init
+                )
+            probe_parts.append(
+                f"PYTHONPATH={shlex.quote(repo_path)}:${{PYTHONPATH:-}} "
+                f"{shlex.quote(python)} -c {shlex.quote(probe_script)}"
+            )
+            probe_result = await run(
+                conn, " && ".join(probe_parts), timeout=min(timeout, 60),
+            )
+            runtime_tensor_order = _parse_runtime_tensor_order(
+                probe_result.stdout
+            )
+            if runtime_tensor_order is None:
+                schema_probe = {
+                    "status": "unavailable",
+                    "exit_code": probe_result.exit_code,
+                    "stderr": probe_result.stderr[-2000:],
+                }
+            else:
+                mismatch = _tensor_order_mismatch(
+                    expected_tensor_order, runtime_tensor_order,
+                )
+                schema_probe = {
+                    "status": "mismatch" if mismatch else "matched",
+                    "expected_tensor_order": expected_tensor_order,
+                    "runtime_tensor_order": runtime_tensor_order,
+                }
+                if mismatch:
+                    schema_probe["difference"] = mismatch
+                    return {
+                        "status": "error",
+                        "mode": "ttk_e2e",
+                        "test_framework": "ttk",
+                        "passed": 0,
+                        "failed": 0,
+                        "total": 0,
+                        "records": [],
+                        "engine_error": (
+                            "TTK_SIGNATURE_MISMATCH: generated CSV tensor "
+                            "order differs from target torch.ops schema"
+                        ),
+                        "runtime_schema_probe": schema_probe,
+                        "duration": time.monotonic() - started,
+                        "remote_output_dir": remote_dir,
+                        "local_artifact_dir": str(artifact_dir),
+                    }
         mkdir = await run(conn, f"mkdir -p {shlex.quote(remote_dir)}")
         if mkdir.exit_code != 0:
             raise SSHEngineError(f"创建远程 TTK 目录失败: {mkdir.stderr}")
@@ -215,6 +340,7 @@ async def _run_remote(
             "ttk_command": command,
             "golden_plugin": str(plugin_path) if plugin_path else None,
             "runtime_plugin": str(runtime_plugin_path) if runtime_plugin_path else None,
+            "runtime_schema_probe": schema_probe,
         }
     except SSHEngineError as exc:
         return {
@@ -222,6 +348,7 @@ async def _run_remote(
             "passed": 0, "failed": 0, "total": 0, "records": [],
             "engine_error": str(exc), "duration": time.monotonic() - started,
             "remote_output_dir": remote_dir, "local_artifact_dir": str(artifact_dir),
+            "runtime_schema_probe": schema_probe,
         }
     finally:
         if conn is not None:

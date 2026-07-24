@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import csv
 import io
 import json
@@ -711,7 +712,6 @@ def validate_execution(value) -> list[str]:
         errors.append("passed + failed must equal total")
     if not isinstance(value.get("records", []), list):
         errors.append("records must be an array")
-
     # fusion 策略扩展：从产物顶层取 execution_strategy（不读 run_state，产物自包含）。
     # fusion 时 fusion_phases 必填且路径门禁 dir_check_passed 全真；
     # comparison_result 仅记录性，不做必填或阈值校验（精度不入成败）。
@@ -731,6 +731,25 @@ def validate_execution(value) -> list[str]:
                             f"fusion: phase {phase_name} dir_check_passed 必须为 true "
                             f"(rank_0/rank_1 输出非空门禁)"
                         )
+    fingerprints = value.get("input_artifacts")
+    if isinstance(fingerprints, dict):
+        for name, metadata in fingerprints.items():
+            if not isinstance(metadata, dict):
+                errors.append(f"input_artifacts.{name} must be an object")
+                continue
+            path = Path(str(metadata.get("path", "")))
+            expected = str(metadata.get("sha256", ""))
+            if not path.is_file():
+                errors.append(
+                    f"input_artifacts.{name} no longer exists: {path}"
+                )
+                continue
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            if not expected or actual != expected:
+                errors.append(
+                    f"input_artifacts.{name} changed after EXECUTE; "
+                    "return to GENERATE/EXECUTE before accepting this result"
+                )
     return errors
 
 

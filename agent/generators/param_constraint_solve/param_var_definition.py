@@ -18,6 +18,17 @@ from agent.generators.data_definition.constants import DataMatchMap, ParamModelC
 
 logger = LazyLogger()
 
+# 全局计数器，确保 Z3 RecFunction 名称跨平台唯一，
+# 避免 multiple platforms 在同一进程中因 RecFunction 名称冲突导致
+# "recursive function __prod_shape_* already defined"
+_prod_fn_counter = 0
+
+
+def _next_prod_fn_id():
+    global _prod_fn_counter
+    _prod_fn_counter += 1
+    return _prod_fn_counter
+
 
 # 辅助解析函数
 def _parse_int_value(v):
@@ -683,7 +694,7 @@ class TensorVar(BaseVar):
         )
 
         # 约束 tensor 元素总数上限：shape 各维度乘积 < TENSOR_TENSOR_ELEMENT_LIMIT
-        prod_func_name = f"__prod_shape_{self.name}"
+        prod_func_name = f"__prod_shape_{self.name}_{_next_prod_fn_id()}"
         SeqIntSort = z3.SeqSort(z3.IntSort())
         ProdShape = z3.RecFunction(prod_func_name, SeqIntSort, z3.IntSort())
         s_var = z3.Const(f"{prod_func_name}_arg", SeqIntSort)
@@ -828,7 +839,7 @@ class TensorListVar(BaseVar):
                                  self.elem_shape[idx] > 0))
         )
 
-        prod_func_name = f"__prod_shape_{self.name}"
+        prod_func_name = f"__prod_shape_{self.name}_{_next_prod_fn_id()}"
         SeqIntSort = z3.SeqSort(z3.IntSort())
         ProdShape = z3.RecFunction(prod_func_name, SeqIntSort, z3.IntSort())
         s_var = z3.Const(f"{prod_func_name}_arg", SeqIntSort)

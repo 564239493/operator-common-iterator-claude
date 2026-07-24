@@ -1,1 +1,22 @@
-{"operator":"torch_npu.npu_quant_lightning_indexer","status":"pending","plugin":null,"verified_modes":{},"unsupported":["all modes until real Golden verification"]}
+{
+  "operator": "torch_npu.npu_quant_lightning_indexer",
+  "status": "pending",
+  "plugin": "npu_quant_lightning_indexer_golden.py",
+  "verified_modes": {},
+  "unsupported": [
+    "query_quant_mode != 0 (only per-token-head supported)",
+    "key_quant_mode != 0 (only per-token-head supported)",
+    "layout_query not in {BSND, TND}",
+    "layout_key not in {BSND, TND, PA_BSND}",
+    "sparse_mode not in {0, 3}"
+  ],
+  "pending_reason": "Golden plugin derived 2026-07-24 from documented per-token-head quantized indexer formula and from upstream Ascend CPU reference at operators-src/op-plugin/test/test_custom_ops/test_npu_quant_lightning_indexer.py:_quant_lightning_indexer. Formula: score[j] = sum_g W[g] * ReLU(query_dequant_scale[g] * key_dequant_scale[j] * (Q[g,:] @ K[j,:])). Returns int32 indices only (kernel contract). Layout conversion reuses _tnd_to_bsnd / _page_to_bsnd / _page_scale_to_bsnd helpers. Plugin copied to iter_001/ttk_golden_quant_lightning_indexer.py. Real NPU precision verification blocked by SSH credential rotation on 218.106.157.54 (engine_error=PermissionDenied). On next credential refresh, re-run: python scripts/execute_cases.py --cases iter_001/cases_ttk.csv --output iter_001/execution_result.json --test-framework ttk --mode real --run-id torch_npu-npu_quant_lightning_indexer-20260724-032449-829515",
+  "limitations": [
+    "ReLU(scope*QK) per doc formula — does NOT match the upstream test's order ReLU(QK) then /1024.0 pre-scale; /1024.0 was a test-only overflow guard",
+    "Per-token-head dequantization only (query_quant_mode=0, key_quant_mode=0); per-token (mode=1) raises NotImplementedError",
+    "Quantization dtypes int8/float8_e4m3fn/hifloat8 are computed in fp32 — kernel internal accumulator path may differ for fp8/hifloat8 due to mantissa width; precision verification pending real NPU",
+    "Output returns only int32 indices (kernel contract); sparse_values not exposed",
+    "Padding: 0-index for unfilled slots (matches kernel observation; matches sibling npu_lightning_indexer_golden.py)"
+  ],
+  "ttk_content_generation_mode": "range_only"
+}

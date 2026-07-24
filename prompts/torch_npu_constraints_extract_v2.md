@@ -14,6 +14,7 @@
 | Z3 兼容 | 提示规则 3.5：始终保留合法完整表达式，禁止 `# TODO:` 跳过约束 | 防止 shape/layout/presence 硬约束在生成和审计阶段同时失效 |
 | Audit 兼容 | 提示规则 3.6：外部约束保持 `is None` 风格，内部适配由执行层负责 | 避免约束文件耦合 `ConstraintValue`/Z3 实现 |
 | Bool 比较 | 提示规则 3.1.1：bool 参数与 `True`/`False` 必须用 `==`/`!=`，禁止 `is`/`is not` | 防止 bool 值关系被误写成 Python 对象身份判断 |
+| 离散标量 | 提示规则 3.1.3：“A或B/仅支持A、B/模式A、B”必须提取为标量 `enum` | 防止把有限模式编号误判成连续 `range` |
 
 ---
 
@@ -45,6 +46,21 @@ python scripts/validate_artifacts.py hs_constraints <iter-dir>/constraints.json
 > 依据或显式标 `[NO_EVIDENCE]`；不得靠 LLM 推断。
 
 ### 3.1 基础属性与离散 enum（沿用 v1）
+
+#### 3.1.0 参数 type 必须使用 ValueWithSrcText 对象（v2 强制）
+
+文档中的 Python 类型必须先按 v1 §6.1 映射为内部类型，例如
+`Tensor -> aclTensor`、`List[Tensor] -> aclTensorList`、
+`List[int] -> aclIntArray`。`type` 字段必须写成带来源的对象：
+
+```json
+"type": {"value": "aclTensor", "src_text": "Tensor", "type": null}
+```
+
+禁止把真实类型写成裸字符串，例如 `"type": "aclTensor"`。当前数据模型允许
+`type` 为字符串仅用于兼容 `"N/A"` 等历史占位；生成器不能依赖裸字符串承载真实
+参数类型。输出后必须运行 `normalize_constraints.py`，将历史裸字符串规范化为上述
+对象结构。
 
 #### 3.1.1 Bool 参数和值的比较语法（v2 强制）
 
@@ -96,6 +112,73 @@ optional presence 由参数可选属性及 `param is None` / `param is not None`
 固定长度列表的元素用 `container[0]`、`container[1]` 访问；不得将整个
 `container.range_value`（Z3 序列）直接与单个整数或 Tensor shape 轴比较。
 同一条非平台特有的文档约束必须复制到所有产品平台结果，不能只修补第一个平台。
+
+#### 3.1.3 有限标量候选必须使用 enum（v2 强制）
+
+先判断原文描述的是“有限候选集合”还是“连续数值区间”，不能因为候选恰好是连续整数，
+就把有限候选集合改写成 `range`。
+
+以下措辞均表示有限离散候选，必须写成 `type="enum"`：
+
+- “传入 A 或 B”；
+- “仅支持 A、B、C”；
+- “取值为 A/B/C”；
+- “一共 N 种模式：A、B、C……”；
+- 分别说明“传入 A 时……”和“传入 B 时……”，且没有声明 A 到 B 之间的连续区间。
+
+标量 enum 的每个候选直接作为 `value` 的一个元素，不得额外包一层数组。例如
+`antiquant_mode` 原文“传入0或1”必须提取为：
+
+```json
+"allowed_range_value": {
+  "value": [0, 1],
+  "src_text": "传入0或1",
+  "type": "enum"
+}
+```
+
+禁止写成：
+
+```json
+{"value": [[0, 1]], "src_text": "传入0或1", "type": "range"}
+```
+
+也禁止写成 `type="enum", value=[[0,1]]`。后者在当前数据结构中表示一个数组候选，
+不是标量候选 `0` 和 `1`。
+
+只有原文明确使用“范围/区间/大于/小于/不超过”等连续边界语义时，才按 `range`
+或精确不等式处理。例如“取值范围为0到512”是区间；“仅支持0、128、256、512”
+则仍是 enum。若合法集合还随 `Q_S`、layout、dtype 等条件变化，应先将所有文档明确
+支持的候选写入 enum，再在 `constraints_in_parameters` 中写条件化的子集关系。
+
+#### 3.1.4 约束表达式只能使用运行期 DSL 属性（v2 强制）
+
+参数卡中的 `dimensions.value` 是 constraints JSON 的静态 rank 候选字段，不是约束
+表达式中可访问的运行期属性。`constraints_in_parameters[*].expr` 中：
+
+- rank 必须写成 `len(query.shape) == 3`，禁止写
+  `query.dimensions.value == 3`；
+- 最后一轴必须写成 `query.shape[-1]`，禁止写
+  `query.shape[query.shape.__len__() - 1]`；
+- optional 参数访问 shape/dtype/value 前必须保留 `is None` 短路守卫；
+- 不得通过调用 `.__len__()`、`.value` 或其他实现细节绕过 DSL。
+
+产出前必须同时用正例和反例检查 implication。尤其 Page Attention 未开启时的 rank
+相等关系，若“有效 PA”定义为 `block_table is not None and block_size != 0`，正确形式为：
+
+```python
+((block_table is not None) and (block_size.range_value != 0)) or \
+(len(query.shape) == len(value.shape))
+```
+
+禁止写成：
+
+```python
+(block_table is None) or (block_size.range_value == 0) or \
+(len(query.shape) == len(value.shape))
+```
+
+后者在非 PA 场景会直接为 True，恰好把约束方向写反。
 
 ### 3.2 Dtype 三元组一致性（v2 新增）
 
@@ -236,6 +319,7 @@ Python 短路语义，避免 absent 时继续访问 `.shape`、`.dtype` 或 `.ra
 6. EXECUTE 0/10 失败应减少 70%+（剩余的 Z3 solver hint 与下游 scenario planner 优化）
 7. 所有 bool 参数值关系使用 `== True/False` 或 `!= True/False`，不存在
    `is True/False`、`is not True/False` 或隐式 `not bool_param`
+8. “传入A或B/仅支持A、B/模式A、B”生成标量 `enum`，不会被误提取成连续 `range`
 
 ## 附：v2 不解决的问题
 

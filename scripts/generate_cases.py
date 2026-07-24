@@ -21,6 +21,7 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -33,6 +34,24 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 logger = logging.getLogger("generate_cases")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Replace a generated artifact only after its complete content is ready."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    _atomic_write_text(
+        path, json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _setup_iter_log(iter_dir: Path) -> Path | None:
@@ -475,6 +494,15 @@ def main() -> int:
 
     generator = TestCaseGenerator(constraints, seed=args.seed)
     output_dir = output_path.parent
+    generation_status_path = output_dir / "generation_status.json"
+    if args.test_framework == "ttk":
+        _atomic_write_json(generation_status_path, {
+            "state": "in_progress",
+            "message": (
+                "TTK generation has not completed; EXECUTE must not reuse "
+                "canonical JSON or CSV artifacts from an earlier attempt."
+            ),
+        })
     scenario_generation: dict[str, Any] = {}
     if args.test_framework == "ttk":
         from agent.hs import is_hs_operator
@@ -519,6 +547,7 @@ def main() -> int:
         canonical_cases = output_dir / "cases.json"
         materialization_report = None
         selected_materialized_source: Path | None = None
+        per_platform_execution_paths = dict(per_platform_paths)
         if operator_name == "aclnnScatterPaKvCache":
             from scripts.atk_to_ttk_aclnn import (
                 materialize_scatter_pa_kv_cache_cases,
@@ -548,6 +577,7 @@ def main() -> int:
                 }
                 if platform == selected_platform:
                     selected_materialized_source = materialized_path
+                per_platform_execution_paths[platform] = materialized_path
             materialization_report = {
                 "operator": operator_name,
                 "reason": (
@@ -589,6 +619,7 @@ def main() -> int:
                 }
                 if platform == selected_platform:
                     selected_materialized_source = materialized_path
+                per_platform_execution_paths[platform] = materialized_path
             materialization_report = {
                 "operator": operator_name,
                 "reason": (
@@ -628,12 +659,59 @@ def main() -> int:
                 json.dumps(materialization_report, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+        if operator_name == "torch_npu.npu_quant_lightning_indexer":
+            from scripts.atc_to_ttk import (
+                materialize_quant_lightning_indexer_ttk_cases,
+            )
+
+            per_platform_materialization: dict[str, Any] = {}
+            for platform, platform_path in per_platform_paths.items():
+                platform_cases = json.loads(
+                    platform_path.read_text(encoding="utf-8")
+                )
+                materialized_cases, report = (
+                    materialize_quant_lightning_indexer_ttk_cases(
+                        platform_cases
+                    )
+                )
+                materialized_path = platform_path.with_name(
+                    f"{platform_path.stem}_ttk_materialized.json"
+                )
+                materialized_path.write_text(
+                    json.dumps(
+                        materialized_cases, ensure_ascii=False, indent=2
+                    ),
+                    encoding="utf-8",
+                )
+                per_platform_materialization[platform] = {
+                    **report,
+                    "source_file": str(platform_path),
+                    "materialized_file": str(materialized_path),
+                }
+                if platform == selected_platform:
+                    selected_materialized_source = materialized_path
+                per_platform_execution_paths[platform] = materialized_path
+            materialization_report = {
+                "operator": operator_name,
+                "reason": (
+                    "range-only TTK cannot represent multi-batch prefix sums "
+                    "or unconstrained PageAttention indices safely; retain raw "
+                    "generator output and execute a documented smoke projection"
+                ),
+                "per_platform": per_platform_materialization,
+            }
+            (output_dir / "ttk_materialization_report.json").write_text(
+                json.dumps(
+                    materialization_report, ensure_ascii=False, indent=2
+                ),
+                encoding="utf-8",
+            )
         selected_source = (
             selected_materialized_source
-            or per_platform_paths[selected_platform]
+            or per_platform_execution_paths[selected_platform]
         )
-        canonical_cases.write_text(
-            selected_source.read_text(encoding="utf-8"), encoding="utf-8"
+        _atomic_write_text(
+            canonical_cases, selected_source.read_text(encoding="utf-8"),
         )
 
         if operator_name.startswith("aclnn"):
@@ -645,10 +723,11 @@ def main() -> int:
                 if output_path.suffix.lower() == ".csv"
                 else output_path.with_suffix(".csv")
             )
+            ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
             conversion = convert_file(
-                canonical_cases, ttk_output, constraints=constraints
+                canonical_cases, ttk_temporary, constraints=constraints
             )
-            csv_validation = validate_csv(ttk_output)
+            csv_validation = validate_csv(ttk_temporary)
             conversion_failures = [
                 entry for entry in conversion["audit"] if entry["issues"]
             ]
@@ -664,6 +743,8 @@ def main() -> int:
                     ),
                 )
             conversion = {**conversion, "csv_validation": csv_validation}
+            ttk_temporary.replace(ttk_output)
+            conversion["destination"] = str(ttk_output)
             summary = {
                 "operator_name": operator_name,
                 "test_framework": "ttk",
@@ -675,6 +756,11 @@ def main() -> int:
                 "per_platform_files": {
                     key: str(value) for key, value in per_platform_paths.items()
                 },
+                "per_platform_execution_files": {
+                    key: str(value)
+                    for key, value in per_platform_execution_paths.items()
+                },
+                "selected_execution_file": str(selected_source),
                 "requested_per_platform": args.count,
                 "total": conversion["case_count"],
                 "semantically_clean_count": conversion["semantically_clean_count"],
@@ -689,12 +775,23 @@ def main() -> int:
                     f"python3 -m ttk aclnn -i {ttk_output.name} --plat=<plat>"
                 ),
             }
-            (output_dir / "generation_summary.json").write_text(
-                json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+            summary["artifact_hashes"] = {
+                "selected_execution_file": _sha256(selected_source),
+                "cases_json": _sha256(canonical_cases),
+                "cases_csv": _sha256(ttk_output),
+            }
+            _atomic_write_json(output_dir / "generation_summary.json", summary)
+            _atomic_write_json(
+                output_dir / "ttk_conversion_audit.json", conversion,
             )
-            (output_dir / "ttk_conversion_audit.json").write_text(
-                json.dumps(conversion, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            _atomic_write_json(generation_status_path, {
+                "state": "complete",
+                "selected_platform": selected_platform,
+                "selected_execution_file": str(selected_source),
+                "cases_json": str(canonical_cases),
+                "cases_csv": str(ttk_output),
+                "artifact_hashes": summary["artifact_hashes"],
+            })
             print(json.dumps(summary, ensure_ascii=False))
             return 0
 
@@ -750,7 +847,10 @@ def main() -> int:
             )
         ttk_output = output_path if output_path.suffix.lower() == ".csv" else output_path.with_suffix(".csv")
         tensor_order = _ordered_input_tensor_names(constraints)
-        conversion = convert_file(canonical_cases, ttk_output, selected_platform, tensor_order)
+        ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
+        conversion = convert_file(
+            canonical_cases, ttk_temporary, selected_platform, tensor_order,
+        )
         conversion_failures = [
             entry for entry in conversion["audit"] if entry["issues"]
         ]
@@ -764,6 +864,8 @@ def main() -> int:
                     }, ensure_ascii=False,
                 ),
             )
+        ttk_temporary.replace(ttk_output)
+        conversion["destination"] = str(ttk_output)
         summary = {
             "operator_name": operator_name,
             "test_framework": "ttk",
@@ -772,6 +874,11 @@ def main() -> int:
             "platform_selection_reason": platform_selection_reason,
             "platforms": per_platform_counts,
             "per_platform_files": {k: str(v) for k, v in per_platform_paths.items()},
+            "per_platform_execution_files": {
+                key: str(value)
+                for key, value in per_platform_execution_paths.items()
+            },
+            "selected_execution_file": str(selected_source),
             "requested_per_platform": args.count,
             "total": conversion["case_count"],
             "semantically_clean_count": conversion["semantically_clean_count"],
@@ -796,12 +903,23 @@ def main() -> int:
                 if materialization_report is not None else None
             ),
         }
-        (ttk_output.parent / "generation_summary.json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        summary["artifact_hashes"] = {
+            "selected_execution_file": _sha256(selected_source),
+            "cases_json": _sha256(canonical_cases),
+            "cases_csv": _sha256(ttk_output),
+        }
+        _atomic_write_json(ttk_output.parent / "generation_summary.json", summary)
+        _atomic_write_json(
+            ttk_output.parent / "ttk_conversion_audit.json", conversion,
         )
-        (ttk_output.parent / "ttk_conversion_audit.json").write_text(
-            json.dumps(conversion, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _atomic_write_json(generation_status_path, {
+            "state": "complete",
+            "selected_platform": selected_platform,
+            "selected_execution_file": str(selected_source),
+            "cases_json": str(canonical_cases),
+            "cases_csv": str(ttk_output),
+            "artifact_hashes": summary["artifact_hashes"],
+        })
         print(json.dumps(summary, ensure_ascii=False))
         return 0
 
