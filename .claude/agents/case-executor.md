@@ -73,7 +73,33 @@ HS/E2E 默认加载可用的自主推导或源码 Golden，但精度失败不得
 `remote_root/repo_path/python/env_init_script`，创建算子名_时间点目录，上传 CSV/plugin，
 HS 执行 E2E 并下载到 `ttk_artifacts/`；ACLNN 执行原生 ACLNN 模式并下载到
 `ttk_aclnn_artifacts/`。两者均不得调用 ATK golden 推导或上传 `/home/operator_atk`。
+## fusion 模式（通算融合算子，`run_state.execution_strategy=="fusion"`）
 
+先读 `runs/<run-id>/run_state.json` 取 `execution_strategy` 确认为 `fusion`（非 fusion
+走上面的 real 三子步骤）。fusion 走 4 步执行流程，**跳过 CPU golden 推导**：
+
+1. **generate**（与 default 相同）
+   `python scripts/execute_cases.py --generate --cases <iter>/<cases>.json \
+     --output <iter>/generate_result.json --doc <inputs>/<doc>.md --operator <op> \
+     --server-config servers.json --run-id <run-id>`
+   fusion 走 `_SPECIAL_TEMPLATES` 专属 `.tpl`（已是真实实现，无 dummy 标记），故
+   `<iter>/cases_executor.py` 无 `# TODO: CPU_GOLDEN` 块。
+
+2. **跳过 CPU golden 推导**：fusion `.tpl` 已是真实实现，`atc-cpu-golden-derivation`
+   skill 天然无操作（找不到标记即跳过）。不自检 dummy 标记。
+
+3. **real-run（4 步流程）**：
+   `python scripts/execute_cases.py --mode real --strategy fusion --num <case_count> \
+     --cases <iter>/<cases>.json --output <iter>/execution_result.json \
+     --doc <inputs>/<doc>.md --operator <op> \
+     --server-config servers.json --run-id <run-id>`
+   runner 内部按 4 步执行：① CPU 标杆(dist/gloo) ② NPU 级联标杆(dist/hccl/is_bm)
+   ③ dist_cpu→cpu_benchmark 改名 ④ 精度对比(accuracy_load)。每步远程命令完整落
+   `execution.log`。路径门禁（rank_0/rank_1 非空）失败写 `engine_error` 终止。
+   精度对比结果记入 `comparison_result`，**不入成败**；passed/failed 只反映执行成败。
+
+4. 执行后 `python scripts/validate_artifacts.py execution <iter>/execution_result.json`
+   （fusion 时校验 `fusion_phases` + `dir_check_passed` 全真，`comparison_result` 可选）。
 ## 通用纪律
 
 执行前只检查 cases 可读且至少包含一条可执行用例；执行后记录 execution_result。

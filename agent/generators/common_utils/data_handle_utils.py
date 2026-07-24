@@ -181,7 +181,7 @@ class DataHandleUtil:
             if target_platform not in param_attribute and GlobalConfig.COMMON_PLATFORM not in param_attribute:
                 logger.error(
                     f"Platform '{target_platform}' not in param : {param_name} attribute and {GlobalConfig.COMMON_PLATFORM} not in param")
-                return None
+                continue
             effective_param_data = param_attribute.get(target_platform, None)
             effective_param_data = effective_param_data if effective_param_data is not None else param_attribute.get(
                 GlobalConfig.COMMON_PLATFORM, None)

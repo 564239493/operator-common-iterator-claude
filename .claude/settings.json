@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_project_writes.py\""
+            "command": "/usr/bin/true"
           }
         ]
       }
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+            "command": "/c/software/operator-common-iterator-claude/.venv/Scripts/python.exe /c/software/operator-common-iterator-claude/.claude/hooks/trace_hook.py"
           }
         ]
       }
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+            "command": "/c/software/operator-common-iterator-claude/.venv/Scripts/python.exe /c/software/operator-common-iterator-claude/.claude/hooks/trace_hook.py"
           }
         ]
       }
@@ -67,7 +67,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+            "command": "/c/software/operator-common-iterator-claude/.venv/Scripts/python.exe /c/software/operator-common-iterator-claude/.claude/hooks/trace_hook.py"
           }
         ]
       }

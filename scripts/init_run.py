@@ -453,6 +453,9 @@ def main() -> int:
         "operator_family": operator_family,
         "test_framework": test_framework,
         "run_scope": "constraints_only" if test_framework == "constraints" else "full",
+        "execution_strategy": None,  # EXTRACT 后 orchestrator 跑 classify_operator.py 回写: fusion | default
+        "operator_category": None,  # fusion_comm_compute | default | None
+        "operator_category_evidence": [],  # 分类证据 (规则编号 + 原文摘录)
         "current_iteration": 1,
         # Initialization freezes the plan synchronously; the first actionable
         # state is EXTRACT.  Persisting PLAN here caused Claude Code runs to
