@@ -83,8 +83,13 @@ class ParamModelConfig:
     DEFAULT_PARAM_DTYPE = "fp16"
     # 默认的参数数据类型，原始文档中的名称
     DEFAULT_PARAM_DTYPE_DTYPE_IN_ORIGINAL_DOC = "FLOAT16"
+    # 默认的参数数据类型集合，当文档中无法提取到数据类型的集合时，使用此变量
+    DEFAULT_PARAM_DTYPE_SET = ["FLOAT16", "FLOAT32", "FLOAT64", "BFLOAT16", "INT16", "INT8", "INT32", "INT64", "UINT8",
+                               "UINT16", "UINT32", "UINT64", "INT4"]
     # 默认的tensor维度值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM = 1
+    # 非tensor类的数据的range_value默认值
+    SHAPE_DIM_VALUES = [1, 2, 4, 8]
     # 默认的tensor维度值最小值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM_MIN = 1
     # 默认的tensor维度值最大值，只有在规则数据中未解析到dim相关的规则时才会使用
@@ -98,11 +103,16 @@ class ParamModelConfig:
                    "float8_e8m0", "float6_e3m2", "float8_e4m3fn", "float6_e2m3", "float4_e2m1", "float4_e1m2"]
     INT_DTYPE = ["int", "int16", "int8", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "int4"]
     BOOL_DTYPE = ["bool"]
+    STRING_DTYPE = ["string"]
 
     # 数值类参数以及bool类参数填充值模型全集
     FLOAT_TENSOR_DATA_PROFILE = ["Typical", "PosNormal", "NegNormal", "Zero", "One",
                                  "SubNormal"]
+    FLOAT_POS_TENSOR_DATA_PROFILE = ["Typical", "PosNormal", "One", "SubNormal"]
+    FLOAT_NEG_TENSOR_DATA_PROFILE = ["Typical", "NegNormal", "Zero"]
     INT_TENSOR_DATA_PROFILE = ["Pos", "Neg", "Zero", "One", "Max", "Min"]
+    INT_POS_DATA_PROFILE = ["Pos", "One", "Max"]
+    INT_NEG_DATA_PROFILE = ["Neg", "Zero", "Min"]
     BOOL_DATA_PROFILE = [True, False]
     # tensor类型参数数据type
     TENSOR_ATK_TYPE = ["tensor", "tensors"]
@@ -112,6 +122,7 @@ class ParamModelConfig:
     OPERATOR_NAME_RE_PATTERN = re.compile(
         r'^([a-zA-Z0-9]+)_(dim_count|dim_property|dtype|data_profile|memory|value|mode|param_type)$')
     # 严格应用人工规则修正的参数间约束类型
+    COMBINATION_USE_CONSTRAINT_TYPE = ["shape_equality", "type_equality", "format_equality"]
     # STRICT_CONSTRAINT_TYPE = ["shape_equality", "type_equality"]
     STRICT_CONSTRAINT_TYPE = []
     # 参数format可取值

@@ -14,15 +14,16 @@ import z3
 from pydantic import BaseModel
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
-from agent.generators.operator_param_models.case_generate import CaseGenerate
-from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
-from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ExpressionPreprocessor, ASTtoZ3Converter
-from agent.generators.common_model_definition import InterParamConstraint, InterConstraintsRuleType, OperatorRule
+from agent.generators.common_model_definition import InterParamConstraint, OperatorRule
 from agent.generators.common_utils.common_dispatcher import CommonDispatcher
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import ParamModelConfig, DataMatchMap
 from agent.generators.data_definition.param_models_def import ParameterPropertyData, ParamRangeValueType
+from agent.generators.operator_param_models.case_generate import CaseGenerate
+from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
+from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
+from common_utils.expression_analysis import ExpressionPreprocessor
 
 logger = LazyLogger()
 
@@ -641,7 +642,7 @@ class ParamConstraintUtils(CommonDispatcher):
         for param_name in self.case_input_map:
             # 必选参数不许检查，直接视为需要存在
             param_combination_data = self.param_combinations.get(param_name)
-            if param_combination_data is not None and not param_combination_data.is_optional:
+            if param_combination_data is not None and not param_combination_data.is_present:
                 continue
             # 1. allowed_range_value 只能取 None（如 [null]）
             param_ori_data = (
