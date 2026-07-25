@@ -1,5 +1,5 @@
-# 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达)
-# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters / joint cross dtype/format combo table expressed as OR-of-ANDs disjunction)
+# 算子约束提取通用提示词 · v4 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达)
+# Operator Constraints Extraction Universal Prompt · v4 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters / joint cross dtype/format combo table expressed as OR-of-ANDs disjunction)
 
 > **用途**：从昇腾 CANN（Compute Architecture for Neural Networks）算子官方说明文档（Markdown / HTML）中，**人工 + LLM 协同** 提取结构化的算子约束信息，并以**纯 JSON** 形式输出，可直接喂给下游的测试用例生成引擎。
 >
@@ -29,7 +29,7 @@
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 30 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表） |
+| 9 | 自检清单 | 提取完成后必须执行 31 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、支持场景表→维数联动） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 | 知识库路径速查表 | 本提示词与 `knowledge/` 的对应关系（维护参考） |
 | （外部）`CHANGELOG.md` | v1→v3 变更记录 | 不参与提取，维护参考 |
@@ -519,6 +519,12 @@ bool 参数（`is_xxx`/`xxxFlag` / `transposeX*` 等）**必须**产出 `allowed
 与 `transposeX2=False` 的 `x2.shape=(H*rankSize, N)` 当成独立候选，结果 5 个
 transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
 
+**维数特例（rank-only 门控）**：当门控目标不是具体 shape 元组而是**维数/rank**
+（如「weight 为 2D / 3D」「dimNum=2」「separated → 2D」「单单单 → 3D」），属本节
+特例，按 §4.6.3 H「条件维数 / dimNum 门控（支持场景表）」处理——只门控
+`len(目标.shape)`，不门控具体轴；`dimensions` 留全集，门控单独落库，**禁止**把
+`dimensions=[2,3]` 当无条件并集留下而不配跨参数门控 expr。
+
 **识别信号词**（任一出现即触发本节规则）：
 
 | 信号词 | 示例 |
@@ -590,6 +596,66 @@ transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
    最后一根输出轴决定，与 `mat2_transposed` 直接相关。
 6. **同一 expr 不得交叉门控**：单一 expr 只对一个隐式 bool 门控；如果同时涉及
    `self_transposed` 与 `mat2_transposed`，拆为两条独立 expr（每条对应一个 bool）。
+
+##### H. 条件维数 / dimNum 门控（支持场景表，v4 增补，通用规则）
+
+> 本节来自 aclnnGroupedMatmulV5 闭环：文档有「groupType 支持场景表」
+> （line 726 groupType -1 splitItem 0/1 → weight 2D；line 727 groupType 0 单单单
+> splitItem 2/3 → weight 3D；line 730 groupType 2 单单单 → weight 2D / out 3D；
+> line 731 groupType 2 单多多 → weight 2D），提取器只把表里 `len()`/value 级约束
+> 提升，**未**把「离散参数组合 → weight 维数」逐行提升为跨参数约束，weight 只留
+> `dimensions=[2,3]` 无条件并集，下游生成器自由产出 `splitItem=1(separated)+weight 3D`
+> 非法组合，ACL `161002` 拒绝（见
+> `runs/aclnnGroupedMatmulV5-20260722-130202-435112/`）。本节是 §4.6.3 G「条件 Shape」
+> 的维数特例：**只门控 rank，不门控具体轴**。
+
+**识别信号**（任一出现即触发本节，**不**依赖算子名）：
+
+- 文档含「支持场景表 / 场景矩阵 / groupType 支持场景 / splitItem 支持场景」类
+  表格，且单元格写 weight/out 的维数；
+- 短语「separated → 2D」「单单单 → 3D」「单多多 → 2D」「dimNum=2」「二维 / 三维」
+  「X 为 2D / 3D」配合 `groupType`/`splitItem`/单-多 tensor 取值出现；
+- 某张量 `dimensions.value` 含 ≥2 个 rank（如 `[2,3]`）且文档同时按离散参数
+  区分该张量用哪个 rank。
+
+**门控参数形态**：同 §4.6.3 G——函数签名里 enum/int 标量
+（`groupType.range_value`、`splitItem.range_value`），`is_operator_param.value=true`。
+
+**必须产出**：场景表**每一合法行**一格 `cross_param_constraint`，析取形式
+`not(门控条件) or (len(目标.shape) == N)`，门控条件合取该行全部离散键值与 tensor 数；
+`relation_params` 同时含门控参数与目标张量（含 tensor 数时一并含相关 TensorList）。
+rank 一律写 `len(param.shape)`，**禁止**写 `param.dimNum`（项目约束语言无此字段，
+见 §4.6.3「维数 vs 长度」与 §9 模式 4）。
+
+```text
+# R1 separated → weight 2D（不含 len()，生成器 length=null 未修时也能挡）
+expr_type: cross_param_constraint
+expr: not(splitItem.range_value == 0 or splitItem.range_value == 1) or (len(weight.shape) == 2)
+relation_params: ["splitItem", "weight"]
+src_text: "weight separated（splitItem=0/1）时 weight 各 tensor 仅支持 2D；groupType 支持场景表 line 726"
+
+# R2 groupType 0 单单单 → weight 3D（含 len(weight)，须生成器先写具体 length）
+expr_type: cross_param_constraint
+expr: not(groupType.range_value == 0 and len(x) == 1 and len(weight) == 1) or (len(weight.shape) == 3)
+relation_params: ["groupType", "x", "weight"]
+src_text: "groupType=0 单单单 splitItem=2/3 时 weight 为 3D；line 727"
+```
+
+**规则要点**：
+
+1. **`dimensions` 留全集、门控单独落库**：`weight.dimensions.value=[2,3]` 作为
+   「该 tensor rank 宇宙」可保留，但 `constraints_in_parameters` **必须**同时有
+   跨参数门控 expr 把 rank 收窄到当前场景；只留并集、无门控 = 漏抽。
+2. **析取必须覆盖场景表全部合法行**：漏一行该组合下 rank 无约束，生成器随机赋值；
+   多 rank 映射（某场景同时允许 2D/3D）在该行用 `or` 表达。
+3. **含 `len(weight)`/`len(x)` 的行依赖 TensorList 具体长度**：若生成器
+   `length=null` 未修，这些行不可求值；不含 tensor 数的行（如 R1）应优先落库，
+   可立即阻断非法组合。
+4. **`expr_type` 选 `cross_param_constraint`**（与 §9.30 dtype×format 交叉表一致）；
+   `derived_value` 不适用（非派生值，是 rank 门控）。
+5. **反例（禁止）**：`weight.dimensions.value=[2,3]` 且 `constraints_in_parameters`
+   无 `len(weight.shape)` 门控 expr → 漏抽；`weight.dimNum == 2` → 字段不存在；
+   把 R1/R2 拆成两条互不引用门控参数的无条件 `shape_equality` → 丢失门控。
 
 #### 4.6.4 隐式参数（命名维度变量 / 外部常量）识别
 
@@ -1172,7 +1238,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 30 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 31 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1383,6 +1449,24 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
        表达即可，不强求 OR-of-ANDs；三平台均不得出现 `additionalDtype="2"`/`dstFormat="29"`
        这类数值枚举码混入 dtype/format 字段。
 
+31. **支持场景表 → 维数联动自检（v4 增补）**：当文档含「支持场景表 / 场景矩阵 /
+    groupType 支持场景」类表格，且单元格按离散参数（`groupType` / `splitItem` /
+    单-多 tensor 等）区分某 tensor 的维数（2D / 3D / dimNum / 二维三维）时，
+    必须满足**全部**：
+    a. 对每个 `dimensions.value` 含 ≥2 个 rank 的 tensor，
+       `constraints_in_parameters[每个支持平台]` 中**必须**存在同时引用
+       `len(目标.shape)` 与门控 enum/int 参数 `.range_value` 的
+       `cross_param_constraint` expr，`relation_params` 同时含两者（含 tensor 数时
+       一并含相关 TensorList）；
+    b. 析取**必须覆盖场景表全部合法行**：遗漏一行会使该组合下 rank 无约束、
+       生成器随机赋值；多 rank 映射在该行用 `or` 表达；
+    c. 不得只留 `dimensions.value=[2,3]` 无条件并集而无门控 expr——视为漏抽，重写
+       （见 §4.6.3 H 要点 1）；
+    d. rank 一律 `len(param.shape)`，**禁止** `param.dimNum`（无此字段，违 §4.6.3
+       「维数 vs 长度」）；
+    e. `src_text` 必须摘场景表对应行原文（含 `groupType`/`splitItem` 取值与维数
+       结论），可溯源；逐平台落库。
+
 ## 10. 调用模板
 
 下面给出一份**可直接复制**的 prompt 调用片段：
@@ -1390,7 +1474,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ```text
 # System
 你是一名昇腾 CANN 算子约束抽取专家。
-请严格遵循《算子约束提取通用提示词 v3》的所有规则，并参考知识库：
+请严格遵循《算子约束提取通用提示词 v4》的所有规则，并参考知识库：
 - 解析 shape/dimensions 时参考 §4.6.3 dimensions 解析表
 - 识别隐式维度变量时参考 §4.6.4（概念词/操作名/类型词需剔除）
 - 处理 NZ / FRACTAL_NZ 张量时参考 §4.6.5（块尺寸硬约束、转置/非转置布局区分）
@@ -1431,10 +1515,10 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 
 ## 你的任务
 1. 完整阅读算子说明文档；
-2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 30 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
+2. 按《算子约束提取通用提示词 v4》第 3 章 schema 输出 JSON；
+3. 内部执行第 9 章 31 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
    §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0、§9.26 公共互推导/broadcast 知识展开、
-   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表）；
+   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.31 支持场景表→维数联动）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
