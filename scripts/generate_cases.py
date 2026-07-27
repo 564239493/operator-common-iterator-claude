@@ -371,7 +371,7 @@ def _log_ranksize_distribution(
         )
 
 
-def main() -> int:
+def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--constraints", required=True)
     parser.add_argument("--output", required=True)
@@ -394,13 +394,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--hs-scenario-mode",
-        choices=("planned", "original"),
-        default="planned",
+        choices=("original", "planned"),
+        default="original",
         help=(
-            "torch_npu + TTK 用例生成模式；planned 按 "
-            "TND/BSND/paged_attention 分场景固定并投影用例（默认），"
-            "original 直接使用 agent.generators 原生逻辑，不做场景"
-            "拆分、属性固定或 case 投影。对 ACLNN/ATK 无影响。"
+            "torch_npu + TTK 用例生成模式；original（默认）直接使用 "
+            "agent.generators 原生逻辑，不做场景拆分、属性固定或 case 投影；"
+            "planned 显式按 "
+            "TND/BSND/paged_attention 分场景固定并投影用例，"
+            "对 ACLNN/ATK 无影响。"
         ),
     )
     parser.add_argument(
@@ -968,6 +969,46 @@ def main() -> int:
 
     print(json.dumps(summary, ensure_ascii=False))
     return 0
+
+
+def _record_generation_failure(argv: list[str], exc: BaseException) -> None:
+    """Best-effort terminal status for a failed TTK generation attempt."""
+    status_parser = argparse.ArgumentParser(add_help=False)
+    status_parser.add_argument("--output")
+    status_parser.add_argument("--test-framework", default="atk")
+    try:
+        status_args, _ = status_parser.parse_known_args(argv)
+    except SystemExit:
+        return
+    if status_args.test_framework != "ttk" or not status_args.output:
+        return
+
+    status_path = Path(status_args.output).parent / "generation_status.json"
+    try:
+        if status_path.is_file():
+            current = json.loads(status_path.read_text(encoding="utf-8"))
+            if current.get("state") == "complete":
+                return
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    message = str(exc).strip() or type(exc).__name__
+    try:
+        _atomic_write_json(status_path, {
+            "state": "failed",
+            "error_type": type(exc).__name__,
+            "message": message,
+        })
+    except OSError:
+        logger.exception("failed to persist generation failure status: %s", status_path)
+
+
+def main() -> int:
+    try:
+        return _main()
+    except BaseException as exc:
+        _record_generation_failure(sys.argv[1:], exc)
+        raise
 
 
 if __name__ == "__main__":

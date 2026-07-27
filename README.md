@@ -53,6 +53,13 @@ ACLNN 默认使用 ATK；如需完整 TTK ACLNN 流程，显式指定：
 `cases_ttk.csv`，并通过远端 `python3 -m ttk aclnn` 执行；不需要 torch_npu E2E
 Golden plugin。
 
+torch_npu + TTK 默认直接使用原生生成器。只有需要启用 TND/BSND/
+paged-attention 场景拆分和投影时才显式指定：
+
+```text
+/iterate-operator operator_docs/hs/torch_npu-npu_sparse_flash_attention.md --test-framework ttk --hs-scenario-mode planned
+```
+
 未指定 `--prompt` 时，项目会自动选择
 当前文档 family 数值版本最大的提示词：ACLNN 使用
 `prompts/operator_constraints_extract_vN.md`，torch_npu 使用

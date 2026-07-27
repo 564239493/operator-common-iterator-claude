@@ -233,16 +233,32 @@ def _ordered_input_tensor_names(constraints: dict[str, Any]) -> list[str]:
     inputs = constraints.get("inputs") or {}
     if not isinstance(inputs, dict):
         return names
-    for name, per_platform in inputs.items():
-        if not isinstance(per_platform, dict):
+    for name, parameter in inputs.items():
+        if not isinstance(parameter, dict):
             continue
-        # per_platform maps platform -> field dict; any platform's type suffices.
-        first = next(iter(per_platform.values()), None)
-        if not isinstance(first, dict):
-            continue
-        type_field = first.get("type")
-        type_value = type_field.get("value") if isinstance(type_field, dict) else type_field
-        if type_value and "Tensor" in str(type_value):
+
+        # Current constraints use a flat ``inputs[name][field]`` structure.
+        # Older artifacts may instead use
+        # ``inputs[name][platform][field]``.  Inspect the parameter itself
+        # first, then every nested mapping, rather than assuming that the
+        # first value is a platform definition (it is commonly the
+        # ``description`` string in the flat format).
+        definitions = [parameter]
+        definitions.extend(
+            value for value in parameter.values() if isinstance(value, dict)
+        )
+        is_tensor = False
+        for definition in definitions:
+            type_field = definition.get("type")
+            type_value = (
+                type_field.get("value")
+                if isinstance(type_field, dict)
+                else type_field
+            )
+            if type_value and "tensor" in str(type_value).lower():
+                is_tensor = True
+                break
+        if is_tensor:
             names.append(name)
     operator_name = str(constraints.get("operator_name") or "").strip()
     runtime_order = _TTK_RUNTIME_TENSOR_ORDER_OVERRIDES.get(operator_name)

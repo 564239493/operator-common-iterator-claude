@@ -38,6 +38,7 @@ runs/<operator>-<timestamp>/
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
 `server_config`、`max_iterations`、`case_count`、`operator_family`、`test_framework`、
+`hs_scenario_mode`、
 `run_scope`、`current_iteration`、`state`、
 `history` 和时间戳。state 只能取
 WORKFLOW.md 定义的状态。
@@ -65,6 +66,11 @@ WORKFLOW.md 定义的状态。
 `run_scope` 为 `full` 或 `constraints_only`。后者由尚未适配 TTK 的 torch_npu API 在
 auto 模式下使用：约束 normalize/validate 通过后可进入 SUCCESS，但 history 必须包含
 `CONSTRAINTS_ONLY_SUCCESS`；不得生成 cases 或宣称执行/精度成功。
+
+`hs_scenario_mode` 为 `original` 或 `planned`，默认 `original`。它只影响
+torch_npu + TTK 的 GENERATE：`original` 使用原生生成器，`planned` 才启用
+TND/BSND/paged-attention 场景拆分和投影。case-generator 必须从 run_state
+透传该值。
 
 ## constraints.json
 

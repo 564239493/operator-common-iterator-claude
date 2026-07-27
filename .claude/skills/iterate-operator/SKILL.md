@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -16,11 +16,15 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    auto 仅对已有 TTK adapter 的六个重点算子选择 `ttk`；其余 torch_npu API 选择
    `constraints`，只运行约束提取/补充/校验，不误入必然失败的用例生成。
    max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
+   `hs-scenario-mode=original`；只有用户显式传入
+   `--hs-scenario-mode planned` 时，torch_npu + TTK 才启用 TND/BSND/
+   paged-attention 场景拆分和投影。该参数对 ACLNN/ATK 不生效。
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
 2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
-   `--supplement-constraints`、`--operator-family`、`--test-framework` 等参数，
+   `--supplement-constraints`、`--operator-family`、`--test-framework`、
+   `--hs-scenario-mode` 等参数，
    `--batch-dir` 是目录批次内部参数不传）。该命令把外部文档只读复制到 run 的 `inputs/` 目录，
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。若传入 `--src`，把算子
    源码关键文件浅快照到 `inputs/src_snapshot/`，写入 `run_state.operator_src_snapshot`
@@ -68,7 +72,9 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
      和可能的 SUPPLEMENT 完成后运行 constraints normalize/validate；通过则把
      `run_state.state` 更新为 `SUCCESS`，history 记录 `CONSTRAINTS_ONLY_SUCCESS`，并明确
      报告成功范围仅为约束提取。跳过 case-generator、executor、Golden 和执行质量门禁。
-   - `case-generator`
+   - `case-generator`：读取 `run_state.hs_scenario_mode`，调用
+     `generate_cases.py` 时原样透传 `--hs-scenario-mode`；旧 run 缺少该字段时使用
+     `original`，不得自行改成 `planned`。
    - `case-executor`：
      - **default**（`run_state.execution_strategy != "fusion"`）：real 模式内部完成
        generate→`atc-cpu-golden-derivation` 推导→real-run 三子步骤；推导须清除

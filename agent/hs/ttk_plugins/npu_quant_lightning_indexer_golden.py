@@ -541,9 +541,11 @@ def npu_quant_lightning_indexer_golden(
                     scores = scores.masked_fill(mask, NEG_INF)
 
             # ---- 5. Top-k, padding ----
+            # The kernel pads the unfilled slots with -1 (per ExtractIndex
+            # + InitSortOutBuf pattern), NOT 0. Match that here.
             k_num = min(SC, S_k)
             if k_num <= 0:
-                top_idx = torch.zeros(SC, dtype=torch.int32, device=device)
+                top_idx = torch.full((SC,), -1, dtype=torch.int32, device=device)
             else:
                 _, topk_idx = torch.topk(
                     scores, k_num, largest=True, sorted=True,
@@ -553,7 +555,7 @@ def npu_quant_lightning_indexer_golden(
                     pad_n = SC - k_num
                     top_idx = torch.cat([
                         topk_idx,
-                        torch.zeros(pad_n, dtype=torch.int32, device=device),
+                        torch.full((pad_n,), -1, dtype=torch.int32, device=device),
                     ])
                 else:
                     top_idx = topk_idx

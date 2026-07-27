@@ -47,20 +47,20 @@ python scripts/generate_cases.py \
 `cases_ttk.csv` 优先选择 `servers.json` 实际覆盖的平台，不再固定取第一个产品。
 优先级为：显式 `--platform` > servers 文件顺序 > 单台服务器 platforms 顺序。
 
-默认使用 `--hs-scenario-mode planned`，按 `tnd` / `bsnd` / `paged_attention`
-拆分预算、固定 layout 并投影完整场景。如需完全使用原有
-`agent/generators` 生成逻辑，执行：
+默认使用 `--hs-scenario-mode original`，完全使用原有 `agent/generators`
+生成逻辑，不拆分场景、不固定 layout、不做 HS case 投影。如需显式按
+`tnd` / `bsnd` / `paged_attention` 拆分预算并投影完整场景，执行：
 
 ```bash
 python scripts/generate_cases.py \
   --constraints runs/<run>/iter_001/constraints.json \
   --output runs/<run>/iter_001/cases_ttk.csv \
   --count 10 --test-framework ttk \
-  --hs-scenario-mode original \
+  --hs-scenario-mode planned \
   --server-config servers.json
 ```
 
-`original` 模式不拆分场景、不固定 layout、不调用 HS case 投影。
+`planned` 模式会拆分场景、固定 layout 并调用 HS case 投影。
 生成阶段的 HS 语义、场景/domain 覆盖和 JSON→TTK CSV 转换审计仅记录
 告警，不中断用例产出；直接进入 TTK 执行观察真实结果。
 

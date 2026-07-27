@@ -723,12 +723,22 @@ def main() -> int:
             )
             from scripts.execute_ttk_aclnn import run_aclnn
 
+            golden_plugin = None
+            if csv_api_name == "aclnnScatterPaKvCache":
+                golden_plugin = (
+                    ROOT
+                    / "agent"
+                    / "hs"
+                    / "ttk_plugins"
+                    / "aclnn_scatter_pa_kv_cache_golden.py"
+                )
             result = run_aclnn(
                 csv_path=cases_path,
                 server=server,
                 artifact_dir=artifact_dir,
                 mode="npu",
                 timeout=1800.0,
+                plugin_path=golden_plugin,
             )
             result.update({
                 "test_framework": "ttk",

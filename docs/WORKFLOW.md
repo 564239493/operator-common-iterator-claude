@@ -28,6 +28,7 @@
 | supplement-constraints | 可选；支持项目外路径 | EXTRACT 后据此做关系补充，为空则跳过补充阶段 |
 | operator-family | auto | `torch_npu` 文档自动选 hs，否则 aclnn；CLI 接受 `torch_npu` 作为 hs 别名 |
 | test-framework | auto | ACLNN→atk（可显式 ttk）；六个已适配 torch_npu→ttk；其余 torch_npu→constraints-only |
+| hs-scenario-mode | original | torch_npu + TTK 默认走原生生成器；显式 planned 才启用场景拆分和投影 |
 
 `init_run.py` 先校验外部文档和真实执行配置。配置不完整时返回结构化提示且不创建
 run；校验通过后将外部文档复制为项目内快照并创建 run_state。主协调器必须展示调度

@@ -67,6 +67,7 @@ async def _run_aclnn(
     mode: str = "validate",
     test_indexes: str = "",
     timeout: float = 600,
+    plugin_path: Path | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     ttk = server.get("ttk") or {}
@@ -81,6 +82,9 @@ async def _run_aclnn(
     remote_dir = f"{remote_root}/{_safe_name(op_name)}_{stamp}"
     remote_csv = f"{remote_dir}/{csv_path.name}"
     remote_results = f"{remote_dir}/results.csv"
+    remote_plugin = (
+        f"{remote_dir}/{plugin_path.name}" if plugin_path is not None else None
+    )
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
     endpoint = ServerEndpoint.from_server_row(server)
@@ -92,11 +96,17 @@ async def _run_aclnn(
         if mkdir.exit_code != 0:
             raise SSHEngineError(f"mkdir failed: {mkdir.stderr}")
         await upload_file(conn, csv_path, remote_csv)
+        if plugin_path is not None:
+            if not plugin_path.is_file():
+                raise SSHEngineError(f"golden plugin not found: {plugin_path}")
+            await upload_file(conn, plugin_path, remote_plugin)
 
         ttk_args = (
             f"-i {shlex.quote(csv_path.name)} "
             f"--plat={shlex.quote(plat)}"
         )
+        if remote_plugin is not None:
+            ttk_args += f" --plugin {shlex.quote(plugin_path.name)}"
         if mode == "validate":
             ttk_args += " --validate"
         if test_indexes:
@@ -170,6 +180,7 @@ async def _run_aclnn(
             "stdout": result.stdout, "stderr": result.stderr,
             "duration": duration,
             "remote_dir": remote_dir, "remote_command": command,
+            "golden_plugin": str(plugin_path) if plugin_path is not None else None,
             "local_artifact_dir": str(artifact_dir),
             "results_csv": str(local_results) if local_results.is_file() else None,
             "npu_passed": npu_pass, "npu_failed": npu_fail, "npu_total": npu_total,
@@ -188,6 +199,7 @@ async def _run_aclnn(
             "engine_error": str(exc),
             "duration": time.monotonic() - started,
             "remote_dir": remote_dir,
+            "golden_plugin": str(plugin_path) if plugin_path is not None else None,
             "local_artifact_dir": str(artifact_dir),
         }
     finally:
@@ -208,6 +220,7 @@ def main() -> None:
     parser.add_argument("--server-config", type=Path, default="servers.json")
     parser.add_argument("--artifact-dir", type=Path, default=None)
     parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument("--plugin", type=Path, default=None)
     args = parser.parse_args()
 
     config = json.loads(args.server_config.read_text(encoding="utf-8"))
@@ -230,6 +243,7 @@ def main() -> None:
     result = run_aclnn(
         csv_path=args.csv, server=server, artifact_dir=artifact_dir,
         mode=mode, test_indexes=args.ti, timeout=args.timeout,
+        plugin_path=args.plugin,
     )
 
     print(f"Status:   {result['status']}")

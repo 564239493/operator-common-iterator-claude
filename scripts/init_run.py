@@ -272,6 +272,15 @@ def main() -> int:
             "进入原生 TTK ACLNN 流程。"
         ),
     )
+    parser.add_argument(
+        "--hs-scenario-mode",
+        choices=("original", "planned"),
+        default="original",
+        help=(
+            "torch_npu + TTK 用例生成策略；original（默认）直接使用原生生成器，"
+            "planned 显式启用 TND/BSND/paged-attention 场景拆分和投影。"
+        ),
+    )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
     args = parser.parse_args()
@@ -452,6 +461,7 @@ def main() -> int:
         "case_count": args.case_count,
         "operator_family": operator_family,
         "test_framework": test_framework,
+        "hs_scenario_mode": args.hs_scenario_mode,
         "run_scope": "constraints_only" if test_framework == "constraints" else "full",
         "execution_strategy": None,  # EXTRACT 后 orchestrator 跑 classify_operator.py 回写: fusion | default
         "operator_category": None,  # fusion_comm_compute | default | None
@@ -495,6 +505,7 @@ def main() -> int:
             "mode": args.mode,
             "operator_family": operator_family,
             "test_framework": test_framework,
+            "hs_scenario_mode": args.hs_scenario_mode,
             "run_scope": "constraints_only" if test_framework == "constraints" else "full",
             "server_config": str(server_config) if server_config else "",
         },

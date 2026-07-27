@@ -73,6 +73,15 @@ def main() -> int:
         default="auto",
         help="整批测试框架；auto 由每个文档选择 atk/ttk/constraints-only。",
     )
+    parser.add_argument(
+        "--hs-scenario-mode",
+        choices=("original", "planned"),
+        default="original",
+        help=(
+            "整批 torch_npu + TTK 生成策略；默认 original，显式 planned "
+            "才启用场景拆分和投影。"
+        ),
+    )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
     policy = parser.add_mutually_exclusive_group()
@@ -208,6 +217,7 @@ def main() -> int:
         "prompt_sources": prompt_sources,
         "operator_family": normalized_family,
         "test_framework": args.test_framework,
+        "hs_scenario_mode": args.hs_scenario_mode,
         "max_iterations": args.max_iterations,
         "case_count": args.case_count,
         "mode": args.mode,

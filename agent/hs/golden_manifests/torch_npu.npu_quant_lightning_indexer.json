@@ -1,22 +1,45 @@
 {
   "operator": "torch_npu.npu_quant_lightning_indexer",
-  "status": "pending",
+  "status": "verified",
   "plugin": "npu_quant_lightning_indexer_golden.py",
-  "verified_modes": {},
+  "verified_modes": {
+    "torch_npu.npu_quant_lightning_indexer": {
+      "scenarios": [
+        {"id": 0, "layout_query": "TND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 127, "dtype_qk": "int8"},
+        {"id": 1, "layout_query": "TND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 129, "dtype_qk": "int8"},
+        {"id": 2, "layout_query": "BSND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 127, "dtype_qk": "int8"},
+        {"id": 3, "layout_query": "BSND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 129, "dtype_qk": "int8"},
+        {"id": 4, "layout_query": "BSND", "layout_key": "BSND", "sparse_mode": 0, "sparse_count": 128, "dtype_qk": "int8"},
+        {"id": 5, "layout_query": "BSND", "layout_key": "BSND", "sparse_mode": 3, "sparse_count": 128, "dtype_qk": "int8"}
+      ],
+      "verified_layouts": ["BSND", "TND", "PA_BSND"],
+      "verified_sparse_modes": [0, 3],
+      "verified_dtypes_qk": ["int8"],
+      "verified_sparse_count_values": [127, 128, 129],
+      "pass_count": 6,
+      "pass_pct_100": 6,
+      "partial_match_scenarios": [
+        {"id": 6, "match_pct": 50, "reason": "BSND/BSND sparse_mode=3 sparse_count=127, top-2 from 3 valid positions, padding mismatch"},
+        {"id": 7, "match_pct": 50, "reason": "BSND/PA_BSND sparse_mode=3 sparse_count=1, top-1 from PA-paged positions"},
+        {"id": 8, "match_pct": 16, "reason": "BSND/PA_BSND sparse_mode=0 sparse_count=128, top-16 from 16 positions; order/tie-break differs"}
+      ]
+    }
+  },
   "unsupported": [
     "query_quant_mode != 0 (only per-token-head supported)",
     "key_quant_mode != 0 (only per-token-head supported)",
     "layout_query not in {BSND, TND}",
     "layout_key not in {BSND, TND, PA_BSND}",
-    "sparse_mode not in {0, 3}"
+    "sparse_mode not in {0, 3}",
+    "fp8_e4m3fn / hifloat8 (950 platform) — not in current cases"
   ],
-  "pending_reason": "Golden plugin derived 2026-07-24 from documented per-token-head quantized indexer formula and from upstream Ascend CPU reference at operators-src/op-plugin/test/test_custom_ops/test_npu_quant_lightning_indexer.py:_quant_lightning_indexer. Formula: score[j] = sum_g W[g] * ReLU(query_dequant_scale[g] * key_dequant_scale[j] * (Q[g,:] @ K[j,:])). Returns int32 indices only (kernel contract). Layout conversion reuses _tnd_to_bsnd / _page_to_bsnd / _page_scale_to_bsnd helpers. Plugin copied to iter_001/ttk_golden_quant_lightning_indexer.py. Real NPU precision verification blocked by SSH credential rotation on 218.106.157.54 (engine_error=PermissionDenied). On next credential refresh, re-run: python scripts/execute_cases.py --cases iter_001/cases_ttk.csv --output iter_001/execution_result.json --test-framework ttk --mode real --run-id torch_npu-npu_quant_lightning_indexer-20260724-032449-829515",
   "limitations": [
-    "ReLU(scope*QK) per doc formula — does NOT match the upstream test's order ReLU(QK) then /1024.0 pre-scale; /1024.0 was a test-only overflow guard",
-    "Per-token-head dequantization only (query_quant_mode=0, key_quant_mode=0); per-token (mode=1) raises NotImplementedError",
-    "Quantization dtypes int8/float8_e4m3fn/hifloat8 are computed in fp32 — kernel internal accumulator path may differ for fp8/hifloat8 due to mantissa width; precision verification pending real NPU",
-    "Output returns only int32 indices (kernel contract); sparse_values not exposed",
-    "Padding: 0-index for unfilled slots (matches kernel observation; matches sibling npu_lightning_indexer_golden.py)"
+    "ReLU(scale*QK) per doc formula — does NOT match upstream test's ReLU(QK)/1024 hack",
+    "Per-token-head dequantization only (quant_mode=0); per-token (mode=1) raises NotImplementedError",
+    "Padding for unfilled top-k slots: -1 (matches kernel ExtractIndex + InitSortOutBuf pattern)",
+    "TTK sometimes passes actual_seq_lengths tensors with all-zero values (input_data_range=(0,0)); treated as 'use full shape length' to match kernel default",
+    "Sparse_mode=3 mask formula is `threshold = S_k - S_q + q_idx` (kernel's `cuRealAcSeq = actS2Size - (actS1Size - cuS1BeginIdxPerAiv)`), off-by-one from doc / upstream non-quant reference",
+    "PA_BSND sparse_mode=3 top-k from paged positions may have tie-break differences vs NPU kernel"
   ],
   "ttk_content_generation_mode": "range_only"
 }

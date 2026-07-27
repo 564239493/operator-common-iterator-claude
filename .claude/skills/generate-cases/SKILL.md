@@ -25,7 +25,7 @@ python scripts/generate_cases.py --constraints <constraints.json> --output <case
 若 `run_state.json.test_framework == "ttk"`，改为：
 
 ```text
-python scripts/generate_cases.py --constraints <constraints.json> --output <iter>/cases_ttk.csv --count <N> --test-framework ttk --server-config servers.json
+python scripts/generate_cases.py --constraints <constraints.json> --output <iter>/cases_ttk.csv --count <N> --test-framework ttk --hs-scenario-mode <run_state.hs_scenario_mode> --server-config servers.json
 ```
 
 所有产品的 `cases_<platform>.json` 仍分别生成并保留；用于 `cases.json` 和
@@ -34,15 +34,17 @@ python scripts/generate_cases.py --constraints <constraints.json> --output <iter
 人工调试可用 `--platform <精确平台名>` 覆盖。选择结果和原因写入
 `generation_summary.json.selected_platform/platform_selection_reason`。
 
-torch_npu TTK 默认使用 `--hs-scenario-mode planned`。当用户明确要求不做
-`tnd` / `bsnd` / `paged_attention` 场景拆分、完全使用原有
-`agent/generators` 逻辑时，在生成命令追加：
+torch_npu TTK 默认使用 `--hs-scenario-mode original`，完全使用原有
+`agent/generators` 逻辑，不做 `tnd` / `bsnd` / `paged_attention`
+场景拆分。只有用户显式选择场景拆分时才使用：
 
 ```text
---hs-scenario-mode original
+--hs-scenario-mode planned
 ```
 
-`original` 不做场景拆分和投影。HS 语义、场景覆盖和 TTK 转换审计仅作
+`planned` 才做场景拆分和投影。实际值必须从 `run_state.hs_scenario_mode`
+透传；兼容旧 run，该字段缺失时使用 `original`，不得在 GENERATE 阶段重新决定。
+HS 语义、场景覆盖和 TTK 转换审计仅作
 诊断记录，不阻断用例产出。
 
 TTK 与 ATK 一样，`count` 表示每个平台请求生成的统一中间用例数；实际数量以

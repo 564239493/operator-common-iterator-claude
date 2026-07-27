@@ -29,7 +29,7 @@
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 30 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、v5 新增 dtype/value 逐字一致性） |
+| 9 | 自检清单 | 提取完成后必须执行 33 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、dtype/value 逐字一致性、聚合表达式求解器兼容性） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 | 知识库路径速查表 | 本提示词与 `knowledge/` 的对应关系（维护参考） |
 | （外部）`CHANGELOG.md` | v1→v3 变更记录 | 不参与提取，维护参考 |
@@ -950,6 +950,30 @@ NDC1HWC0, FRACTAL_NZ_C0_16, FRACTAL_NZ_C0_32, NDHWC, NCHW_VECT_C0_16, NC1HWC0, N
    - ✅ `all(v >= 1 for v in padding.range_value)`
    - ✅ `all(d > 0 for d in x.shape)`（不允许空 Tensor）
    - ❌ `[v >= 1 for v in padding.range_value]`（返回 list，不返回 bool）
+   - `all()` / `any()` 的生成器仅用于逐元素布尔判定；**不得**将生成器
+     传给 `sum()`，当前求解器不支持 `sum(expr for ... in ...)`、
+     `sum(... for ... in zip(...))` 或带索引循环的求和。
+   - 当前求解器不支持 `zip()`；不得在 `all()`、`any()`、`sum()` 或其他
+     表达式中产出 `zip(...)`。
+   - 数组整体求和只使用 `sum(param.range_value)`。若被求和项是线性组合，
+     必须先做代数等价变换：
+
+     ```text
+     # 文档：reduceSum(A[i] - B[i]) <= capacity
+     # 正例：分别对完整数组求和，再做标量运算
+     sum(A.range_value) - sum(B.range_value) <= capacity.range_value
+
+     # 反例：当前求解器无法翻译
+     sum(A.range_value[i] - B.range_value[i]
+         for i in range(min(len(A.range_value), len(B.range_value)))) <= capacity.range_value
+     sum(a - b for a, b in zip(A.range_value, B.range_value)) <= capacity.range_value
+     all((a - b) <= capacity.range_value
+         for a, b in zip(A.range_value, B.range_value))
+     ```
+
+   - 代数改写不得擅自加入 `min(len(...))` 截断。若文档明确要求数组等长，
+     另建 shape/长度约束；若合法场景中两数组长度本来不同，不得为了
+     索引循环强制等长，应根据文档的总量语义对两个完整数组分别求和。
 5. **"维数 vs 长度"**：表达式中的 `len(x.shape)` 表示 rank（仅 `aclTensor` / `aclTensorList` 有 `.shape`），"shape size" 永远指 rank，**不是**各维大小乘积。`aclIntArray` / `aclFloatArray` / `aclBoolArray` **没有 `.shape`**，其元素个数直接写 `len(paramName)`（裸参数名），**禁止** `len(paramName.shape)`。
 6. **负索引优先**：当约束引用了以字母命名的维度（如 `H`、`W`）且该维度在 shape 描述中**始终处于固定语义位置**（如"最后一维"），必须使用 `shape[-1]` 而非固定正索引 `shape[1]` 或 `shape[3]`。
 7. **命名维度变量 / 外部常量引用**：使用 `变量名.range_value` 形式（如 `BS.range_value`、`rankSize.range_value`），不写 `BS.shape[0]`。
@@ -1222,7 +1246,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 30 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 33 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1461,6 +1485,20 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
        并在参数 `description` 末尾补注 `[DICT_GAP:<token>]`，此情形不受 §9.4 拒绝；
     d. 该自检同样覆盖 `allowed_range_value.value` 的字符串枚举、`format.value` 格式串、
        combo 表 dtype/format 值；发现不一致即重做该条目。
+33. **聚合表达式求解器兼容性自检（从 v4 合并）**：遍历所有
+    `constraints_in_parameters` 的 `expr`，必须满足**全部**：
+    a. 不得出现 `zip()`、`sum(... for ... in ...)`、
+       `sum(... for ... in zip(...))` 或 `sum([comprehension])`；当前生成器只支持
+       `sum(param.range_value)` 这类对完整数组的直接求和；
+    b. 对 `reduceSum(A[i] - B[i])` 等线性聚合，必须改写为
+       `sum(A.range_value) - sum(B.range_value)`，并保留原有门控与容量不等式；
+    c. 不得用 `range(min(len(A), len(B)))` 静默截断较长数组；只在文档明确要求
+       等长时另建长度约束；
+    d. `aclnnScatterPaKvCache` 专项形式必须为
+       `(seqLensOptional is None or compressLensOptional is None) or `
+       `(sum(seqLensOptional.range_value) - sum(compressLensOptional.range_value) <= `
+       `num_blocks.range_value * block_size.range_value)`，不得产出索引生成器、
+       `zip()` 生成器或逐元素 `all((s - c) <= ...)`。
 
 ## 10. 调用模板
 
@@ -1494,6 +1532,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 - dtype / format / 枚举候选必须与 src_text / 文档原文逐字一致（见 §4.6.3
   「dtype / value 候选逐字一致性硬规则」与 §9.32）；文档 token 不在 §5.2 时
   原样保留并标 `[DICT_GAP:<token>]`，不得改写为字典内形似项凑数
+- 聚合表达式必须遵循 §6.1 第 4 条与 §9.33：禁止 `zip()` 和
+  `sum(generator)`；线性聚合须改写为对完整数组分别 `sum()` 后进行标量运算
 
 输出必须是**纯 JSON 字符串**，无任何前后缀。
 
@@ -1514,9 +1554,10 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v5》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 32 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
+3. 内部执行第 9 章 33 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
    §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0、§9.26 公共互推导/broadcast 知识展开、
-   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.32 dtype/value 候选逐字一致性）；
+   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.32 dtype/value 候选逐字一致性、
+   §9.33 聚合表达式求解器兼容性）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
@@ -1553,5 +1594,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 1. §4.6.3 新增「dtype / value 候选逐字一致性硬规则」子节（位于「dtype 为空时的类型回填规则」之后、「aclDataType 参数的固定 dtype 规则」之前）。
 2. §5.2 受控字典 Tensor 数据类型清单：`HFLOAT8` → `HIFLOAT8`（依据 `agent/generators/data_definition/constants.py` 第 159-160 行及全部算子文档原文；`HFLOAT4` 暂无证据，未动）。
 3. §8 边缘场景处理新增两条：条目内 `src_text` 与 `value` 不逐字一致；文档 token 不在 §5.2 的 `[DICT_GAP]` 处置。
-4. §9 自检清单新增 §9.32「dtype / value 候选逐字一致性自检」；§9.4 补充逐字一致与 `[DICT_GAP]` 例外；§9 标题自检项数由 30 改为 32。
-5. §10 调用模板：System 段补引逐字一致性规则与 `[DICT_GAP]`；任务第 3 步自检列表追加 §9.32、项数改 32。
+4. §9 自检清单新增 §9.32「dtype / value 候选逐字一致性自检」；§9.4 补充逐字一致与 `[DICT_GAP]` 例外；合并 §9.33 后当前自检项数为 33。
+5. §10 调用模板：System 段补引逐字一致性规则、`[DICT_GAP]` 与聚合表达式兼容性规则；任务第 3 步自检列表追加 §9.32、§9.33，项数改为 33。
+6. 从 v4 恢复并加强聚合表达式兼容性规则：§6.1 禁止 `zip()` 与
+   `sum(generator)`，§9 新增 §9.33；`aclnnScatterPaKvCache` 的
+   `reduceSum(A[i]-B[i])` 固定改写为两个完整数组 `sum()` 相减。
