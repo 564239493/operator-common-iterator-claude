@@ -58,16 +58,20 @@ class PairwiseParamCombinationGenerator:
         )
         reset()
         t0 = time.perf_counter()
-        combination_input_generator = CombinationInputGenerate(operator_rule_data=self.operator_rule_data)
-        combination_input_data = combination_input_generator.generate_combination_input_data()
+        with track_block("Parameter info generator"):
+            combination_input_generator = CombinationInputGenerate(operator_rule_data=self.operator_rule_data)
+            combination_input_data = combination_input_generator.generate_combination_input_data()
 
         logger.debug(f"End generate combination input data, operator name : '{self.operator_rule_data.operator_name}'")
-        generator_config = PairwiseParamCombinationGenerator.load_config(combination_input_data=combination_input_data)
-        generator_options = GeneratorOptions()
-        constraint_utils = build_constraint(generator_config.constraints)
+        with track_block("Constraint build"):
+            generator_config = PairwiseParamCombinationGenerator.load_config(combination_input_data=combination_input_data)
+            generator_options = GeneratorOptions()
+            constraint_utils = build_constraint(generator_config.constraints)
         logger.debug(f"Constraint build success, operator : '{self.operator_rule_data.operator_name}'")
-        universe, tracker, builder = build_universe_and_tracker(generator_config, constraint_utils)
-        with track_block("Generate"):
+        with track_block("Universe generator"):
+            universe, tracker, builder = build_universe_and_tracker(generator_config, constraint_utils)
+
+        with track_block("Generate testcase suites"):
             candidate_gen = CandidateGenerator(
                 config=generator_config,
                 constraint=constraint_utils,
@@ -75,7 +79,6 @@ class PairwiseParamCombinationGenerator:
                 universe=universe,
                 coverage_tracker=tracker,
             )
-
             gen = CoverageDrivenGenerator(
                 universe=universe,
                 coverage_tracker=tracker,
@@ -85,6 +88,7 @@ class PairwiseParamCombinationGenerator:
                 pair_builder=builder,
             )
             combination_data_result = gen.generate()
+
         if self.combination_data_save_path is not None:
             combination_data_save_path = os.path.join(self.combination_data_save_path,
                                                       f"{self.operator_rule_data.operator_name}_combination_data.json")

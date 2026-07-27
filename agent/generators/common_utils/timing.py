@@ -89,7 +89,7 @@ def print_summary(file=None) -> None:
     """
     stats = get_stats()
     if not stats:
-        logger.error(f"[timing] 没有记录到任何计时数据, file : {file}")
+        logger.error(f"[timing] No timing data was recorded, file : {file}")
         return
 
     header = (
@@ -118,6 +118,9 @@ def print_summary(file=None) -> None:
     out = "\n".join(lines)
     if file is not None:
         logger.debug(f"Time record to file : {out}, file : {file}")
+        file.write(out)
+        file.flush()
+        file.close()
     else:
         logger.debug(f"Time record : {out}")
 
