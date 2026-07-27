@@ -92,6 +92,8 @@ class ParamModelConfig:
     SHAPE_DIM_VALUES = [1, 2, 4, 8]
     # 默认的tensor维度值最小值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM_MIN = 1
+    # 默认的tensor的维度值集合，在文档中如果提取不出来关于dimension的取值集合，那就按照默认的[1,2,3,4,5,6,7,8]设置
+    DEFAULT_TENSOR_SHAPE_SET = [1, 2, 3, 4, 5, 6, 7, 8]
     # 默认的tensor维度值最大值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM_MAX = 8
     # 默认数组类参数的长度
