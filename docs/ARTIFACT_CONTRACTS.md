@@ -15,6 +15,8 @@ runs/<operator>-<timestamp>/
     conflict_candidates.json           # 可选：source-analyst 产，结构化冲突候选（机读）
     conflict_resolution.json           # 可选：用户裁决 [{conflict_id, winner}]
     supplement_constraints.md          # 可选：--supplement-constraints 手写快照
+    scene_scan.json                    # 可选：scene-scanner 产，文档涉及的量化方式×位宽组合清单
+    scene_directive.md                 # 可选：render_scene_directive.py 渲染，extractor 据此屏蔽非选定场景
   iter_001/
     constraints.json
     constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
@@ -36,7 +38,7 @@ runs/<operator>-<timestamp>/
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
-`server_config`、`max_iterations`、`case_count`、`current_iteration`、`state`、`history` 和时间戳。
+`server_config`、`max_iterations`、`case_count`、`scene`、`current_iteration`、`state`、`history` 和时间戳。
 state 只能取 WORKFLOW.md 定义的状态。
 
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
@@ -115,6 +117,43 @@ join 两者，source-wins 转 `replace_constraint` patch（`origin="conflict_res
 ```
 `conflict_resolution.json` = JSON 数组，每项 `{"conflict_id": "CF1", "winner": "source|doc", "note": ""}`。
 `doc_expr` 必须从 `constraints.json` 精确复制，否则合并器精确匹配失败阻断。
+
+## scene_scan.json / scene_directive.md / run_state.scene
+
+`scene_scan.json`（scene-scanner 产，落 `inputs/`）：枚举该算子文档实际涉及的
+「量化方式 × 量化位宽组合」场景。`has_quant_scenarios` 为 bool；`=true` 时
+`quant_modes`/`quant_widths_by_mode`/`valid_combos`/`evidence` 必须完整，且每条
+`valid_combos` 必须有对应 (mode, width) 的 `evidence.src_text` 摘自原文。`=false`
+（非量化算子）时其余字段留空，主协调器跳过场景征询。结构由
+`validate_artifacts.py scene_scan` 校验。
+
+`run_state.scene`（`init_run` 写 `null`，SCENE_SCAN 子步骤由
+`scripts/render_scene_directive.py` 回写）：`{enabled, scope, quant_mode,
+quant_width, scene_token, valid_combos, directive, scan}`（单选字段）。`scope=subset` 时
+`quant_mode`/`quant_width` 为用户单选值（各 1 个，`quant_width` 在非量化/无位宽细分时
+为 `null`），`valid_combos` 恰 1 条，`directive` 指向 `inputs/scene_directive.md`；
+`scope=all`/`off` 时 `quant_mode`/`quant_width`/`scene_token` 为 `null`、`directive=""` 且不写
+directive 文件（extractor 见无 directive 即按全场景提取，行为不变）。
+
+`scene_token`（确定性映射，供将来 `generator.py` 支持 `--scene` 时透传）：`scope=subset`
+时由 (quant_mode, quant_width) 算出，`scope=all`/`off` 时为 `null`。映射表：
+
+| quant_mode | quant_width | scene_token |
+|---|---|---|
+| 量化 | A8W8 / A4W4 / … | `quant-{width}` |
+| 量化 | `null`（无位宽细分） | `quant` |
+| 伪量化 | A16W8 / A16W4 / … | `dequant-{width}` |
+| 伪量化 | `null`（无位宽细分） | `dequant` |
+| 非量化 | `null` | `noquant` |
+
+纯非量化算子（`has_quant_scenarios=false`）不触发场景征询，`run_state.scene=null`，
+执行时不传 `--scene`。当前 `scene_token` 仅落盘，执行链路（runner / execute_cases /
+generator）暂不消费——待 `generator.py` 改进支持 `--scene` 后再打通透传。
+
+`scene_directive.md`（`render_scene_directive.py` 渲染，落 `inputs/`，仅 `scope=subset`
+时存在）：列合法 (方式, 位宽) 组合与屏蔽规则，constraint-extractor 据此屏蔽非选定
+场景的 Optional 参数 presence 与专属约束，保留通用约束（shape/dtype/format 等）。
+轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动本文件，屏蔽跨轮稳定。
 
 ## source_raw.json / source_evidence.json
 
