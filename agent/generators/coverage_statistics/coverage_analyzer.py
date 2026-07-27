@@ -127,18 +127,18 @@ def run_batch(case_dir: str, constraint_dir: str, output_format: str = "console"
     # --- 目录校验 ---
     if not os.path.exists(case_dir):
         logger.error(f"Case directory not found: {case_dir}")
-        print(f"[ERROR] Case directory not found: {case_dir}")
+        logger.error(f"[ERROR] Case directory not found: {case_dir}")
         return
     if not os.path.exists(constraint_dir):
         logger.error(f"Constraint directory not found: {constraint_dir}")
-        print(f"[ERROR] Constraint directory not found: {constraint_dir}")
+        logger.error(f"[ERROR] Constraint directory not found: {constraint_dir}")
         return
 
     # --- 获取 case 文件列表 ---
     case_files = [f for f in os.listdir(case_dir) if f.endswith(".json")]
     if not case_files:
         logger.warning(f"No JSON files found in {case_dir}")
-        print(f"[WARN] No JSON files found in {case_dir}")
+        logger.warning(f"[WARN] No JSON files found in {case_dir}")
         return
 
     logger.info(f"Batch mode: {len(case_files)} case files found in {case_dir}")
@@ -151,13 +151,13 @@ def run_batch(case_dir: str, constraint_dir: str, output_format: str = "console"
         # 约束文件不存在则跳过
         if not os.path.exists(constraint_path):
             logger.warning(f"No matching constraint file for {case_file}, skipped")
-            print(f"[SKIP] No matching constraint file for {case_file}")
+            logger.warning(f"[SKIP] No matching constraint file for {case_file}")
             continue
 
         logger.info(f"Processing: {case_file}")
-        print(f"\n{'=' * 72}")
-        print(f"  Processing: {case_file}")
-        print(f"{'=' * 72}")
+        logger.info(f"\n{'=' * 72}")
+        logger.info(f"  Processing: {case_file}")
+        logger.info(f"{'=' * 72}")
 
         report = run_single(case_path, constraint_path, output_format)
 
@@ -169,9 +169,9 @@ def run_batch(case_dir: str, constraint_dir: str, output_format: str = "console"
             with open(out_path, "w", encoding="utf-8") as f:
                 f.write(report)
             logger.info(f"Report saved: {out_path}")
-            print(f"  Report saved: {out_path}")
+            logger.debug(f"  Report saved: {out_path}")
 
-        print(report)
+        logger.debug(report)
 
     logger.info("Batch processing completed")
 
@@ -218,8 +218,7 @@ def main():
             with open(out_path, "w", encoding="utf-8") as f:
                 f.write(report)
             logger.info(f"Report saved: {out_path}")
-            print(f"Report saved: {out_path}")
-        print(report)
+        logger.info(report)
     else:
         parser.print_help()
 

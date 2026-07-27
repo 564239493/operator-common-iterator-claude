@@ -169,7 +169,7 @@ class ParameterPropertyData(BaseModel):
     range_value_profile: Any
     memory_continuity: bool = False
     length: int | None = None
-    is_optional: bool = True
+    is_present: bool = True
     is_operator_param : bool = True
 
 

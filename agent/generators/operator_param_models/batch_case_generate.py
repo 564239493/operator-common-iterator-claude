@@ -15,10 +15,11 @@ from agent.generators.atk_common_utils.case_config import CaseConfig
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import GlobalConfig
-from agent.generators.data_definition.param_models_def import OperatorParameterCombination, RunPlatform, ParameterPropertyData
+from agent.generators.data_definition.param_models_def import OperatorParameterCombination, RunPlatform, \
+    ParameterPropertyData
+from agent.generators.operator_param_combine.combination_generator_main import PairwiseParamCombinationGenerator
 # [PAIRWISE] 替换旧随机生成器为 Pairwise 策略生成器
 # from operator_param_combine.param_combination_generate import ParamCombinationGenerator
-from agent.generators.operator_param_combine.pairwise_combination import PairwiseParamCombinationGenerator
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.param_constraint_utils import ParamConstraintUtils
 from agent.generators.common_model_definition import OperatorRule, InterParamConstraint
@@ -92,7 +93,7 @@ class OperatorCaseGenerator:
             param_combination_dict = {each.param_name: each for each in param_combination.parameter_property}
             case_config = case_generate_instance.generate_case(param_combination_dict)
             correct_status, correct_case = self.correct_case(case_config, operator_constraint_data,
-                                                              param_combination_dict)
+                                                             param_combination_dict)
             t_end = time.time()
             solve_time += 1
             logger.debug(
@@ -122,7 +123,7 @@ class OperatorCaseGenerator:
         return final_case_list
 
     def dump_case_param(self, case: CaseConfig, operator_rule_instance: OperatorRule,
-                     param_combinations: Dict[str, ParameterPropertyData] = None):
+                        param_combinations: Dict[str, ParameterPropertyData] = None):
         base_path = Path("cases") / f"{case.name}-{int(time.time())}"
         base_path.mkdir(parents=True, exist_ok=True)
 
@@ -227,7 +228,8 @@ class OperatorCaseGenerator:
             effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_rule_data)
             operator_name, _ = os.path.splitext(file)
             param_combination_generator = PairwiseParamCombinationGenerator(operator_rule_data=operator_rule_data,
-                                                                            case_num=case_num)
+                                                                            case_num=case_num,
+                                                                            combination_data_save_path=case_save_path)
             # param_combination_generator = PairwiseParamCombinationGenerator(operator_rule_data=operator_rule_data,
             #                                                                 case_num=case_num)
             param_combination_list = param_combination_generator.get_param_combination_input()
@@ -237,6 +239,6 @@ class OperatorCaseGenerator:
                                                     param_combination_list=param_combination_list,
                                                     jsonl_save_path=case_save_path)
             data_handle_util.convert_jsonl_to_json(api_name=operator_name, jsonl_save_path=case_save_path,
-                                                    json_save_path=case_save_path)
+                                                   json_save_path=case_save_path)
             logger.info(f"End handle operator data, file index : {index}/{tsv_file_num}, file name : {file}")
         logger.info(f"End handle param combination, operator file num : {len(tsv_file_list)}")
