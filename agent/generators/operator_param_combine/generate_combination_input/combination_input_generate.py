@@ -108,21 +108,22 @@ class CombinationInputGenerate:
                                                                       "array_length")
         if length_value is None:
             return None
-        length_valid_data = []
+        length_valid_data = set()
         for length in length_value:
             if isinstance(length, list) and len(length) < 2:
                 logger.warning(f"Array length data invalid, length should be 2 : '{length}'")
                 continue
             if isinstance(length, list):
                 # 数组数据的长度，无法枚举的按照最大值，最小值，中间值等价划分
-                length_valid_data.append(length[0])
-                length_valid_data.append(length[1])
-                length_valid_data.append((length[0] + length[1]) // 2)
+                length_valid_data.add(length[0])
+                length_valid_data.add(length[1])
+                length_valid_data.add((length[0] + length[1]) // 2)
             elif isinstance(length, int):
-                length_valid_data.append(length)
+                length_valid_data.add(length)
             else:
                 logger.warning(f"Array length data invalid, length should be list or int : '{length}'")
-        if length_value is None:
+        length_valid_data = list(length_valid_data)
+        if length_valid_data is None:
             logger.warning(
                 f"Generate parameter length, param name : '{param_name}', length value is None, "
                 f"use default length: '{ParamModelConfig.DEFAULT_LIST_LENGTH}'")
@@ -130,8 +131,8 @@ class CombinationInputGenerate:
 
         logger.debug(f"End generate parameter length, "
                      f"operator name : '{self.operator_rule_data.operator_name}', param name : '{param_name}', "
-                     f"length value : '{length_value}'")
-        return length_value
+                     f"length value : '{length_valid_data}'")
+        return length_valid_data
 
     def generate_dimension_property(self, param_name) -> List[int] | None:
         """
@@ -401,8 +402,16 @@ class CombinationInputGenerate:
             param_type_dict[param_name] = param_type
             range_value_profile = self.generate_range_value_property(param_name, param_dtype)
 
+            is_range_value_all_none = len(range_value_profile) > 0 and all(x is None for x in range_value_profile)
+
+            # 如果某个参数可取值范围只有None，则该参数不参与组合以及后续用例生成，即生成的用例中没有该参数
+            if is_range_value_all_none:
+                logger.debug(
+                    f"In combination input data generate, operator : '{self.operator_rule_data.operator_name}', "
+                    f"param : '{param_name}', range value only has None")
+                continue
+
             is_present = self.generate_is_present_property(param_name)
-            is_present = tuple(is_present) if is_present is not None else is_present
             if is_present is None:
                 continue
             input_data = CombinationInputDataModel(dtype=param_dtype, range_value=range_value_profile,
@@ -445,4 +454,3 @@ class CombinationInputGenerate:
         with open(save_path, "w", encoding="utf-8") as f:
             f.write(input_data_dict)
         logger.debug(f"Save input data to json file, path : {save_path}")
-
