@@ -1,3 +1,4 @@
+from __future__ import annotations
 import copy
 import json
 import os.path
@@ -5,7 +6,10 @@ import time
 from itertools import islice, cycle
 from typing import List, Dict, Any
 
-from agent.generators import OperatorRule
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from agent.generators import OperatorRule
+    
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import DataMatchMap, ParamModelConfig

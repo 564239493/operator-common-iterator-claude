@@ -232,11 +232,13 @@ class OperatorCaseGenerator:
             operator_name, _ = os.path.splitext(file)
             operator_rule_data_path = os.path.join(operator_constraint_data_directory, operator_name + ".json")
             operator_rule_data = data_handle_util.handle_operator_rule_data(operator_rule_data_path)
-            effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_rule_data)
+            effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_rule_data,
+                                                                                            target_platform=target_platform)
             operator_name, _ = os.path.splitext(file)
-            param_domain_data, param_combination_generator = PairwiseParamCombinationGenerator(operator_rule_data=operator_rule_data,
-                                                                            case_num=case_num,
-                                                                            combination_data_save_path=case_save_path)
+            param_domain_data, param_combination_generator = PairwiseParamCombinationGenerator(
+                operator_rule_data=operator_rule_data,
+                case_num=case_num,
+                combination_data_save_path=case_save_path)
             # param_combination_generator = PairwiseParamCombinationGenerator(operator_rule_data=operator_rule_data,
             #                                                                 case_num=case_num)
             param_combination_list = param_combination_generator.get_param_combination_input()
