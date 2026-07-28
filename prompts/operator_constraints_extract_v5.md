@@ -285,6 +285,26 @@ class OperatorRule(BaseModel):
 - 流程参数不进入 `inputs` / `outputs`。
 - **一段式算子例外（v3 新增）**：一段式算子没有 `workspaceSize`/`workspace`/`executor`/`stream`，其输出常为**标量指针**（如 `uint64_t *weightTensorSize`、`int64_t *xxx`）。标量指针输出**必须**进 `outputs`，**不得**因 `uint64_t*` 与 `workspaceSize` 同类型而误判为流程参数排除。其 `ParamAttributes`：`type.value` 去掉 `*`（如 `uint64_t`）、`format.value="N/A"`、`dimensions.value=[]`、`is_operator_param.value=true`、`dtype.value` 取文档"数据类型"列（空则按 type 回填，如 `["uint64_t"]`）、`is_support_discontinuous.value="N/A"`。
 
+**参数角色到容器的映射与覆盖（v5 强制规则）**：
+
+- 必须先读取参数表中的“输入/输出”分类列，为函数原型中的每个非流程参数建立
+  `参数名 -> 文档角色 -> JSON 容器集合` 清单，再填写参数约束卡；不得先按 C 指针形式猜测
+  `inputs` / `outputs`，也不得在填写其他字段时改变已经确认的角色。
+- 文档分类为“输入”或“可选输入”的参数，必须进入 `inputs`。
+- 文档分类为“输出”或“可选输出”的参数，必须进入 `outputs`。
+- 文档分类为“输入/输出”的参数表示调用方传入并由算子原地更新，必须至少进入
+  `outputs`，保证下游能够识别其输出语义。若具体算子 schema 或执行链还需要显式保留
+  其输入语义，允许同名参数同时出现在 `inputs` 与 `outputs`；不得为了追求容器互斥而
+  丢失文档明确给出的任一角色。
+- 文档存在“输出/输入输出”参数但 `outputs` 为空，视为角色提取失败，必须在输出
+  JSON 前修正。
+- 角色证据优先级固定为：参数表“输入/输出”分类列 > 参数正文中的明确
+  “输入/输出/原地更新”说明 > C 原型限定符。`const aclTensor *` 可作为输入的辅助证据；
+  非 `const` 指针只能作为可写参数的辅助证据，**不得**单独据此判为输出。
+- 若不同产品或不同接口对同名参数给出不同角色分类，必须回到对应参数表核对接口范围并
+  保留来源证据；不得静默丢弃其中一个角色。需要同时表达读写语义时允许写入两个容器，
+  但 `outputs` 中必须保留文档明确给出的输出语义。
+
 #### 4.6.2 二级 key（平台名）
 
 - 二级 key 为**平台名**，取值集合：
@@ -1256,6 +1276,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
    `product_support` 中的每一个平台都产出条目**——即使各平台 `ParamAttributes` 内容完全
    一致，也必须逐平台复制；不得用单个平台名"代笔"。常见错误模式：从 `Atlas 350 加速卡`
    文档表格读取约束后，只输出 `Atlas 350 加速卡` 条目，遗漏 `Atlas A3 / A2` 条目。
+   同时执行参数角色覆盖检查：逐项对照函数原型与参数表分类列，确认“输入/可选输入”参数
+   存在于 `inputs`，“输出/可选输出/输入输出”参数存在于 `outputs`。允许有明确读写语义的
+   同名参数同时出现在两个容器；只要文档存在输出类参数，`outputs` 就不得为空。
 4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）且与该条目
    `src_text` / 文档原文逐字一致（仅允许 §5.2 登记的规范化映射，见 §9.32）；文档 token
    不在 §5.2 时按 `[DICT_GAP]` 原样保留，不受本项拒绝；非 Tensor 参数若非"仅支持空指针"，
