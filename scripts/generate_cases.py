@@ -156,6 +156,7 @@ def generate_platform_outputs(
     for platform in platforms:
         sanitized = platform.replace("/", "_")
         checkpoint_dir = jsonl_save_path / sanitized
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)  # 新增
         checkpoint_file = checkpoint_dir / f"{generator.operator_name}.jsonl"
         converted_source = output_dir / f"{generator.operator_name}.json"
         target = output_dir / f"cases_{sanitized}.json"
