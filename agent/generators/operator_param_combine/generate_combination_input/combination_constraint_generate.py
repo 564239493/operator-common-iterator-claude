@@ -1,8 +1,10 @@
+from __future__ import annotations
 import ast
 import re
-from typing import List, Set, Optional, Any, Dict
+from typing import List, Set, Optional, Any, Dict, TYPE_CHECKING
 
-from agent.generators import OperatorRule
+if TYPE_CHECKING:
+    from agent.generators import OperatorRule
 from agent.generators.data_definition.constants import ParamModelConfig, DataMatchMap
 
 

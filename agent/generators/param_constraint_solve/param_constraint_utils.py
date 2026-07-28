@@ -6,6 +6,7 @@
 功能：参数约束关系实现
 """
 import ast
+import copy
 import re
 from collections import defaultdict
 from typing import List, Dict, Any
@@ -656,25 +657,39 @@ class ParamConstraintUtils(CommonDispatcher):
             if param_property_data is None:
                 continue
             is_present_value = param_property_data.is_present
+            if not is_present_value:
+                continue
             builder.solver.add(builder.var_map[param_name].is_present == is_present_value)
-            self.solve_none_in_constraint(param_name)
 
-    def solve_none_in_constraint(self, param_name: str):
+    def solve_none_in_constraint(self, constraints):
         """
         对于表达式中的 is None 和 is not None,根据is_present属性进行后处理，如果is_present为False,则将表达式中的和此参数相关的子表达式，
         如x is None 整个替换为True
-        :param param_name: 参数名称
         """
-        for constraint in self.operator_rule_data.constraints_in_parameters:
-            expr = constraint.expr
-            is_none_pattern = f"{param_name} is None"
-            is_not_none_pattern = f"{param_name} is not None"
-            if is_none_pattern not in expr and is_not_none_pattern not in expr:
-                continue
-            new_expr = expr.replace(is_none_pattern, "True")
-            new_expr = new_expr.replace(is_not_none_pattern, "False")
-            logger.debug(f"Solve none in constraint, ori expr : '{expr}', after replace : '{new_expr}'")
-            constraint.expr = new_expr
+        constraint_after_solve_none = []
+        for constraint in constraints:
+            # 处理当前参数和约束相关的参数，如果参数不在case_input_map中，则认为其is_present为False
+            relation_params = constraint.relation_params
+            expr_ori = constraint.expr
+            new_expr = copy.deepcopy(expr_ori)
+            for param_name in relation_params:
+                param_property_data = self.param_combinations.get(param_name)
+                if param_property_data is None:
+                    is_present_value = False
+                else:
+                    is_present_value = param_property_data.is_present
+                if not is_present_value:
+                    is_none_pattern = f"{param_name} is None"
+                    is_not_none_pattern = f"{param_name} is not None"
+                    if is_none_pattern not in new_expr and is_not_none_pattern not in new_expr:
+                        continue
+                    new_expr = new_expr.replace(is_none_pattern, "True")
+                    new_expr = new_expr.replace(is_not_none_pattern, "False")
+            logger.debug(f"Solve none in constraint, ori expr : '{expr_ori}', after replace : '{new_expr}'")
+            constraint_solve_none = copy.deepcopy(constraint)
+            constraint_solve_none.expr = new_expr
+            constraint_after_solve_none.append(constraint_solve_none)
+        return constraint_after_solve_none
 
     def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False):
         """
@@ -687,6 +702,10 @@ class ParamConstraintUtils(CommonDispatcher):
         for param_name in self.case_input_map.keys():
             param_info = self.case_input_map.get(param_name)
             if not param_info:
+                continue
+            param_property_data = self.param_combinations.get(param_name)
+            is_present_value = param_property_data.is_present if param_property_data is not None else False
+            if not is_present_value:
                 continue
             param_type = param_info.type
             z3_param_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(param_type, "tensor")
@@ -711,11 +730,13 @@ class ParamConstraintUtils(CommonDispatcher):
         针对所有的参数关联表达式，使用z3求解器求解
         :param: z3_constraints: 表达式列表，包含所有需要求解的表达式
         """
-        expr_list = [constraint_expr.expr for constraint_expr in z3_constraints if
-                     constraint_expr.expr is not None and constraint_expr.expr]
+
         logger.info(f"Start solving solution of constraints by Z3, operator name : {self.operator_name}")
         builder = Z3ConstraintBuilder()
         self.declare_param_in_z3(builder=builder, is_print_log=True)
+        constraint_after_solve_no = self.solve_none_in_constraint(z3_constraints)
+        expr_list = [constraint_expr.expr for constraint_expr in constraint_after_solve_no if
+                     constraint_expr.expr is not None and constraint_expr.expr]
 
         # 先添加 JSON 约束到求解器
         json_expr_dict = {f"json:{expr}": expr for expr in expr_list}
