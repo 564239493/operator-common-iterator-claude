@@ -8,7 +8,7 @@
 import ast
 import re
 from collections import defaultdict
-from typing import List, Dict
+from typing import List, Dict, Any
 
 import z3
 from pydantic import BaseModel
@@ -40,12 +40,14 @@ class ParamConstraintUtils(CommonDispatcher):
     def __init__(self, case: CaseConfig, case_generate_instance: CaseGenerate,
                  inter_param_constraints: List[InterParamConstraint], operator_rule_data: OperatorRule,
                  param_combinations: Dict[str, ParameterPropertyData] = None,
+                 param_domain_data: Dict[str, Any] = None,
                  is_generate_real_data: bool = False):
         self.inter_param_constraints = inter_param_constraints
         # 形如{'x1': {'DType': 'BFLOAT16', 'DataProfile': 'NaN', 'DimCount': '2', 'DimProperty': 'Has_Large_Size',
         # 'DataProfile': 'SubNormal', 'Memory': 'Contiguous'}, 'epsilon': {'Value': '1e-5'},
         # 'additionalOutput': {'Mode': 'True'}}
         self.param_combinations = param_combinations
+        self.param_domain_data = param_domain_data
         self.operator_rule_data = operator_rule_data
         # 是否生成真实数据，若为FALSE只保留生成数据模型的名称，用于后续实际执行的时候调用生成真实数据
         self.is_generate_real_data = is_generate_real_data
@@ -73,8 +75,8 @@ class ParamConstraintUtils(CommonDispatcher):
         dtype_domain_data = {}
         format_domain_data = {}
         for param_name in self.case_input_map.keys():
-            dtype_domain = self.generate_dtype_string_domain(param_name)
-            format_domain = self.generate_format_string_domain(param_name)
+            dtype_domain = self.param_domain_data.get("parameters", {}).get(param_name, {}).get("dtype")
+            format_domain = self.param_domain_data.get("parameters", {}).get(param_name, {}).get("format")
             if dtype_domain:
                 dtype_domain_data[param_name] = dtype_domain
             if format_domain:
@@ -635,12 +637,12 @@ class ParamConstraintUtils(CommonDispatcher):
 
     def analysis_param_is_present(self, builder: Z3ConstraintBuilder):
         """
-        遍历所有表达式，收集每个参数的存在情况，如果某个参数只出现过 xxx is None的条件，则认为其is_present属性只能设置为False，如果既出现过is None, 也出现过 is not None, 则认为其iS_present属性为True, 另外，如果参数的allowed_range_value中只有null,则认为其is_present也只能取False
+        遍历所有表达式，收集每个参数的存在情况，如果某个参数只出现过 xxx is None的条件，则认为其is_present属性只能设置为False，如果既出现过is None, 也出现过 is not None, 则认为其is_present属性为True, 另外，如果参数的allowed_range_value中只有null,则认为其is_present也只能取False
         """
         force_false_params = set()
 
         for param_name in self.case_input_map:
-            # 必选参数不许检查，直接视为需要存在
+            # 必选参数不需检查，直接视为需要存在
             param_combination_data = self.param_combinations.get(param_name)
             if param_combination_data is not None and not param_combination_data.is_present:
                 continue
@@ -668,6 +670,37 @@ class ParamConstraintUtils(CommonDispatcher):
             if param_combination_data is None:
                 continue
             builder.solver.add(builder.var_map[param_name].is_present)
+
+    def set_param_is_present(self, builder: Z3ConstraintBuilder):
+        """
+        设置求解器中is_present的取值，因为在组合生成阶段，已根据allowed_range_value和部分is_None表达式，预处理参数的is_present取值，
+        这里直接取组合中参数的is_present取值
+        :param builder: z3求解器实例
+        """
+        for param_name in self.case_input_map:
+            param_property_data = self.param_combinations.get(param_name)
+            if param_property_data is None:
+                continue
+            is_present_value = param_property_data.is_present
+            builder.solver.add(builder.var_map[param_name].is_present == is_present_value)
+            self.solve_none_in_constraint(param_name)
+
+    def solve_none_in_constraint(self, param_name: str):
+        """
+        对于表达式中的 is None 和 is not None,根据is_present属性进行后处理，如果is_present为False,则将表达式中的和此参数相关的子表达式，
+        如x is None 整个替换为True
+        :param param_name: 参数名称
+        """
+        for constraint in self.operator_rule_data.constraints_in_parameters:
+            expr = constraint.expr
+            is_none_pattern = f"{param_name} is None"
+            is_not_none_pattern = f"{param_name} is not None"
+            if is_none_pattern not in expr and is_not_none_pattern not in expr:
+                continue
+            new_expr = expr.replace(is_none_pattern, "True")
+            new_expr = new_expr.replace(is_not_none_pattern, "False")
+            logger.debug(f"Solve none in constraint, ori expr : '{expr}', after replace : '{new_expr}'")
+            constraint.expr = new_expr
 
     def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False):
         """
@@ -697,7 +730,7 @@ class ParamConstraintUtils(CommonDispatcher):
                 builder.declare_var(param_name, z3_param_type, dtype=param_dtype, range_value=range_values,
                                     length=param_length, is_print_log=is_print_log)
 
-        self.analysis_param_is_present(builder)
+        self.set_param_is_present(builder)
 
     def solve_z3_constraints(self, z3_constraints: List[InterParamConstraint]):
         """
@@ -725,7 +758,7 @@ class ParamConstraintUtils(CommonDispatcher):
 
         if all_static:
             self.choice_no_conflicts_expr_core(builder=builder, param_union_expr=expr_list,
-                                          param_static_expr_list=all_static)
+                                               param_static_expr_list=all_static)
 
         logger.info("Start whole expr solve")
         try:

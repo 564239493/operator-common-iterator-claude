@@ -16,6 +16,7 @@ from agent.generators.operator_param_combine.generate_combination_input.combinat
 
 logger = LazyLogger()
 
+
 class CombinationInputDataModel(BaseModel):
     dtype: List[str]
     range_value: List[Any]
@@ -24,6 +25,7 @@ class CombinationInputDataModel(BaseModel):
     dimension: List[int] = []
     shape_property: List[str] = []
     format: List[str] = []
+
 
 class CombinationInputGenerate:
     def __init__(self, operator_rule_data: OperatorRule, case_num: int = 1, json_save_path: str = None):
@@ -189,12 +191,7 @@ class CombinationInputGenerate:
                 f"Generate dtype property, param name : '{param_name}', dtype set is empty, use default data dtype")
             return ParamModelConfig.DEFAULT_PARAM_DTYPE_SET
         valid_dtype_set = [each for each in dtype_set if each not in ParamModelConfig.UNSUPPORT_DTYPE]
-        if self.operator_rule_data.dtype_support_description:
-            if self.choose_dtype_map_combination is None:
-                self.choose_dtype_map_combination = random.choice(self.operator_rule_data.dtype_support_description)
-            # 部分参数可能不在dtype_map中，如果不在dtype_map中，需要取inputs.dtype.value中获取
-            if param_name in self.choose_dtype_map_combination:
-                valid_dtype_set = [self.choose_dtype_map_combination.get(param_name)]
+        # 此处只需要将inputs中的dtype取值作为dtype值域,不能在dyupe_support_map中随机选择一组作为完整的值域
         logger.debug(
             f"End generate dtype property, "
             f"operator name: '{self.operator_rule_data.operator_name}', param name: '{param_name}', dtype: '{valid_dtype_set}'")
@@ -218,12 +215,7 @@ class CombinationInputGenerate:
             logger.error(
                 f"Generate format property, param name : '{param_name}', format set is empty or None")
             return None
-        if self.operator_rule_data.format_support_description:
-            if self.choose_format_map_combination is None:
-                self.choose_format_map_combination = random.choice(self.operator_rule_data.format_support_description)
-            # 部分参数可能不在dtype_map中，如果不在dtype_map中，需要取inputs.dtype.value中获取
-            if param_name in self.choose_format_map_combination:
-                format_set = [self.choose_format_map_combination.get(param_name)]
+        # 此处只需要将inputs中的dtype取值作为dtype值域,不能在dyupe_support_map中随机选择一组作为完整的值域
         logger.debug(
             f"End generate format property, "
             f"operator name: '{self.operator_rule_data.operator_name}', param name: '{param_name}', format: '{format_set}'")
@@ -440,6 +432,10 @@ class CombinationInputGenerate:
         self.constraint_generate.propagate_constraint_values(parameters, param_type_dict)
         valid_expr_list.extend(
             self.constraint_generate.check_constraint_expr(parameters=parameters, param_type_dict=param_type_dict))
+        dtype_support_constraint = self.constraint_generate.solve_dtype_support_description()
+        format_support_constraint = self.constraint_generate.solve_format_support_map()
+        valid_expr_list.extend(dtype_support_constraint)
+        valid_expr_list.extend(format_support_constraint)
         combination_input_data["constraints"] = valid_expr_list
         return combination_input_data
 

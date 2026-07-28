@@ -65,7 +65,7 @@ def _resolve_operator_name(operator_constraint: Union[str, os.PathLike, Mapping]
 
 
 def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
-                           case_num=1, jsonl_save_path=None) -> List:
+                           case_num=1, jsonl_save_path=None) -> tuple[List, str]:
     """
     算子用例生成的主入口。
 
@@ -109,22 +109,22 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     operator_constraint_data = _build_constraint_data(operator_constraint)
     if operator_constraint_data is None:
         logger.error("Failed to build operator constraint data, abort generation")
-        return []
+        return [], ""
     operator_name = _resolve_operator_name(operator_constraint, operator_constraint_data)
     logger.info(f"Start handle operator, operator name : {operator_name}")
     effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_constraint_data,
                                                                                     target_platform=platform)
     if effective_operator_constraint_data is None:
         logger.error(f"Effective operator rule data is None, operator name : {operator_name}")
-        return []
+        return [], operator_name
     # param_combination_generator = ParamCombinationGenerator(operator_rule_data=effective_operator_constraint_data,
     #                                                                 case_num=case_num)
     param_combination_generator = PairwiseParamCombinationGenerator(
         operator_rule_data=effective_operator_constraint_data, case_num=case_num,
         combination_data_save_path=jsonl_save_path)
-    param_combination_list = param_combination_generator.get_param_combination_input()
+    param_domain_data, param_combination_list = param_combination_generator.get_param_combination_input()
     case_list = operator_case_generate.handle_single_operator(
-        operator_constraint_data=effective_operator_constraint_data,
+        operator_constraint_data=effective_operator_constraint_data, param_domain_data=param_domain_data,
         param_combination_list=param_combination_list, target_platform=platform,
         case_num=case_num, jsonl_save_path=jsonl_save_path)
     return case_list, operator_name
