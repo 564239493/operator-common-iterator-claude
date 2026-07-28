@@ -18,6 +18,7 @@ from agent.generators.operator_param_combine.combination_result_generator.covera
 from agent.generators.operator_param_combine.combination_result_generator.generator import GeneratorOptions
 from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
 from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
+from common_utils.logger_util import LazyLogger
 from operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
 from operator_param_combine.combination_result_generator.constraint.evaluator import ConstraintEvaluator
 
@@ -25,6 +26,8 @@ _PARAMETER_ATTRIBUTE_KEYS = frozenset({
     "dtype", "range_value", "is_present", "length",
     "dimension", "shape_property", "format",
 })
+
+logger = LazyLogger()
 
 
 def load_config(json_path: str) -> GeneratorConfig:
@@ -59,11 +62,18 @@ def build_constraint(constraints: tuple[str, ...]) -> ConstraintProtocol | None:
 
     compiler = ConstraintCompiler()
     evaluator = ConstraintEvaluator()
-    compiled = [compiler.compile(expr) for expr in constraints]
+    compiled = []
+    for expr in constraints:
+        try:
+            cc = compiler.compile(expr)
+            compiled.append(cc)
+        except Exception as e:
+            logger.error(f"Failed to compile constraint, expr : '{expr}', error : {e}")
 
     class CombinedConstraint:
         def __init__(self):
             self.compiled = compiled
+
         def evaluate(self, context) -> bool:
             for constraint_compile in compiled:
                 try:
