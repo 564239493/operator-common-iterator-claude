@@ -13,6 +13,10 @@ torch_npu 算子文档
   -> 当前 OperatorRule constraints.json
 ```
 
+从 v3 起，每个 canonical `prompts/torch_npu_constraints_extract_vN.md` 都是可独立
+使用的完整版本，不从其它版本继承；v1/v2 仅保留用于历史任务复现。选择器与 ACLNN
+一致，只装配“一个完整基线 + 命中的知识模块”；run 内最终仍只有一个不可变完整快照。
+
 `scripts/select_torch_npu_prompt.py` 只扫描 `knowledge/torch_npu/**`；ACLNN 的
 `scripts/select_prompt.py` 只扫描 ACLNN 基线和 `prompts/modules/**`。运行时的 auto、
 `--operator-family hs` 和 `--operator-family torch_npu` 都会选择前一条链；ACLNN 选择
@@ -97,7 +101,7 @@ format 在 JSON 中必须分开。
 
 ### 基线
 
-`prompts/torch_npu_constraints_extract_v1.md` 负责：
+最新完整 `prompts/torch_npu_constraints_extract_vN.md` 基线负责：
 
 - 当前 11 字段 `OperatorRule` 契约和平台嵌套；
 - 原型顺序、required/optional、keyword-only 与默认值处理；

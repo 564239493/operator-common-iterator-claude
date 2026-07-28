@@ -55,6 +55,10 @@ WORKFLOW.md 定义的状态。
 `prompts/torch_npu_constraints_extract_vN.md`；`current_prompt` 指向 run 内
 `inputs/prompt_v1.md` 完整快照。
 
+ACLNN canonical 版本以及 torch_npu v3+ 都是独立完整基线，不使用跨版本继承或
+“沿用 vN”占位。selector 只在选定基线后追加当前文档命中的知识模块；torch_npu
+v1/v2 仅作为历史任务复现材料。
+
 默认（未传 `--prompt`）时，ACLNN 由 `scripts/select_prompt.py` 装配
 `prompts/modules/*.md`；torch_npu 由 `scripts/select_torch_npu_prompt.py` 装配
 `knowledge/torch_npu/**/*.md`。两个选择器不扫描对方的根目录。

@@ -27,6 +27,35 @@ _CONDITIONAL_SHAPE_SIGNAL_RE = re.compile(
 )
 
 
+def _looks_like_mojibake(text: str) -> bool:
+    """Detect strongly corrupted UTF-8/legacy-codepage text conservatively."""
+    if "\ufffd" in text:
+        return True
+    if not text:
+        return False
+    suspicious = sum(
+        "\u00c0" <= char <= "\u00ff" or char in "\u00b2\u00b3\u00b5\u00b7"
+        for char in text
+    )
+    cjk = sum("\u3400" <= char <= "\u9fff" for char in text)
+    return suspicious >= 3 and suspicious / len(text) >= 0.2 and cjk == 0
+
+
+def _validate_product_support_text(value) -> list[str]:
+    """Reject corrupted labels without assuming concrete platform names."""
+    product_support = value.get("product_support")
+    if not isinstance(product_support, list):
+        return []
+    errors: list[str] = []
+    for index, platform in enumerate(product_support):
+        if isinstance(platform, str) and _looks_like_mojibake(platform):
+            errors.append(
+                f"product_support[{index}] looks like mojibake: {platform!r}; "
+                "preserve the platform label from the source document as UTF-8"
+            )
+    return errors
+
+
 def load(path: str):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -627,7 +656,8 @@ def validate_constraints(value) -> list[str]:
 
         OperatorRule(**value)
         errors = (
-            validate_constraint_semantics(value)
+            _validate_product_support_text(value)
+            + validate_constraint_semantics(value)
             + array_length_errors
             + _validate_tensor_format_values(value)
             + _validate_conditional_shape_constraints(value)

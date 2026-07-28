@@ -36,3 +36,28 @@ depends_on: ["attention_family", "quantization"]
 - 原型 `attention_mode=0`，参数说明却称仅支持 2。保留默认值与支持限制，并在相关描述中写 `DOC_CONFLICT`；禁止静默把默认值改成 2 或把 0 加进支持集。
 - 参数表对 value/KV 打包最后一维的描述与调用示例中的 value/output 末维可能不一致。以参数/约束硬规格生成结构化规则，同时记录示例冲突；不要从示例单独改写 D。
 - 返回值文字称 shape/dtype 与 query 一致时，与示例输出末维冲突也要显式记录，不能选择性忽略。
+
+## 调试辅助提示（仅本算子）
+
+本节只承载算子专属的运行时观测线索，不向通用基线或 `attention_family` 扩散。
+后续 EXECUTE 失败信号若涉及 `kv_quant_sparse_flash_attention_tiling.cpp`，可与
+下列入口做交叉核验：
+
+- `CheckActualSeqLensQShape`：当 `actualSeqLengthsQ shape size is %d, it should be
+  equal to batch size[%d]` 出现时，对应通用基线 §3.10 中 `actual_seq_lengths_query`
+  的 batch 绑定；TND 的 query 没有 B 轴，B 由一维 actual-seq Tensor 的元素个数
+  定义，禁止锚到 head 轴 `query.shape[1]`。BSND 下才锚到 `query.shape[0]`。
+- `CheckActualSeqLensShape`：`actualSeqLengths shape size is %d, it should be
+  equal to batch size[%d]`，对应 `actual_seq_lengths_kv` 的 batch 绑定（§3.10）；
+  TND KV 没有 B 轴，PA_BSND 使用 `block_table.shape[0]`，不能使用
+  key/value 的 block_num 或 KV head 轴。
+- `CheckBlockTable`：`when the layout_kv is TND/BSND, block_table should be
+  null` 与 `when the layout_kv is PA_BSND, block_table should not be null`，对应
+  §3.9 的非 PA 缺省与 PA 反向蕴含。
+- `CheckFeatureMlaAntiquantPa`：`when page attention is enabled, block_size(%d)
+  should be %d-aligned`，对应 §3.11 的 PA `block_size` 16 对齐与
+  `sparse_block_size` 整除；`block_size` 是 `key.shape[1]`，不是函数原型参数。
+
+上述函数入口与 `2^63-1`、`int8 K/V 共享 shape`、`layout_query ↔ layout_kv 兼容
+表`等已经在通用基线表达为可执行约束；本节不引入新硬约束，仅作为失败诊断与
+约束方向复核的辅助。

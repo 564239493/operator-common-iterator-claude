@@ -596,6 +596,15 @@ def main() -> int:
             "default 流程不使用。"
         ),
     )
+    parser.add_argument(
+        "--hs-scenario-mode",
+        choices=("original", "planned"),
+        default=None,
+        help=(
+            "HS torch_npu 场景模式；TTK 执行阶段透传并记录，"
+            "用例本身必须已按该模式生成。"
+        ),
+    )
     args = parser.parse_args()
 
     cases_path = resolve_input_path(args.cases)
@@ -896,6 +905,7 @@ def main() -> int:
         )
         result.update({
             "selected_platform": selected_platform,
+            "hs_scenario_mode": args.hs_scenario_mode,
             "platform_retarget": retarget_info,
             "input_artifacts": _artifact_fingerprints(
                 iter_dir, cases_path

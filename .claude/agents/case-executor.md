@@ -67,12 +67,15 @@ dummy executor。
 HS/E2E 默认加载可用的自主推导或源码 Golden，但精度失败不得阻塞功能流程；
 `--no-golden` 仅关闭算子 Golden，不得关闭内部格式 runtime bootstrap。
 
-`python scripts/execute_cases.py --test-framework ttk --generate --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json`
+`python scripts/execute_cases.py --test-framework ttk --generate --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json --hs-scenario-mode <run_state.hs_scenario_mode>`
 
 `--generate` 只产生 Linux NPU 节点命令；`--mode real` 从 `servers.json.ttk` 读取
 `remote_root/repo_path/python/env_init_script`，创建算子名_时间点目录，上传 CSV/plugin，
 HS 执行 E2E 并下载到 `ttk_artifacts/`；ACLNN 执行原生 ACLNN 模式并下载到
 `ttk_aclnn_artifacts/`。两者均不得调用 ATK golden 推导或上传 `/home/operator_atk`。
+
+`python scripts/execute_cases.py --test-framework ttk --mode real --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json --server-config servers.json --hs-scenario-mode <run_state.hs_scenario_mode>`
+
 ## fusion 模式（通算融合算子，`run_state.execution_strategy=="fusion"`）
 
 先读 `runs/<run-id>/run_state.json` 取 `execution_strategy` 确认为 `fusion`（非 fusion

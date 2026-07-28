@@ -88,7 +88,10 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
       `engine_error` 终止流程。
    - `quality-reviewer`
 6. 若基础产物可读、至少生成一条用例且执行器已完成运行，更新 run_state 为 SUCCESS
-   并结束。Golden 覆盖率、准确度、场景覆盖率和语义审计 warning 当前不作为门禁。
+   并结束。Golden 覆盖率和准确度 warning 当前不作为门禁。HS+TTK 所选执行平台
+   `semantically_clean_count=0`，或 `planned` 模式缺失计划内必需场景时，生成器必须
+   以 `HS_SEMANTIC_GATE_FAILED` 停在 GENERATE，不得进入 EXECUTE；其他部分语义
+   warning 仍按非阻断处理。
 7. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
    diagnose 域（读 execution_result + uncertain-doc + source_raw，error_string
    匹配，命中的 uncertain 追加到 `inputs/supplementary-doc.md`，产

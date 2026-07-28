@@ -87,10 +87,14 @@ KV-SFA 当前通过 TTK `input_data_ranges` 只能可靠构造单元素 actual s
 
 ## 执行准备
 
+执行准备和真实执行必须透传生成阶段记录的
+`run_state.hs_scenario_mode`，避免 `execution_result` 丢失场景模式审计信息。
+
 ```bash
 python scripts/execute_cases.py --test-framework ttk --generate \
   --cases runs/<run>/iter_001/cases_ttk.csv \
-  --output runs/<run>/iter_001/execution_result.json
+  --output runs/<run>/iter_001/execution_result.json \
+  --hs-scenario-mode <run_state.hs_scenario_mode>
 ```
 
 对于已经生成完三个（或多个）平台 JSON 的旧任务，无需重新 EXTRACT/GENERATE。
@@ -123,7 +127,8 @@ python3 -m ttk e2e -i cases_ttk.csv --backend npu
 ```bash
 python scripts/execute_cases.py --test-framework ttk --mode real \
   --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json \
-  --server-config servers.json
+  --server-config servers.json \
+  --hs-scenario-mode <run_state.hs_scenario_mode>
 ```
 
 完成后同步到 `<iter>/ttk_artifacts/`：`results.csv`、`log/`、远端 stdout/stderr。

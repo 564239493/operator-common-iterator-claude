@@ -4,7 +4,7 @@
 The ACLNN selector in ``select_prompt.py`` and this selector intentionally use
 different roots.  A torch_npu run receives:
 
-1. the latest ``prompts/torch_npu_constraints_extract_vN.md`` baseline;
+1. one complete ``prompts/torch_npu_constraints_extract_vN.md`` baseline;
 2. the always-on torch_npu documentation conventions; and
 3. only the torch_npu knowledge modules matched by the current document.
 
@@ -23,6 +23,13 @@ ROOT = Path(__file__).resolve().parents[1]
 KNOWLEDGE_ROOT = ROOT / "knowledge" / "torch_npu"
 COMMON_PATH = KNOWLEDGE_ROOT / "common" / "documentation_conventions.md"
 PATTERNS_DIR = KNOWLEDGE_ROOT / "operator_patterns"
+# The contract is dynamic: concrete platform keys always come from the current
+# document's product_support values, never from a hard-coded platform list.
+PLATFORM_CONTRACT_MARKERS = (
+    "### 3.2 平台嵌套",
+    "`product_support` 中的每个平台建立 key",
+    "不能创建 `common` 平台桶",
+)
 
 # General family knowledge must precede exact-operator review checklists.
 MODULE_ORDER = [
@@ -178,6 +185,18 @@ def classify(doc_text: str, doc_name: str = "") -> list[str]:
     )
 
 
+def validate_prompt_contract(prompt_text: str) -> None:
+    """Fail before EXTRACT when the assembled prompt lost its core schema."""
+    missing = [
+        marker for marker in PLATFORM_CONTRACT_MARKERS if marker not in prompt_text
+    ]
+    if missing:
+        raise ValueError(
+            "assembled torch_npu prompt is incomplete; missing dynamic platform "
+            f"contract markers: {missing}"
+        )
+
+
 def assemble(base_path: Path, doc_path: Path, output_path: Path) -> list[str]:
     """Write a complete per-run torch_npu prompt snapshot and return modules."""
     if not COMMON_PATH.is_file():
@@ -195,8 +214,10 @@ def assemble(base_path: Path, doc_path: Path, output_path: Path) -> list[str]:
             parts.append(parsed[name]["body"].rstrip())
             parts.append("")
 
+    assembled = "\n".join(parts).rstrip() + "\n"
+    validate_prompt_contract(assembled)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+    output_path.write_text(assembled, encoding="utf-8")
     return ["common/documentation_conventions", *names]
 
 

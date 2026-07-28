@@ -54,6 +54,34 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _hs_generation_gate_errors(
+    platform_audits: dict[str, dict[str, Any]],
+    selected_platform: str,
+    scenario_mode: str,
+) -> list[str]:
+    """Return blockers that make a real HS+TTK execution predictably invalid."""
+    selected = platform_audits.get(selected_platform)
+    if not isinstance(selected, dict):
+        return [f"missing HS semantic audit for selected platform {selected_platform!r}"]
+
+    case_count = int(selected.get("case_count") or 0)
+    clean_count = int(selected.get("semantically_clean_count") or 0)
+    errors: list[str] = []
+    if case_count > 0 and clean_count == 0:
+        errors.append(
+            f"selected platform {selected_platform!r} has 0/{case_count} "
+            "semantically clean HS cases"
+        )
+
+    missing_scenarios = selected.get("missing_scenarios") or []
+    if scenario_mode == "planned" and missing_scenarios:
+        errors.append(
+            f"planned HS generation missed required scenarios for "
+            f"{selected_platform!r}: {missing_scenarios}"
+        )
+    return errors
+
+
 def _setup_iter_log(iter_dir: Path) -> Path | None:
     """Mirror the script's run into ``<iter_dir>/generation.log``."""
     try:
@@ -847,6 +875,26 @@ def _main() -> int:
                 "HS scenario coverage warnings (non-blocking): %s",
                 json.dumps(missing_by_platform, ensure_ascii=False),
             )
+        generation_gate_errors = _hs_generation_gate_errors(
+            platform_audits,
+            selected_platform,
+            args.hs_scenario_mode,
+        )
+        if generation_gate_errors:
+            failure_payload = {
+                "state": "failed",
+                "code": "HS_SEMANTIC_GATE_FAILED",
+                "message": (
+                    "HS semantic generation gate rejected cases before TTK "
+                    "conversion/EXECUTE"
+                ),
+                "selected_platform": selected_platform,
+                "hs_scenario_mode": args.hs_scenario_mode,
+                "errors": generation_gate_errors,
+                "per_platform_hs_case_audits": platform_audit_paths,
+            }
+            _atomic_write_json(generation_status_path, failure_payload)
+            raise RuntimeError("; ".join(generation_gate_errors))
         ttk_output = output_path if output_path.suffix.lower() == ".csv" else output_path.with_suffix(".csv")
         tensor_order = _ordered_input_tensor_names(constraints)
         ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
@@ -988,7 +1036,7 @@ def _record_generation_failure(argv: list[str], exc: BaseException) -> None:
     try:
         if status_path.is_file():
             current = json.loads(status_path.read_text(encoding="utf-8"))
-            if current.get("state") == "complete":
+            if current.get("state") in {"complete", "failed"}:
                 return
     except (OSError, json.JSONDecodeError):
         pass

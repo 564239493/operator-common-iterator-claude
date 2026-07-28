@@ -58,7 +58,10 @@ CSV 只是该统一中间模型的框架 adapter 产物。同时检查 `ttk_conv
 
 `post_check_report.json` 不是必需产物，默认不创建。Z3 约束、Python 复检、
 场景覆盖与 domain coverage 的问题可保留在 `generation.log`、
-`generation_summary.json` 或转换 audit 中，但不得作为删除 case/拒绝执行的门禁。
+`generation_summary.json` 或转换 audit 中。一般语义 warning 仍不删除 case；但所选
+执行平台 `semantically_clean_count=0` 时必须由生成器以
+`HS_SEMANTIC_GATE_FAILED` 阻断，禁止进入 TTK 转换/EXECUTE。`planned` 模式缺失其
+计划内必需场景时同样阻断。
 
 正式生成器调试日志按算子和平台分别写入
 `logs/generate_case_<operator>_<platform>.log`。同一平台的分场景生成共用该平台日志，

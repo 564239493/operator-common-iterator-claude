@@ -82,7 +82,8 @@ HS/E2E 在 command preparation 和 real 执行前都会重新核对服务器平�
 
 ```text
 python scripts/execute_cases.py --test-framework ttk --generate \
-  --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json
+  --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json \
+  --hs-scenario-mode <run_state.hs_scenario_mode>
 ```
 
 真实执行使用：
@@ -90,7 +91,8 @@ python scripts/execute_cases.py --test-framework ttk --generate \
 ```text
 python scripts/execute_cases.py --test-framework ttk --mode real \
   --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json \
-  --server-config servers.json
+  --server-config servers.json \
+  --hs-scenario-mode <run_state.hs_scenario_mode>
 ```
 
 默认允许使用自主推导或源码 Golden，但精度失败只记录、不阻塞功能执行。
