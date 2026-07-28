@@ -97,7 +97,7 @@ class Z3ConstraintBuilder:
             if is_print_log:
                 logger.debug(f"[Declare] {var_name} -> {type_hint} (dtype: {dtype}, range_value: {range_value})")
         except Exception as e:
-            logger.error(f"[Declare] Failed to create var '{var_name}', err msg : {e}")
+            logger.error(f"[Declare] Failed to create var '{var_name}', kwargs : '{kwargs}', err msg : '{e}'")
 
     def get_or_create_var(self, var_name):
         if var_name not in self.var_map:

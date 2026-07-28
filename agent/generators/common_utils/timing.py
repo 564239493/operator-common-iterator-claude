@@ -104,6 +104,7 @@ def print_summary(file=None) -> None:
         header,
         sep,
     ]
+    total_stats = stats.pop("TOTAL", None)
     for label, s in stats.items():
         total_s = s.total
         avg_ms = (total_s / s.count) * 1000
@@ -113,6 +114,18 @@ def print_summary(file=None) -> None:
             f"{label:<50s} {s.count:>6d}  {total_s:>9.3f}  "
             f"{avg_ms:>9.2f}  {min_ms:>9.2f}  {max_ms:>9.2f}"
         )
+
+    if total_stats is not None:
+        s = total_stats
+        total_s = s.total
+        avg_ms = (total_s / s.count) * 1000
+        min_ms = s.min * 1000
+        max_ms = s.max * 1000
+        lines.append(
+            f"{'TOTAL':<50s} {s.count:>6d}  {total_s:>9.3f}  "
+            f"{avg_ms:>9.2f}  {min_ms:>9.2f}  {max_ms:>9.2f}"
+        )
+
     lines.append("=" * len(header))
 
     out = "\n".join(lines)

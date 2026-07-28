@@ -18,7 +18,6 @@ from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import DataMatchMap, GlobalConfig, ParamModelConfig
 from agent.generators.data_definition.param_models_def import RunPlatform
 from agent.generators.common_model_definition import OperatorRule, ParamAttributes, ValueWithSrcText
-from opci.resources.claude.hooks.guard_project_writes import is_inside
 
 logger = LazyLogger()
 

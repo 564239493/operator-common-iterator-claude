@@ -3,7 +3,7 @@ import json
 import os.path
 import time
 from itertools import islice, cycle
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from agent.generators import OperatorRule
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
@@ -47,10 +47,10 @@ class PairwiseParamCombinationGenerator:
         constraints = tuple(combination_input_data.get("constraints", []))
         return GeneratorConfig(parameters=parameters, constraints=constraints)
 
-    def get_param_combination_input(self) -> List[OperatorParameterCombination] | None:
+    def get_param_combination_input(self) -> tuple[Dict[str, Any], List[OperatorParameterCombination]] | tuple[None, None]:
         if self.operator_rule_data is None:
             logger.error(f"Get param combination failed, input operator constraint data is None")
-            return None
+            return None, None
 
         logger.info(
             f"Start pairwise parameter combination generation, "
@@ -58,48 +58,60 @@ class PairwiseParamCombinationGenerator:
         )
         reset()
         t0 = time.perf_counter()
-        with track_block("Parameter info generator"):
-            combination_input_generator = CombinationInputGenerate(operator_rule_data=self.operator_rule_data)
-            combination_input_data = combination_input_generator.generate_combination_input_data()
+        try:
+            with track_block("Parameter info generator"):
+                combination_input_generator = CombinationInputGenerate(operator_rule_data=self.operator_rule_data)
+                combination_input_data = combination_input_generator.generate_combination_input_data()
+                param_domain_data_save_path = os.path.join(self.combination_data_save_path,
+                                                          f"{self.operator_rule_data.operator_name}_domain_data.json")
+                with open(param_domain_data_save_path, "w", encoding="utf-8") as f:
+                    json.dump(combination_input_data, f, indent=2, ensure_ascii=False, default=str)
 
-        logger.debug(f"End generate combination input data, operator name : '{self.operator_rule_data.operator_name}'")
-        with track_block("Constraint build"):
-            generator_config = PairwiseParamCombinationGenerator.load_config(combination_input_data=combination_input_data)
-            generator_options = GeneratorOptions()
-            constraint_utils = build_constraint(generator_config.constraints)
-        logger.debug(f"Constraint build success, operator : '{self.operator_rule_data.operator_name}'")
-        with track_block("Universe generator"):
-            universe, tracker, builder = build_universe_and_tracker(generator_config, constraint_utils)
+            logger.debug(
+                f"End generate combination input data, operator name : '{self.operator_rule_data.operator_name}'")
+            with track_block("Constraint build"):
+                generator_config = PairwiseParamCombinationGenerator.load_config(
+                    combination_input_data=combination_input_data)
+                generator_options = GeneratorOptions()
+                constraint_utils = build_constraint(generator_config.constraints)
+            logger.debug(f"Constraint build success, operator : '{self.operator_rule_data.operator_name}'")
+            with track_block("Universe generator"):
+                universe, tracker, builder = build_universe_and_tracker(generator_config, constraint_utils)
 
-        with track_block("Generate testcase suites"):
-            candidate_gen = CandidateGenerator(
-                config=generator_config,
-                constraint=constraint_utils,
-                random_seed=generator_options.random_seed,
-                universe=universe,
-                coverage_tracker=tracker,
-            )
-            gen = CoverageDrivenGenerator(
-                universe=universe,
-                coverage_tracker=tracker,
-                constraint=constraint_utils,
-                config=generator_options,
-                candidate_generator=candidate_gen,
-                pair_builder=builder,
-            )
-            combination_data_result = gen.generate()
+            with track_block("Generate testcase suites"):
+                candidate_gen = CandidateGenerator(
+                    config=generator_config,
+                    constraint=constraint_utils,
+                    random_seed=generator_options.random_seed,
+                    universe=universe,
+                    coverage_tracker=tracker,
+                )
+                gen = CoverageDrivenGenerator(
+                    universe=universe,
+                    coverage_tracker=tracker,
+                    constraint=constraint_utils,
+                    config=generator_options,
+                    candidate_generator=candidate_gen,
+                    pair_builder=builder,
+                )
+                combination_data_result = gen.generate()
 
-        if self.combination_data_save_path is not None:
-            combination_data_save_path = os.path.join(self.combination_data_save_path,
-                                                      f"{self.operator_rule_data.operator_name}_combination_data.json")
-            PairwiseParamCombinationGenerator.save_result(combination_data_result, combination_data_save_path)
-            timing_path = os.path.join(self.combination_data_save_path,
-                                       f"{self.operator_rule_data.operator_name}_timing.txt")
-            record_time("TOTAL", time.perf_counter() - t0)
-            with open(timing_path, "w") as f:
-                print_summary(file=f)
-        combination_result = self.transformer_to_combination_property(combination_data_result)
-        return combination_result
+            if self.combination_data_save_path is not None:
+                combination_data_save_path = os.path.join(self.combination_data_save_path,
+                                                          f"{self.operator_rule_data.operator_name}_combination_data.json")
+                PairwiseParamCombinationGenerator.save_result(combination_data_result, combination_data_save_path)
+                timing_path = os.path.join(self.combination_data_save_path,
+                                           f"{self.operator_rule_data.operator_name}_timing.txt")
+                record_time("TOTAL", time.perf_counter() - t0)
+                with open(timing_path, "w") as f:
+                    print_summary(file=f)
+            combination_result = self.transformer_to_combination_property(combination_data_result)
+        except Exception as e:
+            logger.error(
+                f"Generator parameter combination failed, combination result is None or empty, "
+                f"operator name : '{self.operator_rule_data.operator_name}', err msg : '{str(e)}'")
+            return None, None
+        return combination_input_data, combination_result
 
     @staticmethod
     def extract_cases(result: GenerationResult) -> list[dict]:

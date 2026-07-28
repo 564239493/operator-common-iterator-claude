@@ -699,14 +699,14 @@ class TensorVar(BaseVar):
         ProdShape = z3.RecFunction(prod_func_name, SeqIntSort, z3.IntSort())
         s_var = z3.Const(f"{prod_func_name}_arg", SeqIntSort)
         z3.RecAddDefinition(ProdShape, [s_var],
-            z3.If(z3.Length(s_var) == 0,
-                   z3.IntVal(1),
-                   s_var[0] * ProdShape(
-                       z3.SubSeq(s_var, 1, z3.Length(s_var) - 1))))
+                            z3.If(z3.Length(s_var) == 0,
+                                  z3.IntVal(1),
+                                  s_var[0] * ProdShape(
+                                      z3.SubSeq(s_var, 1, z3.Length(s_var) - 1))))
         self.solver.add(ProdShape(self.shape) < ParamModelConfig.TENSOR_TENSOR_ELEMENT_LIMIT)
 
         # 3. 添加约束
-        self._add_dtype_constraints(dtype, allowed_dtypes)
+        self._add_dtype_constraints(allowed_dtypes)
         self._add_format_constraints(allowed_formats)
         # 不再添加 range_value 约束，仅作为建议保存
         # self._add_initial_range_constraints(range_value)
@@ -715,19 +715,12 @@ class TensorVar(BaseVar):
         # range_value 的 case 跳过此死重量，避免 fp16/bf16/fp32 巨大实数上下界的 forall 拖垮
         # Z3 量词实例化（见 BaseVar.range_value / get_element_at）。
 
-    def _add_dtype_constraints(self, dtype, allowed_dtypes):
+    def _add_dtype_constraints(self, allowed_dtypes):
         # A. 定义域约束
         if allowed_dtypes:
             valid_dtypes = [dt for dt in allowed_dtypes if dt in DTYPE_MAP]
             if valid_dtypes:
                 self.solver.add(z3.Or([self.dtype == DTYPE_MAP.get(dt) for dt in valid_dtypes]))
-
-        # # B. 初始值约束
-        # if dtype:
-        #     if dtype in DTYPE_MAP:
-        #         self.solver.add(self.dtype == DTYPE_MAP.get(dtype))
-        #     else:
-        #         raise ValueError(f"Unknown dtype '{dtype}'")
 
     def _add_format_constraints(self, allowed_formats):
         if allowed_formats:
@@ -806,7 +799,8 @@ class TensorVar(BaseVar):
 
 
 class TensorListVar(BaseVar):
-    def __init__(self, name, solver, dtype=None, allowed_dtypes=None, allowed_formats=None, range_value=None, length=None):
+    def __init__(self, name, solver, dtype=None, allowed_dtypes=None, allowed_formats=None, range_value=None,
+                 length=None):
         super().__init__(name, solver)
         self.name = name
         self.type = "tensor_list"
@@ -844,10 +838,10 @@ class TensorListVar(BaseVar):
         ProdShape = z3.RecFunction(prod_func_name, SeqIntSort, z3.IntSort())
         s_var = z3.Const(f"{prod_func_name}_arg", SeqIntSort)
         z3.RecAddDefinition(ProdShape, [s_var],
-            z3.If(z3.Length(s_var) == 0,
-                   z3.IntVal(1),
-                   s_var[0] * ProdShape(
-                       z3.SubSeq(s_var, 1, z3.Length(s_var) - 1))))
+                            z3.If(z3.Length(s_var) == 0,
+                                  z3.IntVal(1),
+                                  s_var[0] * ProdShape(
+                                      z3.SubSeq(s_var, 1, z3.Length(s_var) - 1))))
         self.solver.add(ProdShape(self.elem_shape) < ParamModelConfig.TENSOR_TENSOR_ELEMENT_LIMIT)
 
         self._add_dtype_constraints(dtype, allowed_dtypes)
@@ -972,7 +966,9 @@ class ListVar(BaseVar):
     def resolve_model(self, model):
         # 如果变量或属性为无关变量，即约束表达式中不涉及该变量和属性，则不要将该属性和变量添加至结果中
         decls = model.decls()
-        result = {'type': self.type}
+
+        is_present = z3.is_true(model.eval(self.is_present)) if self.is_present.decl() in model.decls() else True
+        result = {'type': self.type, "is_present": is_present}
 
         if self.z3_var.decl() not in decls:
             return result
@@ -981,7 +977,10 @@ class ListVar(BaseVar):
         if seq_len is None:
             logger.warning(f"ListVar '{self.name}' length is not constrained, treating as empty list.")
             # 无法确定长度，返回空列表或根据 input_spec 返回
-            return {'type': self.type, 'dtype': self.dtype_arg, 'length': 0, 'range_values': self._range_spec}
+            result["dtype"] = self.dtype_arg
+            result["length"] = 0
+            result["range_values"] = self._range_spec
+            return result
 
         values = []
         for i in range(seq_len):
@@ -997,8 +996,10 @@ class ListVar(BaseVar):
         resolved_range = DataHandleUtil.range_value_post_processing(dtype_str, resolved_range)
         # 智能解析 Range
         # resolved_range = BaseVar._resolve_range_from_set(values, self._range_spec)
-        is_present = z3.is_true(model.eval(self.is_present)) if self.is_present.decl() in model.decls() else True
-        return {'type': self.type, 'dtype': self.dtype_arg, 'length': seq_len, 'range_values': resolved_range, 'is_present': is_present}
+        result["dtype"] = self.dtype_arg
+        result["length"] = seq_len
+        result["range_values"] = resolved_range
+        return result
 
 
 class ScalarVar(BaseVar):
@@ -1020,8 +1021,10 @@ class ScalarVar(BaseVar):
         return self.z3_var
 
     def resolve_model(self, model):
-        result = {'type': self.type}
         decls = model.decls()
+        is_present = z3.is_true(model.eval(self.is_present)) if self.is_present.decl() in model.decls() else True
+        result = {'type': self.type, "is_present": is_present}
+
         if self.z3_var.decl() not in decls:
             return result
 
@@ -1042,5 +1045,6 @@ class ScalarVar(BaseVar):
         #     py_val,
         #     self._range_spec
         # )
-        is_present = z3.is_true(model.eval(self.is_present)) if self.is_present.decl() in model.decls() else True
-        return {'type': self.type, 'dtype': self.dtype_arg, 'range_values': resolved_range, 'is_present': is_present}
+        result["dtype"] = self.dtype_arg
+        result["range_values"] = resolved_range
+        return result

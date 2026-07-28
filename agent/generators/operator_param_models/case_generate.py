@@ -147,6 +147,12 @@ class CaseGenerate:
             # optional_param_probability = random.random()
             # if param_attributes.is_optional and optional_param_probability > GlobalConfig.OPTIONAL_PARAM_PROBABILITY:
             #     continue
+            param_range_profile_ori = param_attributes.range_value_profile
+            if param_range_profile_ori is None:
+                logger.debug(
+                    f"In generate case, operator : '{self.operator_name}', param : '{param_name}', range value ori is None")
+                # 如果某个参数可取值范围为None，则该参数用例生成，即生成的用例中没有该参数
+                continue
             if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
                 param_shape = self.generate_param_shape(param_name, param_attributes.shape_property.dim_count,
                                                         param_attributes.shape_property.dim_value_profile)
@@ -272,7 +278,6 @@ class CaseGenerate:
         #                                            param_range_model_name=param_range_model,
         #                                            param_range_rule=param_rule)
         # param_range_data = param_range_instance.model_dump()
-
 
         if isinstance(param_range_data, list):
             param_range_data = [int(each) for each in param_range_data]

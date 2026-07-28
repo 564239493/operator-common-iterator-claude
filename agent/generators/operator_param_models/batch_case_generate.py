@@ -8,7 +8,7 @@
 import json
 import os.path
 import time
-from typing import Dict, List
+from typing import Dict, List, Any
 from pathlib import Path
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
@@ -55,12 +55,14 @@ class OperatorCaseGenerator:
 
     def handle_single_operator(self, operator_constraint_data: OperatorRule,
                                param_combination_list: List[OperatorParameterCombination],
+                               param_domain_data: Dict[str, Any],
                                target_platform=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
                                case_num: int = 1, jsonl_save_path: str = None):
         """
         读取参数组合文件，xxx.tsv，解析数据，并生成对用的用例
         :param operator_constraint_data: 算子约束结构化数据
         :param param_combination_list: 算子参数组合用例数据
+        :param param_domain_data: 参数属性的值域
         :param target_platform: 执行机环境
         :param case_num: 生成用例的个数，默认为1
         :param jsonl_save_path: JSONL 增量 checkpoint 保存目录，为 None 时不写 checkpoint
@@ -72,7 +74,7 @@ class OperatorCaseGenerator:
         logger.info(
             f"Start generate cases, operator name : {operator_name}, "
             f"case num : {case_num}, target platform : {target_platform}")
-        if param_combination_list is None:
+        if param_combination_list is None or len(param_combination_list) == 0:
             logger.error(f"Target platform: {target_platform}, no param combinations match")
             return []
         params_role = self.get_params_roles(operator_name)
@@ -92,8 +94,10 @@ class OperatorCaseGenerator:
             param_combination = param_combination_list[case_index % len(param_combination_list)]
             param_combination_dict = {each.param_name: each for each in param_combination.parameter_property}
             case_config = case_generate_instance.generate_case(param_combination_dict)
-            correct_status, correct_case = self.correct_case(case_config, operator_constraint_data,
-                                                             param_combination_dict)
+            correct_status, correct_case = self.correct_case(case=case_config,
+                                                             operator_rule_instance=operator_constraint_data,
+                                                             param_combinations=param_combination_dict,
+                                                             param_domain_data=param_domain_data)
             t_end = time.time()
             solve_time += 1
             logger.debug(
@@ -142,7 +146,7 @@ class OperatorCaseGenerator:
             with open(param_combinations_path, 'w', encoding='utf-8') as f:
                 json.dump(combos_dict, f, ensure_ascii=False, indent=4)
 
-    def correct_case(self, case: CaseConfig, operator_rule_instance: OperatorRule,
+    def correct_case(self, case: CaseConfig, operator_rule_instance: OperatorRule, param_domain_data: Dict[str, Any],
                      param_combinations: Dict[str, ParameterPropertyData] = None, dump_case: bool = False):
         """
         根据算子参数的约束条件修正参数取值
@@ -151,7 +155,9 @@ class OperatorCaseGenerator:
                      is_generate_real_data: bool = False
         :param case: 算子用例对象
         :param param_combinations: 此用例生成时使用的参数组合信息，即pict输出的组合数据
+        :param param_domain_data: 参数属性的值域
         :param operator_rule_instance: 算子结构化数据，由模型辅助生成的结构化数据,，已转换为数据的实例
+        :param dump_case: 是否将中间过程的数据保存
         :return: 修正后的算子用例
         """
         if dump_case:
@@ -164,6 +170,7 @@ class OperatorCaseGenerator:
         param_constraint_patch = ParamConstraintUtils(case=case, case_generate_instance=case_generate_instance,
                                                       inter_param_constraints=inter_param_constraints,
                                                       param_combinations=param_combinations,
+                                                      param_domain_data=param_domain_data,
                                                       operator_rule_data=operator_rule_instance)
         correct_status = param_constraint_patch.correct_operator_param()
         for input_data in case.inputs:
@@ -227,17 +234,18 @@ class OperatorCaseGenerator:
             operator_rule_data = data_handle_util.handle_operator_rule_data(operator_rule_data_path)
             effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_rule_data)
             operator_name, _ = os.path.splitext(file)
-            param_combination_generator = PairwiseParamCombinationGenerator(operator_rule_data=operator_rule_data,
+            param_domain_data, param_combination_generator = PairwiseParamCombinationGenerator(operator_rule_data=operator_rule_data,
                                                                             case_num=case_num,
                                                                             combination_data_save_path=case_save_path)
             # param_combination_generator = PairwiseParamCombinationGenerator(operator_rule_data=operator_rule_data,
             #                                                                 case_num=case_num)
             param_combination_list = param_combination_generator.get_param_combination_input()
-            case_list = self.handle_single_operator(operator_constraint_data=effective_operator_constraint_data,
-                                                    target_platform=target_platform,
-                                                    case_num=case_num,
-                                                    param_combination_list=param_combination_list,
-                                                    jsonl_save_path=case_save_path)
+            self.handle_single_operator(operator_constraint_data=effective_operator_constraint_data,
+                                        target_platform=target_platform,
+                                        case_num=case_num,
+                                        param_domain_data=param_domain_data,
+                                        param_combination_list=param_combination_list,
+                                        jsonl_save_path=case_save_path)
             data_handle_util.convert_jsonl_to_json(api_name=operator_name, jsonl_save_path=case_save_path,
                                                    json_save_path=case_save_path)
             logger.info(f"End handle operator data, file index : {index}/{tsv_file_num}, file name : {file}")
