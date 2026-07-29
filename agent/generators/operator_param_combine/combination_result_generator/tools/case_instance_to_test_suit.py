@@ -12,8 +12,10 @@ from agent.generators.data_definition.param_models_def import ParamShapeRoleRule
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.operator_param_models.param_shape_models import ParamShapeModel
 from agent.generators.operator_param_combine.combination_generator_main import PairwiseParamCombinationGenerator
-from agent.generators.operator_param_combine.combination_result_generator.generator import GenerationResult, TestSuite, TestCase
-from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterAttribute
+from agent.generators.operator_param_combine.combination_result_generator.generator import GenerationResult, TestSuite, \
+    TestCase
+from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import \
+    ParameterAttribute
 
 logger = LazyLogger()
 
@@ -82,7 +84,7 @@ class CaseInstanceToTestSuit:
         """
         range_model_data = param_role_model.get(model_name)
         if range_model_data is not None:
-            range_model_value = float(range_model_data[0].get("value"))
+            range_model_value = float(range_model_data[0].value)
         else:
             range_model_value = None
         return range_model_value
@@ -187,27 +189,27 @@ class CaseInstanceToTestSuit:
             testcase.values = defaultdict(dict)
             for input_data in case_input:
                 param_name = input_data.get("name")
-                testcase.values[param_name][ParameterAttribute.IS_PRESENT] = True
+                testcase.values[param_name][ParameterAttribute.IS_PRESENT.value] = True
                 dtype_value = input_data.get("dtype")
                 if dtype_value is not None:
-                    testcase.values[param_name][ParameterAttribute.DTYPE] = dtype_value
+                    testcase.values[param_name][ParameterAttribute.DTYPE.value] = dtype_value
                 length_value = input_data.get("length")
                 if length_value is not None:
-                    testcase.values[param_name][ParameterAttribute.LENGTH] = length_value
+                    testcase.values[param_name][ParameterAttribute.LENGTH.value] = length_value
                 shape_value = input_data.get("shape")
                 if shape_value is not None:
                     dimension_value = len(shape_value)
-                    testcase.values[param_name][ParameterAttribute.DIMENSION] = dimension_value
+                    testcase.values[param_name][ParameterAttribute.DIMENSION.value] = dimension_value
                     shape_property = self.transform_shape_to_model(shape_value)
-                    testcase.values[param_name][ParameterAttribute.SHAPE_PROPERTY] = shape_property
-                range_value = input_data.get("range")
+                    testcase.values[param_name][ParameterAttribute.SHAPE_PROPERTY.value] = shape_property
+                range_value = input_data.get("range_values")
                 if range_value is not None:
                     range_value_profile = self.transform_range_value_to_model(range_value, dtype_value)
-                    testcase.values[param_name][ParameterAttribute.RANGE_VALUE] = range_value_profile
+                    testcase.values[param_name][ParameterAttribute.RANGE_VALUE.value] = range_value_profile
                 format_value = input_data.get("format")
                 if format_value is not None:
-                    testcase.values[param_name][ParameterAttribute.FORMAT] = format_value
-                test_suits.add(testcase)
+                    testcase.values[param_name][ParameterAttribute.FORMAT.value] = format_value
+            test_suits.add(testcase)
         case_generate_result = GenerationResult(suite=test_suits, coverage_rate=0, iterations=0, elapsed_time=0)
         case_data_save_path = os.path.join(self.case_suit_save_path, f"{operator_name}_case_abstract_data.json")
         PairwiseParamCombinationGenerator.save_result(case_generate_result, case_data_save_path)
@@ -223,23 +225,68 @@ class CaseInstanceToTestSuit:
             case_data = json.load(f)
             return case_data
 
+    @staticmethod
+    def batch_transform(case_dir: str, abstract_save_path: str) -> None:
+        """对目录下所有 {operator_name}.json 用例文件批量转换。
+
+        Args:
+            case_dir: 用例 JSON 文件所在目录
+            abstract_save_path: 抽象数据保存目录
+        """
+        if not os.path.isdir(case_dir):
+            logger.error(f"Case directory does not exist: {case_dir}")
+            return
+        os.makedirs(abstract_save_path, exist_ok=True)
+
+        case_files = [
+            f for f in os.listdir(case_dir)
+            if f.endswith(".json")
+               and not f.endswith("_domain_data.json")
+               and not f.endswith("_combination_data.json")
+               and not f.endswith("_case_abstract_data.json")
+        ]
+
+        for file_name in sorted(case_files):
+            case_path = os.path.join(case_dir, file_name)
+            case_data = CaseInstanceToTestSuit.load_case_file(case_path)
+            if case_data is None or (isinstance(case_data, list) and len(case_data) == 0):
+                logger.warning(f"Skip empty case file: {file_name}")
+                continue
+            converter = CaseInstanceToTestSuit(case_instance=case_data,
+                                               case_suit_save_path=abstract_save_path)
+            converter.transform_case_to_test_suit()
+
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Pairwise Coverage Evaluator"
-    )
+    parser = argparse.ArgumentParser(description="...")
     parser.add_argument("--cases", help="path to cases.json")
-    parser.add_argument(
-        "--case_abstract_save_path", default=None,
-        help="case abstract data save path",
-    )
+    parser.add_argument("--cases_directory", help="directory with case JSON files")
+    parser.add_argument("--case_abstract_save_path", help="output directory")
     args = parser.parse_args()
-    case_data = CaseInstanceToTestSuit.load_case_file(args.cases)
-    if case_data is None:
-        logger.error(f"Case file {args.cases} does not exist")
-        return
-    CaseInstanceToTestSuit(case_instance=case_data,
-                                                   case_suit_save_path=args.case_abstract_save_path)
+
+    from agent.generators.common_utils.logger_util import init_logger
+    init_logger(log_name="case_instance_to_test_suit", log_dir="./output/logs")
+
+    if args.cases_directory and args.case_abstract_save_path:
+        # 批量模式
+        CaseInstanceToTestSuit.batch_transform(
+            case_dir=args.cases_directory,
+            abstract_save_path=args.case_abstract_save_path,
+        )
+    elif args.cases and args.case_abstract_save_path:
+        # 单文件模式
+        case_data = CaseInstanceToTestSuit.load_case_file(args.cases)
+        if case_data is None:
+            logger.error(f"Case file {args.cases} does not exist")
+            return
+        converter = CaseInstanceToTestSuit(
+            case_instance=case_data,
+            case_suit_save_path=args.case_abstract_save_path,
+        )
+        converter.transform_case_to_test_suit()
+    else:
+        parser.print_help()
+
 
 if __name__ == '__main__':
     main()
