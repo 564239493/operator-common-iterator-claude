@@ -294,7 +294,7 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
                     for val in domain:
                         pair1_factors.append(FactorValue(Factor(param.name, attr_name), val))
         pair1_universe_size = len(pair1_factors)
-        valid_pair1_keys = {f"{fv.factor.name}={fv.factor.attribute}={fv.value}" for fv in pair1_factors}
+        valid_pair1_keys = {f"{fv.factor.name}={fv.value}" for fv in pair1_factors}
         covered_pair1: set[str] = set()
 
         cases = load_cases(cases_path)
@@ -314,7 +314,7 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
                 else:
                     illegal_count += 1
             for fv in factor_values:
-                fv_key = f"{fv.factor.name}={fv.factor.attribute}={fv.value}"
+                fv_key = f"{fv.factor.name}={fv.value}"
                 if fv_key in valid_pair1_keys:
                     covered_pair1.add(fv_key)
 
@@ -343,6 +343,15 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
             "pair1_coverage_rate": pair1_coverage_rate,
         }
 
+        # 收集 uncovered pairs
+        uncovered_pairs_list: list[str] = []
+        uncovered_indices = tracker.uncovered_indices()
+        for idx in uncovered_indices:
+            pair = universe.get_by_index(idx)
+            if pair is not None:
+                uncovered_pairs_list.append(_format_pair(pair))
+        uncovered_1pair_list = sorted(valid_pair1_keys - covered_pair1)
+
         coverage_pct = coverage_rate * 100
         pair1_pct = pair1_coverage_rate * 100
         emit(f"  {operator_name:<40} {len(cases):>6} {universe_size:>10} {covered_count:>8} {coverage_pct:>6.1f}% {illegal_count:>8} {len(missing_params):>8} {pair1_covered:>8} {pair1_pct:>6.1f}%")
@@ -357,6 +366,10 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
                     "pair1_universe_size": pair1_universe_size,
                     "pair1_covered": pair1_covered,
                     "pair1_coverage_rate": pair1_coverage_rate,
+                    "uncovered_pairs_2pair": uncovered_pairs_list,
+                    "uncovered_pairs_2pair_count": len(uncovered_pairs_list),
+                    "uncovered_pairs_1pair": uncovered_1pair_list,
+                    "uncovered_pairs_1pair_count": len(uncovered_1pair_list),
                 }, f, indent=2, ensure_ascii=False, default=str)
 
     avg_rate = total_covered / total_universe * 100 if total_universe else 0
@@ -366,6 +379,15 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
     emit(f"  {'-'*40} {'-'*6} {'-'*10} {'-'*8} {'-'*7} {'-'*8} {'-'*8} {'-'*8} {'-'*7}")
     emit(f"  {'TOTAL':<40} {sum(r['total_cases'] for r in results.values()):>6} {total_universe:>10} {total_covered:>8} {avg_rate:>6.1f}% {'-':>8} {total_pair1_cov:>8} {avg_pair1_rate:>6.1f}%")
     emit("=" * 120)
+    emit("  Legend:")
+    emit("    Cases    - number of test cases evaluated")
+    emit("    Universe - total valid 2-pairs in the domain data")
+    emit("    Covered  - 2-pairs covered by test cases")
+    emit("    Rate     - 2-pair coverage rate = Covered / Universe")
+    emit("    Illegal  - cumulative illegal pairs from all cases")
+    emit("    Missing  - parameters defined in domain but never assigned in any case")
+    emit("    1-Pair   - single attribute values covered by test cases")
+    emit("    1-Rate   - 1-pair coverage rate = 1-Pair / total single attribute values")
     emit()
 
     if report_path:
