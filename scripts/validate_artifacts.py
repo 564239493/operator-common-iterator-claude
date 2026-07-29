@@ -626,6 +626,104 @@ def validate_source_raw(value) -> list[str]:
     return errors
 
 
+def validate_scene_scan(value) -> tuple[list[str], list[str]]:
+    """Validate inputs/scene_scan.json produced by the scene-scanner Agent.
+
+    has_quant_scenarios=false →其余字段可空（非量化算子）。=true 时校验
+    quant_modes/quant_widths_by_mode/valid_combos/evidence 结构与一致性，
+    并要求每条 valid_combo 都有 evidence 溯源原文。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(value, dict):
+        return ["scene_scan must be an object"], warnings
+    if "has_quant_scenarios" not in value:
+        errors.append("missing field: has_quant_scenarios")
+        return errors, warnings
+    has_quant = value.get("has_quant_scenarios")
+    if not isinstance(has_quant, bool):
+        return ["has_quant_scenarios must be bool"], warnings
+
+    if not has_quant:
+        if value.get("quant_modes"):
+            warnings.append("has_quant_scenarios=false but quant_modes non-empty")
+        return [], warnings
+
+    quant_modes = value.get("quant_modes")
+    if not isinstance(quant_modes, list) or not quant_modes:
+        errors.append("quant_modes must be a non-empty list when has_quant_scenarios=true")
+        return errors, warnings
+    if not all(isinstance(m, str) for m in quant_modes):
+        errors.append("quant_modes entries must be strings")
+
+    widths_by_mode = value.get("quant_widths_by_mode")
+    if not isinstance(widths_by_mode, dict):
+        errors.append("quant_widths_by_mode must be an object")
+
+    valid_combos = value.get("valid_combos")
+    if not isinstance(valid_combos, list) or not valid_combos:
+        errors.append("valid_combos must be a non-empty list when has_quant_scenarios=true")
+        valid_combos = []
+    seen_keys: set[tuple[str, str | None]] = set()
+    for i, c in enumerate(valid_combos):
+        if not isinstance(c, dict):
+            errors.append(f"valid_combos[{i}] must be an object")
+            continue
+        mode = c.get("mode")
+        width = c.get("width")
+        if not isinstance(mode, str):
+            errors.append(f"valid_combos[{i}].mode must be a string")
+            continue
+        if mode not in quant_modes:
+            errors.append(f"valid_combos[{i}].mode {mode!r} not in quant_modes")
+        if width is not None and not isinstance(width, str):
+            errors.append(f"valid_combos[{i}].width must be a string or null")
+        key = (mode, width)
+        if key in seen_keys:
+            warnings.append(f"duplicate valid_combo: ({mode}, {width})")
+        seen_keys.add(key)
+        if isinstance(widths_by_mode, dict):
+            listed = widths_by_mode.get(mode)
+            if not isinstance(listed, list):
+                warnings.append(f"quant_widths_by_mode[{mode!r}] missing or not a list")
+            elif width is not None and width not in listed:
+                errors.append(
+                    f"valid_combos[{i}] width {width!r} not in quant_widths_by_mode[{mode!r}]"
+                )
+
+    evidence = value.get("evidence")
+    if not isinstance(evidence, list):
+        errors.append("evidence must be a list")
+        evidence = []
+    ev_keys: set[tuple[str, str | None]] = set()
+    for e in evidence:
+        if not isinstance(e, dict):
+            continue
+        em, ew = e.get("mode"), e.get("width")
+        if isinstance(em, str):
+            ev_keys.add((em, ew))
+    for c in valid_combos:
+        if not isinstance(c, dict):
+            continue
+        key = (c.get("mode"), c.get("width"))
+        if key not in ev_keys:
+            errors.append(
+                f"valid_combo ({c.get('mode')}, {c.get('width')}) has no evidence entry"
+            )
+        else:
+            ev_item = next(
+                (e for e in evidence
+                 if isinstance(e, dict) and e.get("mode") == c.get("mode")
+                 and e.get("width") == c.get("width")),
+                None,
+            )
+            if isinstance(ev_item, dict) and not str(ev_item.get("src_text", "")).strip():
+                errors.append(
+                    f"evidence for ({c.get('mode')}, {c.get('width')}) has empty src_text"
+                )
+    return errors, warnings
+
+
 VALIDATORS = {
     "constraints": validate_constraints,
     "cases": validate_cases,
@@ -636,6 +734,7 @@ VALIDATORS = {
     "uncertain_doc": validate_uncertain_doc,
     "conflict_doc": validate_conflict_doc,
     "source_raw": validate_source_raw,
+    "scene_scan": validate_scene_scan,
 }
 
 

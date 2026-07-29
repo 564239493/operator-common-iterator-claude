@@ -19,6 +19,35 @@ from agent.generators.data_definition.constants import DataMatchMap, ParamModelC
 logger = LazyLogger()
 
 
+# 约束 tensor 元素总数上限的递归函数 __prod_shape_<param_name> 注册到 z3 全局 ctx。
+# z3-solver 5.0 起，同名 RecAddDefinition 第二次会抛 "recursive function ... already
+# defined"；而该乘积递归对同名参数是同一数学，跨 case（correct_case 多轮）/跨平台
+# 复用 FuncDeclRef 完全等价。故按名幂等注册：已注册则复用，避免 declare_var 构造
+# TensorVar 时抛错导致 var_map 缺键（下游 analysis_param_is_present 裸索引 KeyError）。
+# 注：当前全模块共用 z3.main_ctx()，故注册项跨 Z3ConstraintBuilder 共享；若未来引入
+# 按 builder 隔离的 ctx，需改为 ctx 感知注册表。
+_PROD_SHAPE_REC_FUNCS = {}
+
+
+def _get_or_register_prod_shape(prod_func_name, seq_int_sort):
+    """返回名为 __prod_shape_<param> 的共享递归函数；首次注册，之后复用。
+
+    z3 全局 ctx 下同名 RecAddDefinition 仅可注册一次。ProdShape 的定义体（序列各
+    元素乘积）与具体 TensorVar 实例无关，故按 func_name 单例化。
+    """
+    existing = _PROD_SHAPE_REC_FUNCS.get(prod_func_name)
+    if existing is not None:
+        return existing
+    prod = z3.RecFunction(prod_func_name, seq_int_sort, z3.IntSort())
+    s_var = z3.Const(f"{prod_func_name}_arg", seq_int_sort)
+    z3.RecAddDefinition(prod, [s_var],
+        z3.If(z3.Length(s_var) == 0,
+               z3.IntVal(1),
+               s_var[0] * prod(z3.SubSeq(s_var, 1, z3.Length(s_var) - 1))))
+    _PROD_SHAPE_REC_FUNCS[prod_func_name] = prod
+    return prod
+
+
 # 辅助解析函数
 def _parse_int_value(v):
     """健壮的整数解析"""
@@ -679,13 +708,7 @@ class TensorVar(BaseVar):
         # 约束 tensor 元素总数上限：shape 各维度乘积 < TENSOR_TENSOR_ELEMENT_LIMIT
         prod_func_name = f"__prod_shape_{self.name}"
         SeqIntSort = z3.SeqSort(z3.IntSort())
-        ProdShape = z3.RecFunction(prod_func_name, SeqIntSort, z3.IntSort())
-        s_var = z3.Const(f"{prod_func_name}_arg", SeqIntSort)
-        z3.RecAddDefinition(ProdShape, [s_var],
-            z3.If(z3.Length(s_var) == 0,
-                   z3.IntVal(1),
-                   s_var[0] * ProdShape(
-                       z3.SubSeq(s_var, 1, z3.Length(s_var) - 1))))
+        ProdShape = _get_or_register_prod_shape(prod_func_name, SeqIntSort)
         self.solver.add(ProdShape(self.shape) < ParamModelConfig.TENSOR_TENSOR_ELEMENT_LIMIT)
 
         # 3. 添加约束
@@ -824,13 +847,7 @@ class TensorListVar(BaseVar):
 
         prod_func_name = f"__prod_shape_{self.name}"
         SeqIntSort = z3.SeqSort(z3.IntSort())
-        ProdShape = z3.RecFunction(prod_func_name, SeqIntSort, z3.IntSort())
-        s_var = z3.Const(f"{prod_func_name}_arg", SeqIntSort)
-        z3.RecAddDefinition(ProdShape, [s_var],
-            z3.If(z3.Length(s_var) == 0,
-                   z3.IntVal(1),
-                   s_var[0] * ProdShape(
-                       z3.SubSeq(s_var, 1, z3.Length(s_var) - 1))))
+        ProdShape = _get_or_register_prod_shape(prod_func_name, SeqIntSort)
         self.solver.add(ProdShape(self.elem_shape) < ParamModelConfig.TENSOR_TENSOR_ELEMENT_LIMIT)
 
         self._add_dtype_constraints(dtype, allowed_dtypes)

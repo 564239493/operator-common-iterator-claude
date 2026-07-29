@@ -30,6 +30,28 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    `message`、`server_config` 和 `errors` 提示给用户。不得自动切换到 mock。
    只有用户显式传入 `--mode mock` 才能执行 Mock。
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
+
+**SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
+`scene-scanner`（读 `inputs/<doc>.md` + `prompts/scan_scenes.md`，产
+`inputs/scene_scan.json`，自跑 `python scripts/validate_artifacts.py scene_scan
+inputs/scene_scan.json`）。完成后主协调器读 `scene_scan.json`：
+- `has_quant_scenarios=false` → 跳过（无 directive，按全场景提取，行为不变）；
+- `has_quant_scenarios=true` 且 `--scene all` → 跑
+  `python scripts/render_scene_directive.py --scan <scene_scan.json> --run-dir <run-dir> --scope all`
+  （scope=all，不剪枝、不弹窗）；
+- `has_quant_scenarios=true` 且 `--scene auto`（默认）→ 主会话用 AskUserQuestion
+  两段征询（**均单选**）：Q1 量化方式（single-select，选项=`scene_scan.quant_modes`，
+  选了伪量化就不能选量化）→ 据 Q1 答案取所选方式的位宽列表（`quant_widths_by_mode`
+  或 `valid_combos` 中该方式的 width 并集）→ Q2 位宽（single-select；列表为空如纯非量化
+  或该方式无位宽细分则跳过 Q2，`quant_width=null`）→ 把单选答案写入 `selection.json`
+  为 `{"quant_mode": <Q1>, "quant_width": <Q2 或 null>}`（单值）→ 跑
+  `python scripts/render_scene_directive.py --scan <scene_scan.json> --selection <selection.json> --run-dir <run-dir> --scope subset`
+  （校验选定 (mode,width) ∈ scan、算 valid_combos、写 `inputs/scene_directive.md`、回写
+  `run_state.scene`；非法选择 exit 2 阻断，提示用户重选，不静默回退）。
+EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入
+constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 directive，
+屏蔽跨轮稳定。
+
 5. 每轮按顺序委派：
    - **EXTRACT（fork-join）**：当 `run_state.operator_src_snapshot` 非空时，
      **并行**委派 `constraint-extractor`（产 `constraints.json`）与 `source-analyst`
