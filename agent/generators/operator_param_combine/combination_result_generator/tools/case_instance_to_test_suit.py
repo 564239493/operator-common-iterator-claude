@@ -189,6 +189,7 @@ class CaseInstanceToTestSuit:
             testcase.values = defaultdict(dict)
             for input_data in case_input:
                 param_name = input_data.get("name")
+                param_type = input_data.get("type")
                 testcase.values[param_name][ParameterAttribute.IS_PRESENT.value] = True
                 dtype_value = input_data.get("dtype")
                 if dtype_value is not None:
@@ -204,7 +205,10 @@ class CaseInstanceToTestSuit:
                     testcase.values[param_name][ParameterAttribute.SHAPE_PROPERTY.value] = shape_property
                 range_value = input_data.get("range_values")
                 if range_value is not None:
-                    range_value_profile = self.transform_range_value_to_model(range_value, dtype_value)
+                    if param_type is not None and param_type in ParamModelConfig.TENSOR_ATK_TYPE:
+                        range_value_profile = self.transform_range_value_to_model(range_value, dtype_value)
+                    else:
+                        range_value_profile = range_value
                     testcase.values[param_name][ParameterAttribute.RANGE_VALUE.value] = range_value_profile
                 format_value = input_data.get("format")
                 if format_value is not None:

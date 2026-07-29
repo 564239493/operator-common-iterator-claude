@@ -13,16 +13,67 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 
 from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
 from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
 from agent.generators.operator_param_combine.combination_result_generator.engine import load_config, build_constraint, \
     build_universe_and_tracker
+from agent.generators.operator_param_combine.combination_result_generator.engine import \
+        _PARAMETER_ATTRIBUTE_KEYS
+from agent.generators.data_definition.constants import DataMatchMap
+from operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
+from operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
+from agent.generators.common_utils.logger_util import init_logger, LazyLogger
+
+logger = LazyLogger()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 _SAMPLE_TOP = 30
+
+def _load_config_with_dtype_mapping(config_path: str) -> GeneratorConfig:
+    """加载 domain config 并将 dtype 从 ACL 全格式映射为 ATK 短格式。"""
+
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not data.get("parameters"):
+        logger.warning(f"Domain data has no parameters: {config_path}")
+
+    dtype_map = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP
+    # 构建 ACL → ATK 反向映射（全大写优先，非 ACL_ 前缀优先）
+    _acl_to_atk = {}
+    for k, v in dtype_map.items():
+        if k == k.upper():
+            if v not in _acl_to_atk:
+                _acl_to_atk[v] = k
+            elif not k.startswith("ACL_"):
+                _acl_to_atk[v] = k
+
+    import re
+    # 约束中 dtype 引用映射：将 'FLOAT16'/'ACL_FLOAT16' 替换为 'fp16'
+    def _replace_dtype_in_expr(expr):
+        for atk, acl in _acl_to_atk.items():
+            expr = re.sub(rf"'{acl}'", f"'{atk}'", expr)
+            expr = re.sub(rf'"{acl}"', f'"{atk}"', expr)
+        return expr
+
+    parameters = {}
+    for param_name, attrs in data["parameters"].items():
+        kwargs = {"name": param_name}
+        for key, values in attrs.items():
+            if key in _PARAMETER_ATTRIBUTE_KEYS:
+                if key == "dtype":
+                    # FLOAT16 → fp16, BFLOAT16 → bf16, ...
+                    values = tuple(dtype_map.get(v, v) for v in values)
+                kwargs[key] = tuple(values)
+        parameters[param_name] = ParameterModel(**kwargs)
+
+    constraints = tuple(_replace_dtype_in_expr(e) for e in data.get("constraints", []))
+    return GeneratorConfig(parameters=parameters, constraints=constraints)
 
 
 def load_cases(cases_path: str) -> list[dict]:
@@ -30,8 +81,12 @@ def load_cases(cases_path: str) -> list[dict]:
         data = json.load(f)
 
     if isinstance(data, list):
+        if len(data) == 0:
+            logger.warning(f"Case file has empty case list: {cases_path}")
         return data
     if isinstance(data, dict) and "cases" in data:
+        if len(data["cases"]) == 0:
+            logger.warning(f"Case file has empty cases array: {cases_path}")
         return data["cases"]
     raise ValueError("cases file must be a JSON array or object with 'cases' key")
 
@@ -57,7 +112,7 @@ def _format_pair(pair) -> str:
 
 def run(config_path: str, cases_path: str, uncovered_path: str | None = None) -> None:
     # ---- build universe ----
-    config = load_config(config_path)
+    config = _load_config_with_dtype_mapping(config_path)
     print(f"[config]    loaded {len(config.parameters)} parameter(s)")
     if config.constraints:
         print(f"[config]    loaded {len(config.constraints)} constraint(s)")
@@ -175,11 +230,12 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
     Returns:
         {operator_name: {total_cases, universe_size, covered, uncovered, coverage_rate, illegal, missing_params}}
     """
-    from agent.generators.common_utils.logger_util import init_logger
     init_logger(log_name="batch_eval", log_dir=os.path.join(config_dir, "logs"))
 
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+    if output_dir and not report_path:
+        report_path = os.path.join(output_dir, "report", "coverage_summary.txt")
 
     domain_files = sorted(
         f for f in os.listdir(config_dir)
@@ -199,13 +255,14 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
         lines.append(s)
 
     emit()
-    emit("=" * 100)
+    emit("=" * 120)
     emit(f"  Batch Coverage Evaluation")
     emit(f"  config dir: {config_dir}")
     emit(f"  cases  dir: {cases_dir}")
-    emit("=" * 100)
-    emit(f"  {'Operator':<40} {'Cases':>6} {'Universe':>10} {'Covered':>8} {'Rate':>7} {'Illegal':>8} {'Missing':>8}")
-    emit(f"  {'-'*40} {'-'*6} {'-'*10} {'-'*8} {'-'*7} {'-'*8} {'-'*8}")
+    emit(f"  generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    emit("=" * 120)
+    emit(f"  {'Operator':<40} {'Cases':>6} {'Universe':>10} {'2-Pair':>8} {'2-Pair rate':>7} {'Illegal':>8} {'Missing':>8} {'1-Pair':>8} {'1-Pair rate':>7}")
+    emit(f"  {'-'*40} {'-'*6} {'-'*10} {'-'*8} {'-'*7} {'-'*8} {'-'*8} {'-'*8} {'-'*7}")
 
     for domain_file in domain_files:
         operator_name = domain_file.replace("_domain_data.json", "")
@@ -218,15 +275,31 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
             continue
 
         try:
-            config = load_config(config_path)
+            config = _load_config_with_dtype_mapping(config_path)
         except Exception as e:
             emit(f"  {operator_name:<40} {'ERR':>6} {'ERR':>10} {'ERR':>8} {'ERR':>7} {'ERR':>8} {'ERR':>8}  [{e}]")
             continue
+        if not config.parameters:
+            logger.warning(f"Config for '{operator_name}' has 0 parameters, universe will be empty")
+
         constraint = build_constraint(config.constraints)
         universe, tracker, builder = build_universe_and_tracker(config, constraint)
         universe_size = universe.size()
 
+        # 1-pair universe: 每个参数的单个属性取值
+        pair1_factors: list[FactorValue] = []
+        for param in config.parameters.values():
+            for attr_name, domain in param.attributes().items():
+                if domain:
+                    for val in domain:
+                        pair1_factors.append(FactorValue(Factor(param.name, attr_name), val))
+        pair1_universe_size = len(pair1_factors)
+        valid_pair1_keys = {f"{fv.factor.name}={fv.factor.attribute}={fv.value}" for fv in pair1_factors}
+        covered_pair1: set[str] = set()
+
         cases = load_cases(cases_path)
+        if len(cases) == 0:
+            logger.warning(f"Cases for '{operator_name}' is empty, no pairs to evaluate")
         illegal_count = 0
         covered_param_names: set[str] = set()
 
@@ -240,6 +313,10 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
                     tracker.update([pair])
                 else:
                     illegal_count += 1
+            for fv in factor_values:
+                fv_key = f"{fv.factor.name}={fv.factor.attribute}={fv.value}"
+                if fv_key in valid_pair1_keys:
+                    covered_pair1.add(fv_key)
 
         covered_count = tracker.covered_count()
         uncovered_count = universe_size - covered_count
@@ -250,6 +327,9 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
         total_covered += covered_count
         total_universe += universe_size
 
+        pair1_covered = len(covered_pair1)
+        pair1_coverage_rate = pair1_covered / pair1_universe_size if pair1_universe_size else 0
+
         results[operator_name] = {
             "total_cases": len(cases),
             "universe_size": universe_size,
@@ -258,23 +338,34 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
             "coverage_rate": coverage_rate,
             "illegal_pairs": illegal_count,
             "missing_parameters": missing_params,
+            "pair1_universe_size": pair1_universe_size,
+            "pair1_covered": pair1_covered,
+            "pair1_coverage_rate": pair1_coverage_rate,
         }
 
         coverage_pct = coverage_rate * 100
-        emit(f"  {operator_name:<40} {len(cases):>6} {universe_size:>10} {covered_count:>8} {coverage_pct:>6.1f}% {illegal_count:>8} {len(missing_params):>8}")
+        pair1_pct = pair1_coverage_rate * 100
+        emit(f"  {operator_name:<40} {len(cases):>6} {universe_size:>10} {covered_count:>8} {coverage_pct:>6.1f}% {illegal_count:>8} {len(missing_params):>8} {pair1_covered:>8} {pair1_pct:>6.1f}%")
 
         if output_dir:
-            out_path = os.path.join(output_dir, f"{operator_name}_coverage_report.json")
+            os.makedirs(os.path.join(output_dir, "report"), exist_ok=True)
+            out_path = os.path.join(output_dir, "report", f"{operator_name}_coverage_report.json")
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(results[operator_name] | {
                     "operator_name": operator_name,
                     "missing_parameters": missing_params,
+                    "pair1_universe_size": pair1_universe_size,
+                    "pair1_covered": pair1_covered,
+                    "pair1_coverage_rate": pair1_coverage_rate,
                 }, f, indent=2, ensure_ascii=False, default=str)
 
     avg_rate = total_covered / total_universe * 100 if total_universe else 0
-    emit(f"  {'-'*40} {'-'*6} {'-'*10} {'-'*8} {'-'*7} {'-'*8} {'-'*8}")
-    emit(f"  {'TOTAL':<40} {sum(r['total_cases'] for r in results.values()):>6} {total_universe:>10} {total_covered:>8} {avg_rate:>6.1f}%")
-    emit("=" * 100)
+    total_pair1_uni = sum(r.get("pair1_universe_size", 0) for r in results.values())
+    total_pair1_cov = sum(r.get("pair1_covered", 0) for r in results.values())
+    avg_pair1_rate = total_pair1_cov / total_pair1_uni * 100 if total_pair1_uni else 0
+    emit(f"  {'-'*40} {'-'*6} {'-'*10} {'-'*8} {'-'*7} {'-'*8} {'-'*8} {'-'*8} {'-'*7}")
+    emit(f"  {'TOTAL':<40} {sum(r['total_cases'] for r in results.values()):>6} {total_universe:>10} {total_covered:>8} {avg_rate:>6.1f}% {'-':>8} {total_pair1_cov:>8} {avg_pair1_rate:>6.1f}%")
+    emit("=" * 120)
     emit()
 
     if report_path:
