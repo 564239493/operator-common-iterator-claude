@@ -1,12 +1,14 @@
+from __future__ import annotations
 import copy
 import json
 import os
-import random
-from typing import List, Dict, Any
+from typing import List, Dict, Any, TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from agent.generators import OperatorRule, ParamAttributes
+if TYPE_CHECKING:
+    from agent.generators import OperatorRule, ParamAttributes
+
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.common_utils.logger_util import LazyLogger

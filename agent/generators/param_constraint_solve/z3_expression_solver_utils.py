@@ -99,9 +99,10 @@ class Z3ConstraintBuilder:
         except Exception as e:
             logger.error(f"[Declare] Failed to create var '{var_name}', kwargs : '{kwargs}', err msg : '{e}'")
 
-    def get_or_create_var(self, var_name):
+    def get_var(self, var_name):
         if var_name not in self.var_map:
-            self.declare_var(var_name, type_hint="tensor")
+            logger.warning("Var not in var map, the parameter was not declared, it's is_present is False")
+            return None
         return self.var_map[var_name]
 
     def add_constraints(self, expr_str_dict: Dict[str, str]):
@@ -175,9 +176,9 @@ class Z3ConstraintBuilder:
                     logger.debug(f"[OK] {expr_str}")
             else:
                 if is_print_log:
-                    logger.debug(f"[SKIP] {expr_str}: converter returned None, ignored")
+                    logger.debug(f"[SKIP] '{expr_str}': converter returned None, ignored")
         except Exception as e:
-            logger.error(f"[FAIL] {expr_str}: {e}")
+            logger.error(f"[FAIL] expr : '{expr_str}': err msg : '{e}'")
 
     def solve(self):
         if self._timeout_ms:

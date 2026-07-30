@@ -110,7 +110,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         return node.value
 
     def visit_Name(self, node):
-        return self.builder.get_or_create_var(node.id).get_z3_expr()
+        return self.builder.get_var(node.id).get_z3_expr()
 
     def visit_List(self, node):
         return [self.visit(e) for e in node.elts]
@@ -136,7 +136,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
         # --- 直接属性访问: var.attr ---
         var_name = node.value.id
-        t_var = self.builder.get_or_create_var(var_name)
+        t_var = self.builder.get_var(var_name)
         if isinstance(t_var, TensorListVar):
             if node.attr == 'length':
                 return t_var.length
@@ -705,7 +705,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             return self._handle_sum_generator(node.args[0])
 
         if len(node.args) == 1 and isinstance(node.args[0], ast.Name):
-            var = self.builder.get_or_create_var(node.args[0].id)
+            var = self.builder.get_var(node.args[0].id)
             if isinstance(var, TensorVar):
                 return self._sum_tensor_elements(var)
             if isinstance(var, TensorListVar):
