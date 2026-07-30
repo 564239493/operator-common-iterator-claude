@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>P0 + P1 改动根因总结</title>
+<style>
+  :root{
+    --bg:#0f1420; --card:#161d2e; --card2:#1c2538; --border:#2a3550;
+    --txt:#e6ecf5; --mut:#9aa6bd; --acc:#4ea1ff; --ok:#36c691;
+    --warn:#f0b341; --err:#f0616d; --crit:#ff7a8a; --code:#d6b3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#0b0f1a 0,#0f1420 60px);color:var(--txt);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.65;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:36px 28px 80px}
+  h1{font-size:28px;margin:0 0 4px;letter-spacing:.5px}
+  h2{font-size:21px;margin:42px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--border);color:#cfe0ff}
+  h3{font-size:16px;margin:24px 0 10px;color:#b9c8e8}
+  h4{font-size:14px;margin:14px 0 6px;color:#9fe9c8}
+  .sub{color:var(--mut);font-size:14px;margin-bottom:8px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:11px;
+    background:#22304d;color:#cfe0ff;margin-left:8px;vertical-align:middle}
+  .tag.p0{background:#3a1a22;color:#ffb3bd} .tag.p1{background:#13243a;color:#b6d4ff}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin:14px 0}
+  .card.hl{border-left:4px solid var(--err)} .card.hlo{border-left:4px solid var(--ok)}
+  .card.hlw{border-left:4px solid var(--warn)} .card.hlc{border-left:4px solid var(--crit)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  th,td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+  th{background:#1a2336;color:#b9c8e8;font-weight:600}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Courier New",monospace}
+  code{background:#0c111c;border:1px solid #243049;padding:1px 6px;border-radius:5px;font-size:12.5px;color:var(--code)}
+  pre{background:#0b1018;border:1px solid #243049;border-radius:10px;padding:14px 16px;overflow:auto;font-size:12.5px;line-height:1.55;color:#cdd9ee}
+  pre .kw{color:#ff9dab} pre .fn{color:#79d3ff} pre .str{color:#b6e3a0} pre .cmt{color:#6a7590;font-style:italic} pre .hot{color:#ffd86b;background:#332a0d}
+  ul.tight{margin:6px 0;padding-left:22px} ul.tight li{margin:3px 0}
+  .kv{display:grid;grid-template-columns:120px 1fr;gap:6px 14px;font-size:13.5px;margin:6px 0}
+  .kv .k{color:var(--mut)}
+  .toc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin:18px 0;font-size:13.5px}
+  .toc a{color:#b6d4ff;text-decoration:none} .toc a:hover{text-decoration:underline}
+  .step{background:#0c111c;border:1px solid #243049;border-radius:8px;padding:10px 14px;margin:8px 0}
+  .err-txt{color:#ffb3bd} .ok-txt{color:#9fe9c8} .warn-txt{color:#ffd79a}
+  .foot{margin-top:46px;padding-top:18px;border-top:1px solid var(--border);color:var(--mut);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>P0 + P1 改动根因总结</h1>
+<div class="sub">对应提交 <code>b586302</code>（P0）+ <code>9138640</code>（P1），未 push。本文档逐条剖析每处改动的<b>根因机制</b>，附实证/代码/运行示例。</div>
+<div class="sub">共同主线：两期都围绕 <b>伪 SAT</b>——Z3 声称 <code>sat</code> 但生成的用例实际违反了某条约束。P0 堵住“约束被静默丢弃”这一制度性入口；P1 加“约束被加但编码 unsound”的 post_check 兜底，并从源头纠正 #8 算子的文档自相矛盾。</div>
+
+<div class="toc">
+  <b>目录</b> &nbsp;
+  <a href="#s0">0. 改动总览</a> ·
+  <a href="#p0">P0-6.1 递归函数撞名致伪 SAT</a> ·
+  <a href="#p02">P0-6.2 失败不可观测</a> ·
+  <a href="#p1a">P1-6.3a/b post_check 兜底</a> ·
+  <a href="#p15">P1-6.5 #8 文档矛盾纠错</a> ·
+  <a href="#sm">共同主线与互补</a>
+</div>
+
+<h2 id="s0">0. 改动总览</h2>
+<table>
+<thead><tr><th>提交</th><th>改动</th><th>文件</th><th>根因一句话</th></tr></thead>
+<tbody>
+<tr><td><code>b586302</code> <span class="tag p0">P0</span></td><td>6.1 幂等注册</td><td><code>expression_preprocess_utils.py</code></td><td>递归 RecFunction 跨 case 同名撞名，抛错被 except 吞 → 约束丢弃 → 伪 SAT</td></tr>
+<tr><td><code>b586302</code> <span class="tag p0">P0</span></td><td>6.2 失败可观测</td><td><code>z3_expression_solver_utils.py</code></td><td>except 只 logger.error 无标志位，sat 仍落盘——伪 SAT 的制度前提</td></tr>
+<tr><td><code>9138640</code> <span class="tag p1">P1</span></td><td>6.3a 接入主流程</td><td><code>generate_cases.py</code> / <code>post_check_cases.py</code></td><td>约束被加但 Z3 编码 unsound（model 不满足 expr）→ 用 Python eval 兜底过滤</td></tr>
+<tr><td><code>9138640</code> <span class="tag p1">P1</span></td><td>6.3b eval 保真</td><td><code>post_check_cases.py</code></td><td>eval-error≠违例，否则误杀通过用例（False positive）</td></tr>
+<tr><td><code>9138640</code> <span class="tag p1">P1</span></td><td>6.5 #8 专属模块</td><td><code>prompts/modules/aclnnFusedLinearCrossEntropyLossGrad.md</code></td><td>文档参数表↔公式矛盾，extractor 忠实提取错绑 → 运行时 EZ1001</td></tr>
+</tbody></table>
+
+<h2 id="p0">P0 · 6.1 递归函数跨 case 撞名致伪 SAT</h2>
+
+<div class="card hlc">
+<div class="kv"><div class="k">根因</div><div>
+<b>z3-solver 5.0 起，同名的 <code>z3.RecAddDefinition</code> 第二次会抛 <code>"recursive function ... already defined"</code>。</b>
+而早期三个方法用 <b>per-builder <code>slice_id</code></b> 命名递归函数：
+<code>_sum_z3_sequence</code> → <code>__sum_seq_{id}</code>、<code>_prod_z3_sequence</code> → <code>__prod_seq_{id}</code>、<code>_sum_tensor_elements</code> → <code>__sum_tensor_{name}_{id}</code>。
+<code>_slice_counter</code> 在每个新 <code>Z3ConstraintBuilder</code> 实例里 <b>从 0 重置</b>，全模块又共用 <code>z3.main_ctx()</code>（全局上下文）。
+<br>→ case 1 注册 <code>__prod_seq_1</code>；case 2 计数器又从 1 起，再注册 <code>__prod_seq_1</code> → <b>抛错</b> → 被 <code>add_constraint</code> 的 <code>except Exception</code> 吞掉（仅 <code>logger.error</code>）→ 该约束<b>没进 solver</b> → solver 在“部分约束”上 <code>check()</code> 返回 <code>sat</code> → 生成违反被丢约束的用例 → <b>伪 SAT</b>。
+</div></div>
+</div>
+
+<h4>示例 A · z3 5.0.0 实证复现（修复前的 bug 机制）</h4>
+<pre><span class="cmt"># 全局 ctx，第二次同名 RecAddDefinition 必抛——这正是跨 case 撞名的根</span>
+P1 = reg_prod(<span class="str">'__prod_seq_int'</span>, int_seq_sort)   <span class="cmt"># case 1: OK</span>
+P2 = reg_prod(<span class="str">'__prod_seq_int'</span>, int_seq_sort)   <span class="cmt"># case 2: 同名再注册</span>
+<span class="hot">→ Z3Exception: recursive function __prod_seq_int already defined</span>
+<span class="cmt"># str(SeqSort) 各异：'Seq(Int)' / 'Seq(Real)'，SeqSort 无 .domain()</span></pre>
+
+<h4>示例 B · 修复前后的生成日志对比（ConfusionTranspose，含 prod 约束）</h4>
+<pre><span class="cmt"># 修复前（伪 SAT）：prod 约束被丢，sat on 部分约束，99/100 用例违反 prod</span>
+[FAIL] prod(shape.range_value) == prod(x.shape): recursive function ... already defined
+Solve result: sat                          <span class="hot"># ← sat 但约束被丢，伪 SAT</span>
+
+<span class="cmt"># 修复后（6.1）：prod 约束保留，solver 在完整约束上 sat，0 [FAIL] / 0 [PSEUDO_SAT_RISK]</span>
+grep -cE '\[FAIL\]|\[PSEUDO_SAT_RISK\]' generation.log   <span class="hot">→ 0</span>
+grep -cE 'Solve result: sat'            generation.log   <span class="hot">→ 20</span>   <span class="cmt"># 全部 sat，约束未被丢</span></pre>
+
+<h4>修复：与既有 <code>_PROD_SHAPE_REC_FUNCS</code> 同构的幂等注册</h4>
+<pre><span class="cmt"># 模块级注册表（跨 builder 共享 z3.main_ctx()，与 param_var_definition 同模式）</span>
+_PROD_SEQ_REC_FUNCS = {}      <span class="cmt"># key: name(str) -> FuncDeclRef</span>
+
+<span class="kw">def</span> <span class="fn">_get_or_register_prod_seq</span>(seq):
+    seq_sort = seq.sort()
+    name = f<span class="str">"__prod_seq_{_sanitize_sort_name(str(seq_sort))}"</span>   <span class="cmt"># 名从 sort 派生，非 per-builder slice_id</span>
+    existing = _PROD_SEQ_REC_FUNCS.get(name)
+    <span class="kw">if</span> existing <span class="kw">is not</span> None:
+        <span class="kw">return</span> existing(seq)                  <span class="cmt"># 复用，不再 RecAddDefinition</span>
+    ProdSeq = z3.RecFunction(name, seq_sort, z3.IntSort())
+    ...
+    z3.RecAddDefinition(ProdSeq, ...)         <span class="cmt"># 仅首次注册</span>
+    _PROD_SEQ_REC_FUNCS[name] = ProdSeq
+    <span class="kw">return</span> ProdSeq(seq)
+
+<span class="cmt"># 三方法改为一行委托（保留 rank==1 副作用与返回表达式）</span>
+<span class="kw">def</span> <span class="fn">_prod_z3_sequence</span>(self, seq): <span class="kw">return</span> _get_or_register_prod_seq(seq)
+<span class="kw">def</span> <span class="fn">_sum_z3_sequence</span>(self, seq, element_sort=None): <span class="kw">return</span> _get_or_register_sum_seq(seq, element_sort)
+<span class="kw">def</span> <span class="fn">_sum_tensor_elements</span>(self, tensor_var):
+    SumArr = _get_or_register_sum_tensor(tensor_var.get_element_sort())
+    ...                                       <span class="cmt"># self.builder.solver.add(rank==1) 副作用保留</span>
+    <span class="kw">return</span> SumArr(arr, z3.IntVal(0), n_elements)</pre>
+
+<div class="card hlw">
+<div class="kv"><div class="k">为何 ten.html 原方案不够</div><div>
+<span class="err-txt">①</span> 只点名 <code>_prod_z3_sequence</code>/<code>_sum_z3_sequence</code>，<b>漏 <code>_sum_tensor_elements</code></b>（同一 bug 模式：slice_id 命名 + RecAddDefinition）。<br>
+<span class="err-txt">②</span> 片段硬编码 <code>"__prod_seq_global"</code>，注册表键用 <code>(str(seq_sort),)</code>——若同进程出现不同 seq_sort，<b>键不同不早返回，却同名注册仍抛</b>。本实现改为函数名从 <code>str(sort)</code> 派生（<code>_sanitize_sort_name</code>），保证同 sort 同名复用、不同 sort 不同名不撞名。<br>
+<span class="ok-txt">③</span> <code>get_next_slice_id</code>/<code>_slice_counter</code> 保留——其它路径（<code>__in_</code>/<code>__notin_</code>/max-min 命名）仍用，只是不再用于 RecFunction 命名。
+</div></div></div>
+
+<h2 id="p02">P0 · 6.2 add_constraint 失败不可观测</h2>
+<div class="card hlc">
+<div class="kv"><div class="k">根因</div><div>
+<code>add_constraint</code> 的 <code>except Exception as e: logger.error(...)</code> 只记日志，<b>丢弃的约束无任何标志位</b>；<code>solve()</code> 仍以“部分约束”返回 <code>sat</code> 并落盘。这是 6.1 伪 SAT 能<b>静默</b>发生的制度性前提——丢了约束谁都不知道。
+</div></div>
+<div class="kv"><div class="k">修复</div><div>
+<code>__init__</code> 增 <code>_dropped_exprs=[]</code> / <code>_sat_with_drops=False</code>；<code>except</code> 追加 <code>self._dropped_exprs.append((expr_name, expr_str, str(e)))</code>；<code>solve</code> 在 sat 且有丢弃时置 <code>_sat_with_drops=True</code> 并 <code>logger.warning("[PSEUDO_SAT_RISK] ...")</code>。<b>仅可观测，不阻断、不判 unknown</b>——阻断统一交给 P1 的 post_check，避免强制 unknown 回归当前通过算子。
+</div></div></div>
+
+<h4>示例 · 6.2 端到端实证（违禁 expr 触发 except → tainted 告警）</h4>
+<pre>b = Z3ConstraintBuilder()
+b.add_constraint(<span class="str">"c_bad"</span>, <span class="str">"sum(x for x in [1,2]) == 1"</span>)   <span class="cmt"># converter 抛 NotImplementedError（generator 未支持）</span>
+b.solve()
+<span class="hot">[FAIL] sum(x for x in [1,2]) == 1: sum() with generator expression is not yet supported</span>
+<span class="hot">[PSEUDO_SAT_RISK] sat with 1 dropped expr(s); defer to post_check: [('c_bad', ...)]</span>
+<span class="cmt"># _dropped_exprs 非空、_sat_with_drops=True；产出仍保留（不阻断），交给 post_check 兜</span></pre>
+
+<h2 id="p1a">P1 · 6.3a/6.3b post_check 安全网——理论不完备的兜底</h2>
+
+<div class="card hlc">
+<div class="kv"><div class="k">根因</div><div>
+6.1/6.2 堵住“约束被丢”的伪 SAT，但 Z3 还有<b>另一类</b>问题：<b>约束被加进 solver，但编码 unsound</b>——solver 找到的 model 在 realized（落地的）用例上实际违反 expr。典型如 <code>len(out.shape) &gt;= len(x.shape)</code>：在 Z3 Seq 上 solver 找的 model 看似满足，但 realized shape 列表并不满足。这类需 6.3c 编码增强根治；post_check 是<b>兜底</b>：生成后用 Python 直接 <code>eval</code> realized 用例是否真满足 expr，违例则过滤。
+</div></div>
+<div class="kv"><div class="k">为何要 6.3b 保真边界</div><div>
+eval 有<b>保真陷阱</b>：<code>range_value</code> 在 realized case 里可能是标量/列表，与 expr 的 Z3-array 语义不对应。如 <code>prod(shape.range_value)</code> 期望 range_value 是序列，但 realized 里 <code>shape.range_value = 65534</code>（标量）→ <code>prod(65534)</code> 抛 TypeError。若把 eval-error 当违例过滤，会<b>误杀通过用例</b>（False positive）——比不兜底更糟。
+</div></div></div>
+
+<h4>修复 6.3b · eval-error ≠ 违例</h4>
+<pre><span class="kw">def</span> <span class="fn">eval_expr</span>(expr, namespace) -> (ok, err):
+    <span class="kw">try</span>: <span class="kw">return</span> bool(eval(expr, {<span class="str">'__builtins__'</span>: SAFE_BUILTINS}, namespace)), None
+    <span class="kw">except</span> Exception <span class="kw">as</span> exc: <span class="kw">return</span> False, f<span class="str">"{type(exc).__name__}: {exc}"</span>
+
+<span class="cmt"># 仅 err is None 且 ok=False 才算真违例（计入 violated_count、可过滤）</span>
+<span class="kw">if</span> err <span class="kw">is not</span> None:        case_eval_error = True      <span class="cmt"># eval_unreliable，绝不过滤</span>
+<span class="kw">elif not</span> ok:           case_clean_violation = True  <span class="cmt"># 真违例，过滤</span>
+<span class="cmt"># 既无 clean-False 又无 eval-error → fully-verified pass</span></pre>
+<pre><span class="cmt"># 补 prod（math.prod）/ __len__ 扩展可 eval 范围</span>
+SAFE_BUILTINS[<span class="str">"prod"</span>] = _prod
+<span class="kw">def</span> <span class="fn">__len__</span>(self): <span class="kw">return</span> len(self.range_value)   <span class="cmt"># len(param)→len(range_value)；标量则抛→eval_error（诚实）</span></pre>
+
+<h4>修复 6.3a · 接入 generate_cases.py（过滤 + 补采 + shortfall）</h4>
+<pre><span class="cmt"># 生成后默认跑 post_check（--post-check 默认开 / --no-post-check 关）</span>
+report = run_post_check(output_dir, constraints_path)   <span class="cmt"># 含每平台 violating_case_ids 全量</span>
+<span class="kw">for</span> platform <span class="kw">in</span> per_platform_paths:
+    violating = set(report[platform][<span class="str">"violating_case_ids"</span>])
+    <span class="kw">if not</span> violating: <span class="kw">continue</span>          <span class="cmt"># 干净平台不触碰文件（输出与无 post_check 完全一致）</span>
+    kept = [c <span class="kw">for</span> c <span class="kw">in</span> cases <span class="kw">if</span> c[<span class="str">"id"</span>] <span class="kw">not in</span> violating]   <span class="cmt"># 仅过滤 clean-False</span>
+    <span class="kw">while</span> len(kept) &lt; count <span class="kw">and</span> attempts &lt; count*3:   <span class="cmt"># 上限防死循环</span>
+        gen = TestCaseGenerator(constraints, seed=base_seed + 10000 + rounds)  <span class="cmt"># 新 seed 补采</span>
+        ... generate_for_platform → run_post_check → 取通过用例 → kept.extend(...)
+    final = kept[:count]
+    <span class="kw">for</span> i, c <span class="kw">in</span> enumerate(final): c[<span class="str">"id"</span>] = i   <span class="cmt"># 重排 id 0..N-1（save_name 与 id 无绑定，安全）</span>
+    <span class="cmt"># 不足则 kept&lt;count → post_check_shortfall 如实落盘</span></pre>
+
+<h4>示例 · 三算子 post_check 行为（真实运行数据）</h4>
+<table>
+<thead><tr><th>算子</th><th>expr（可否 eval）</th><th>初生成违例</th><th>post_check 行为</th><th>终态</th></tr></thead>
+<tbody>
+<tr><td><b>BitwiseNot</b></td><td><code>self.dtype==out.dtype</code> / <code>self.shape==out.shape</code>（可 eval）</td><td>0</td><td>no-op，不触碰 cases 文件</td><td class="ok-txt">0 违例 / passed=10 / 不退化</td></tr>
+<tr><td><b>ForeachErf</b></td><td><code>len(out.shape)&gt;=len(x.shape)</code>（可 eval，非 sound 编码）</td><td>8(A3) / 9(A2)</td><td><b>过滤违例 + 3 轮补采</b></td><td class="ok-txt">kept=30 / shortfall=0 / 终态 0 违例 / passed=30</td></tr>
+<tr><td><b>ConfusionTranspose</b></td><td><code>prod(shape.range_value)==prod(x.shape)</code>（range_value 标量 65534，不可 eval）</td><td>0（6.1 已让 prod 约束不丢）</td><td>标 <code>eval_unreliable</code> 不过滤（防误杀）</td><td class="warn-txt">0 违例 / 20 unreliable / 诚保留</td></tr>
+</tbody></table>
+<pre><span class="cmt"># ForeachErf 实际 post_check_summary（证明过滤+补采真实发生）</span>
+"Atlas A3 .../Atlas A3 ...": {"violations": 8, "kept": 30, "shortfall": 0, "regen_rounds": 3, "attempts": 41}
+"Atlas A2 .../Atlas A2 ...": {"violations": 9, "kept": 30, "shortfall": 0, "regen_rounds": 3, "attempts": 42}
+<span class="cmt"># attempts 41/42 &lt; cap(3×30=90)，补采未死循环；终态 post_check_report：0 violations / 0 unreliable / passed=30</span></pre>
+
+<h2 id="p15">P1 · 6.5 #8 算子专属提取模块——文档自相矛盾的源头纠错</h2>
+<div class="card hlc">
+<div class="kv"><div class="k">根因</div><div>
+<code>aclnnFusedLinearCrossEntropyLossGrad</code> 文档<b>参数表↔公式自相矛盾</b>：
+<ul class="tight">
+<li>公式（49 行）：<code>grad_weight = softmax^T · input ∈ R^{V×H}</code> → weightGradOut 第 2 维 = <b>H</b> = <code>input.shape[1]</code>。</li>
+<li>参数表（261 行）：“weightGradOut 第 2 维长度与输入 <b>grad</b> 长度相同” → = <b>BT</b> = <code>grad.shape[0]</code>。</li>
+</ul>
+constraint-extractor <b>忠实</b>提取参数表文本 → 落 <code>weightGradOut.shape[1] == grad.shape[0]</code>（绑 BT）→ NPU 运行时 Expected <code>[V, H]</code>，BT≠H 时报 <code>EZ1001 161002: Expected [128,128] but got [128,8]</code>（BT=8, H=128）。
+</div></div>
+<div class="kv"><div class="k">修复</div><div>
+用 <code>scripts/select_prompt.py</code> 的 <code>operator_name_eq</code> 机制（<code>nz_matmul.md</code> 先例），在 <code>init_run</code> 阶段把算子专属模块装配进 <code>inputs/prompt_v1.md</code>（extractor 读取<b>之前</b>），据此落 <code>weightGradOut.shape[1] == input.shape[1]</code>（绑 H，允许 BT≠H）+ maskedTarget/targetMask 值域。<b>仅该算子命中，不污染其他算子</b>。
+</div></div>
+<div class="kv"><div class="k">为何优于 6.4 supplement</div><div>
+6.5 主（持久/版本化、前置生效、自动命中、修法正确绑 H）；6.4 per-run supplement 降为兜底（且补丁内容纠正为 <code>replace_constraint</code> 绑 <code>input.shape[1]</code>，非 <code>BT==H</code> 退化 band-aid）。
+</div></div></div>
+
+<h4>示例 · 模块命中验证（select_prompt.py --list-modules）</h4>
+<pre><span class="cmt"># #8 命中本模块（+ 既有 backward_partial，pre-existing，非本模块引入）</span>
+$ select_prompt.py --base ...v4.md --doc ...FusedLinearCrossEntropyLossGrad.md --list-modules
+backward_partial,aclnnFusedLinearCrossEntropyLossGrad   <span class="ok-txt">← 命中 ✓</span>
+
+<span class="cmt"># 其他算子不命中（operator_name_eq 精确匹配）</span>
+$ ... --doc aclnnBitwiseNot.md --list-modules          → (空)            <span class="ok-txt">不污染 ✓</span>
+$ ... --doc aclnnConfusionTranspose.md --list-modules  → transpose_shape  <span class="ok-txt">不污染 ✓</span></pre>
+<pre><span class="cmt"># 模块体（消解矛盾，落正确绑定）</span>
+triggers:
+  - kind: operator_name_eq
+    value: "aclnnFusedLinearCrossEntropyLossGrad"
+...
+1. weightGradOut.shape[1] == input.shape[1]   <span class="cmt"># 绑 H，禁止 == grad.shape[0]（绑 BT）</span>
+2. 0 &lt;= maskedTarget.range_value and maskedTarget.range_value &lt;= weight.shape[0] - 1
+3. 0 &lt;= targetMask.range_value and targetMask.range_value &lt;= 255</pre>
+
+<h2 id="sm">共同主线与互补</h2>
+<div class="card hlo">
+<ul class="tight">
+<li><b>P0 堵“约束被丢”的伪 SAT（源头）</b>：6.1 让 prod/sum/tensor-sum 递归约束不再跨 case 撞名丢弃；6.2 让丢弃可见。<span class="ok-txt">实证：ConfusionTranspose 生成 0 [FAIL]/0 [PSEUDO_SAT_RISK]，prod 约束保留</span>。</li>
+<li><b>P1 兜“约束被加但 unsound”的伪 SAT（兜底）</b>：6.3a/b 用 Python eval realized 用例过滤违例 + 补采 + shortfall。<span class="ok-txt">实证：ForeachErf 8-9 违例→过滤补采→kept=30/0 残留</span>。</li>
+<li><b>互补不重叠</b>：6.1 防约束<b>丢失</b>（prod/sum 类），post_check 兜约束<b>被加但编码 unsound</b>（len 类可 eval 的）。对<b>不可 eval</b> 的（如 prod 在标量 range_value 上）post_check 诚实标 <code>eval_unreliable</code> 不过滤——由 6.1 已在源头保证其不丢，故无须再兜。</li>
+<li><b>P1 另一支</b>：6.5 从<b>源头</b>纠正 #8 文档矛盾（绑 H），与 6.1/6.3 正交——它解决的是 extractor 的<b>输入</b>（prompt）问题，非 Z3 求解问题。</li>
+<li><b>诚实降级原则贯穿</b>：6.2 不阻断只告警、post_check 不可 eval 不过滤、补采不足标 shortfall 如实落盘——任何时候不假装成功。</li>
+</ul></div>
+
+<div class="foot">
+本文档对应提交 <code>b586302</code>（P0: 6.1+6.2，2 files +121/-57）与 <code>9138640</code>（P1: 6.3a+6.3b+6.5+plan，4 files +825），均基于 main_haoxu_tongsuan 分支，未 push。所有实证数据来自 z3 5.0.0 与重跑 aclnnBitwiseNot / aclnnForeachErf / aclnnConfusionTranspose 生成。
+</div>
+
+</div>
+</body>
+</html>

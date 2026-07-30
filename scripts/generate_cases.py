@@ -199,6 +199,108 @@ def _log_ranksize_distribution(
         )
 
 
+def _post_check_filter_topup(
+    constraints: dict,
+    constraints_path: Path,
+    per_platform_paths: dict[str, Path],
+    per_platform_counts: dict[str, int],
+    count: int,
+    base_seed: int,
+    cap_multiplier: int,
+) -> tuple[dict, dict[str, dict]]:
+    """6.3a post_check 安全网：过滤伪 SAT 违例用例，补采至 count，如实落 shortfall。
+
+    流程：对已生成的 cases_<platform>.json 跑 run_post_check → 丢弃违例用例
+    （仅 clean-False，eval-error 不过滤防误杀）→ 用新 seed 重生成补采（上限
+    count*cap_multiplier 防死循环）→ post_check 新批次取通过用例 → 合并重排
+    id 0..N-1（save_name 与 id 无绑定，重排安全）→ 不足则如实标 shortfall。
+    干净平台（0 违例）原文件不触碰（输出与无 post_check 完全一致）。
+    """
+    import tempfile
+    from agent.generators.facade import TestCaseGenerator
+    from scripts.post_check_cases import run_post_check, write_report
+
+    output_dir = next(iter(per_platform_paths.values())).parent
+    initial = run_post_check(output_dir, constraints_path)
+    stats: dict[str, dict] = {}
+    for platform, path in per_platform_paths.items():
+        plat = initial["platforms"].get(platform, {})
+        violating_ids = set(plat.get("violating_case_ids", []))
+        if not violating_ids:
+            stats[platform] = {
+                "violations": 0,
+                "kept": per_platform_counts[platform],
+                "shortfall": 0,
+                "regen_rounds": 0,
+            }
+            continue
+        cases = json.loads(path.read_text(encoding="utf-8"))
+        kept = [c for c in cases if c.get("id") not in violating_ids]
+        cap = max(count, count * cap_multiplier)
+        attempts = len(cases)
+        rounds = 0
+        while len(kept) < count and attempts < cap:
+            rounds += 1
+            need = count - len(kept)
+            gen = TestCaseGenerator(constraints, seed=base_seed + 10_000 + rounds)
+            with tempfile.TemporaryDirectory(
+                prefix=f"postcheck_topup_{platform.replace('/', '_')}_"
+            ) as tmp:
+                tmp_dir = Path(tmp)
+                tmp_ckpt = tmp_dir / "jsonl"
+                tmp_ckpt.mkdir(parents=True, exist_ok=True)
+                try:
+                    gen.generate_for_platform(
+                        platform,
+                        need,
+                        jsonl_save_path=str(tmp_ckpt),
+                        json_save_path=str(tmp_dir),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "post_check topup gen failed [%s]: %s", platform, exc
+                    )
+                    break
+                src = tmp_dir / f"{gen.operator_name}.json"
+                if not src.exists():
+                    logger.warning(
+                        "post_check topup: no output for [%s]", platform
+                    )
+                    break
+                batch = json.loads(src.read_text(encoding="utf-8"))
+                sanitized = platform.replace("/", "_")
+                (tmp_dir / f"cases_{sanitized}.json").write_text(
+                    json.dumps(batch, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp_report = run_post_check(tmp_dir, constraints_path)
+                tmp_viol = set(
+                    tmp_report["platforms"]
+                    .get(platform, {})
+                    .get("violating_case_ids", [])
+                )
+                passing = [c for c in batch if c.get("id") not in tmp_viol]
+                kept.extend(passing)
+                attempts += len(batch)
+        final = kept[:count]
+        for i, c in enumerate(final):
+            c["id"] = i
+        path.write_text(
+            json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        per_platform_counts[platform] = len(final)
+        stats[platform] = {
+            "violations": len(violating_ids),
+            "kept": len(final),
+            "shortfall": max(0, count - len(final)),
+            "regen_rounds": rounds,
+            "attempts": attempts,
+        }
+    final_report = run_post_check(output_dir, constraints_path)
+    write_report(final_report, output_dir)
+    return final_report, stats
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--constraints", required=True)
@@ -223,6 +325,25 @@ def main() -> int:
         "len(fusion_devices) (fusion 分布式算子 rankSize 必须等于实际卡数)。"
         "默认项目根 servers.json; 文件不存在或无 fusion server 时不钉值, "
         "保持文档 enum。仅读非秘密字段 fusion_devices。",
+    )
+    parser.add_argument(
+        "--post-check",
+        dest="post_check",
+        action="store_true",
+        default=True,
+        help="生成后跑 post_check 过滤伪 SAT 违例用例并补采至 count（默认开）。",
+    )
+    parser.add_argument(
+        "--no-post-check",
+        dest="post_check",
+        action="store_false",
+        help="关闭 post_check 安全网（仅生成，不过滤违例）。",
+    )
+    parser.add_argument(
+        "--post-check-cap-multiplier",
+        type=int,
+        default=3,
+        help="补采尝试上限 = case_count × 该倍数（防死循环，默认 3）。",
     )
     args = parser.parse_args()
     if args.count < 1:
@@ -293,6 +414,27 @@ def main() -> int:
 
     _log_ranksize_distribution(per_platform_paths, pinned_ws)
 
+    post_check_report = None
+    post_check_stats = None
+    if args.post_check:
+        post_check_report, post_check_stats = _post_check_filter_topup(
+            constraints,
+            constraints_path,
+            per_platform_paths,
+            per_platform_counts,
+            args.count,
+            args.seed,
+            args.post_check_cap_multiplier,
+        )
+        for platform, st in (post_check_stats or {}).items():
+            if st["violations"]:
+                logger.warning(
+                    "post_check [%s]: dropped %d violating, kept %d, "
+                    "shortfall %d (%d regen rounds)",
+                    platform, st["violations"], st["kept"],
+                    st["shortfall"], st["regen_rounds"],
+                )
+
     summary = {
         "operator_name": generator.operator_name,
         "requested_per_platform": args.count,
@@ -312,6 +454,18 @@ def main() -> int:
         ),
         "id_format": "platform 内 0 基整数 (per-platform 0,1,2,...)",
     }
+    if args.post_check:
+        summary["post_check"] = {
+            "enabled": True,
+            "overall_violation": post_check_report["overall_violation"],
+            "overall_eval_unreliable": post_check_report["overall_eval_unreliable"],
+            "per_platform": post_check_stats,
+            "report_path": str(
+                next(iter(per_platform_paths.values())).parent / "post_check_report.json"
+            ),
+        }
+    else:
+        summary["post_check"] = {"enabled": False}
     (output_dir / "generation_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )

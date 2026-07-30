@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>算子迭代批次修复方案 — 实施细化计划</title>
+<style>
+  :root{
+    --bg:#0f1420; --card:#161d2e; --card2:#1c2538; --border:#2a3550;
+    --txt:#e6ecf5; --mut:#9aa6bd; --acc:#4ea1ff; --ok:#36c691;
+    --warn:#f0b341; --err:#f0616d; --crit:#ff7a8a; --code:#d6b3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#0b0f1a 0,#0f1420 60px);color:var(--txt);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.65;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:36px 28px 80px}
+  h1{font-size:28px;margin:0 0 4px;letter-spacing:.5px}
+  h2{font-size:21px;margin:42px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--border);color:#cfe0ff}
+  h3{font-size:16px;margin:24px 0 10px;color:#b9c8e8}
+  h4{font-size:14px;margin:14px 0 6px;color:#9fe9c8}
+  .sub{color:var(--mut);font-size:14px;margin-bottom:8px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:11px;
+    background:#22304d;color:#cfe0ff;margin-left:8px;vertical-align:middle}
+  .tag.p0{background:#3a1a22;color:#ffb3bd} .tag.p1{background:#13243a;color:#b6d4ff}
+  .tag.p2{background:#3a2f12;color:#ffd79a}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin:14px 0}
+  .card.hl{border-left:4px solid var(--err)} .card.hlo{border-left:4px solid var(--ok)}
+  .card.hlw{border-left:4px solid var(--warn)} .card.hlc{border-left:4px solid var(--crit)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  th,td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+  th{background:#1a2336;color:#b9c8e8;font-weight:600}
+  td .mono,code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Courier New",monospace}
+  code{background:#0c111c;border:1px solid #243049;padding:1px 6px;border-radius:5px;font-size:12.5px;color:var(--code)}
+  pre{background:#0b1018;border:1px solid #243049;border-radius:10px;padding:14px 16px;overflow:auto;font-size:12.5px;line-height:1.55;color:#cdd9ee}
+  pre .kw{color:#ff9dab} pre .fn{color:#79d3ff} pre .str{color:#b6e3a0} pre .cmt{color:#6a7590;font-style:italic} pre .hot{color:#ffd86b;background:#332a0d}
+  ul.tight{margin:6px 0;padding-left:22px} ul.tight li{margin:3px 0}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:6px 14px;font-size:13.5px;margin:6px 0}
+  .kv .k{color:var(--mut)}
+  .fix{background:#0d1814;border:1px solid #1f3a2d;border-radius:10px;padding:14px 16px;margin:10px 0}
+  .diff{color:#9fe9c8} .warn-txt{color:#ffd79a} .err-txt{color:#ffb3bd}
+  .toc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin:18px 0;font-size:13.5px}
+  .toc a{color:#b6d4ff;text-decoration:none} .toc a:hover{text-decoration:underline}
+  .step{background:#0c111c;border:1px solid #243049;border-radius:8px;padding:10px 14px;margin:8px 0}
+  .step b{color:#cfe0ff}
+  .foot{margin-top:46px;padding-top:18px;border-top:1px solid var(--border);color:var(--mut);font-size:12.5px}
+  .gate{background:#22121a;border:1px solid #3a1a22;border-radius:10px;padding:12px 16px;margin:10px 0}
+  .gate .t{color:#ffb3bd;font-weight:700;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>算子迭代批次修复方案 — 实施细化计划</h1>
+<div class="sub">来源：基于 <code>ten.html</code> §6 修复方案（6.1–6.5）细化&nbsp;|&nbsp;批次 <code>operator_docs-20260729-182839-571262</code>&nbsp;|&nbsp;目标：9 失败 → 全部恢复或诚实降级，且不拖垮当前已通过的算子</div>
+<div class="sub">说明：本计划把 ten.html 的高层方案落到<b>可执行步骤</b>——精确文件:行号、改动前后的代码骨架、验证命令、回归门禁与回滚。同时修正 ten.html 方案中已识别的三处缺陷：①6.1 漏覆盖 <code>_sum_tensor_elements</code> 且硬编码函数名有跨-sort 撞名隐患；②6.2 “直接判 unknown” 分支会回归当前通过算子；③6.4 的 #8 补丁 <code>BT==H</code> 是退化 band-aid。</div>
+
+<div class="toc">
+  <b>目录</b> &nbsp;
+  <a href="#s0">0. 概览</a> ·
+  <a href="#s1">1. P0-6.1 幂等注册</a> ·
+  <a href="#s2">2. P0-6.2 add_constraint 可观测</a> ·
+  <a href="#s3">3. P1-6.3 post_check 主流程+编码增强</a> ·
+  <a href="#s4">4. P1-6.5 算子专属模块</a> ·
+  <a href="#s5">5. P2-6.4 supplement 兜底+执行机配置</a> ·
+  <a href="#s6">6. 实施阶段与门禁</a> ·
+  <a href="#s7">7. 回归验证矩阵</a> ·
+  <a href="#s8">8. 风险与回滚</a>
+</div>
+
+<h2 id="s0">0. 概览</h2>
+
+<div class="card">
+<div class="kv"><div class="k">修复总览</div><div>
+<b>P0（必做，堵伪 SAT 制度入口）</b>：6.1 幂等注册 prod/sum/tensor-sum 递归函数；6.2 add_constraint 失败可观测。<br>
+<b>P1（理论不完备兜底 + #8 主路径）</b>：6.3 post_check 入主流程 + 针对性编码增强（外科式）；6.5 #8 算子专属提取模块。<br>
+<b>P2（恢复 #8 兜底 + 放行 #3）</b>：6.4 per-run supplement 降级为兜底（且补丁内容纠正）；#3 servers.json 配置。
+</div></div></div>
+
+<table>
+<thead><tr><th>编号</th><th>优先级</th><th>改动文件</th><th>覆盖失败</th><th>回归风险</th></tr></thead>
+<tbody>
+<tr><td>6.1</td><td><span class="tag p0">P0</span></td><td><code>expression_preprocess_utils.py</code></td><td>#4 #9（#2 部分）</td><td>低（无 prod/sum 算子不触碰）</td></tr>
+<tr><td>6.2</td><td><span class="tag p0">P0</span></td><td><code>z3_expression_solver_utils.py</code></td><td>所有 expr 转换失败</td><td>低（仅可观测，不强制 unknown）</td></tr>
+<tr><td>6.3</td><td><span class="tag p1">P1</span></td><td><code>post_check_cases.py</code> / <code>generate_cases.py</code> / <code>expression_preprocess_utils.py</code></td><td>#5 #6 #7 #10 #2</td><td>3a/3b 低；3c 编码增强<b>中</b>（须门禁）</td></tr>
+<tr><td>6.5</td><td><span class="tag p1">P1</span></td><td>新增 <code>prompts/modules/aclnnFusedLinearCrossEntropyLossGrad.md</code></td><td>#8</td><td>低（<code>operator_name_eq</code> 仅该算子）</td></tr>
+<tr><td>6.4</td><td><span class="tag p2">P2</span></td><td><code>servers.json</code> + 运行时 supplement</td><td>#8 #3</td><td>低（#8 兜底已纠正；#3 纯配置）</td></tr>
+</tbody>
+</table>
+
+<div class="card hlo">
+<div class="kv"><div class="k">回归基线</div><div>
+<b>必保不退化</b>：<code>aclnnBitwiseNot</code>（当前 100/100，纯相等约束，无 prod/sum/len）。每个阶段结束必须重跑它，通过率不得下降。<br>
+<b>正向验证靶标</b>：每条修复对应一个"从违反 → 通过"的算子（见 §7 矩阵）。
+</div></div></div>
+
+<h2 id="s1">1. P0-6.1 幂等注册 prod/sum/tensor-sum 递归函数</h2>
+<div class="card hlc">
+<div class="kv"><div class="k">问题定位</div><div>
+<code>expression_preprocess_utils.py</code> 三个方法用 per-builder <code>slice_id</code> 命名 RecFunction，跨 case 撞名：<br>
+<code>_sum_z3_sequence</code>(747-770) → <code>__sum_seq_{slice_id}</code>；<code>_prod_z3_sequence</code>(772-785) → <code>__prod_seq_{slice_id}</code>；<code>_sum_tensor_elements</code>(787-817) → <code>__sum_tensor_{name}_{slice_id}</code>。<br>
+<code>_slice_counter</code> 每个 <code>Z3ConstraintBuilder</code> 实例从 0 重置（<code>z3_expression_solver_utils.py:137</code>），全模块共用 <code>z3.main_ctx()</code> → 第二个 case 即抛 <code>recursive function ... already defined</code> → 被 <code>add_constraint</code> 的 <code>except</code> 吞掉（<code>:197-198</code>）→ 约束丢弃 → 伪 SAT。<b>已用 z3 5.0.0 实证复现</b>。
+</div></div>
+<div class="kv"><div class="k">已有修法</div><div><code>param_var_definition.py:32-48 _get_or_register_prod_shape</code> + 模块级 <code>_PROD_SHAPE_REC_FUNCS</code>（按名幂等注册，已用于 shape 总元素数路径）。本方案把同构模式套到 expr 路径。</div></div>
+<div class="kv"><div class="k">ten.html 缺陷</div><div><span class="err-txt">①</span> 只点名 <code>_prod_z3_sequence</code>/<code>_sum_z3_sequence</code>，<b>漏 <code>_sum_tensor_elements</code></b>（同 bug 模式）；<span class="err-txt">②</span> 片段硬编码 <code>"__prod_seq_global"</code>，注册表键用 <code>(str(seq_sort),)</code>——若同进程出现不同 seq_sort，不同键不早返回却同名注册仍撞名。本计划<b>改为函数名从 sort 派生</b>，消除隐患。</div></div>
+</div>
+
+<h4>改动 1.1 — 新增模块级注册表与幂等助手（expression_preprocess_utils.py 顶部）</h4>
+<pre><span class="cmt"># 与 param_var_definition._PROD_SHAPE_REC_FUNCS 同构：模块级、跨 builder 共享 z3.main_ctx()</span>
+_PROD_SEQ_REC_FUNCS   = {}   <span class="cmt"># key: str(seq_sort)               -> ProdSeq</span>
+_SUM_SEQ_REC_FUNCS    = {}   <span class="cmt"># key: (str(seq_sort), str(elem)) -> SumSeq</span>
+_SUM_TENSOR_REC_FUNCS = {}   <span class="cmt"># key: str(element_sort)          -> SumArr</span>
+
+def _rec_suffix(element_sort):
+    <span class="kw">if</span> element_sort <span class="kw">is</span> None <span class="kw">or</span> element_sort == z3.IntSort(): <span class="kw">return</span> <span class="str">"int"</span>
+    <span class="kw">if</span> element_sort == z3.RealSort(): <span class="kw">return</span> <span class="str">"real"</span>
+    <span class="kw">return</span> <span class="str">"other"</span>   <span class="cmt"># 兜底，避免同名不同 sort 撞名</span>
+
+<span class="kw">def</span> <span class="fn">_get_or_register_prod_seq</span>(seq):
+    seq_sort = seq.sort()
+    existing = _PROD_SEQ_REC_FUNCS.get(str(seq_sort))
+    <span class="kw">if</span> existing <span class="kw">is not</span> None: <span class="kw">return</span> existing(seq)          <span class="cmt"># 复用，不再 RecAddDefinition</span>
+    name = <span class="str">f"__prod_seq_{_rec_suffix(z3.IntSort())}"</span>  <span class="cmt"># 名字从 sort 派生，非硬编码</span>
+    P = z3.RecFunction(name, seq_sort, z3.IntSort())
+    v = z3.Const(f<span class="str">"{name}_arg"</span>, seq_sort)
+    z3.RecAddDefinition(P, [v],
+        z3.If(z3.Length(v) == 0, z3.IntVal(1),
+              v[0] * P(z3.SubSeq(v, 1, z3.Length(v) - 1))))
+    _PROD_SEQ_REC_FUNCS[str(seq_sort)] = P
+    <span class="kw">return</span> P(seq)
+
+<span class="kw">def</span> <span class="fn">_get_or_register_sum_seq</span>(seq, element_sort):
+    <span class="kw">if</span> element_sort <span class="kw">is</span> None: element_sort = z3.IntSort()
+    seq_sort = seq.sort()
+    key = (str(seq_sort), str(element_sort))
+    existing = _SUM_SEQ_REC_FUNCS.get(key)
+    <span class="kw">if</span> existing <span class="kw">is not None</span>: <span class="kw">return</span> existing(seq)
+    name = f<span class="str">"__sum_seq_{_rec_suffix(element_sort)}"</span>     <span class="cmt"># int/real 两键，对应 ten.html 注记</span>
+    zero = z3.IntVal(0) <span class="kw">if</span> element_sort == z3.IntSort() <span class="kw">else</span> z3.RealVal(0)
+    S = z3.RecFunction(name, seq_sort, element_sort)
+    v = z3.Const(f<span class="str">"{name}_arg"</span>, seq_sort)
+    z3.RecAddDefinition(S, [v],
+        z3.If(z3.Length(v) == 0, zero,
+              v[0] + S(z3.SubSeq(v, 1, z3.Length(v) - 1))))
+    _SUM_SEQ_REC_FUNCS[key] = S
+    <span class="kw">return</span> S(seq)
+
+<span class="kw">def</span> <span class="fn">_get_or_register_sum_tensor</span>(element_sort):
+    existing = _SUM_TENSOR_REC_FUNCS.get(str(element_sort))
+    <span class="kw">if</span> existing <span class="kw">is not None</span>: <span class="kw">return</span> existing
+    array_sort = z3.ArraySort(z3.IntSort(), element_sort)
+    name = f<span class="str">"__sum_tensor_{_rec_suffix(element_sort)}"</span>
+    zero = z3.IntVal(0) <span class="kw">if</span> element_sort == z3.IntSort() <span class="kw">else</span> z3.RealVal(0)
+    A = z3.RecFunction(name, array_sort, z3.IntSort(), z3.IntSort(), element_sort)
+    a = z3.Const(f<span class="str">"{name}_arr"</span>, array_sort)
+    s = z3.Int(f<span class="str">"{name}_start"</span>); e = z3.Int(f<span class="str">"{name}_end"</span>)
+    z3.RecAddDefinition(A, [a, s, e],
+        z3.If(s &gt;= e, zero, z3.Select(a, s) + A(a, s + 1, e)))
+    _SUM_TENSOR_REC_FUNCS[str(element_sort)] = A
+    <span class="kw">return</span> A</pre>
+
+<h4>改动 1.2 — 三个方法改用幂等助手（保留原递归体与副作用）</h4>
+<pre><span class="cmt"># _prod_z3_sequence: 改为单行委托，递归体已移入助手</span>
+<span class="kw">def</span> <span class="fn">_prod_z3_sequence</span>(self, seq):
+    <span class="kw">return</span> _get_or_register_prod_seq(seq)
+
+<span class="cmt"># _sum_z3_sequence: 同上，element_sort 透传</span>
+<span class="kw">def</span> <span class="fn">_sum_z3_sequence</span>(self, seq, element_sort=None):
+    <span class="kw">return</span> _get_or_register_sum_seq(seq, element_sort)
+
+<span class="cmt"># _sum_tensor_elements: 保留 rank==1 副作用与返回表达式，仅把 RecFunction 注册换为幂等</span>
+<span class="kw">def</span> <span class="fn">_sum_tensor_elements</span>(self, tensor_var):
+    arr = tensor_var.range_value
+    element_sort = tensor_var.get_element_sort()
+    SumArr = _get_or_register_sum_tensor(element_sort)   <span class="cmt"># 幂等，不再 slice_id 命名</span>
+    shape = tensor_var.shape <span class="kw">if</span> isinstance(tensor_var, TensorVar) <span class="kw">else</span> tensor_var.elem_shape
+    rank = z3.Length(shape)
+    self.builder.solver.add(rank == 1)                   <span class="cmt"># 副作用保留（per-call，非函数定义）</span>
+    <span class="kw">return</span> SumArr(arr, z3.IntVal(0), shape[0])</pre>
+
+<h4>验证 6.1</h4>
+<div class="step"><b>实证脚本（一次性，不入库）</b>：构造 3 个 <code>Z3ConstraintBuilder</code> 顺序注册 <code>__prod_seq_*</code>，确认不抛、复用同一 <code>FuncDeclRef</code>（已用 z3 5.0.0 实证复现并固化验证）。<b>不引入持久化自动化测试</b>（<code>tests/</code> 亦在 <code>.gitignore</code>），回归靠重跑算子矩阵（§7）+ 6.3 post_check 安全网。</div>
+<div class="step"><b>端到端</b>：重跑 <code>aclnnConfusionTranspose</code>（#4，纯 prod），<code>post_check_report.json</code> 的 <code>violated_count</code> 应从 99/100 → 0/100 或诚实的 0 用例（unsat）。重跑 <code>aclnnGroupedMatMulAlltoAllv</code>（#9 的 sum 部分）由 200/200 → 显著下降（剩余违反应为字符串长度项，由 6.3 兜底）。</div>
+<div class="step"><b>回归门禁</b>：<code>aclnnBitwiseNot</code> 保持 100/100。</div>
+
+<h2 id="s2">2. P0-6.2 add_constraint 失败可观测（不静默丢约束）</h2>
+<div class="card hlc">
+<div class="kv"><div class="k">问题</div><div><code>z3_expression_solver_utils.py:197-198</code> 的 <code>except Exception</code> 仅记 <code>logger.error</code>，丢弃的约束无任何标志位，<code>solve()</code> 仍以"部分约束"返回 sat 并落盘——伪 SAT 的制度性入口。</div></div>
+<div class="kv"><div class="k">ten.html 缺陷</div><div>方案给"post_check 复算<b>或</b>直接判 unknown"两选项。<span class="err-txt">"直接判 unknown" 会回归</span>：若某当前通过算子存在被静默丢但冗余/巧合满足的 expr，强制 unknown 会把它从通过变 0 用例。本计划<b>只做可观测</b>，阻断<b>统一交给 6.3 的 post_check</b>，不引入 force-unknown。</div></div>
+</div>
+
+<h4>改动 2.1 — Z3ConstraintBuilder 记录被丢约束并在 sat 时打标</h4>
+<pre><span class="kw">def</span> <span class="fn">__init__</span>(self, timeout_ms=60000):
+    ...
+    self._slice_counter = 0
+    self._dropped_exprs = []          <span class="cmt"># 新增：(expr_name, expr_str, err)</span>
+    self._sat_with_drops = False      <span class="cmt"># 新增：sat 但有约束被丢的 tainted 标志</span>
+
+<span class="kw">def</span> <span class="fn">add_constraint</span>(self, expr_name, expr_str, is_print_log=False):
+    <span class="kw">try</span>:
+        tree = ast.parse(expr_str, mode=<span class="str">'eval'</span>)
+        z3_constraint = ASTtoZ3Converter(self).visit(tree.body)
+        <span class="kw">if</span> z3_constraint <span class="kw">is not</span> None:
+            self.solver.assert_and_track(z3_constraint, expr_name)
+        <span class="kw">elif</span> is_print_log:
+            logger.debug(f<span class="str">"[SKIP] {expr_str}: converter returned None"</span>)
+    <span class="kw">except</span> Exception <span class="kw">as</span> e:
+        logger.error(f<span class="str">"[FAIL] {expr_str}: {e}"</span>)
+        self._dropped_exprs.append((expr_name, expr_str, str(e)))   <span class="cmt"># 记录，不静默</span>
+
+<span class="kw">def</span> <span class="fn">solve</span>(self):
+    ...
+    check_res = self.solver.check()
+    <span class="kw">if</span> check_res == z3.sat:
+        <span class="kw">if</span> self._dropped_exprs:
+            self._sat_with_drops = True                              <span class="cmt"># sat 但 tainted</span>
+            logger.warning(f<span class="str">"[PSEUDO_SAT_RISK] sat with {len(self._dropped_exprs)} dropped expr(s); defer to post_check"</span>)
+        ...   <span class="cmt"># 其余不变</span>
+    <span class="kw">return</span> results</pre>
+<div class="step"><b>不阻断</b>：<code>solve()</code> 仍返回结果（保留产出），由 <code>generate_cases.py</code> 后置的 post_check（6.3）过滤 tainted 用例。<b>不</b>在此处判 unknown。</div>
+
+<h4>验证 6.2</h4>
+<div class="step"><b>观测</b>：grep <code>generation.log</code> 出现 <code>[PSEUDO_SAT_RISK]</code> 与 <code>[FAIL]</code> 计数；<code>generate_result.json</code> 暴露 <code>dropped_exprs</code> 列表（供 post_check 决策）。</div>
+<div class="step"><b>回归门禁</b>：<code>aclnnBitwiseNot</code> 无 dropped exprs，<code>_sat_with_drops=False</code>，100/100 不变。</div>
+
+<h2 id="s3">3. P1-6.3 post_check 纳入生成主流程 + 针对性编码增强</h2>
+
+<h3>3a — 接入 post_check 到 generate_cases.py（post_check 已参数化）</h3>
+<div class="card hlo">
+<div class="kv"><div class="k">现状</div><div><code>scripts/post_check_cases.py</code> <b>已参数化</b>（<code>--iter-dir</code>/<code>--constraints</code> CLI、写 <code>post_check_report.json</code>、逐平台 eval <code>constraints_in_parameters</code>），无需再改硬编码。6.3a 仅剩<b>接入主流程</b> + 抽出可复用入口。</div></div></div>
+<div class="step"><b>改动</b>：post_check_cases.py 抽出 <code>run_post_check(iter_dir, constraints_path) -&gt; report</code>（含每平台 <code>violating_case_ids</code> 全量，供过滤），<code>main()</code> 薄封装。<code>generate_cases.py</code> 增 <code>--post-check</code>（默认开）/<code>--no-post-check</code>：生成后调 <code>run_post_check</code>，对有违例平台<b>过滤</b>违例用例并<b>补采</b>至 <code>case_count</code>（新 seed 重生成→post_check→留通过用例，上限 3×case_count 防死循环），不足则如实落盘并标 <code>post_check_shortfall</code>。</div>
+<div class="step"><b>接入</b>：<code>scripts/generate_cases.py</code> 生成 <code>cases_*.json</code> 后，若 <code>--post-check</code>（默认开），调用 post_check；对 <code>overall_pass=false</code> 的平台，<b>过滤</b>违反用例并<b>补采</b>至 <code>case_count</code>，补采设上限（如 3 轮 × case_count）防死循环；仍不足则如实落盘并标注 <code>post_check_shortfall</code>。</div>
+
+<h3>3b — post_check eval 保真边界（防误杀通过用例）</h3>
+<div class="card hlw">
+<ul class="tight">
+<li><b>range_value 列表/元组型</b>：<code>range_values</code> 可能为标量、<code>[min,max]</code> 列表或元组；<code>0 &lt;= param.range_value</code> 在列表型上抛 TypeError。<b>不扩展 <code>__eq__</code> 语义</b>（避免把坏用例判成通过），改由下方 eval-error 门禁兜住：抛错即不可信、不过滤。</li>
+<li><b>读对文件</b>：post_check 读 <code>cases_&lt;platform&gt;.json</code>（已展开），<b>不</b>读紧凑 <code>cases.json</code>（诊断时两者都要看，见 CLAUDE.md 约定）。</li>
+<li><b>eval-error ≠ 违例</b>：每 expr 返回 <code>(ok, err)</code>。<b>仅 <code>err is None 且 ok=False</code> 才算真违例</b>（可过滤、计入 <code>violated_count</code>）；<code>err</code> 非空标 <code>eval_unreliable</code>，<b>绝不</b>据此过滤或计入违例——防 range_value 列表型等误杀通过用例。该 expr 仅告警。</li>
+</ul></div>
+
+<h3>3c — 针对性编码增强（外科式，逐项门禁，<span class="warn-txt">勿全局铺开</span>）</h3>
+<table>
+<thead><tr><th>失败</th><th>expr 特征</th><th>增强（仅在对应 expr_type 命中时启用）</th><th>门禁</th></tr></thead>
+<tbody>
+<tr><td>#5/#6/#7 ForeachErf/Expm1/Log2</td><td><code>len(out.shape) &gt;= len(x.shape)</code></td><td>序列长度提升为显式 <code>Int</code> 标量 <code>L_out/L_x</code>，加 <code>z3.Length(seq)==L_*</code> 双向约束，对 <code>L_out&gt;=L_x</code> 求解（sound refinement，等价加约束）</td><td>BitwiseNot 不触发；ForeachErf 47/200→0</td></tr>
+<tr><td>#10 Im2col</td><td><code>shape[-1]</code> + <code>//</code></td><td>负索引 <code>shape[-1]</code>→<code>shape[len-1]</code> 正索引并约束 <code>len&gt;0</code>；floor 除法项先对自变量定上下界再建模；<b>或</b>公式驱动算子改走构造式（给 self/pad/dil/k/stride 直接算 out.shape，不走 Z3 反解）</td><td>Im2col 177/300→0；构造式优先</td></tr>
+<tr><td>#2 BlendImagesCustom</td><td>shape_broadcast</td><td>广播依赖改构造式（定主形状→派生从属），或 unknown 显式降级枚举兜底</td><td>0 用例→&gt;0</td></tr>
+</tbody></table>
+<div class="gate"><div class="t">3c 门禁（必须逐项过）</div>每条编码增强<b>独立开关</b>（按 expr_type/算子名条件启用）；上线前对该增强未命中的算子集回归（不得改变其求解结果）；<code>post_check</code>（3a）作为增强失效时的最终安全网——<b>增强错了顶多被 post_check 兜住，不会落盘违法用例</b>。</div>
+
+<h2 id="s4">4. P1-6.5 算子专属提取模块（#8 主路径）</h2>
+<div class="card hlo">
+<div class="kv"><div class="k">机理</div><div><code>scripts/select_prompt.py</code> 在 <code>init_run</code> 阶段装配 base prompt + 命中模块 → <code>inputs/prompt_v1.md</code>（extractor 读取<b>之前</b>）；<code>trigger_matches</code> 支持 <code>operator_name_eq</code>，仅该算子命中、不污染其他算子；<code>nz_matmul.md</code> 已用 <code>operator_name_eq: aclnnBatchMatMulWeightNz</code> 为先例。</div></div>
+<div class="kv"><div class="k">为何优于 6.4 supplement</div><div>持久（版本化）/ 前置（提取期即生效，源头避免错绑）/ 自动（后续该算子所有 run 命中）/ <b>修法正确</b>（绑 <code>input.shape[1]</code> 允许 BT≠H，而非 <code>BT==H</code> 退化 band-aid）。</div></div></div>
+
+<h4>改动 4.1 — 新建模块文件</h4>
+<pre>--- prompts/modules/aclnnFusedLinearCrossEntropyLossGrad.md ---
+module: aclnnFusedLinearCrossEntropyLossGrad
+description: 修正文档参数表↔公式冲突：weightGradOut.shape[1] 绑 H 不绑 BT；maskedTarget/targetMask 值域
+triggers:
+  - kind: operator_name_eq
+    value: "aclnnFusedLinearCrossEntropyLossGrad"
+depends_on: []
+---
+## 算子专属提取规则（消解文档自相矛盾，非通用模式）
+
+1. <b>weightGradOut.shape[1] 必须绑 input.shape[1]（=H），不得绑 grad.shape[0]（=BT）</b>
+   - 文档参数表（weightGradOut 行）写"第2维长度与输入grad长度相同"（=BT），与公式第49行
+     <code>grad_weight = softmax^T · input ∈ R^{V×H}</code>（第2维=H）<b>矛盾</b>。
+   - <b>以公式为准</b>：NPU 运行时 Expected [V,H]；失败例 BT=8、H=128 证明 BT≠H 才是常态，
+     强制 BT==H 会退化测试。落 expr：<code>weightGradOut.shape[1] == input.shape[1]</code>
+     （等价 <code>== weight.shape[1]</code>，因已有 <code>weight.shape[1]==input.shape[1]</code>）；
+     <b>禁止</b> <code>weightGradOut.shape[1] == grad.shape[0]</code>。
+2. <b>maskedTarget ∈ [0, weight.shape[0]-1]</b>：局部词表索引，负值越界触发 aicore 507015。
+   expr：<code>0 &lt;= maskedTarget.range_value and maskedTarget.range_value &lt;= weight.shape[0] - 1</code>。
+3. <b>targetMask ∈ [0,255]</b>：dtype=UINT8，8bit 掩码。
+   expr：<code>0 &lt;= targetMask.range_value and targetMask.range_value &lt;= 255</code>。
+4. <b>维护注记</b>：本模块为消解文档参数表↔公式冲突的算子专属纠错；若官方文档修订使二者一致，应同步删除本模块。</pre>
+
+<h4>验证 6.5</h4>
+<div class="step"><b>命中验证</b>：<code>.venv/Scripts/python.exe scripts/select_prompt.py --base prompts/operator_constraints_extract_v4.md --doc operator_docs/aclnnFusedLinearCrossEntropyLossGrad.md --list-modules</code> → 输出含 <code>aclnnFusedLinearCrossEntropyLossGrad</code>。</div>
+<div class="step"><b>不污染验证</b>：对 <code>aclnnBitwiseNot.md</code>、<code>aclnnConfusionTranspose.md</code> 同样跑 <code>--list-modules</code> → 输出<b>不含</b>该模块。</div>
+<div class="step"><b>端到端</b>：重跑 <code>aclnnFusedLinearCrossEntropyLossGrad</code>（新 run），<code>constraints.json</code> 的 <code>weightGradOut.shape[1]</code> 应绑 <code>input.shape[1]</code> 而非 <code>grad.shape[0]</code>；<code>post_check</code> 0 违反；实跑 EZ1001 与 aicore 507015 归零。</div>
+<div class="step"><b>回归门禁</b>：其他算子装配出的 <code>prompt_v1.md</code> 内容不变（diff 为空）。</div>
+
+<h2 id="s5">5. P2-6.4 per-run supplement（兜底，内容已纠正）+ #3 执行机配置</h2>
+<div class="card hlw">
+<div class="kv"><div class="k">定位</div><div>#8 主路径已交给 6.5 模块；6.4 的 per-run supplement <b>降级为兜底</b>：当模块未命中（文档修订删了模块）或 extractor 不遵循模块（LLM 非确定性）时，确定性 replace 兜底。</div></div>
+<div class="kv"><div class="k">ten.html 缺陷</div><div><code>iter_001/supplement_additions.md</code> 的 #8 补丁是 <code>grad.shape[0]==input.shape[1]</code>（<b>BT==H</b>），是退化 band-aid。本计划纠正为 <code>replace_constraint</code>，直接纠正错绑。</div></div></div>
+
+<h4>改动 5.1 — #8 兜底补丁（constraints_patch.json，纠正版）</h4>
+<pre>[
+  {
+    "op": "replace_constraint",
+    "target_platform": "all",
+    "match_expr": "weightGradOut.shape[1] == grad.shape[0]",
+    "proposed": {
+      "expr_type": "shape_value_dependency",
+      "expr": "weightGradOut.shape[1] == input.shape[1]",
+      "relation_params": ["weightGradOut", "input"]
+    },
+    "basis": "§1: 文档参数表(261行)与公式(49行)冲突，运行时确认 shape[1]=H=input.shape[1]"
+  },
+  {
+    "op": "add_constraint", "target_platform": "all",
+    "proposed": { "expr_type": "self_value_dependency",
+      "expr": "0 &lt;= maskedTarget.range_value and maskedTarget.range_value &lt;= weight.shape[0] - 1",
+      "relation_params": ["maskedTarget", "weight"] },
+    "basis": "§2: 局部词表索引，负值越界 aicore 507015"
+  },
+  {
+    "op": "add_constraint", "target_platform": "all",
+    "proposed": { "expr_type": "self_value_dependency",
+      "expr": "0 &lt;= targetMask.range_value and targetMask.range_value &lt;= 255",
+      "relation_params": ["targetMask"] },
+    "basis": "§3: dtype=UINT8"
+  }
+]</pre>
+<div class="step"><b>落地</b>：<code>python scripts/apply_supplement_constraints.py runs/&lt;run&gt;/iter_001/constraints.json runs/&lt;run&gt;/iter_001/constraints_patch.json</code> → 自动重跑 normalize+validate，失败阻断不进 GENERATE。</div>
+<div class="step"><b>自检前置</b>：patch 写入前先在 <code>constraints.json</code> grep <code>match_expr</code> 原文确认存在（见 supplement-constraints SKILL.md §3/§6）。</div>
+
+<h4>改动 5.2 — #3 执行机配置（纯配置，不动代码）</h4>
+<div class="step"><code>servers.json</code> 增加一台可跑 <code>Atlas 350 加速卡</code> 算子的主机，或为现有主机声明支持 350 平台。验证：重跑 <code>aclnnCIoU</code> 不再 <code>NO_SERVER_FOR_PLATFORM</code>。</div>
+
+<h2 id="s6">6. 实施阶段与门禁</h2>
+<table>
+<thead><tr><th>阶段</th><th>动作</th><th>门禁（必须全过才进下一阶段）</th></tr></thead>
+<tbody>
+<tr><td>Phase 1 · P0 <span class="tag" style="background:#0d1814;color:#9fe9c8">✅已落地</span></td><td>6.1 幂等注册 + 6.2 可观测</td><td>实证通过；<code>BitwiseNot</code> 生成 50 用例全 sat、0 dropped/0 tainted；<code>ConfusionTranspose</code> post_check violated 99/100→0 或诚实的 0 用例</td></tr>
+<tr><td>Phase 2 · P1</td><td>6.5 #8 模块 + 6.3a/3b post_check 主流程</td><td>select_prompt 命中/不污染验证通过；<code>FusedLinear</code> constraints.json 绑 <code>input.shape[1]</code>、post_check 0 违反；<code>ForeachErf</code> 走 post_check 过滤+补采后通过率显著升</td></tr>
+<tr><td>Phase 3 · P1</td><td>6.3c 编码增强（逐项，外科式）</td><td>每项增强对未命中算子回归 diff 为空；<code>Im2col</code> 177/300→0；<code>BlendImagesCustom</code> 0→&gt;0</td></tr>
+<tr><td>Phase 4 · P2</td><td>6.4 #8 兜底补丁（纠正版）+ #3 servers.json</td><td>supplement normalize+validate 通过；<code>CIoU</code> 不再 BLOCKED</td></tr>
+</tbody>
+</table>
+<div class="card hlo"><div class="kv"><div class="k">依赖</div><div>6.3a（post_check 主流程）是 6.1/6.2 的<b>安全网</b>，建议 Phase 1 即上 3a（与 6.1/6.2 同阶段），3c 编码增强延后到 Phase 3 单独门禁。6.5 与 6.4 #8 补丁<b>不冲突</b>：6.5 主、6.4 兜底，二者均落同一正确约束（绑 input.shape[1]）。</div></div></div>
+
+<h2 id="s7">7. 回归验证矩阵</h2>
+<table>
+<thead><tr><th>算子</th><th>当前</th><th>修复后预期</th><th>门禁项</th></tr></thead>
+<tbody>
+<tr><td class="op">aclnnBitwiseNot</td><td>100/100</td><td>100/100（基线不退化）</td><td>每阶段必跑</td></tr>
+<tr><td class="op">aclnnConfusionTranspose</td><td>99/100 违反</td><td>0 违反 或 0 用例(unsat)</td><td>6.1</td></tr>
+<tr><td class="op">aclnnGroupedMatMulAlltoAllv</td><td>200/200 违反</td><td>sum 部分归 0；剩余字符串长度项由 post_check 过滤</td><td>6.1 + 6.3a</td></tr>
+<tr><td class="op">aclnnForeachErf/Expm1/Log2</td><td>47/200 违反</td><td>0 违反（post_check 过滤+补采 / 3c len→Int）</td><td>6.3a（或 6.3c）</td></tr>
+<tr><td class="op">aclnnIm2col</td><td>177/300 违反</td><td>0 违反（3c 构造式优先）</td><td>6.3c</td></tr>
+<tr><td class="op">aclnnBlendImagesCustom</td><td>0 用例(unknown)</td><td>&gt;0 用例（构造式 / 枚举兜底）</td><td>6.3c</td></tr>
+<tr><td class="op">aclnnFusedLinearCrossEntropyLossGrad</td><td>5/100(MAX_ITERATIONS)</td><td>显著上升（绑 H + 值域补全）</td><td>6.5（主）/ 6.4（兜底）</td></tr>
+<tr><td class="op">aclnnCIoU</td><td>BLOCKED</td><td>放行（有执行机后）</td><td>6.4 #3</td></tr>
+</tbody>
+</table>
+
+<h2 id="s8">8. 风险与回滚</h2>
+<div class="card hl">
+<div class="kv"><div class="k">中风险项</div><div><b>6.3c 编码增强</b>（len→Int、负索引改写、floor 定界、广播构造式）改变 Z3 求解的约束集，可能把当前 SAT 的算子变 UNSAT 或改变用例分布。<b>对策</b>：逐项开关 + 未命中算子回归 diff + post_check 兜底（增强错了被 post_check 兜住，不落盘违法用例）。</div></div>
+<div class="kv"><div class="k">低风险项</div><div>6.1（无 prod/sum 算子不触碰，与既有 shape-product 幂等模式同构、生产已验证）；6.2（仅可观测，不阻断）；6.5（<code>operator_name_eq</code> 仅该算子）；6.4 #3（纯配置）。</div></div>
+<div class="kv"><div class="k">回滚</div><div>6.1/6.2：还原三方法体 + 删注册表即可；6.5：删 <code>prompts/modules/aclnnFusedLinearCrossEntropyLossGrad.md</code>（<code>classify()</code> 自动不再命中）；6.3c：关掉对应增强开关；6.4 #8 补丁：<code>constraints.json.pre_supplement</code> 备份还原（<code>apply_supplement_constraints.py</code> 已自动备份）。</div></div>
+<div class="kv"><div class="k">不引入自动化测试</div><div>按约定不新增持久化自动化测试套件（<code>tests/</code> 亦在 <code>.gitignore</code>）；6.1 幂等性以一次性实证脚本验证（不入库），回归统一靠重跑算子矩阵（§7）+ 6.3 post_check 作安全网。</div></div>
+</div>
+
+<div class="foot">
+本计划由 <code>ten.html</code> §6 修复方案细化而来，结合源码核验（<code>expression_preprocess_utils.py</code> / <code>z3_expression_solver_utils.py</code> / <code>param_var_definition.py</code> / <code>post_check_cases.py</code> / <code>select_prompt.py</code> / <code>apply_supplement_constraints.py</code>）与 z3 5.0.0 实证。所有 file:line 引用基于当前 main_haoxu_tongsuan 分支。
+</div>
+
+</div>
+</body>
+</html>
