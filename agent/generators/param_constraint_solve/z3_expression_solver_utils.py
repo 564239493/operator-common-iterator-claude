@@ -135,6 +135,12 @@ class Z3ConstraintBuilder:
             self.solver.set('timeout', timeout_ms)
         self.var_map = {}
         self._slice_counter = 0
+        # 6.2 失败可观测：记录被 add_constraint 的 except 吞掉丢弃的约束，
+        # solve 在 sat 且有丢弃时打 _sat_with_drops tainted 标志（仅可观测，
+        # 不阻断、不判 unknown——阻断统一交给 post_check），消除"部分约束
+        # 返回 sat"的伪 SAT 制度入口。
+        self._dropped_exprs = []          # [(expr_name, expr_str, err_str)]
+        self._sat_with_drops = False
 
     def get_next_slice_id(self):
         self._slice_counter += 1
@@ -196,6 +202,7 @@ class Z3ConstraintBuilder:
                     logger.debug(f"[SKIP] {expr_str}: converter returned None, ignored")
         except Exception as e:
             logger.error(f"[FAIL] {expr_str}: {e}")
+            self._dropped_exprs.append((expr_name, expr_str, str(e)))   # 6.2 记录，不静默丢弃
 
     def solve(self):
         if self._timeout_ms:
@@ -204,6 +211,13 @@ class Z3ConstraintBuilder:
         logger.info(f"Solve result: {check_res}")
         results = {}
         if check_res == z3.sat:
+            # 6.2: sat 但有约束被丢弃 → tainted（伪 SAT 风险），仅告警不阻断，
+            # 由 post_check 后置过滤；保留产出，不强制判 unknown 以免回归当前通过算子。
+            if self._dropped_exprs:
+                self._sat_with_drops = True
+                logger.warning(
+                    f"[PSEUDO_SAT_RISK] sat with {len(self._dropped_exprs)} dropped expr(s); "
+                    f"defer to post_check: {self._dropped_exprs}")
             m = self.solver.model()
             for name, var_obj in self.var_map.items():
                 logger.info(f"Param name : {name}")

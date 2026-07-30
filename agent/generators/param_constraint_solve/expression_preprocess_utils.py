@@ -17,6 +17,106 @@ logger = LazyLogger()
 
 
 # ==========================================
+# 递归函数幂等注册（跨 case / 跨 builder 共享 z3.main_ctx()）
+# ==========================================
+# z3-solver 5.0 起，同名 RecAddDefinition 第二次会抛 "recursive function ...
+# already defined"。早期 _sum_z3_sequence/_prod_z3_sequence/_sum_tensor_elements
+# 用 per-builder slice_id 命名（__sum_seq_<id> / __prod_seq_<id> /
+# __sum_tensor_<name>_<id>），而每个 Z3ConstraintBuilder 实例计数器从 0 重置、
+# 全模块共用 z3.main_ctx()，故第二个 case 即撞名 → 抛错被 add_constraint 的
+# except 吞掉 → 约束静默丢弃 → 伪 SAT（声称 sat 但用例违反被丢约束）。
+# 与 param_var_definition._PROD_SHAPE_REC_FUNCS 同构：按 sort 幂等注册，
+# 已注册则复用 FuncDeclRef 不再 RecAddDefinition。函数名从 sort 字符串派生，
+# 保证同 sort 同名复用、不同 sort 不同名不撞名。注：当前全模块共用
+# z3.main_ctx()，注册项跨 Z3ConstraintBuilder 共享；若未来引入按 builder
+# 隔离的 ctx，需改为 ctx 感知注册表。
+_PROD_SEQ_REC_FUNCS = {}      # key: name(str) -> ProdSeq FuncDeclRef
+_SUM_SEQ_REC_FUNCS = {}       # key: name(str) -> SumSeq FuncDeclRef
+_SUM_TENSOR_REC_FUNCS = {}    # key: name(str) -> SumArr FuncDeclRef
+
+
+def _sanitize_sort_name(sort_str: str) -> str:
+    """sort 字符串 -> 合法标识符后缀，保证不同 sort 派生不同名（防撞名）。"""
+    s = "".join(ch if ch.isalnum() else "_" for ch in sort_str).strip("_")
+    return s or "other"
+
+
+def _get_or_register_prod_seq(seq):
+    """序列元素连乘的共享递归函数；按 seq_sort 幂等注册，复用 FuncDeclRef。
+
+    ProdSeq 定义体（序列各元素乘积，结果恒 Int）与具体调用无关，按 seq_sort
+    单例化；同 seq_sort 复用，不同 seq_sort 不同名互不撞名。
+    """
+    seq_sort = seq.sort()
+    name = f"__prod_seq_{_sanitize_sort_name(str(seq_sort))}"
+    existing = _PROD_SEQ_REC_FUNCS.get(name)
+    if existing is not None:
+        return existing(seq)
+    ProdSeq = z3.RecFunction(name, seq_sort, z3.IntSort())
+    seq_var = z3.Const(f"{name}_arg", seq_sort)
+    z3.RecAddDefinition(ProdSeq, [seq_var],
+        z3.If(z3.Length(seq_var) == 0,
+               z3.IntVal(1),
+               seq_var[0] * ProdSeq(z3.SubSeq(seq_var, 1, z3.Length(seq_var) - 1))))
+    _PROD_SEQ_REC_FUNCS[name] = ProdSeq
+    return ProdSeq(seq)
+
+
+def _get_or_register_sum_seq(seq, element_sort):
+    """序列元素求和的共享递归函数；按 (seq_sort, element_sort) 幂等注册。"""
+    if element_sort is None:
+        element_sort = z3.IntSort()
+    seq_sort = seq.sort()
+    name = f"__sum_seq_{_sanitize_sort_name(str(seq_sort))}_{_sanitize_sort_name(str(element_sort))}"
+    existing = _SUM_SEQ_REC_FUNCS.get(name)
+    if existing is not None:
+        return existing(seq)
+    if element_sort == z3.IntSort():
+        zero = z3.IntVal(0)
+    elif element_sort == z3.RealSort():
+        zero = z3.RealVal(0)
+    else:
+        zero = z3.IntVal(0)
+    SumSeq = z3.RecFunction(name, seq_sort, element_sort)
+    seq_var = z3.Const(f"{name}_arg", seq_sort)
+    z3.RecAddDefinition(SumSeq, [seq_var],
+        z3.If(z3.Length(seq_var) == 0,
+               zero,
+               seq_var[0] + SumSeq(z3.SubSeq(seq_var, 1, z3.Length(seq_var) - 1))))
+    _SUM_SEQ_REC_FUNCS[name] = SumSeq
+    return SumSeq(seq)
+
+
+def _get_or_register_sum_tensor(element_sort):
+    """张量元素求和的共享递归函数；按 element_sort 幂等注册，返回 FuncDeclRef。
+
+    SumArr 定义体以 (arr, start, end) 为参数、按 element_sort 定 array_sort 与
+    零值，与具体 TensorVar 实例无关，故按 element_sort 单例化复用。
+    """
+    name = f"__sum_tensor_{_sanitize_sort_name(str(element_sort))}"
+    existing = _SUM_TENSOR_REC_FUNCS.get(name)
+    if existing is not None:
+        return existing
+    array_sort = z3.ArraySort(z3.IntSort(), element_sort)
+    if element_sort == z3.IntSort():
+        zero = z3.IntVal(0)
+    elif element_sort == z3.RealSort():
+        zero = z3.RealVal(0)
+    else:
+        zero = z3.IntVal(0)
+    SumArr = z3.RecFunction(name, array_sort, z3.IntSort(), z3.IntSort(), element_sort)
+    arr_var = z3.Const(f"{name}_arr", array_sort)
+    start_var = z3.Int(f"{name}_start")
+    end_var = z3.Int(f"{name}_end")
+    z3.RecAddDefinition(SumArr, [arr_var, start_var, end_var],
+        z3.If(start_var >= end_var,
+               zero,
+               z3.Select(arr_var, start_var) + SumArr(arr_var, start_var + 1, end_var)))
+    _SUM_TENSOR_REC_FUNCS[name] = SumArr
+    return SumArr
+
+
+# ==========================================
 # 共享模板 TensorListVar 元素代理
 # ==========================================
 class TensorElementProxy:
@@ -745,70 +845,20 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         return self._sum_scalars(args)
 
     def _sum_z3_sequence(self, seq, element_sort=None):
-        if element_sort is None:
-            element_sort = z3.IntSort()
-
-        seq_sort = seq.sort()
-        slice_id = self.builder.get_next_slice_id()
-        func_name = f"__sum_seq_{slice_id}"
-
-        SumSeq = z3.RecFunction(func_name, seq_sort, element_sort)
-        seq_var = z3.Const(f"{func_name}_arg", seq_sort)
-
-        if element_sort == z3.IntSort():
-            zero = z3.IntVal(0)
-        elif element_sort == z3.RealSort():
-            zero = z3.RealVal(0)
-        else:
-            zero = z3.IntVal(0)
-
-        z3.RecAddDefinition(SumSeq, [seq_var],
-            z3.If(z3.Length(seq_var) == 0,
-                   zero,
-                   seq_var[0] + SumSeq(z3.SubSeq(seq_var, 1, z3.Length(seq_var) - 1))))
-
-        return SumSeq(seq)
+        # 幂等注册：跨 case/跨 builder 共享 z3.main_ctx()，按 (seq_sort, element_sort)
+        # 复用 FuncDeclRef，避免 per-builder slice_id 命名撞名导致约束被静默丢弃（伪 SAT）。
+        return _get_or_register_sum_seq(seq, element_sort)
 
     def _prod_z3_sequence(self, seq):
-        seq_sort = seq.sort()
-        slice_id = self.builder.get_next_slice_id()
-        func_name = f"__prod_seq_{slice_id}"
-
-        ProdSeq = z3.RecFunction(func_name, seq_sort, z3.IntSort())
-        seq_var = z3.Const(f"{func_name}_arg", seq_sort)
-
-        z3.RecAddDefinition(ProdSeq, [seq_var],
-            z3.If(z3.Length(seq_var) == 0,
-                   z3.IntVal(1),
-                   seq_var[0] * ProdSeq(z3.SubSeq(seq_var, 1, z3.Length(seq_var) - 1))))
-
-        return ProdSeq(seq)
+        # 幂等注册：同上，按 seq_sort 复用连乘递归函数。
+        return _get_or_register_prod_seq(seq)
 
     def _sum_tensor_elements(self, tensor_var):
         arr = tensor_var.range_value
         element_sort = tensor_var.get_element_sort()
 
-        slice_id = self.builder.get_next_slice_id()
-        func_name = f"__sum_tensor_{tensor_var.name}_{slice_id}"
-
-        array_sort = z3.ArraySort(z3.IntSort(), element_sort)
-
-        SumArr = z3.RecFunction(func_name, array_sort, z3.IntSort(), z3.IntSort(), element_sort)
-        arr_var = z3.Const(f"{func_name}_arr", array_sort)
-        start_var = z3.Int(f"{func_name}_start")
-        end_var = z3.Int(f"{func_name}_end")
-
-        if element_sort == z3.IntSort():
-            zero = z3.IntVal(0)
-        elif element_sort == z3.RealSort():
-            zero = z3.RealVal(0)
-        else:
-            zero = z3.IntVal(0)
-
-        z3.RecAddDefinition(SumArr, [arr_var, start_var, end_var],
-            z3.If(start_var >= end_var,
-                   zero,
-                   z3.Select(arr_var, start_var) + SumArr(arr_var, start_var + 1, end_var)))
+        # 幂等注册：按 element_sort 复用 SumArr FuncDeclRef，不再 slice_id 命名。
+        SumArr = _get_or_register_sum_tensor(element_sort)
 
         shape = tensor_var.shape if isinstance(tensor_var, TensorVar) else tensor_var.elem_shape
         rank = z3.Length(shape)
