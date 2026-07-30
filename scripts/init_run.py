@@ -283,6 +283,18 @@ def main() -> int:
     )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
+    parser.add_argument(
+        "--scene",
+        choices=("auto", "all", "off"),
+        default="auto",
+        help=(
+            "场景提取范围：auto=EXTRACT 前跑 scene-scan，文档有量化场景则主会话"
+            "AskUserQuestion 单选征询(量化方式+位宽各选1)、无则跳过；all=跑 scene-scan 但取全场景(不剪枝、"
+            "不询问，批处理默认)；off=不跑 scene-scan。scene-scan 由 iterate-operator "
+            "在 EXTRACT 前委派 scene-scanner Agent 完成，本脚本只记录选择并在 "
+            "run_state.scene 留空待回写。"
+        ),
+    )
     args = parser.parse_args()
 
     if args.doc is None:
@@ -463,6 +475,7 @@ def main() -> int:
         "test_framework": test_framework,
         "hs_scenario_mode": args.hs_scenario_mode,
         "run_scope": "constraints_only" if test_framework == "constraints" else "full",
+        "scene": None,  # EXTRACT 前 SCENE_SCAN 子步骤回写 {enabled, scope, quant_mode, quant_width, valid_combos, ...}
         "execution_strategy": None,  # EXTRACT 后 orchestrator 跑 classify_operator.py 回写: fusion | default
         "operator_category": None,  # fusion_comm_compute | default | None
         "operator_category_evidence": [],  # 分类证据 (规则编号 + 原文摘录)

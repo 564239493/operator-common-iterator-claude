@@ -40,7 +40,29 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    不要求服务器配置。
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
 5. `init_run.py` 成功后 state 已是 EXTRACT；必须立即委派，不能仅创建 run 后结束。
-   每轮按顺序委派：
+
+**SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
+`scene-scanner`（读 `inputs/<doc>.md` + `prompts/scan_scenes.md`，产
+`inputs/scene_scan.json`，自跑 `python scripts/validate_artifacts.py scene_scan
+inputs/scene_scan.json`）。完成后主协调器读 `scene_scan.json`：
+- `has_quant_scenarios=false` → 跳过（无 directive，按全场景提取，行为不变）；
+- `has_quant_scenarios=true` 且 `--scene all` → 跑
+  `python scripts/render_scene_directive.py --scan <scene_scan.json> --run-dir <run-dir> --scope all`
+  （scope=all，不剪枝、不弹窗）；
+- `has_quant_scenarios=true` 且 `--scene auto`（默认）→ 主会话用 AskUserQuestion
+  两段征询（**均单选**）：Q1 量化方式（single-select，选项=`scene_scan.quant_modes`，
+  选了伪量化就不能选量化）→ 据 Q1 答案取所选方式的位宽列表（`quant_widths_by_mode`
+  或 `valid_combos` 中该方式的 width 并集）→ Q2 位宽（single-select；列表为空如纯非量化
+  或该方式无位宽细分则跳过 Q2，`quant_width=null`）→ 把单选答案写入 `selection.json`
+  为 `{"quant_mode": <Q1>, "quant_width": <Q2 或 null>}`（单值）→ 跑
+  `python scripts/render_scene_directive.py --scan <scene_scan.json> --selection <selection.json> --run-dir <run-dir> --scope subset`
+  （校验选定 (mode,width) ∈ scan、算 valid_combos、写 `inputs/scene_directive.md`、回写
+  `run_state.scene`；非法选择 exit 2 阻断，提示用户重选，不静默回退）。
+EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入
+constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 directive，
+屏蔽跨轮稳定。
+
+6. 每轮按顺序委派：
    - **EXTRACT（fork-join）**：当 `run_state.operator_src_snapshot` 非空时，
      **并行**委派 `constraint-extractor`（产 `constraints.json`）与 `source-analyst`
      （extract 域：产 `<iter>/source_raw.json` + `inputs/supplementary-doc.md` +
@@ -87,12 +109,12 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
       `engine_error` 终止流程。
    - `quality-reviewer`
-6. 若基础产物可读、至少生成一条用例且执行器已完成运行，更新 run_state 为 SUCCESS
+7. 若基础产物可读、至少生成一条用例且执行器已完成运行，更新 run_state 为 SUCCESS
    并结束。Golden 覆盖率和准确度 warning 当前不作为门禁。HS+TTK 所选执行平台
    `semantically_clean_count=0`，或 `planned` 模式缺失计划内必需场景时，生成器必须
    以 `HS_SEMANTIC_GATE_FAILED` 停在 GENERATE，不得进入 EXECUTE；其他部分语义
    warning 仍按非阻断处理。
-7. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
+8. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
    diagnose 域（读 execution_result + uncertain-doc + source_raw，error_string
    匹配，命中的 uncertain 追加到 `inputs/supplementary-doc.md`，产
    `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence
@@ -104,10 +126,10 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
      送入下一轮。
    - generator_bug：状态设为 STOP_GENERATOR_BUG，停止。
    - executor_bug：状态设为 STOP_EXECUTOR_BUG，停止。
-8. 达到上限后状态设为 MAX_ITERATIONS。
-9. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
+9. 达到上限后状态设为 MAX_ITERATIONS。
+10. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
    不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
-10. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
+11. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
     `STOP_GENERATOR_BUG` 或 `STOP_EXECUTOR_BUG` 后，调用
     `python scripts/batch_state.py --batch-dir <batch-dir> complete`。如果 run 创建前即因
     文档消失等算子级问题阻断，则调用 `complete --terminal-state BLOCKED --message <原因>`。

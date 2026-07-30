@@ -1462,72 +1462,89 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
                     failed_reason = f"mv exit={r3.exit_code}"
 
         # ── Step 4: 精度对比 (accuracy_load) — 记录性, 不入成败 ──────
+        # atk 客户端在任务完成后因 celery 结果后端 sqlite 损坏
+        # (UNIQUE constraint failed: celery_taskmeta.task_id) 不退出,
+        # 阻塞 `await run` 至 SSH 超时 (1800s)。atk 任务本身在 ~40s 内
+        # 成功完成并写出 out_t2/report/*.xlsx。故改为: 后台启动 atk
+        # 命令 (子 shell 继承 conda 函数, disown 续活), 轮询 xlsx 出现
+        # 即解析, 不阻塞在挂死的客户端上。step4 记录性: 超时/无 xlsx
+        # 只置 comparison=None, 不设 failed_phase, 不阻断 step1~3 成功。
         if failed_phase is None and out_t2:
             cmd4 = _build_fusion_atk_command(
                 "accuracy_load", operator_name, remote, fusion_devices, num,
-                env_init, 
+                env_init,
                 out_path_t2=f"{out_t1}/output" if out_t1 else None,
                 out_path_t1=f"{out_t2}/output",
             )
             logger.info("[fusion step4 accuracy_load] command: %s", cmd4)
             t = time.monotonic()
+            bg_log = f"/data/atk-space/runs/step4_{operator_name}.fg.log"
+            # `( cmd4 )` 子 shell 继承父 shell 的 conda 函数; `& disown`
+            # 让后台任务脱离作业表, 父 shell 退出时不发 SIGHUP。
+            bg_cmd = (
+                f"( {cmd4} ) > {bg_log} 2>&1 & disown; echo STEP4_LAUNCHED"
+            )
             try:
-                r4 = await run(conn, cmd4, timeout=req.atk_timeout)
-            except SSHEngineError as exc:
-                logger.exception("[fusion step4] atk run failed: %s", exc)
-                phases.append(
-                    FusionPhase(
-                        phase="accuracy_load", command=cmd4, exit_code=None,
-                        duration=time.monotonic() - t, output_dir=out_t2,
-                        dir_check_passed=None,
-                    )
-                )
-                failed_phase = "accuracy_load"
-                failed_reason = str(exc)
-            else:
-                last_exit = r4.exit_code
+                bg_res = await run(conn, bg_cmd, timeout=30.0)
                 logger.info(
-                    "[fusion step4] exit=%d duration=%.2fs stderr_head=%s",
-                    r4.exit_code, r4.duration, (r4.stderr or "")[:500],
+                    "[fusion step4] background launched: %s",
+                    (bg_res.stdout or "")[:200],
                 )
-                phases.append(
-                    FusionPhase(
-                        phase="accuracy_load", command=cmd4, exit_code=r4.exit_code,
-                        duration=time.monotonic() - t, output_dir=out_t2,
-                        dir_check_passed=None,
-                    )
+            except SSHEngineError as exc:
+                logger.warning(
+                    "[fusion step4] background launch failed: %s", exc
                 )
-                if r4.exit_code != 0:
-                    failed_phase = "accuracy_load"
-                    failed_reason = f"exit={r4.exit_code}"
-                # 解析精度对比 (记录性, 不入成败)
+            # 轮询 out_t2/report 的 xlsx (atk 任务完成标志)
+            remote_report_dir = f"{out_t2}/report"
+            xlsx_name: str | None = None
+            deadline = time.monotonic() + req.atk_timeout
+            while time.monotonic() < deadline:
+                await asyncio.sleep(15)
                 try:
-                    remote_report_dir = f"{out_t2}/report"
-                    local_report_dir = cache_dir / "fusion_accuracy_load_report"
-                    local_report_dir.mkdir(parents=True, exist_ok=True)
                     entries = await list_dir(
                         conn, remote_report_dir, transfer_mode=transfer_mode
                     )
-                    for entry in entries:
-                        name = entry.rsplit("/", 1)[-1] if "/" in entry else entry
-                        if not name.lower().endswith(".xlsx"):
-                            continue
-                        await download_file(
-                            conn,
-                            f"{remote_report_dir}/{name}",
-                            local_report_dir / name,
-                            transfer_mode=transfer_mode,
-                        )
-                    comparison = parse_fusion_comparison(
-                        local_report_dir,
-                        thresholds=_load_fusion_thresholds(operator_name),
+                except Exception:
+                    entries = []
+                for entry in entries:
+                    name = entry.rsplit("/", 1)[-1] if "/" in entry else entry
+                    if name.lower().endswith(".xlsx"):
+                        xlsx_name = name
+                        break
+                if xlsx_name:
+                    break
+            phases.append(
+                FusionPhase(
+                    phase="accuracy_load", command=cmd4, exit_code=None,
+                    duration=time.monotonic() - t, output_dir=out_t2,
+                    dir_check_passed=None,
+                )
+            )
+            logger.info(
+                "[fusion step4] poll done in %.1fs xlsx=%s",
+                time.monotonic() - t, xlsx_name,
+            )
+            # 解析精度对比 (记录性, 不入成败)
+            try:
+                local_report_dir = cache_dir / "fusion_accuracy_load_report"
+                local_report_dir.mkdir(parents=True, exist_ok=True)
+                if xlsx_name:
+                    await download_file(
+                        conn,
+                        f"{remote_report_dir}/{xlsx_name}",
+                        local_report_dir / xlsx_name,
+                        transfer_mode=transfer_mode,
                     )
-                except Exception as exc:
-                    logger.warning(
-                        "[fusion step4] comparison parse failed (non-fatal): %s",
-                        exc,
-                    )
-                    comparison = None
+                comparison = parse_fusion_comparison(
+                    local_report_dir,
+                    thresholds=_load_fusion_thresholds(operator_name),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[fusion step4] comparison parse failed (non-fatal): %s",
+                    exc,
+                )
+                comparison = None
     finally:
         try:
             conn.close()
