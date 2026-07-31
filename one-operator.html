@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>批次总结 · one-operator-20260730-100736-677891</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1f2328; --muted:#57606a; --line:#d0d7de;
+    --green:#1a7f37; --green-bg:#e6f4ea; --red:#cf222e; --red-bg:#ffebe9;
+    --amber:#9a6700; --amber-bg:#fff8c5; --blue:#0969da; --blue-bg:#ddf4ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 16px;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;
+    font-size:15px;line-height:1.65}
+  .wrap{max-width:1040px;margin:0 auto}
+  header.top{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:28px 32px;margin-bottom:24px}
+  header.top h1{margin:0 0 6px;font-size:24px;letter-spacing:.2px}
+  header.top .sub{color:var(--muted);font-size:14px}
+  .badges{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;
+    font-size:13px;font-weight:600;border:1px solid transparent}
+  .b-green{color:var(--green);background:var(--green-bg);border-color:#9ae6b4}
+  .b-red{color:var(--red);background:var(--red-bg);border-color:#ffb4ab}
+  .b-blue{color:var(--blue);background:var(--blue-bg);border-color:#9ec9f9}
+  .b-amber{color:var(--amber);background:var(--amber-bg);border-color:#ffd070}
+  section{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:24px 28px;margin-bottom:20px}
+  h2{margin:0 0 14px;font-size:18px;border-left:4px solid var(--blue);padding-left:10px}
+  h3{margin:20px 0 8px;font-size:15.5px;color:#24292f}
+  p{margin:8px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f3f4f6;font-weight:600}
+  tr.success td:first-child{border-left:4px solid var(--green)}
+  tr.failed td:first-child{border-left:4px solid var(--red)}
+  code,pre,.mono{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace}
+  code{background:#eff1f3;padding:1px 6px;border-radius:4px;font-size:13px;color:#b0041a}
+  pre{background:#1f2328;color:#e6edf3;padding:14px 16px;border-radius:8px;overflow-x:auto;font-size:13px;line-height:1.55}
+  pre .c{color:#8b949e}
+  pre .k{color:#ff7b72}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .kv{display:grid;grid-template-columns:160px 1fr;gap:6px 14px;font-size:14px;margin:6px 0}
+  .kv dt{color:var(--muted);font-weight:600}
+  .kv dd{margin:0}
+  .callout{border-radius:8px;padding:14px 16px;margin:14px 0;border-left:4px solid}
+  .co-red{background:var(--red-bg);border-color:var(--red)}
+  .co-green{background:var(--green-bg);border-color:var(--green)}
+  .co-amber{background:var(--amber-bg);border-color:var(--amber)}
+  .co-blue{background:var(--blue-bg);border-color:var(--blue)}
+  .callout strong{display:block;margin-bottom:4px}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .num{font-variant-numeric:tabular-nums}
+  .step{counter-reset:s}
+  .step li{counter-increment:s;list-style:none;position:relative;padding-left:30px}
+  .step li::before{content:counter(s);position:absolute;left:0;top:1px;width:20px;height:20px;
+    border-radius:50%;background:var(--blue);color:#fff;font-size:12px;font-weight:700;
+    display:flex;align-items:center;justify-content:center}
+  .tag{font-size:12px;padding:1px 7px;border-radius:5px;font-weight:600;margin-left:6px;white-space:nowrap}
+  .t-ok{color:var(--green);background:var(--green-bg)}
+  .t-bad{color:var(--red);background:var(--red-bg)}
+  .t-warn{color:var(--amber);background:var(--amber-bg)}
+  small{color:var(--muted)}
+  .foot{text-align:center;color:var(--muted);font-size:12.5px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>批次总结 · one-operator-20260730-100736-677891</h1>
+  <div class="sub">CANN 算子迭代 · 目录级批次 · 失败根因分析与修复建议</div>
+  <div class="badges">
+    <span class="badge b-blue">4 算子</span>
+    <span class="badge b-green">成功 2</span>
+    <span class="badge b-red">失败 2</span>
+    <span class="badge b-amber">失败类型：执行配置缺口（非代码 bug）</span>
+  </div>
+</header>
+
+<!-- 执行结论 -->
+<section>
+  <h2>一、执行结论</h2>
+  <p>批次 <code>one-operator-20260730-100736-677891</code> 已全部执行完毕（batch_state = <strong>COMPLETED</strong>）。
+  共 4 个算子，<strong>2 成功 / 2 失败</strong>。<u>2 个失败均属"真实执行配置缺口"，并非算子代码 bug，也非约束提取/用例生成问题</u>，
+  因此按安全约束取 <strong>BLOCKED + requires_user_action</strong>，未静默记为算子代码失败，未进入 OPTIMIZE→EXTRACT 循环。</p>
+  <div class="callout co-amber">
+    <strong>关键定性：root_cause = executor_bug（config gap）≠ 代码 bug</strong>
+    <p style="margin:4px 0 0">两个失败算子的 <code>analysis.json</code> 中 <code>root_cause</code> 均为 <code>executor_bug</code>，但细查属"执行环境/资源配置缺失"——分别是
+    <strong>servers.json 平台无交集</strong>与 <strong>aclnn_extracted.txt 签名表缺漏</strong>。prompt-optimizer 无法修复硬件/签名表缺口，故不应进入 OPTIMIZE 循环。</p>
+  </div>
+</section>
+
+<!-- 批次元信息 -->
+<section>
+  <h2>二、批次元信息</h2>
+  <dl class="kv">
+    <dt>batch_id</dt><dd class="mono">one-operator-20260730-100736-677891</dd>
+    <dt>源目录</dt><dd class="mono">one-operator/ （4 份算子文档）</dd>
+    <dt>批次状态</dt><dd>COMPLETED（total 4 / completed 4 / success 2 / failed 2）</dd>
+    <dt>创建时间</dt><dd class="num">2026-07-30 02:07:36 UTC</dd>
+    <dt>完成时间</dt><dd class="num">2026-07-30 04:06:25 UTC（约 1h59m）</dd>
+    <dt>执行参数</dt><dd>max-iterations=3 · case-count=100 · mode=real · continue-on-error · scene=all</dd>
+    <dt>执行机</dt><dd>servers.json 仅配置 Atlas A2 训练系列产品（Ascend 910B）</dd>
+    <dt>批次摘要</dt><dd class="mono">runs/batches/one-operator-20260730-100736-677891/batch_summary.json</dd>
+  </dl>
+</section>
+
+<!-- 逐算子结果 -->
+<section>
+  <h2>三、逐算子结果</h2>
+  <table>
+    <thead>
+      <tr><th>#</th><th>算子</th><th>终态</th><th>A2 执行</th><th>root_cause</th><th>run 目录</th></tr>
+    </thead>
+    <tbody>
+      <tr class="failed">
+        <td>1</td>
+        <td>aclnnCalculateConvolutionWeightSize</td>
+        <td><span class="tag t-bad">BLOCKED</span></td>
+        <td class="num">0 / 0 / 0（未进入）</td>
+        <td>executor_bug<br><small>config gap</small></td>
+        <td class="mono" style="font-size:12px">runs/aclnnCalculateConvolutionWeightSize-20260730-101012-218273</td>
+      </tr>
+      <tr class="success">
+        <td>2</td>
+        <td>aclnnCalculateMatmulWeightSize</td>
+        <td><span class="tag t-ok">SUCCESS</span></td>
+        <td class="num"><strong>100 / 0 / 100</strong></td>
+        <td>—</td>
+        <td class="mono" style="font-size:12px">runs/aclnnCalculateMatmulWeightSize-20260730-104909-491638</td>
+      </tr>
+      <tr class="success">
+        <td>3</td>
+        <td>aclnnCalculateMatmulWeightSizeV2</td>
+        <td><span class="tag t-ok">SUCCESS</span></td>
+        <td class="num"><strong>100 / 0 / 100</strong></td>
+        <td>—</td>
+        <td class="mono" style="font-size:12px">runs/aclnnCalculateMatmulWeightSizeV2-20260730-111849-696261</td>
+      </tr>
+      <tr class="failed">
+        <td>4</td>
+        <td>aclnnTransQuantParam</td>
+        <td><span class="tag t-bad">BLOCKED</span></td>
+        <td class="num">0 / 0 / 0（未进入）</td>
+        <td>executor_bug<br><small>config gap</small></td>
+        <td class="mono" style="font-size:12px">runs/aclnnTransQuantParam-20260730-113858-282157</td>
+      </tr>
+    </tbody>
+  </table>
+  <p><small>说明：passed / failed / total 均为 A2 平台实跑数据。#2/#3 其余 3 个平台（350 / A3 / 推理系列）无执行机未跑，属环境限制而非缺陷。</small></p>
+</section>
+
+<!-- 失败根因 -->
+<section>
+  <h2>四、失败根因分析</h2>
+
+  <p>两个失败算子落在两类"执行配置缺口"上，证据链均已独立核验（grep 签名表 + 读取 execution_result.json / analysis.json）。
+  约束侧与用例侧均<strong>已洗清</strong>：</p>
+  <ul>
+    <li>约束侧：<code>constraints.json</code> 通过 <code>validate_artifacts.py</code> 语义校验；product_support 提取忠实于文档产品支持表；expr 经 null→None 规范化后解析正常；无 null range 端点。</li>
+    <li>用例侧：用例结构合法、post_check 全过（#1 kept=100/0 违例；#4 3×100=300 条 / 0 违例）；aclnn_name 与文档 function_signature 一致。</li>
+  </ul>
+
+  <div class="grid2">
+    <!-- 缺口1 -->
+    <div>
+      <h3>缺口类型 A · 平台无交集<span class="tag t-bad">影响 #1</span></h3>
+      <p>算子文档 product_support 表中，"Atlas A2 训练系列产品" 标记 <strong>×</strong>，仅 "Atlas 推理系列产品（Ascend 310）" 标 √。
+      而 servers.json 仅配置了 A2（910B）服务器。CLI 在 <code class="mono">_select_server_for_execution</code> 阶段返回
+      <code>NO_SERVER_FOR_PLATFORM</code>，generate / real-run 子步骤从未进入。</p>
+      <div class="callout co-red">
+        <strong>影响算子：#1 aclnnCalculateConvolutionWeightSize</strong>
+        execution_result: status=error, mode=real, 0/0/0, duration=0.0, engine_error 非空。
+      </div>
+      <p><small>该算子同时还命中缺口类型 B（签名未收录），即"双重缺口"。</small></p>
+    </div>
+
+    <!-- 缺口2 -->
+    <div>
+      <h3>缺口类型 B · 签名表缺漏<span class="tag t-bad">影响 #1 #4</span></h3>
+      <p>算子一段式 base 签名未收录在 <code class="mono">executer/resources/aclnn_extracted.txt</code>。
+      <code class="mono">executer/resources/generator.py</code>（ATK executor 脚本生成器，第 864–871 行）在签名表查不到
+      <code>aclnn_name</code> 时按设计跳过全部用例（安全行为，不伪造签名），导致 <code>cases_executor.py</code> 未产出，
+      <code>runner.py:622</code> 抛 SSHEngineError，CPU golden 推导与 real-run 无从进行。</p>
+      <div class="callout co-red">
+        <strong>影响算子</strong>
+        <ul style="margin:4px 0 0">
+          <li>#4 aclnnTransQuantParam：表内仅 <code class="mono">aclnnTransQuantParamV2/V3</code>（两段式），缺一段式 base 签名。0/0/0，duration 0.22s。</li>
+          <li>#1 aclnnCalculateConvolutionWeightSize：签名同样未收录（双重缺口）。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <h3>关键证据链</h3>
+  <pre><span class="c"># #4 aclnnTransQuantParam — engine_error（execution_result.json）</span>
+生成 ATK executor 失败: generator.py 未生成任何 executor .py 文件 —
+aclnnTransQuantParam 未收录在 executer/resources/aclnn_extracted.txt 签名表中
+（表中仅有 aclnnTransQuantParamV2 / aclnnTransQuantParamV3，缺少一段式 base 算子签名），
+generator.py 在签名查找阶段跳过全部用例，无法产出 cases_executor.py。
+属真实执行配置缺失（签名表 gap），未静默回退 Mock，未手工伪造 executor。
+
+<span class="c"># #1 aclnnCalculateConvolutionWeightSize — engine_error（节选）</span>
+engine 平台不匹配: 算子 product_support 仅包含 "Atlas 推理系列产品" (310),
+但 servers.json 中唯一的服务器平台为 "Atlas A2 训练系列产品" (910B).
+依据算子文档产品支持表, A2 标记为 ×(不支持), 仅 Atlas 推理系列产品为 √.
+CLI 在 _select_server_for_execution 阶段即返回 NO_SERVER_FOR_PLATFORM.
+附注: 算子签名 aclnnCalculateConvolutionWeightSize 未收录在 aclnn_extracted.txt.</pre>
+
+  <h3>为何不归为 constraint_extraction / generator_bug / 代码 bug</h3>
+  <table>
+    <thead><tr><th>判定维度</th><th>证据</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>约束提取</td><td>constraints.json 通过语义校验；product_support/expr/range 忠实于文档</td><td>已洗清 ✅</td></tr>
+      <tr><td>用例生成（agent/generators/）</td><td>用例结构合法、post_check 0 违例、aclnn_name 与文档签名一致</td><td>已洗清 ✅</td></tr>
+      <tr><td>执行器代码逻辑</td><td>_select_server_for_platform 返回 NO_SERVER_FOR_PLATFORM 并停止、generator.py 跳过未知算子——均为按安全约束的正确作为</td><td>非代码 bug ✅</td></tr>
+      <tr><td>阻断来源</td><td>servers.json 平台配置 + aclnn_extracted.txt 签名表资源（外部配置）</td><td><strong>执行环境配置 gap</strong></td></tr>
+    </tbody>
+  </table>
+  <div class="callout co-red">
+    <strong>⚠️ 不应做的事</strong>
+    <ul style="margin:4px 0 0">
+      <li>不得静默记为算子代码 bug 触发止损（会污染失败统计与质量门禁）。</li>
+      <li>不得进入 OPTIMIZE→EXTRACT 循环——prompt-optimizer 无法修复硬件平台/签名表 gap。</li>
+      <li>不得静默回退 Mock（安全约束：servers.json 缺失/不完整须停止并提示）。</li>
+      <li>#4 补签名后只需重跑 EXECUTE，<u>无需 re-EXTRACT / re-GENERATE</u>（constraints 与 cases 已合法）。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 修复建议 -->
+<section>
+  <h2>五、建议的修复方式</h2>
+
+  <h3>A. 立即修复（解除 2 个 BLOCKED 算子）</h3>
+  <ol class="step">
+    <li>
+      <strong>补录 #4 一段式 base 签名</strong> → 在 <code class="mono">executer/resources/aclnn_extracted.txt</code>（约第 801–802 行 V2/V3 附近）追加：
+      <pre><span class="c"># 一段式 base 算子签名（来自文档 inputs/aclnnTransQuantParam.md 第 46–53 行）</span>
+aclnnTransQuantParam aclnnStatus aclnnTransQuantParam(const float *scaleArray, uint64_t scaleSize, const float *offsetArray, uint64_t offsetSize, uint64_t **quantParam, uint64_t *quantParamSize)</pre>
+      完成后<strong>只需重跑 #4 的 EXECUTE</strong>（constraints + cases 已合法，无需重提取/重生成都）。
+    </li>
+    <li>
+      <strong>补录 #1 签名</strong> → 在 <code class="mono">aclnn_extracted.txt</code> 追加 <code class="mono">aclnnCalculateConvolutionWeightSize</code> 的签名行（取自其文档 function_signature）。
+    </li>
+    <li>
+      <strong>补配 310 执行机</strong> → 在 <code class="mono">servers.json</code> 增加一台 Atlas 推理系列产品（Ascend 310）服务器。
+      <div class="callout co-blue" style="margin-top:8px">
+        <strong>⚠️ 该步须由你手动完成</strong>
+        <p style="margin:4px 0 0">servers.json 含连接密钥等秘密，受 deny 规则保护，我不能读写——只能由你编辑。补好后 #1 即可在 310 上跑通。</p>
+      </div>
+    </li>
+    <li>
+      <strong>恢复批次</strong>（已 SUCCESS 的 #2/#3 不会重跑，仅 BLOCKED 的 #1/#4 会 resume）：
+      <pre>/iterate-directory --batch-dir runs/batches/one-operator-20260730-100736-677891</pre>
+    </li>
+  </ol>
+
+  <h3>B. 结构性修复（避免后续批次重复触发）</h3>
+  <div class="callout co-amber">
+    <strong>init_batch.py 设计缺口</strong>
+    <p style="margin:4px 0">当前 <code class="mono">scripts/init_batch.py</code>（第 109–117 行）<strong>仅校验 servers.json 字段完整性</strong>，
+    <u>未做 per-算子平台交集检查与签名表覆盖预检</u>。结果：config-incompatible 的算子要跑完
+    EXTRACT + GENERATE + EXECUTE + GATE + DIAGNOSE，才在 EXECUTE generate 阶段被阻断——浪费了 EXTRACT/GENERATE 的算力。</p>
+  </div>
+  <ul>
+    <li><strong>init_batch 增加预检</strong>：扫描阶段预读每份文档的 product_support 表 + 查 <code class="mono">aclnn_extracted.txt</code> 是否收录签名；对 config-incompatible 的算子在初始化时即标 BLOCKED，跳过空跑 EXTRACT/GENERATE（对齐 skill step 10"目录批次初始化时应先统一校验该配置"）。</li>
+    <li><strong>（可选）generator.py 信号更清晰</strong>：签名未收录时，除"跳过"外再产出一条显式 config-gap 标记，便于 failure-analyst 更快归因为 config gap 而非代码 bug。</li>
+  </ul>
+</section>
+
+<!-- 已验证可跑通的算子 -->
+<section>
+  <h2>六、已验证可跑通的算子（基线参考）</h2>
+  <table>
+    <thead><tr><th>算子</th><th>A2 结果</th><th>CPU golden 来源</th><th>对齐公式</th></tr></thead>
+    <tbody>
+      <tr><td>#2 aclnnCalculateMatmulWeightSize</td><td><span class="tag t-ok">100 / 100</span></td><td><code class="mono">_SPECIAL_TEMPLATES</code> 真实模板（无 dummy）</td><td><code class="mono">ceil(n/16)*16 × ceil(k/16)*16</code></td></tr>
+      <tr><td>#3 aclnnCalculateMatmulWeightSizeV2</td><td><span class="tag t-ok">100 / 100</span></td><td><code class="mono">_SPECIAL_TEMPLATES</code> 真实模板</td><td>fp16/bf16: Align16；int8: <code class="mono">Align(k,32)</code></td></tr>
+    </tbody>
+  </table>
+  <p><small>结论：Z3 约束求解 + pairwise 组合的生成器在 #2/#3 上产出合法用例且实跑全过——本批次未触发 ten.html 中记录的 pseudo-SAT 失败路径（这两算子约束仅为 len() 与 &gt;0，无被静默丢弃的约束）。</small></p>
+</section>
+
+<section>
+  <h2>七、一句话总结</h2>
+  <p>4 算子批次，<strong>2 成功（MatmulWeightSize / V2，A2 各 100/100）</strong>，<strong>2 BLOCKED</strong>——
+  #1 ConvolutionWeightSize 与 #4 TransQuantParam 因 <strong>servers.json 平台无交集</strong>与
+  <strong>aclnn_extracted.txt 签名表缺一段式 base 算子签名</strong>而阻断，<u>属执行环境配置缺口而非算子代码 bug</u>。
+  修复路径明确：补录签名 + 补配 310 执行机后恢复批次即可，无需重提取约束、重生成用例。</p>
+</section>
+
+<div class="foot">报告生成于 2026-07-30 · 数据来源：batch_summary.json / execution_result.json / analysis.json（各算子 runs/&lt;run-id&gt;/iter_001/）</div>
+
+</div>
+</body>
+</html>

@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
+
+# Windows 默认用 cp936 编码 stdout，会把中文打成乱码；强制 UTF-8。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>aclnnQuantMatmulV5 执行历史失败分析与修复方向</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --card2:#1e222b; --border:#2a2f3a;
+    --txt:#e6e8ec; --muted:#9aa3b2; --accent:#62a9ff; --ok:#4ec9a8;
+    --warn:#e2c070; --err:#f06a6a; --pur:#b58cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.65;font-size:15px}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 24px 80px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.5px}
+  h2{font-size:20px;margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border);color:var(--accent)}
+  h3{font-size:16px;margin:22px 0 8px;color:var(--pur)}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:12px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:820px){.grid2{grid-template-columns:1fr}}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:6px 14px;font-size:13px}
+  .kv b{color:var(--muted);font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}
+  th,td{border:1px solid var(--border);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--card2);color:var(--accent);font-weight:600}
+  tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+  code,kbd{font-family:"JetBrains Mono","Consolas",monospace;font-size:12.5px;background:#0b0d12;border:1px solid var(--border);border-radius:4px;padding:1px 5px;color:var(--warn)}
+  pre{background:#0b0d12;border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow:auto;font-size:12.5px;line-height:1.55}
+  pre code{background:none;border:0;padding:0;color:#d8dde6}
+  .badge{display:inline-block;padding:2px 9px;border-radius:11px;font-size:12px;font-weight:600;letter-spacing:.3px}
+  .b-err{background:rgba(240,106,106,.16);color:var(--err);border:1px solid rgba(240,106,106,.4)}
+  .b-ok{background:rgba(78,201,168,.15);color:var(--ok);border:1px solid rgba(78,201,168,.4)}
+  .b-warn{background:rgba(226,192,112,.15);color:var(--warn);border:1px solid rgba(226,192,112,.4)}
+  .b-pur{background:rgba(181,140,255,.15);color:var(--pur);border:1px solid rgba(181,140,255,.4)}
+  .verdict{font-size:16px;padding:14px 18px;border-radius:10px;border:1px solid rgba(240,106,106,.45);background:rgba(240,106,106,.08)}
+  .tag{color:var(--accent);font-weight:600}
+  .muted{color:var(--muted)}
+  .hl{color:var(--warn);font-weight:600}
+  .ok{color:var(--ok)}
+  .err{color:var(--err)}
+  ul{margin:6px 0;padding-left:22px}
+  li{margin:4px 0}
+  .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:4px;background:var(--card2);border:1px solid var(--border);color:var(--muted);margin-right:5px}
+  .nav{position:sticky;top:0;background:rgba(15,17,21,.92);backdrop-filter:blur(6px);border-bottom:1px solid var(--border);padding:10px 0;margin:0 -24px 24px;z-index:5}
+  .nav .wrap{padding:0 24px;display:flex;flex-wrap:wrap;gap:14px}
+  .nav a{color:var(--muted);text-decoration:none;font-size:13px}
+  .nav a:hover{color:var(--accent)}
+  .step{display:flex;gap:12px;align-items:flex-start}
+  .step .num{flex:0 0 28px;height:28px;border-radius:50%;background:var(--accent);color:#0f1115;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:14px}
+  .fix{border-left:3px solid var(--ok);padding:10px 14px;background:rgba(78,201,168,.05);border-radius:0 8px 8px 0;margin:10px 0}
+  .fix.warn{border-left-color:var(--warn);background:rgba(226,192,112,.05)}
+  .fix.pur{border-left-color:var(--pur);background:rgba(181,140,255,.05)}
+  details{margin:8px 0}
+  summary{cursor:pointer;color:var(--accent);font-weight:600;padding:4px 0}
+</style>
+</head>
+<body>
+<div class="nav"><div class="wrap">
+  <a href="#top">概览</a><a href="#timeline">迭代时间线</a><a href="#iter1">iter_001</a><a href="#iter2">iter_002</a><a href="#iter3">iter_003</a><a href="#root">根因合成</a><a href="#fix">修复方向</a><a href="#cases">用例错误明细</a>
+</div></div>
+<div class="wrap" id="top">
+
+<h1>aclnnQuantMatmulV5 执行历史失败分析与修复方向</h1>
+<div class="sub">
+  <span class="pill">run: aclnnQuantMatmulV5-20260730-152944-814056</span>
+  <span class="pill">scene: 量化 / A8W8</span>
+  <span class="pill">mode: real</span>
+  <span class="pill">strategy: default</span>
+  <span class="pill">max-iter: 3</span>
+  <span class="pill">生成时间: 2026-07-30</span>
+</div>
+
+<div class="verdict">
+  <b>结论：</b>3 轮迭代全部失败（<span class="err">iter_001 0/10</span> · <span class="err">iter_002 0/10</span> · <span class="err">iter_003 1/10</span>）。
+  失败均发生在 NPU <code>aclnnQuantMatmulV5GetWorkspaceSize</code> 第一段入参校验（<code>161002 / ACLNN_ERR_PARAM_INVALID</code>，<code>engine_error</code> 始终为空 → 排除执行器/引擎故障）。
+  两轮诊断均判定 <span class="tag">root_cause = constraint_extraction</span>（约束提取系统性失误），<b>非 generator_bug、非 executor_bug</b>。
+  迭代已用满 3 轮上限，但 <b>终态未收口</b>（<code>state=DIAGNOSE</code>、<code>terminal_state=null</code>，iter_003 未产出 <code>analysis.json</code>）。
+</div>
+
+<div class="card">
+  <div class="kv">
+    <b>算子</b><span>aclnnQuantMatmulV5（量化矩阵乘，两段式接口）</span>
+    <b>产品支持</b><span>Atlas 350 / Atlas A3 / Atlas A2（servers.json 仅 A2 有执行机，实际仅 A2 上机）</span>
+    <b>场景</b><span>量化 A8W8（scene_directive 已渲染，scope=subset）</span>
+    <b>输入参数</b><span>x1, x2, x1Scale, x2Scale, yScale, x1Offset, x2Offset, yOffset, bias, transposeX1, transposeX2, groupSize → out</span>
+    <b>量化模式</b><span>由 groupSize 编码：groupSize=0 → K-C/K-T 等（scale 1 维）；groupSize=4303356032 → G-B（scale 与 x1 同维数）</span>
+    <b>失败模式</b><span>约束提取反复放行了算子运行时实际拒绝的 shape 组合 → 用例通过约束校验却过不了 NPU infershape</span>
+  </div>
+</div>
+
+<h2 id="timeline">一、迭代时间线</h2>
+<table>
+<tr><th>轮次</th><th>状态流转</th><th>A2 结果</th><th>root_cause</th><th>本轮新增失败点</th><th>补救动作</th></tr>
+<tr>
+  <td><b>iter_001</b></td>
+  <td>PLAN→GENERATE→GATE→DIAGNOSE</td>
+  <td><span class="badge b-err">0/10</span></td>
+  <td>constraint_extraction</td>
+  <td>x2 format-维数耦合缺失；C3/C4 scale <code>len&gt;=2</code> 兜底过松；G-B scale-维数耦合缺失</td>
+  <td>supplement_additions.md（补 x2 format-dim + scale groupSize 分支）</td>
+</tr>
+<tr>
+  <td><b>iter_002</b></td>
+  <td>→EXTRACT→EXECUTE→GATE→DIAGNOSE</td>
+  <td><span class="badge b-err">0/10</span></td>
+  <td>constraint_extraction</td>
+  <td><span class="hl">C1（K 相等）转置索引写反</span>（x2 的 [-1]↔[-2] 全分支互换，9 条 K 维不匹配）；C3/C4 G-B 未取 scale.dim==x1.dim</td>
+  <td>supplement_additions.md（替换 C1 正确 expr + G-B scale.dim==x1.dim）</td>
+</tr>
+<tr>
+  <td><b>iter_003</b></td>
+  <td>→EXTRACT→GENERATE→EXECUTE→GATE→DIAGNOSE<b>（未完成）</b></td>
+  <td><span class="badge b-warn">1/10</span></td>
+  <td><span class="muted">未产出 analysis（达上限）</span></td>
+  <td>G-B scale shape <b>值</b>等式缺失；bias 3维↔out batch 耦合缺失；x2Offset 须 1维 缺失</td>
+  <td><span class="muted">无（已达 max-iter=3，未收口 MAX_ITERATIONS）</span></td>
+</tr>
+</table>
+<p class="sub">注：iter_002 的 re-EXTRACT 修正了 iter_001 的 x2 format-dim 与 scale 分支（C7/C8/C3/C4 已体现），但<b>新引入</b>了 C1 转置索引错误——这是 prompt v5 <code>transpose_shape</code> 模块的系统性误读，每次 re-EXTRACT 都会重新生成。</p>
+
+<h2 id="iter1">二、iter_001 失败详情（0/10）</h2>
+<div class="card">
+<p>10/10 用例在 <code>GetWorkspaceSize</code> 第一段校验失败（161002），engine_error 空，CPU golden 干净 dummy，cases_expanded 忠实展开 cases → 排除 executor_bug；post_check 3 平台 30 条 0 violations（生成器忠实满足 7 条 common 约束，含 <code>len&gt;=2</code> 兜底）→ 排除 generator_bug。</p>
+<h3>三类约束缺口</h3>
+<table>
+<tr><th>#</th><th>缺口</th><th>文档依据</th><th>失败佐证</th></tr>
+<tr><td>1</td><td><b>x2 format-维数耦合缺失</b>：constraints 把 x2 dimensions 记为 [2,8]（ND 2-6 与 NZ 4-8 的并集），但无 expr 绑定 <code>x2.format</code> 与维数范围</td><td>文档“NZ格式下维度支持4-8维”；x1 dimensions=[2,6]（仅 ND）</td><td>case 0 ND 8维被拒“should be in range[2,6]”；cases 1/5/7 NZ 2维被拒“should be in range[4,8]”</td></tr>
+<tr><td>2</td><td><b>C3/C4 scale expr 过松</b>：<code>(len(...shape) &gt;= 2)</code> 兜底无条件放行多维 scale，与 src_text “shape是1维(t,)”矛盾</td><td>x1Scale “K-C/K-T 场景下shape为1维(m,)”</td><td>cases 2/3/4/8 groupSize=0 时 scale 6维 → “dimension of x1Scale/x2Scale should be 1, actual is 6”</td></tr>
+<tr><td>3</td><td><b>G-B scale-维数耦合缺失</b>：C7 仅要求 G-B→scale&gt;=2维，未捕获算子强制的 scale.dim==x1.dim</td><td>日志推断（文档仅称“G-B场景下shape为2维及以上”）</td><td>cases 6/9 groupSize=4303356032 → “dimension of x1Scale/x2Scale and x1 should be same”</td></tr>
+</table>
+</div>
+
+<h2 id="iter2">三、iter_002 失败详情（0/10）</h2>
+<div class="card">
+<p>iter_001 的 supplement（x2 format-dim + scale groupSize 分支）经 re-EXTRACT 落入 iter_002 constraints（C7/C8/C3/C4 已体现），但 re-EXTRACT <b>新引入</b>两个失补点，导致再次 0/10。</p>
+
+<h3>核心问题：C1（K 相等）转置索引写反 <span class="badge b-err">系统性 prompt 误读</span></h3>
+<p>constraints.json 行1839 的 C1 expr，<b>x1 索引正确但 x2 的 <code>[-1]↔[-2]</code> 在全部 4 个 transpose 分支都互换了</b>。这使生成器产出 K 维不匹配的用例却通过错误的 C1，对应 9 条失败。</p>
+<pre><code># 错误（现状）：x2 的 [-1]↔[-2] 全互换
+(not tX1 and not tX2 and x1.shape[-1] == x2.shape[-1]) or
+(not tX1 and     tX2 and x1.shape[-1] == x2.shape[-2]) or
+(    tX1 and not tX2 and x1.shape[-2] == x2.shape[-1]) or
+(    tX1 and     tX2 and x1.shape[-2] == x2.shape[-2])
+
+# 正确：x2 K = tX2 ? shape[-1] : shape[-2]（ND 格式 x2: false→(batch,k,n)故K=shape[-2]; true→(batch,n,k)故K=shape[-1]）
+(not tX1 and not tX2 and x1.shape[-1] == x2.shape[-2]) or
+(not tX1 and     tX2 and x1.shape[-1] == x2.shape[-1]) or
+(    tX1 and not tX2 and x1.shape[-2] == x2.shape[-2]) or
+(    tX1 and     tX2 and x1.shape[-2] == x2.shape[-1])</code></pre>
+<p class="sub">文档依据：inputs/aclnnQuantMatmulV5.md 行604-606（A2/A3）、行739-740（350）。失败佐证：9 条 EZ1001 “Input the size of x1's k dimension and size of x2's k dimension should be same”（ids 0,1,2,3,4,5,7,8,9）。</p>
+
+<h3>次要问题：C3/C4 G-B 分支维数未取 ==x1.dim</h3>
+<p>G-B 分支仅要求 <code>len(scale.shape)==2</code>，未要求 <code>len(scale.shape)==len(x1.shape)</code>。case 6（x1 6维、x1Scale 2维）通过却失败：“actual dimension of x1Scale is 2, x1 is 6”。</p>
+<p class="hl">关键观察：iter_001 supplement 修了 A，re-EXTRACT 又在 B 处引入新错——说明 re-EXTRACT（用 buggy prompt 重新生成）会<b>反复引入 prompt 级系统性错误</b>，supplement 补丁只能覆盖一时。</p>
+</div>
+
+<h2 id="iter3">四、iter_003 失败详情（1/10，未完成诊断）</h2>
+<div class="card">
+<p>iter_002 的 supplement（S1-S3：修正 C1 + G-B scale.dim==x1.dim）经 re-EXTRACT 落入 iter_003 constraints。quality_gate 确认 <b>C1 K 不匹配与 G-B scale.dim 问题已消除</b>（本轮无该类错误），case 0（K-C, groupSize=0）全流程通过。但<b>暴露 3 类新语义缺口</b>，仍 9/10 失败。</p>
+<p><code>independent_eval_report.json</code> 显示 30/30 用例满足现有 9 条约束（0 violations）→ 失败源于<b>缺失约束（语义缺口）</b>，而非违反现有约束。</p>
+
+<h3>3 类新缺口（含具体 NPU EZ1001 错误）</h3>
+<table>
+<tr><th>缺口</th><th>失败 case</th><th>NPU 实际报错（EZ1001）</th><th>根因</th></tr>
+<tr>
+  <td><b>G-B scale shape <span class="hl">值</span>等式缺失</b><br>iter_002 只补了 dim==x1.dim，未补 shape 值关系</td>
+  <td>1, 3, 4, 9<br><span class="muted">(gs=4303356032)</span></td>
+  <td>“When quantification mode is G-B or B-B… the k/m-dimension of x1Scale(pertoken_scale) and x1 need to satisfy the relationship: ceil(k_x1, groupSizeK…)…”</td>
+  <td>G-B 表（文档行643）：x1Scale=<code>(m, ceil(k/128))</code>、x2Scale=<code>(ceil(n/128), ceil(k/128))</code>。<b>值</b>未约束，如 case 1 x1=[255,2] 应 x1Scale=[255,1] 却给 [255,767]</td>
+</tr>
+<tr>
+  <td><b>bias 3维 ↔ out batch 耦合缺失</b></td>
+  <td>2, 6, 7</td>
+  <td>“When bias's dimension is 3, infered out batch dimension should be 1, but infered out batch dimension is 0/4.”</td>
+  <td>文档行693：“当 out 的 shape 为 2、4、5、6 维时，bias 的 shape 只支持 1 维(n,)”。即 bias 3维(batch,1,n) 要求 out 为 3维（batch 存在且=1）。约束未限制</td>
+</tr>
+<tr>
+  <td><b>x2Offset 须 1维（A2/A3）缺失</b></td>
+  <td>5, 8</td>
+  <td>“Expected 1 dimension input, but got x2Offset(offset) with shape [1,128] / [127,2].”</td>
+  <td>文档行689（A2/A3 公共约束）：x2Offset “shape是1维(t,)”。但参数表维度列写 1-2（并集），约束放宽到 2维，NPU 实际强制 1维</td>
+</tr>
+</table>
+</div>
+
+<h2 id="root">五、根因合成</h2>
+<div class="card">
+<p><b>根本性质：constraint_extraction 的系统性失误</b>——不是单点笔误，而是<b>约束提取在多个正交维度上反复欠约束</b>，每轮补一个缺口又暴露下一个。可拆为 4 层：</p>
+<ol>
+<li><b>prompt v5 <code>transpose_shape</code> 模块系统性误读 x2 收缩维</b>（iter_002 C1 写反）。这是 prompt 级缺陷，每次 re-EXTRACT 都会重新生成错误 expr，supplement 补丁无法根治。<span class="badge b-pur">需 prompt-optimizer</span></li>
+<li><b>shape <span class="hl">值</span>关系约束缺失</b>（iter_003 G-B scale）。提取器只约束了维数（dim），未约束 shape 各维的具体值关系（如 <code>ceil(k/128)</code>）。G-B 表给了精确公式但未被落为 expr。</li>
+<li><b>条件耦合约束缺失</b>（iter_003 bias 3维↔out 维数、iter_001 x2 format↔维数、iter_001 scale groupSize 分支）。文档用“当…时…”表述的条件规则未被提取为分支 expr，而是被并集放宽（如 x2 dimensions=[2,8]、bias 1-3维、scale 1-6维）。</li>
+<li><b>参数表“并集维度”覆盖了场景级“精确维度”</b>（iter_003 x2Offset 1-2维 vs 公共约束 1维）。提取器取了参数表的宽松上限，未与公共约束的场景级精确值取交。</li>
+</ol>
+<p><b>排除项（已验证）：</b></p>
+<ul>
+<li><span class="ok">非 generator_bug</span>：post_check + independent_eval 均显示生成器忠实满足所给约束（30/30 通过 9 条约束），无 Z3 伪 SAT 或代码 bug。生成器对错误约束的“忠实满足”正是约束失误的下游表现。</li>
+<li><span class="ok">非 executor_bug</span>：engine_error 始终空、exit_code=0、CPU golden 干净（case 0 精度对比通过佐证语义有效）、cases_expanded 忠实展开。10 条失败均为 161002 业务参数校验拒绝。</li>
+</ul>
+<p><b>流程缺口：</b>iter_003 达 max-iter=3 后未收口为 <code>MAX_ITERATIONS</code> 终态（<code>terminal_state=null</code>、<code>state=DIAGNOSE</code>），且未产出 <code>analysis.json</code>——诊断循环未闭合，剩余 3 类缺口未被正式定性记录。</p>
+</div>
+
+<h2 id="fix">六、修复方向（按优先级）</h2>
+
+<div class="fix">
+<h3 style="margin-top:4px">优先级 1：约束级确定性补丁（立即解锁，不需改 prompt）</h3>
+<p>对 iter_003/constraints.json 直接 supplement 三条 expr（origin=diagnose_inferred，依据文档+错误日志），<b>跳过 re-EXTRACT</b>（避免 prompt 重新引入错误），用 <code>apply_supplement_constraints.py</code> 合并 + normalize + validate 后 re-GENERATE + re-EXECUTE：</p>
+<table>
+<tr><th>补丁</th><th>expr 要点</th><th>文档依据</th></tr>
+<tr><td><b>G-B scale shape 值等式</b></td>
+<td>groupSize==4303356032 时：<code>x1Scale.shape[-1]==ceil(x1.shape[-1 if !tX1 else -2]/128)</code>（A2/A3 2维）；<code>x2Scale.shape==[ceil(n/128), ceil(k/128)]</code>。350 batched 表（行836-837）按 batch 前缀</td>
+<td>行643 G-B 表、行836-837 350 G-B/B-B 表</td></tr>
+<tr><td><b>bias 3维↔out 维数</b></td>
+<td><code>len(bias.shape)==3 → len(out.shape)==3</code>（等价 out batch 维存在）；<code>len(out.shape) in {2,4,5,6} → len(bias.shape)==1</code></td>
+<td>行693（A2/A3）、行747-748（350）</td></tr>
+<tr><td><b>x2Offset 1维（A2/A3）</b></td>
+<td>A2/A3 平台：<code>len(x2Offset.shape)==1</code>（覆盖参数表 1-2 维的放宽）</td>
+<td>行689 公共约束</td></tr>
+<tr><td><b>C1 转置索引（防回退）</b></td>
+<td>若 re-EXTRACT 不可避免，则补丁替换为正确 expr（见 iter_002 上文），确保 x2 K = tX2?shape[-1]:shape[-2]</td>
+<td>行604-606 / 行739-740</td></tr>
+</table>
+</div>
+
+<div class="fix pur">
+<h3 style="margin-top:4px">优先级 2：prompt 级根治（v5 → v6，杜绝复发）</h3>
+<p>iter_002 的 C1 转置索引写反是 <b>prompt v5 <code>transpose_shape</code> 模块的系统性误读</b>，supplement 只能临时覆盖。建议 prompt-optimizer 产 v6：</p>
+<ul>
+<li>在 transpose_shape 模块明确收缩维 K 的定位规则：<code>K(x1) = tX1 ? shape[-2] : shape[-1]</code>；<code>K(x2) = tX2 ? shape[-1] : shape[-2]</code>（ND 格式）。</li>
+<li>增加自检反例（类似 v5 修复“shape size=numel”时的 aclnnForeachErf 反例）：用 aclnnQuantMatmulV5 的 4 个 transpose 分支构造 K 相等校验用例，强制提取器落对索引。</li>
+<li>补充“条件分支而非并集”的提取规范：文档“当…时…”必须落为 if-then expr，禁止取并集放宽（覆盖 bias/format/x2Offset/scale 维数等多处）。</li>
+</ul>
+</div>
+
+<div class="fix warn">
+<h3 style="margin-top:4px">优先级 3：流程级修复（避免重蹈）</h3>
+<ul>
+<li><b>收口 MAX_ITERATIONS</b>：iter_003 达 max-iter 后应将 <code>run_state</code> 置为 <code>MAX_ITERATIONS</code> 终态并产出 <code>analysis.json</code>，而非停在 DIAGNOSE。当前 <code>terminal_state=null</code> 导致 run 状态不一致。</li>
+<li><b>supplement 路径避免 re-EXTRACT</b>：当根因是 prompt 级系统性误读（如 transpose）时，re-EXTRACT 会重新引入错误。应直接 patch constraints.json（cp 上轮 constraints + apply_supplement），仅在 prompt 已修复后再 re-EXTRACT。</li>
+<li><b>post_check 可观测性缺口</b>：<code>cases_common.json not found</code> 导致 <code>overall_violation=true</code> 假警（已记录但非真实违规），应修复 common 桶观测以减少误判噪音。</li>
+</ul>
+</div>
+
+<h2 id="cases">七、附录：iter_003 用例错误明细（A2，1 passed / 9 failed）</h2>
+<div class="card">
+<table>
+<tr><th>case</th><th>tX1/tX2/gs</th><th>x1 / x2</th><th>x1Scale / x2Scale</th><th>bias / x2Offset</th><th>NPU 错误（EZ1001）</th><th>归类</th></tr>
+<tr><td><span class="badge b-ok">0</span></td><td>F/F/0</td><td>[1,128]/[128,256]</td><td>[1]/[256]</td><td>[256]/[256]</td><td>—</td><td><span class="ok">SUCCESS（K-C 基线通过）</span></td></tr>
+<tr><td>1</td><td>F/F/G-B</td><td>[255,2]/[2,3]</td><td>[255,767]/[1024,768]</td><td>[9,65,255]/[1,65534]</td><td>G-B k-dim of x1Scale and x1: ceil(k_x1,128)…</td><td><span class="hl">G-B scale 值</span></td></tr>
+<tr><td>2</td><td>F/T/0</td><td>[65534,3]/[1,3]</td><td>[65534]/[1]</td><td>[128,1,128]/[1]</td><td>bias dim 3, infered out batch should be 1, but is 0</td><td>bias 3维↔out</td></tr>
+<tr><td>3</td><td>F/F/G-B</td><td>[129,17]/[17,1]</td><td>[129,17]/[16,1]</td><td>[1]/[1]</td><td>G-B k-dim of x1Scale and x1: ceil(k_x1,128)…</td><td><span class="hl">G-B scale 值</span></td></tr>
+<tr><td>4</td><td>T/F/G-B</td><td>[65535,1024]/[65535,768]</td><td>[1024,65535]/[8,65534]</td><td>[256,1,512]/[768]</td><td>G-B m-dim of x1Scale and x1: ceil(m_x1,128)…</td><td><span class="hl">G-B scale 值</span></td></tr>
+<tr><td>5</td><td>T/F/0</td><td>[1025,1]/[1025,2048]</td><td>[1]/[1]</td><td>[2048]/[1,128]</td><td>Expected 1 dimension input, got x2Offset [1,128]</td><td>x2Offset 1维</td></tr>
+<tr><td>6</td><td>T/F/0</td><td>[1025,1024]/[1025,768]</td><td>[1024]/[768]</td><td>[128,1,2048]/[1]</td><td>bias dim 3, infered out batch should be 1, but is 0</td><td>bias 3维↔out</td></tr>
+<tr><td>7</td><td>F/T/0</td><td>[1,1,1,1,1,1025]/[1024,1025]</td><td>[1]/[1]</td><td>[1,512,64]/[1024]</td><td>bias dim 3, infered out batch should be 1, but is 4</td><td>bias 3维↔out</td></tr>
+<tr><td>8</td><td>F/T/0</td><td>[1,2]/[127,2]</td><td>[1]/[1]</td><td>[1,1024,768]/[127,2]</td><td>Expected 1 dimension input, got x2Offset [127,2]</td><td>x2Offset 1维</td></tr>
+<tr><td>9</td><td>T/F/G-B</td><td>[32,33]/[32,17]</td><td>[33,4098]/[65,4097]</td><td>[17]/[17]</td><td>G-B m-dim of x1Scale and x1: ceil(m_x1,128)…</td><td><span class="hl">G-B scale 值</span></td></tr>
+</table>
+<p class="sub">归因统计：G-B scale shape 值等式缺失 ×4（1,3,4,9）｜ bias 3维↔out batch 耦合缺失 ×3（2,6,7）｜ x2Offset 须 1维 ×2（5,8）。三类缺口合计 9 条，与 9 条失败精确吻合。</p>
+</div>
+
+<div class="card">
+<h3>产物索引（run 目录）</h3>
+<div class="kv">
+  <b>run_state</b><span><code>runs/aclnnQuantMatmulV5-20260730-152944-814056/run_state.json</code></span>
+  <b>文档快照</b><span><code>inputs/aclnnQuantMatmulV5.md</code></span>
+  <b>iter_001 诊断</b><span><code>iter_001/analysis.json</code> + <code>iter_001/supplement_additions.md</code></span>
+  <b>iter_002 诊断</b><span><code>iter_002/analysis.json</code> + <code>iter_002/supplement_additions.md</code>（含 C1 正确 expr + G-B scale.dim 修复规范）</span>
+  <b>iter_003</b><span><code>iter_003/quality_gate.json</code> + <code>iter_003/independent_eval_report.json</code>（30/30 满足现有约束）+ <code>iter_003/execution_result.json</code>（无 analysis.json）</span>
+  <b>批次</b><span><code>runs/batches/quant-operator-20260730-143534-490871/</code></span>
+</div>
+</div>
+
+</div>
+</body>
+</html>

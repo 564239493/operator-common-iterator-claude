@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>算子迭代批次失败分析报告 — operator_docs-20260729-182839-571262</title>
+<style>
+  :root{
+    --bg:#0f1420; --card:#161d2e; --card2:#1c2538; --border:#2a3550;
+    --txt:#e6ecf5; --mut:#9aa6bd; --acc:#4ea1ff; --ok:#36c691;
+    --warn:#f0b341; --err:#f0616d; --crit:#ff7a8a; --code:#d6b3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#0b0f1a 0,#0f1420 60px);color:var(--txt);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.65;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:36px 28px 80px}
+  h1{font-size:28px;margin:0 0 4px;letter-spacing:.5px}
+  h2{font-size:21px;margin:42px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--border);color:#cfe0ff}
+  h3{font-size:16px;margin:24px 0 10px;color:#b9c8e8}
+  .sub{color:var(--mut);font-size:14px;margin-bottom:8px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:11px;
+    background:#22304d;color:#cfe0ff;margin-left:8px;vertical-align:middle}
+  .tag.err{background:#3a1a22;color:#ffb3bd}
+  .tag.ok{background:#143026;color:#9fe9c8}
+  .tag.warn{background:#3a2f12;color:#ffd79a}
+  .tag.crit{background:#3a1226;color:#ffb0d4}
+  .tag.info{background:#13243a;color:#b6d4ff}
+
+  .grid{display:grid;gap:14px}
+  .stat{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:20px 0 4px}
+  .stat .k{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 14px;text-align:center}
+  .stat .n{font-size:30px;font-weight:800;line-height:1}
+  .stat .l{color:var(--mut);font-size:12px;margin-top:6px}
+  .n.total{color:#cfe0ff}.n.suc{color:var(--ok)}.n.fail{color:var(--err)}.n.run{color:var(--warn)}.n.pend{color:var(--mut)}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin:14px 0}
+  .card.hl{border-left:4px solid var(--err)}
+  .card.hlo{border-left:4px solid var(--ok)}
+  .card.hlw{border-left:4px solid var(--warn)}
+  .card.hlc{border-left:4px solid var(--crit)}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  th,td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+  th{background:#1a2336;color:#b9c8e8;font-weight:600;position:sticky;top:0}
+  td.op{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#cfe0ff;white-space:nowrap}
+  td .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--code)}
+  tr:hover td{background:#18203450}
+  .pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;white-space:nowrap}
+  .pill.gen{background:#3a1a22;color:#ffb3bd}
+  .pill.cfg{background:#3a2f12;color:#ffd79a}
+  .pill.ext{background:#13243a;color:#b6d4ff}
+  .pill.suc{background:#143026;color:#9fe9c8}
+  .pill.maxi{background:#2a1230;color:#e0a6f0}
+
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Courier New",monospace}
+  code{background:#0c111c;border:1px solid #243049;padding:1px 6px;border-radius:5px;font-size:12.5px;color:var(--code)}
+  pre{background:#0b1018;border:1px solid #243049;border-radius:10px;padding:14px 16px;overflow:auto;font-size:12.5px;line-height:1.55;color:#cdd9ee}
+  pre .kw{color:#ff9dab} pre .fn{color:#79d3ff} pre .str{color:#b6e3a0} pre .cmt{color:#6a7590;font-style:italic} pre .hot{color:#ffd86b;background:#332a0d}
+
+  .bar{height:9px;border-radius:6px;background:#0c111c;overflow:hidden;border:1px solid #243049;margin-top:8px}
+  .bar>i{display:block;height:100%;border-radius:6px}
+
+  ul.tight{margin:6px 0;padding-left:22px} ul.tight li{margin:3px 0}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:6px 14px;font-size:13.5px;margin:6px 0}
+  .kv .k{color:var(--mut)}
+  .foot{margin-top:46px;padding-top:18px;border-top:1px solid var(--border);color:var(--mut);font-size:12.5px}
+  .evidence{font-size:12px;color:var(--mut);background:#0b1018;border-left:3px solid var(--acc);padding:8px 12px;border-radius:0 8px 8px 0;margin:8px 0}
+  .evidence b{color:#cfe0ff}
+  details{margin:8px 0} summary{cursor:pointer;color:#b9c8e8;font-size:13.5px;user-select:none}
+  .fix{background:#0d1814;border:1px solid #1f3a2d;border-radius:10px;padding:14px 16px;margin:10px 0}
+  .fix h4{margin:0 0 8px;color:#9fe9c8;font-size:13.5px}
+  .diff{color:#9fe9c8}
+  .toc{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin:18px 0;font-size:13.5px}
+  .toc a{color:#b6d4ff;text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  .alert{background:#22121a;border:1px solid #3a1a22;border-radius:10px;padding:14px 16px;margin:14px 0}
+  .alert .t{color:#ffb3bd;font-weight:700;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>算子迭代批次失败分析报告</h1>
+<div class="sub">批次 ID：<code>operator_docs-20260729-182839-571262</code> &nbsp;|&nbsp; 跑批路径：<code>operator_docs/*.md</code> &nbsp;|&nbsp; mode=<code>real</code> &nbsp;|&nbsp; case_count=<code>100</code> &nbsp;|&nbsp; max_iterations=<code>3</code> &nbsp;|&nbsp; prompt=<code>operator_constraints_extract_v4.md</code></div>
+<div class="sub">生成时间：2026-07-30 &nbsp;|&nbsp; 数据来源：<code>runs/batches/*/batch_state.json</code>、各 run 的 <code>analysis.json / post_check_report.json / generation.log / constraints.json</code></div>
+
+<div class="toc">
+  <b>目录</b> &nbsp;
+  <a href="#s1">1. 执行概览</a> ·
+  <a href="#s2">2. 失败分类汇总</a> ·
+  <a href="#s3">3. 根因：Z3 生成器伪 SAT</a> ·
+  <a href="#s4">4. 各算子失败详情</a> ·
+  <a href="#s5">5. 对照：成功算子</a> ·
+  <a href="#s6">6. 修复方案</a> ·
+  <a href="#s7">7. 结论</a>
+</div>
+
+<h2 id="s1">1. 执行概览</h2>
+<div class="sub">批次状态：<b style="color:var(--warn)">RUNNING</b>（current_index=11，正在跑第 11 个算子 aclnnInplaceAdds，尚处 PLAN 态；11~31 共 20 个待跑）。</div>
+
+<div class="stat">
+  <div class="k"><div class="n total">31</div><div class="l">算子总数</div></div>
+  <div class="k"><div class="n suc">1</div><div class="l">成功</div></div>
+  <div class="k"><div class="n fail">9</div><div class="l">失败</div></div>
+  <div class="k"><div class="n run">1</div><div class="l">运行中</div></div>
+  <div class="k"><div class="n pend">20</div><div class="l">待跑</div></div>
+  <div class="k"><div class="n" style="color:var(--acc)">10%</div><div class="l">已完成成功率</div></div>
+</div>
+
+<div class="card">
+<div class="kv"><div class="k">批次结论</div><div>已完成 10 个算子中仅 <b style="color:var(--ok)">1 个成功</b>（aclnnBitwiseNot，100/100），<b style="color:var(--err)">9 个失败</b>。失败分三类：<b>7 个同一根因</b>——确定性 Z3 用例生成器对 <code>prod/sum/len/负索引/floor除法</code> 类约束产生 <b>伪 SAT/unknown</b>（生成器锅）；<b>1 个约束本身有误</b>（#8，constraints.json 错绑 + 值域空，约束提取锅）；<b>1 个执行机配置缺失</b>（非代码 bug）。</div></div>
+</div>
+
+<h2 id="s2">2. 失败分类汇总</h2>
+
+<table>
+<thead><tr><th>#</th><th>算子</th><th>终态</th><th>分类</th><th>失败 expr / 触发点</th><th>违反比例</th><th>根因</th></tr></thead>
+<tbody>
+<tr>
+  <td>1</td><td class="op">aclnnBitwiseNot</td><td><span class="pill suc">SUCCESS</span></td><td>成功</td><td><span class="mono">self.shape==out.shape, dtype==</span></td><td>0 / 100</td><td>—</td>
+</tr>
+<tr>
+  <td>2</td><td class="op">aclnnBlendImagesCustom</td><td><span class="pill gen">STOP_GENERATOR_BUG</span></td><td>生成器·unknown</td><td><span class="mono">shape_broadcast / shape_value_dependency</span></td><td>0 用例</td><td>Z3 返回 unknown，0 用例产出</td>
+</tr>
+<tr>
+  <td>3</td><td class="op">aclnnCIoU</td><td><span class="pill cfg">BLOCKED</span></td><td>配置缺失</td><td>算子仅支持 Atlas 350，servers.json 仅 A2</td><td>—</td><td>无对应执行机（非代码 bug）</td>
+</tr>
+<tr>
+  <td>4</td><td class="op">aclnnConfusionTranspose</td><td><span class="pill gen">STOP_GENERATOR_BUG</span></td><td>生成器·伪SAT</td><td><span class="mono">prod(shape.range_value) == prod(x.shape)</span></td><td>99 / 100</td><td>Z3 <code>__prod_seq</code> 递归函数重定义异常</td>
+</tr>
+<tr>
+  <td>5</td><td class="op">aclnnForeachErf</td><td><span class="pill gen">STOP_GENERATOR_BUG</span></td><td>生成器·伪SAT</td><td><span class="mono">len(out.shape) >= len(x.shape)</span></td><td>47 / 200</td><td>Z3 对 SeqSort 的 <code>Length</code> 推理不完备</td>
+</tr>
+<tr>
+  <td>6</td><td class="op">aclnnForeachExpm1</td><td><span class="pill gen">STOP_GENERATOR_BUG</span></td><td>生成器·伪SAT</td><td><span class="mono">len(out.shape) >= len(x.shape)</span></td><td>47 / 200</td><td>同 #5（约束逐字节相同）</td>
+</tr>
+<tr>
+  <td>7</td><td class="op">aclnnForeachLog2</td><td><span class="pill gen">STOP_GENERATOR_BUG</span></td><td>生成器·伪SAT</td><td><span class="mono">len(out.shape) >= len(x.shape)</span></td><td>确定性跳过</td><td>同 #5/#6（约束逐字节相同）</td>
+</tr>
+<tr>
+  <td>8</td><td class="op">aclnnFusedLinearCrossEntropyLossGrad</td><td><span class="pill maxi">MAX_ITERATIONS</span></td><td>约束提取</td><td>weightGradOut 第二维错绑 + maskedTarget/targetMask 值域空</td><td>95 / 100</td><td>约束提取错误/遗漏（可恢复）</td>
+</tr>
+<tr>
+  <td>9</td><td class="op">aclnnGroupedMatMulAlltoAllv</td><td><span class="pill gen">STOP_GENERATOR_BUG</span></td><td>生成器·伪SAT</td><td><span class="mono">A==sum(sendCounts), BSK==sum(recvCounts), 0&lt;len(group)&lt;128</span></td><td>200 / 200</td><td>Z3 <code>__sum_seq</code> 递归重定义 + 字符串未物化</td>
+</tr>
+<tr>
+  <td>10</td><td class="op">aclnnIm2col</td><td><span class="pill gen">STOP_GENERATOR_BUG</span></td><td>生成器·伪SAT</td><td><span class="mono">out.shape[-1] == (…floor除法…)</span></td><td>177 / 300</td><td>Z3 对 floor 除法 + 负索引不完备</td>
+</tr>
+</tbody>
+</table>
+
+<div class="card hl">
+<div class="kv"><div class="k">分类占比</div><div>
+  <b>生成器伪 SAT / unknown：7/9</b>（#2、#4、#5、#6、#7、#9、#10，含 #7 跳过）—— <b>同一代码缺陷</b>。
+  约束提取错误/遗漏（约束本身有误）：1/9（#8）。执行机配置：1/9（#3）。</div></div>
+<div class="bar"><i style="width:77.7%;background:var(--err)"></i></div>
+<div class="sub" style="margin-top:6px">红 = 生成器伪 SAT 占失败总数的 77.7%，是本轮跑批的头号瓶颈。</div>
+</div>
+
+<h2 id="s3">3. 根因：确定性 Z3 生成器产生“伪 SAT”</h2>
+
+<h3>3.1 机制：约束被静默丢弃</h3>
+<p>用例生成器（<code>agent/generators/param_constraint_solve/</code>）把约束 expr 逐条转成 Z3 表达式后喂给 solver。问题出在 <code>z3_expression_solver_utils.py</code> 的 <code>add_constraint</code>：</p>
+
+<pre><span class="cmt"># agent/generators/param_constraint_solve/z3_expression_solver_utils.py:185-198</span>
+<span class="kw">def</span> <span class="fn">add_constraint</span>(self, expr_name, expr_str, is_print_log=<span class="kw">False</span>):
+    <span class="kw">try</span>:
+        tree = ast.parse(expr_str, mode=<span class="str">'eval'</span>)
+        converter = ASTtoZ3Converter(self)
+        z3_constraint = converter.visit(tree.body)   <span class="cmt"># ← prod/sum 在此抛 "recursive function __prod_seq_1 already defined"</span>
+        <span class="kw">if</span> z3_constraint <span class="kw">is not</span> <span class="kw">None</span>:
+            self.solver.assert_and_track(z3_constraint, expr_name)
+    <span class="kw">except</span> Exception <span class="kw">as</span> e:
+        logger.error(f<span class="hot">"[FAIL] {expr_str}: {e}"</span>)  <span class="cmt"># ← 第198行：捕获后仅记日志，约束被静默丢弃</span></pre>
+
+<div class="alert">
+<div class="t">致命链路</div>
+<code>converter.visit()</code> 在转换 <code>prod(...)</code> / <code>sum(...)</code> 时调用 <code>_prod_z3_sequence</code> / <code>_sum_z3_sequence</code>，
+后者用 <code>z3.RecAddDefinition</code> 注册名为 <code>__prod_seq_&lt;slice_id&gt;</code> 的递归函数。
+<strong>z3-solver 5.0+ 对同名递归函数第二次注册会直接抛异常</strong>。异常被第 197 行的
+<code>except Exception</code> 吞掉——<b>该约束从未进入 solver</b>。solver 只对剩余的静态约束求解，返回 <code>sat</code>，
+落盘用例便违反了被丢弃的 <code>prod/sum</code> 约束，即“伪 SAT”。
+</div>
+
+<h3>3.2 递归函数重名的根因（已有修法但未覆盖全路径）</h3>
+<p>仓库已为 <strong>shape 维度乘积</strong>这条路径做了幂等注册修复，见 <code>param_var_definition.py:22-48</code>：</p>
+<pre><span class="cmt"># 已修复的路径（shape 总元素数乘积）——按名幂等注册，已注册则复用</span>
+_PROD_SHAPE_REC_FUNCS = {}
+<span class="kw">def</span> <span class="fn">_get_or_register_prod_shape</span>(prod_func_name, seq_int_sort):
+    existing = _PROD_SHAPE_REC_FUNCS.get(prod_func_name)
+    <span class="kw">if</span> existing <span class="kw">is not</span> <span class="kw">None</span>: <span class="kw">return</span> existing   <span class="cmt"># 幂等复用，避免重定义异常</span>
+    prod = z3.RecFunction(prod_func_name, ...)
+    z3.RecAddDefinition(prod, [s_var], ...)
+    _PROD_SHAPE_REC_FUNCS[prod_func_name] = prod
+    <span class="kw">return</span> prod</pre>
+<pre><span class="cmt"># 但 expr 求解路径用的是另一套——未做幂等，靠 per-builder slice_id 去重</span>
+<span class="cmt"># expression_preprocess_utils.py:747-786</span>
+<span class="kw">def</span> <span class="fn">_sum_z3_sequence</span>(self, seq, element_sort=<span class="kw">None</span>):
+    slice_id = self.builder.get_next_slice_id()        <span class="cmt"># ← 每个 builder 实例计数器从 1 重置</span>
+    func_name = f<span class="str">"__sum_seq_{slice_id}"</span>          <span class="cmt"># ← 跨 builder / 跨 case 同名</span>
+    SumSeq = z3.RecFunction(func_name, seq_sort, element_sort)
+    z3.RecAddDefinition(SumSeq, [seq_var], ...)        <span class="hot"># ← 第二个 case 即抛 already defined</span>
+    <span class="kw">return</span> SumSeq(seq)
+<span class="kw">def</span> <span class="fn">_prod_z3_sequence</span>(self, seq): ... <span class="cmt"># 同结构，func_name=__prod_seq_{slice_id}</span></pre>
+
+<div class="card hlc">
+<div class="kv"><div class="k">为什么复发</div><div>整个模块共用 <code>z3.main_ctx()</code>，递归函数名是 <b>全局可见</b> 的。而 <code>get_next_slice_id()</code> 是 <b>每个 Z3ConstraintBuilder 实例</b>的局部计数器——每跑一个 case / 每个平台都新建 builder，<code>slice_id</code> 从 1 重来，于是第二个 builder 注册 <code>__prod_seq_1</code> 时与第一个撞名抛异常。shape-product 路径用全局字典按名幂等注册绕开了此问题；<code>_prod_z3_sequence / _sum_z3_sequence</code> 这条 <b>expr 求解路径却没套用同一修法</b>——这是缺陷的核心。</div></div>
+</div>
+
+<h3>3.3 客观证据（post_check 复算）</h3>
+<p>跑批期间新增了确定性复核脚本 <code>scripts/post_check_cases.py</code>（当前硬编码指向 ForeachErf，各 run 另有 <code>post_check_driver.py</code>）：它把每个用例的参数包成暴露 <code>.shape/.range_value</code> 的对象，对 <code>constraints_in_parameters[].expr</code> 逐条 <code>eval</code>，<b>False 即该用例违反约束</b>。结果客观、可复现：</p>
+
+<table>
+<thead><tr><th>算子</th><th>被违反的 expr</th><th>expr_type</th><th>违反 / 总数</th><th>eval 错误</th></tr></thead>
+<tbody>
+<tr><td class="op">aclnnConfusionTranspose</td><td><span class="mono">prod(shape.range_value) == prod(x.shape)</span></td><td>shape_value_dependency</td><td>99 / 100</td><td>0（纯逻辑违反）</td></tr>
+<tr><td class="op">aclnnForeachErf</td><td><span class="mono">len(out.shape) >= len(x.shape)</span></td><td>shape_value_dependency</td><td>23+24 / 200</td><td>0</td></tr>
+<tr><td class="op">aclnnGroupedMatMulAlltoAllv</td><td><span class="mono">A.range_value == sum(sendCounts)</span><br><span class="mono">BSK.range_value == sum(recvCounts)</span><br><span class="mono">0 &lt; len(group.range_value) &lt; 128</span></td><td>value_dependency / self_string_length</td><td>100+100 / 200（全违反）</td><td>0</td></tr>
+<tr><td class="op">aclnnIm2col</td><td><span class="mono">out.shape[-1] == (((…)//stride+1)*((…)//stride+1))</span></td><td>shape_value_dependency</td><td>54+70+53 / 300</td><td>0</td></tr>
+<tr><td class="op">aclnnBlendImagesCustom</td><td>shape_broadcast / shape_value_dependency</td><td>—</td><td>0 用例产出</td><td>Z3 返回 unknown</td></tr>
+</tbody>
+</table>
+<div class="evidence"><b>self_correct 日志佐证（ConfusionTranspose）</b>：循环出现 <code>[choice_core] kept 13/13 statics → Start whole expr solve → [FAIL] prod(shape.range_value)==prod(x.shape): b'recursive function __prod_seq_…' already defined</code>，随后约减默认模型 → sat → 99/100 违反。三个种子（42/123/999）均复现。</div>
+
+<h3>3.4 两类失败变体</h3>
+<div class="card hlc">
+<div class="kv"><div class="k">变体 A：伪 SAT</div><div><b>异常被吞 → 约束被丢 → sat → 用例违反</b>。出现在 prod/sum 递归重定义、len(SeqSort)、floor 除法+负索引。用例照常产出，但通不过复核（ConfusionTranspose / ForeachErf / GroupedMatMulAlltoAllv / Im2col）。</div></div>
+<div class="kv"><div class="k">变体 B：unknown</div><div><b>Z3 求解器返回 unknown → 0 用例</b>。出现在 shape_broadcast 这类过难约束（BlendImagesCustom）。诚实但无法产出用例。</div></div>
+</div>
+
+<h2 id="s4">4. 各算子失败详情</h2>
+
+<div class="card hlc">
+<h3>#2 aclnnBlendImagesCustom <span class="tag crit">生成器·unknown</span></h3>
+<div class="kv"><div class="k">终态</div><div>STOP_GENERATOR_BUG</div></div>
+<div class="kv"><div class="k">现象</div><div>GENERATE 产出 <b>0 用例</b>。Z3 对 <code>shape_broadcast</code> 与 <code>shape_value_dependency</code> 约束返回 <code>unknown</code>，无法物化任何合法张量组合。约束提取本身无误（属生成器能力边界）。</div></div>
+<div class="kv"><div class="k">根因</div><div>广播依赖在 Z3 SeqSort 编码下过难，求解器直接放弃。</div></div>
+<div class="kv"><div class="k">修复方向</div><div>广播类约束改走 <b>构造式</b> 生成（先定主形状、再按广播规则派生从属形状），不走 Z3 全约束求解；或对 unknown 显式降级到枚举/采样兜底。</div></div>
+</div>
+
+<div class="card hlc">
+<h3>#4 aclnnConfusionTranspose <span class="tag crit">生成器·伪SAT</span></h3>
+<div class="kv"><div class="k">终态</div><div>STOP_GENERATOR_BUG</div></div>
+<div class="kv"><div class="k">失败 expr</div><td><span class="mono">prod(shape.range_value) == prod(x.shape)</span>（shape_value_dependency，文档：“shape 中的非零维度乘积必须与输入 x 的元素总数相等”）</div></div>
+<div class="kv"><div class="k">违反</div><div>99 / 100（Atlas 350 平台）。唯一通过的那例为偶然。</div></div>
+<div class="kv"><div class="k">根因</div><div><code>_prod_z3_sequence</code> 注册 <code>__prod_seq_1</code> 递归函数，跨 case 重定义抛异常 → 被第 198 行 <code>except</code> 吞掉 → 约束丢弃 → sat → 99/100 用例 <code>prod(shape) ≠ prod(x.shape)</code>。</div></div>
+<div class="evidence"><b>analysis.json</b>：run_state.json:38-40 <code>state=GENERATE_PSEUDO_SAT, detail='99/100 violate prod constraint; Z3 __prod_seq_1 already defined'</code>；post_check_report <code>overall_pass=false, violated_count=99/100, eval_errors=0</code>。</div>
+</div>
+
+<div class="card hlc">
+<h3>#5 / #6 / #7 aclnnForeachErf / ForeachExpm1 / ForeachLog2 <span class="tag crit">生成器·伪SAT</span></h3>
+<div class="kv"><div class="k">终态</div><div>STOP_GENERATOR_BUG（#7 确定性跳过——约束与 #5/#6 逐字节相同，已知同模式伪 SAT）</div></div>
+<div class="kv"><div class="k">失败 expr</div><div><span class="mono">len(out.shape) >= len(x.shape)</span>（shape_value_dependency）</div></div>
+<div class="kv"><div class="k">违反</div><div>ForeachErf：A3 平台 23/100、A2 平台 24/100，合计 47/200。ForeachExpm1 同。</div></div>
+<div class="kv"><div class="k">根因</div><div>与 prod/sum 不同，这条 <b>没有抛异常</b>，而是 Z3 对 <code>SeqSort</code> 上 <code>z3.Length(seq)</code> 的推理 <b>不完备</b>：solver 返回 sat，但模型里 <code>Length(out.shape) &lt; Length(x.shape)</code> 仍可能成立。属 Z3 序列理论的能力边界，不是注册重名。</div></div>
+<div class="kv"><div class="k">修复方向</div><div>对 <code>len(shape)</code> 类约束：把序列长度提升为显式 <code>Int</code> 标量变量并加 <code>Length(seq)==该标量</code> 双向约束，或直接在生成后用 post_check 过滤违反项并补采。</div></div>
+</div>
+
+<div class="card hlc">
+<h3>#9 aclnnGroupedMatMulAlltoAllv <span class="tag crit">生成器·伪SAT</span></h3>
+<div class="kv"><div class="k">终态</div><div>STOP_GENERATOR_BUG</div></div>
+<div class="kv"><div class="k">失败 expr</div><div><span class="mono">A.range_value == sum(sendCounts)</span>、<span class="mono">BSK.range_value == sum(recvCounts)</span>（value_dependency）；<span class="mono">0 &lt; len(group.range_value) &lt; 128</span>（self_string_length）</div></div>
+<div class="kv"><div class="k">违反</div><div>200 / 200（两个平台各 100/100 全违反）。最严重的一例。</div></div>
+<div class="kv"><div class="k">根因</div><div>同 #4 的 <code>__sum_seq</code> 递归重定义（与 prod 同模式）；外加 <code>group</code> 字符串参数未物化，<code>0&lt;len(group)&lt;128</code> 也未生效。两者叠加致 100% 违反。</div></div>
+</div>
+
+<div class="card hlc">
+<h3>#10 aclnnIm2col <span class="tag crit">生成器·伪SAT</span></h3>
+<div class="kv"><div class="k">终态</div><div>STOP_GENERATOR_BUG</div></div>
+<div class="kv"><div class="k">失败 expr</div><div><span class="mono">out.shape[-1] == (((self.shape[-2]+2*pad[0]-dil[0]*(k[0]-1)-1)//stride[0]+1) * ((self.shape[-1]+2*pad[1]-dil[1]*(k[1]-1)-1)//stride[1]+1))</span>（shape_value_dependency）</div></div>
+<div class="kv"><div class="k">违反</div><div>177 / 300（350 平台 54、A3 平台 70、A2 平台 53）。注意 expr 本身正确（post_check 用同一 expr 复算且 eval_errors=0）。</div></div>
+<div class="kv"><div class="k">根因</div><div>Z3 对 <b>floor 除法 <code>//</code></b> 与 <b>负索引 <code>shape[-1]/shape[-2]</code></b> 的符号化建模不完备，sat 但模型违反公式。</div></div>
+</div>
+
+<div class="card hlw">
+<h3>#8 aclnnFusedLinearCrossEntropyLossGrad <span class="tag warn">约束提取·MAX_ITERATIONS</span></h3>
+<div class="kv"><div class="k">终态</div><div>MAX_ITERATIONS（iter1 仅 5/100 通过，real A2）</div></div>
+<div class="kv"><div class="k">根因</div><div><b>constraint_extraction</b>——<b>约束本身（constraints.json 内容）有误</b>，与本批另外 7 个“生成器伪 SAT”性质截然不同：此处 Z3 <b>未抛异常、未伪 SAT</b>，而是<b>老老实实照着错误/缺失的约束解出了违法用例</b>。具体为 1 处错绑 + 2 处值域遗漏：</div></div>
+<ul class="tight">
+  <li><b>weightGradOut 第二维错绑</b>：文档 44 行 <code>grad_weight = softmax^T · input ∈ R^{V×H}</code>，故正确约束应为 <code>weightGradOut.shape[1] == H == weight.shape[1]</code>；但 constraints.json 误提为 <code>weightGradOut.shape[1] == grad.shape[0]</code>（=BT），把 H 错绑到 BT。case id=0 实跑报 <code>AclNN_Parameter_Error(EZ1001): Expected weightGradOut same size as [128,128] but got [128,8]</code>（H=128 被 BT=8 顶替），26/95 此错。<b>注意</b>：此条约束<b>提取了但提错</b>，并非“未提取”——这正是“约束有问题导致失败”的典型形态。</li>
+  <li><b>maskedTarget 值域空</b>：文档称“词表切片/分片”，应映射 <code>[0, weight.shape[0]-1]</code>，未提取。case id=27 实跑报 <code>aicore 507015 + D-cache bus non-zero</code>，<code>maskedTarget</code> 全元素 = INT_MIN（-2147483648）越界，69/95 此错。</li>
+  <li><b>targetMask 值域空</b>：dtype=UINT8 应为 <code>[0,255]</code>，未提取。case id=0 的 <code>targetMask range=[-32767,-101]</code> 越出 uint8。</li>
+</ul>
+<div class="kv"><div class="k">关键</div><div>diagnose 已自动产出 <code>supplement_additions.md</code>（3 条补丁：BT==H、maskedTarget∈[0,V-1]、targetMask∈[0,255]），但 <b>本次未跑补充管线</b>（<code>run_state.supplement_constraints</code> 为空），iter2 没推进，预算用尽打 MAX_ITERATIONS。这是 9 个失败里 <b>唯一可直接恢复</b> 的——补丁已就绪。</div></div>
+<div class="kv"><div class="k">修复</div><div>对 A2/A3 平台应用 <code>scripts/apply_supplement_constraints.py</code> 合并补丁 → 重跑 normalize+validate → re-GENERATE → re-EXECUTE，预期通过率显著上升；或在 v5 提示词里强化“文档出现的形状等式与 dtype 隐含值域必须落 expr”。</div></div>
+</div>
+
+<div class="card" style="border-left:4px solid var(--warn)">
+<h3>#3 aclnnCIoU <span class="tag warn">配置缺失·BLOCKED</span></h3>
+<div class="kv"><div class="k">终态</div><div>BLOCKED</div></div>
+<div class="kv"><div class="k">现象</div><div>生成器按 <code>Atlas 350 加速卡</code> 产出 <code>cases_Atlas 350 加速卡.json</code>，但 <code>servers.json</code> 唯一执行机为 <code>Atlas A2 development host</code>，平台无交集 → <code>NO_SERVER_FOR_PLATFORM</code>。</div></div>
+<div class="kv"><div class="k">性质</div><div><b>非代码 bug</b>。属环境/配置：补一台 Atlas 350 执行机，或在 servers.json 指定可跑 350 算子的主机即可放行。</div></div>
+</div>
+
+<h2 id="s5">5. 对照：成功算子 aclnnBitwiseNot</h2>
+<div class="card hlo">
+<div class="kv"><div class="k">结果</div><div>100 / 100 通过（real，Atlas A2）</div></div>
+<div class="kv"><div class="k">约束构成</div><div>仅 <code>type_equality</code>（<span class="mono">self.dtype==out.dtype</span>）与 <code>shape_equality</code>（<span class="mono">self.shape==out.shape</span>）——<b>纯相等约束</b>，无 prod/sum/len/floor/负索引/广播。</div></div>
+<div class="kv"><div class="k">启示</div><div>印证根因：Z3 对 <b>简单相等/类型约束</b> 处理正确；只要约束里出现 <b>聚合（prod/sum）、序列长度（len）、floor 除法、负索引、广播</b> 之一，伪 SAT/unknown 即现。</div></div>
+</div>
+
+<h2 id="s6">6. 修复方案</h2>
+
+<h3>6.1 P0 — 修递归函数重定义（直接干掉 #4/#9，缓解 #2）</h3>
+<div class="fix">
+<h4>方案 A：把幂等注册套用到 expr 求解路径（推荐，最小改动）</h4>
+<p>把 <code>param_var_definition.py</code> 已验证的 <code>_get_or_register_prod_shape</code> 模式复制到 <code>expression_preprocess_utils.py</code> 的 <code>_prod_z3_sequence</code> / <code>_sum_z3_sequence</code>：</p>
+<pre><span class="cmt"># 新增模块级注册表（与 _PROD_SHAPE_REC_FUNCS 同构）</span>
+_PROD_SEQ_REC_FUNCS = {}
+_SUM_SEQ_REC_FUNCS  = {}
+
+<span class="kw">def</span> <span class="fn">_prod_z3_sequence</span>(self, seq):
+    seq_sort = seq.sort()
+    <span class="cmt"># 用 seq_sort 的 sort() 作为幂等键，不再依赖 per-builder slice_id</span>
+    key = (str(seq_sort),)
+    existing = _PROD_SEQ_REC_FUNCS.get(key)
+    <span class="kw">if</span> existing <span class="kw">is not None</span>:
+        <span class="kw">return</span> existing(seq)            <span class="cmt"># 复用已注册函数，不再 RecAddDefinition</span>
+    ProdSeq = z3.RecFunction(<span class="str">"__prod_seq_global"</span>, seq_sort, z3.IntSort())
+    seq_var = z3.Const(<span class="str">"__prod_seq_global_arg"</span>, seq_sort)
+    z3.RecAddDefinition(ProdSeq, [seq_var],
+        z3.If(z3.Length(seq_var) == 0, z3.IntVal(1),
+              seq_var[0] * ProdSeq(z3.SubSeq(seq_var, 1, z3.Length(seq_var) - 1))))
+    _PROD_SEQ_REC_FUNCS[key] = ProdSeq
+    <span class="kw">return</span> ProdSeq(seq)
+<span class="cmt"># _sum_z3_sequence 同构改造（注意 element_sort 分 Int/Real 两键）</span></pre>
+<p class="diff">预期：消除 <code>already defined</code> 异常，prod/sum 约束真正进入 solver → ConfusionTranspose、GroupedMatMulAlltoAllv 从伪 SAT 转为真 SAT（或诚实的 unsat）。这条已在本仓库 shape-product 路径验证可行，风险低。</p>
+</div>
+
+<h3>6.2 P0 — 让 add_constraint 不再静默丢约束（防御纵深，兜底所有 expr 转换失败）</h3>
+<div class="fix">
+<h4>方案 B：失败必须可观测、可阻断</h4>
+<pre><span class="kw">def</span> <span class="fn">add_constraint</span>(self, expr_name, expr_str, ...):
+    <span class="kw">try</span>:
+        ...
+        self.solver.assert_and_track(z3_constraint, expr_name)
+    <span class="kw">except</span> Exception <span class="kw">as</span> e:
+        logger.error(f<span class="hot">"[FAIL] {expr_str}: {e}"</span>)
+        self._dropped_exprs.append((expr_name, expr_str, str(e)))  <span class="cmt"># 记录被丢约束</span>
+        <span class="cmt"># 关键：solve() 后若有 dropped_exprs 且 check==sat，</span>
+        <span class="cmt"># 必须 post_check 复算或直接判 unknown，禁止当作干净 sat 落盘用例。</span></pre>
+<p class="diff">根因：当前 <code>except</code> 吞掉异常后 solver 仍以“部分约束”返回 sat 并落盘，这是伪 SAT 的制度性入口。修法是让“有约束被丢”的 sat 不能直接当成功——要么走 post_check 复算全部 expr（已有 <code>post_check_cases.py</code>），要么直接判 unknown 退回 0 用例。两害相权取 post_check 过滤+补采，既保留产出又保证正确性。</p>
+</div>
+
+<h3>6.3 P1 — 修 Z3 理论不完备（#5/#6/#7、#10、#2）</h3>
+<div class="fix">
+<h4>方案 C：把 post_check 纳入生成主流程 + 针对性增强编码</h4>
+<ul class="tight">
+  <li><b>len(shape) 不完备（Foreach 三连）</b>：把序列长度提升为显式 <code>Int</code> 标量 <code>L_out / L_x</code>，约束 <code>z3.Length(seq)==L_*</code> 并对 <code>L_out &gt;= L_x</code> 求解，避免直接对 <code>Length</code> 推理。</li>
+  <li><b>floor 除法 + 负索引（Im2col）</b>：负索引 <code>shape[-1]</code> 改写为 <code>shape[len-1]</code> 正索引并约束 <code>len&gt;0</code>；floor 除法项先对自变量定上下界再做整数除法建模，或对 Im2col 这类公式驱动算子改走 <b>构造式</b>（给定 self/pad/dil/k/stride，直接算 out.shape，不走 Z3 反解）。</li>
+  <li><b>广播 unknown（BlendImagesCustom）</b>：广播依赖改构造式（定主形状→派生从属），或 unknown 显式降级枚举兜底。</li>
+  <li><b>统一兜底</b>：把 <code>scripts/post_check_cases.py</code> 去掉硬编码 run 路径、参数化后接入 <code>generate_cases.py</code>，生成后立即对全部 <code>constraints_in_parameters[].expr</code> 复算，违反项过滤并补采至 case_count——这一步能拦住所有“Z3 说 sat 但其实违反”的逃逸，是上述增强失效时的最终安全网。</li>
+</ul>
+</div>
+
+<h3>6.4 P2 — 恢复 #8 与放行 #3</h3>
+<div class="fix">
+<h4>方案 D：约束补充管线落地 + 执行机配置</h4>
+<ul class="tight">
+  <li><b>#8</b>：对当前 run 执行 <code>--supplement-constraints runs/.../iter_001/supplement_additions.md</code> → <code>apply_supplement_constraints.py</code> 合并 → normalize+validate → re-GENERATE → re-EXECUTE。补丁已由 diagnose 自动产出，成本极低。长期看在 <code>operator_constraints_extract_v5.md</code> 强化“文档出现的形状等式与 dtype 隐含值域必须落 expr”。</li>
+  <li><b>#3</b>：补 Atlas 350 执行机或在 <code>servers.json</code> 指定可跑 350 算子的主机；纯配置，不动代码。</li>
+</ul>
+</div>
+
+<h3>6.5 P1 — #8 改走“算子专属提取模块”（替代 per-run supplement）</h3>
+<div class="fix">
+<h4>方案 E：把 #8 的纠错约束从单 run 的 supplementary-doc.md 提升为 prompts/modules/ 下按算子名命名的稳定模块</h4>
+<p><b>核实</b>：<code>inputs/supplementary-doc.md</code> 确为<b>单 run、单算子</b>产物——落在 <code>runs/&lt;run-id&gt;/inputs/</code>，由 source-analyst（<code>--src</code> 时）或 diagnose（<code>iter_N/supplement_additions.md</code>，<code>origin=diagnose_inferred</code>）产出，跨 run 不留存、每次需重提；与全局基础提示词 <code>operator_constraints_extract_v4.md</code> 是两类东西。用户提议把它沉淀为 <code>prompts/modules/</code> 下、按算子名命名的稳定模块——<b>本仓库已有该机制，可直接落地</b>：</p>
+<ul class="tight">
+  <li><code>scripts/select_prompt.py</code> 在 <code>init_run</code> 阶段按算子特征装配 <b>base prompt + 命中模块</b> → <code>inputs/prompt_v1.md</code>，<b>在 extractor 读取之前</b>完成（<code>init_run.py:395</code> <code>assemble(...)</code>）。</li>
+  <li>其 <code>trigger_matches</code> 已支持 <code>operator_name_eq</code>（精确算子名）触发，仅该算子命中、<b>不污染其他算子</b>；<code>prompts/modules/nz_matmul.md</code> 已用 <code>operator_name_eq: aclnnBatchMatMulWeightNz</code> 作为单算子先例。</li>
+  <li>新模块不在 <code>MODULE_ORDER</code> 固定序中，<code>classify()</code> 会把它排到尾部加载，行为正确。</li>
+</ul>
+<p>因此新建模块文件（<b>不叫 supplementary-doc.md</b>，按算子名命名）：</p>
+<pre>--- prompts/modules/aclnnFusedLinearCrossEntropyLossGrad.md ---
+module: aclnnFusedLinearCrossEntropyLossGrad
+description: 修正文档参数表↔公式冲突：weightGradOut.shape[1] 绑 H 不绑 BT；maskedTarget/targetMask 值域
+triggers:
+  - kind: operator_name_eq
+    value: "aclnnFusedLinearCrossEntropyLossGrad"
+depends_on: []
+---
+## 算子专属提取规则（消解文档自相矛盾，非通用模式）
+
+1. <b>weightGradOut.shape[1] 必须绑 input.shape[1]（=H），不得绑 grad.shape[0]（=BT）</b>
+   - 文档参数表（weightGradOut 行）写“第2维长度与输入grad长度相同”（=BT），与公式第49行
+     <code>grad_weight = softmax^T · input ∈ R^{V×H}</code>（第2维=H）<b>矛盾</b>。
+   - <b>以公式为准</b>：NPU 运行时 Expected [V,H]；失败例 BT=8、H=128 证明 BT≠H 才是常态，
+     强制 BT==H 会退化测试。落 expr：<code>weightGradOut.shape[1] == input.shape[1]</code>
+     （等价 <code>== weight.shape[1]</code>，因已有 <code>weight.shape[1]==input.shape[1]</code>）；
+     <b>禁止</b> <code>weightGradOut.shape[1] == grad.shape[0]</code>。
+2. <b>maskedTarget ∈ [0, weight.shape[0]-1]</b>：局部词表索引，负值越界触发 aicore 507015。
+   expr：<code>0 &lt;= maskedTarget.range_value and maskedTarget.range_value &lt;= weight.shape[0] - 1</code>。
+3. <b>targetMask ∈ [0,255]</b>：dtype=UINT8，8bit 掩码。
+   expr：<code>0 &lt;= targetMask.range_value and targetMask.range_value &lt;= 255</code>。
+4. <b>维护注记</b>：本模块为消解<b>文档参数表↔公式冲突</b>的算子专属纠错；若官方文档修订使二者一致，应同步删除本模块，避免长期堆积。</pre>
+<p class="diff"><b>收益对比 6.4 的 per-run supplement 路径</b>：</p>
+<table>
+<thead><tr><th>维度</th><th>6.4 per-run supplement</th><th>6.5 算子专属模块（本方案）</th></tr></thead>
+<tbody>
+<tr><td>留存性</td><td>单 run 不留，每次需 <code>--supplement-constraints</code> 重提</td><td>沉淀进 <code>prompts/modules/</code>、版本化，后续该算子所有 run 自动命中</td></tr>
+<tr><td>生效时机</td><td>EXTRACT 之后 post-hoc 打补丁</td><td>EXTRACT 之前装配进 prompt，<b>提取期即生效</b>，源头避免错绑</td></tr>
+<tr><td>确定性</td><td>高：<code>apply_supplement_constraints.py</code> 按 <code>match_expr</code> 精确 replace</td><td>中：依赖 extractor LLM 遵循模块（非确定性）</td></tr>
+<tr><td>#8 修法正确性</td><td>补丁为 <code>BT==H</code>，<b>退化 band-aid</b>（只测 BT==H 子空间）</td><td><b>正确纠错</b>：绑 input.shape[1]，允许 BT≠H</td></tr>
+<tr><td>跨算子污染</td><td>无（单 run）</td><td>无（<code>operator_name_eq</code> 仅该算子加载）</td></tr>
+</tbody>
+</table>
+<p class="diff"><b>建议落地</b>：#8 以 6.5 模块为<b>主路径</b>（持久 + 前置 + 自动 + 正确纠错），<b>保留 6.3 的 post_check 作安全网</b>（模块靠 LLM 遵循，万一 extractor 仍错绑，post_check 兜底过滤+补采）；6.4 的 per-run supplement 降级为“模块未命中或 extractor 不遵循”时的确定性兜底，且补丁内容应从 <code>BT==H</code> 改为 <code>replace: weightGradOut.shape[1]==grad.shape[0] → ==input.shape[1]</code>。三者叠加：模块前置预防 → post_check 兜底过滤 → supplement 确定性补救。</p>
+<p class="diff"><b>何时选模块 vs supplement</b>：稳定的算子专属事实（如本文档参数表↔公式冲突、运行时确认的形状等式）走 6.5 模块；仅当纠错依赖<b>源码实现细节</b>（需 <code>--src</code> + source-analyst 裁定）或属<b>一次性 diagnose 推断</b>（尚不稳）时，保留 6.4 per-run supplement。</p>
+</div>
+
+<h3>6.6 修复优先级与预期收益</h3>
+<table>
+<thead><tr><th>优先级</th><th>动作</th><th>覆盖失败</th><th>预期收益</th></tr></thead>
+<tbody>
+<tr><td><span class="pill gen">P0</span></td><td>6.1 幂等注册 prod/sum</td><td>#4 #9（#2 部分）</td><td>消除递归重定义异常，伪 SAT → 真 SAT/unsat</td></tr>
+<tr><td><span class="pill gen">P0</span></td><td>6.2 add_constraint 失败可观测/阻断</td><td>所有 expr 转换失败</td><td>堵住制度性伪 SAT 入口</td></tr>
+<tr><td><span class="pill ext">P1</span></td><td>6.3 post_check 入主流程 + 编码增强</td><td>#5 #6 #7 #10 #2</td><td>拦住 Z3 理论不完备逃逸，保正确性</td></tr>
+<tr><td><span class="pill cfg">P2</span></td><td>6.4 补充管线落地 / 执行机配置</td><td>#8 #3</td><td>#8 可恢复，#3 放行</td></tr>
+<tr><td><span class="pill ext">P1</span></td><td>6.5 算子专属提取模块 prompts/modules/&lt;op&gt;.md</td><td>#8</td><td>持久+前置+自动，正确纠错（绑 H 不绑 BT），替代 per-run supplement</td></tr>
+</tbody>
+</table>
+
+<h2 id="s7">7. 结论</h2>
+<div class="card hl">
+<div class="kv"><div class="k">一句话</div><div>本轮跑批 9 失败分三类：<b>① 7 个同根因（生成器锅）</b>——确定性 Z3 生成器在 <code>add_constraint</code>（<code>z3_expression_solver_utils.py:197-198</code>）把 <code>prod/sum</code> 递归函数重定义异常 <b>静默吞掉并丢弃约束</b>，solver 对剩余约束返回 sat，落盘用例违反被丢约束——即“伪 SAT”。<code>_prod_z3_sequence / _sum_z3_sequence</code> 没套用仓库已有的幂等注册修法（<code>_get_or_register_prod_shape</code>），是缺陷核心；另有 Z3 序列长度/floor 除法不完备（P1 靠 post_check 兜底）。<b>② 1 个约束本身有误（#8，约束提取锅）</b>——constraints.json 把 <code>weightGradOut.shape[1]</code> 错绑到 <code>grad.shape[0]</code>（BT）而非 <code>weight.shape[1]</code>（H），外加 maskedTarget/targetMask 值域空，Z3 未伪 SAT 而是照错约束解出违法用例，实跑 95/100 挂；补丁 <code>supplement_additions.md</code> 已就绪、未跑补充管线故打 MAX_ITERATIONS，<b>可直接恢复</b>。<b>③ 1 个执行机配置缺失</b>（#3，非代码 bug）。</div></div>
+<div class="kv"><div class="k">最快见效</div><div>先做 6.1 + 6.2（两条 P0，改动小、已有同构先例），可直接救回 ConfusionTranspose、GroupedMatMulAlltoAllv 两个 100% 失败的算子，并堵住所有“吞异常→伪 SAT”的逃逸入口；再做 6.3 把 post_check 接入主流程作为全局安全网；#8 走 6.5 算子专属模块（绑 input.shape[1]、勿用 BT==H band-aid），配 6.3 post_check 兜底，6.4 per-run supplement 降为确定性补救。</div></div>
+</div>
+
+<div class="foot">
+本报告基于落盘产物客观生成： <code>runs/batches/operator_docs-20260729-182839-571262/batch_state.json</code>、
+各 run 的 <code>analysis.json</code> / <code>post_check_report.json</code> / <code>generation.log</code> / <code>self_correct_attempts/</code> / <code>constraints.json</code>，
+以及源码 <code>agent/generators/param_constraint_solve/{z3_expression_solver_utils,expression_preprocess_utils,param_var_definition}.py</code>。
+所有违反比例均为 post_check 对 <code>constraints_in_parameters[].expr</code> 的 Python 端 eval 复算结果（eval_errors=0），可复现。
+</div>
+
+</div>
+</body>
+</html>
