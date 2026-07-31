@@ -831,6 +831,12 @@ class TensorListVar(BaseVar):
             elif isinstance(length, (list, tuple)) and len(length) == 2:
                 self.solver.add(self.length >= length[0])
                 self.solver.add(self.length <= length[1])
+        else:
+            # 采样器未钉值（length=None）：len 为自由变量，上界由 cross_param（如 len(x)<=128）
+            # 或 array_length 提供；此处仅补下界 1，避免 Z3 取 0/负值（空 list 非法）。
+            # len 仍自由，Z3 会主动规避触发 sum()/shape 重约束的 len=1 而挑 len>=2，
+            # 故不触发 ④（sum() RecFunction-over-Array 卡死）。
+            self.solver.add(self.length >= 1)
 
         self.elem_dtype = z3.Const(f"{name}.elem.dtype", DType)
         self.elem_shape = z3.Const(f"{name}.elem.shape", z3.SeqSort(z3.IntSort()))

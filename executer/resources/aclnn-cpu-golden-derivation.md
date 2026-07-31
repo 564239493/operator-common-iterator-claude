@@ -1434,3 +1434,52 @@ return result
 - [ ] **NPU error 161002** — if you see "Expected X dimension input, but got otherTensor with sizes [...]", the mat2 format is wrong (ND instead of NZ) → check `get_format` and `init_by_input_data`
 - [ ] **CPU error "batch2 must be a 3D tensor"** — mat2 is 5D NZ on CPU → need NZ→dense decompression
 - [ ] **CPU code handles self_transposed** — reads `self_transposed` from `_get_param` and transposes self before matmul: `if self_transposed: self_t = self_t.transpose(1, 2)`
+
+---
+
+## GroupedMatmulV5 Transposed Shape Handling (Semantic B: shape tuple reorder)
+
+**Applicable operator:** `aclnnGroupedMatmulV5` (and other ND-format grouped-matmul ops that introduce a `<param>_transposed` implicit bool via the `transpose_shape` prompt module).
+
+**Background:** GroupedMatmulV5 uses **semantic B** for transpose — the transpose state is encoded in the **shape tuple order**, not stride. The extractor introduces implicit bools `x_transposed` / `weight_transposed` (see `prompts/modules/transpose_shape.md`); the generator binds each bool to the K-axis position in `<param>.shape` via a `shape_value_dependency` if/else, so in the generated `cases.json`:
+- `x_transposed == False` (groupType ∈ {-1, 0}) → `x.shape == (M, K)` (K at `shape[1]`, normal layout)
+- `x_transposed == True` (groupType == 2) → `x.shape == (K, M)` (K at `shape[0]`, transposed layout)
+
+The bool and shape are **self-consistent at the cases layer**; the executor builds a dense tensor straight from `x.shape` (no stride handling needed). The CPU golden must read the bool (or infer from groupType) and transpose back to the normal `(M, K)` layout before the grouped matmul.
+
+**CPU golden code pattern:**
+
+```python
+# Extract inputs and the implicit transposed flags
+x = _get_tensor("x")              # (M,K) if x_transposed=False, (K,M) if True
+weight = _get_tensor("weight")
+x_transposed = bool(_get_param("x_transposed", False))
+weight_transposed = bool(_get_param("weight_transposed", False))
+
+# Semantic B: JSON shape encodes the transposed axis order.
+# Transpose back to the normal (M,K) / (...,K,N) layout for the matmul.
+if x_transposed and x is not None:
+    x = x.transpose(0, 1)              # (K,M) -> (M,K)
+if weight_transposed and weight is not None:
+    weight = weight.transpose(-1, -2)  # restore normal (...,K,N) layout
+
+# Now x is (M,K), weight is (...,K,N); proceed with the grouped matmul
+# (split by groupListOptional per groupType/groupListType — that logic is
+#  outside the transpose concern; see the MoE/FFN grouped-matmul pattern).
+result = grouped_matmul(x, weight, bias, group_list, group_type, split_item)
+return result
+```
+
+**Key points:**
+1. Read the bool via `_get_param("<param>_transposed", False)` — same pattern as WeightNZ's `self_transposed` (§WeightNZ, line ~1372).
+2. `x_transposed` / `weight_transposed` are implicit control variables, **not** in the ACLNN function signature; they appear only in `cases.json` inputs and are read by name.
+3. Semantic B = transpose-by-shape-reorder, so the golden transposes the **axes** (`transpose(0,1)` / `transpose(-1,-2)`), not strides — no `as_strided`, no stride fields in `cases.json`.
+4. The flag is **redundant with `groupType`** for GroupedMatmulV5 (groupType==2 ⇒ `x_transposed==True`), but the golden should read the bool directly (single source of truth at the cases layer) rather than re-deriving from groupType.
+5. If a case lacks the bool (older `cases.json` without `_transposed`), fall back to inferring from `groupType == 2`.
+
+**Checklist for GroupedMatmulV5 transposed handling:**
+- [ ] **CPU code reads `x_transposed` / `weight_transposed`** from `_get_param` by name
+- [ ] **CPU code transposes x back to (M,K)** when `x_transposed == True` before matmul
+- [ ] **CPU code does NOT touch stride** — semantic B only reorders axes; no `as_strided`, no stride fields in cases.json
+- [ ] **executor unchanged** — `cases_executor.py` builds the tensor from `x.shape` directly (does not read `_transposed`); only the CPU golden reads the bool
+- [ ] **case shape and bool are consistent** — verify `x_transposed == True` ⇔ `x.shape` has K at `shape[0]` (the generator's `shape_value_dependency` if/else guarantees this)
