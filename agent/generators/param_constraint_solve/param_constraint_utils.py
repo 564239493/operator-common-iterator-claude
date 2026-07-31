@@ -23,7 +23,6 @@ from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import ParamModelConfig, DataMatchMap
 from agent.generators.data_definition.param_models_def import ParameterPropertyData, ParamRangeValueType
 from agent.generators.operator_param_models.case_generate import CaseGenerate
-from agent.generators.param_constraint_solve.case_expr_evaluator import build_namespace, eval_constraint
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
 
@@ -786,42 +785,4 @@ class ParamConstraintUtils(CommonDispatcher):
         # constraints_in_parameters，并把“伪 SAT”用例 fail-closed 丢弃；复杂算子中
         # Param 包装、可选参数和 SeqSort 语义不完整，曾导致 0/10 用例全部被误杀。
         # 真实合法性改由后续 TTK/ATK 执行结果观察，不在生成阶段二次阻断。
-        return True
-
-    def _post_check_resolved_case(self, builder: Z3ConstraintBuilder,
-                                  constraints: List[InterParamConstraint]) -> bool:
-        """Python 侧 eval 复核 resolved case 对 Z3 实际求解的 constraints[].expr 的满足性，
-        捕获 Z3 伪 SAT——Z3 对 `len(shape)`/`shape[-1]` 等 SeqSort/Length(+ProdShape 递归，
-        param_var_definition.py:627-650)不完备，会返回 SAT 但实际用例违反 expr（典型 S4：
-        WeightQuant 下 rank 必 ∈{2,3} 但 Z3 给 rank=6 仍声称 SAT）。用真 Python `len()`/下标求值，
-        与 per-run post_check_cases.py 同法（已验证能抓 S4 伪 SAT）。
-
-        只复核 `constraints`（Z3 实际求解的子集，即 solve_z3_constraints 入参 z3_constraints），
-        不复核全量 inter_param_constraints：STRICT/customize 约束不经 Z3（不会伪 SAT），且在
-        此点（customize 之前）尚未应用，全量评估会误杀。
-
-        语义：expr eval 错误 fail-open（不阻断，保留对不可评估 expr 的容忍）；expr 求值
-        False fail-closed（return False → 经 correct_operator_param 接入 batch_case_generate
-        的 solve_time 重试/早停，伪 SAT 用例不再落盘）。"""
-        namespace = build_namespace(self.case_input_map)
-        for constraint in constraints:
-            expr = constraint.expr
-            if not expr:
-                continue
-            ok, err = eval_constraint(expr, namespace)
-            if err is not None:
-                logger.warning(
-                    f"[PostCheck] expr eval error (fail-open, 不阻断): {err}; "
-                    f"expr={expr[:120]}; operator={self.operator_name}")
-                continue
-            if not ok:
-                logger.error(
-                    f"[PostCheck] resolved case violates constraint (spurious SAT): "
-                    f"expr={expr[:120]}; operator={self.operator_name}")
-                return False
-        if getattr(builder, "dropped_constraints", None):
-            logger.warning(
-                f"[PostCheck] {len(builder.dropped_constraints)} constraint(s) dropped during Z3 "
-                f"solve (sort mismatch/parse error); Python-eval 为兜底, operator={self.operator_name}: "
-                f"{[d.get('expr', '')[:60] for d in builder.dropped_constraints]}")
         return True

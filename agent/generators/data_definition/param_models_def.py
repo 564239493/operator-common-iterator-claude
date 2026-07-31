@@ -25,6 +25,21 @@ class ParamRangeRoleRules(Enum):
     CHOICE = "Choice"
     DEFAULT = "Normal"
 
+class ParamRangeModel(Enum):
+    TYPICAL = "Typical"
+    POSNORMAL = "PosNormal"
+    NEGNORMAL = "NegNormal"
+    ZERO = "Zero"
+    ONE = "One"
+    NAN = "NaN"
+    POSINF = "PosInf"
+    NEGINF = "NegInf"
+    SUBNORMAL = "SubNormal"
+    POS = "Pos"
+    NEG = "Neg"
+    MAX = "Max"
+    MIN = "Min"
+
 
 class ParamShapeRoleRules(Enum):
     TYPICAL = "Typical"

@@ -1,5 +1,5 @@
-# 算子约束提取通用提示词 · v3 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达)
-# Operator Constraints Extraction Universal Prompt · v3 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters / joint cross dtype/format combo table expressed as OR-of-ANDs disjunction)
+# 算子约束提取通用提示词 · v4 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达)
+# Operator Constraints Extraction Universal Prompt · v4 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters / joint cross dtype/format combo table expressed as OR-of-ANDs disjunction)
 
 > **用途**：从昇腾 CANN（Compute Architecture for Neural Networks）算子官方说明文档（Markdown / HTML）中，**人工 + LLM 协同** 提取结构化的算子约束信息，并以**纯 JSON** 形式输出，可直接喂给下游的测试用例生成引擎。
 >
@@ -29,7 +29,7 @@
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 32 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、表达式求解器兼容性） |
+| 9 | 自检清单 | 提取完成后必须执行 32 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、表达式求解器兼容性、支持场景表→维数联动、必选参数"只支持 nullptr"取值语义） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 | 知识库路径速查表 | 本提示词与 `knowledge/` 的对应关系（维护参考） |
 | （外部）`CHANGELOG.md` | v1→v3 变更记录 | 不参与提取，维护参考 |
@@ -343,16 +343,28 @@ class OperatorRule(BaseModel):
   `Nullable` 等字样时，不能据此把 `is_optional.value` 置为 `true`，也不能把这些名字片段
   作为 `is_optional.src_text`。参数名只是接口命名，不是文档约束证据。
 - **"支持/仅支持输入 nullptr" 不等于参数可省略**：如果参数表分类仍为"输入"，但使用说明写
-  "当前仅支持输入 nullptr"，应提取为 `is_optional.value=false`，并另行在
-  `constraints_in_parameters` 中表达 `param is None` / `param == nullptr` 之类的取值约束。
-  该参数仍是必填入参，只是必填值为 `nullptr`。
+  "当前仅支持输入 nullptr"/"仅支持传空指针"/"必须为空指针"，应提取为 `is_optional.value=false`
+  （参数仍必填），并把取值约束的**主导表达**写入 `allowed_range_value`：
+  `{"value": [null], "type": "enum", "src_text": "当前仅支持输入nullptr"}`——`null` 在此是
+  "取值语义"（参数出现且值为 `nullptr`），不是"缺席语义"。`allowed_range_value.src_text`
+  必须摘录含 `nullptr`/`空指针` 关键词的原文，以通过校验层 `_EXPLICIT_NULL_RE` 放行（见
+  `scripts/validate_artifacts.py` 的 `_validate_dynamic_allowed_ranges`）。**不得**在
+  `constraints_in_parameters` 中为该必选参数追加 `param is None` 条目：`param is None` 编码
+  "缺席语义"，与本次确立的"null 取值语义"冲突，且生成器对必选参数强制 `is_present=True`，
+  会把 `param is None` 归约为 `z3.Not(True)=False` 导致求解 UNSAT；必选 + 只支持 `nullptr`
+  的取值语义由 `allowed_range_value={"value":[null], "type":"enum"}` 唯一承载。该参数仍是必填
+  入参，只是必填值为 `nullptr`（见 §9.32 自检）。
 - **`is_optional.src_text` 必须引用真实分类或显式说明**：非可选参数推荐摘录 `"输入"`、`"输出"`
   或包含该分类的表格行原文；可选参数摘录 `"可选输入"` / `"可不传（即为nullptr）"` 等明确原文。
   禁止 `src_text` 仅写 `"Optional"`，除非这是文档分类/正文中的独立显式说明，而不是参数名的一部分。
 - **反例**：`aclnnSwinAttentionScoreQuant` 的 `biasQuantOptional`、`biasDequant1Optional`、
   `biasDequant2Optional`、`paddingMask1Optional`、`paddingMask2Optional` 在参数表"输入/输出"列均为
   "输入"，因此 `is_optional.value=false`；不得因名称后缀 `Optional` 置为 `true`。其中
-  `paddingMask2Optional` 的"当前仅支持输入nullptr"应作为取值约束提取，而不是作为可选性证据。
+  `paddingMask2Optional` 的"当前仅支持输入nullptr"**不得**作为可选性证据，也**不得**写成
+  `constraints_in_parameters` 的 `param is None` 条目；必须提取为
+  `allowed_range_value={"value": [null], "type": "enum", "src_text": "当前仅支持输入nullptr"}`，
+  参数仍为必填（`is_optional.value=false`），只是必填值为 `nullptr`（见上方"支持/仅支持输入
+  nullptr"规则与 §9.32 自检）。
 
 **TensorList 长度关系（强制规则）**：
 
@@ -374,7 +386,10 @@ class OperatorRule(BaseModel):
 - `aclIntArray` → `["int"]`，`aclFloatArray` → `["float"]`，`aclBoolArray` → `["bool"]`；
 - 其他非 Tensor 参数使用 `type.value` 回填，例如 `type.value="int"` 时输出 `dtype.value=["int"]`；
 - `aclTensor` / `aclTensorList` 不得用类型名回填 dtype；其 dtype 必须来自文档，确实未说明时保持 `[]`；
-- 文档明确参数"只支持传空指针""必须为空指针"或"仅支持空指针"时保持 `[]`；
+- 文档明确参数"只支持传空指针""必须为空指针"或"仅支持空指针"时，`dtype.value` 保持 `[]`
+  （参数本身无有效元素类型）；此时取值约束由 `allowed_range_value={"value": [null], "type":
+  "enum"}` 承载，`src_text` 摘含 `nullptr`/`空指针` 的原文（见 §4.6「"支持/仅支持输入 nullptr"」
+  规则与 §9.32 自检）；
 - 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`。
 - 注：`aclIntArray` 的 dtype 不走"文档张量 dtype 列回填"——见下方「aclIntArray 参数的固定 dtype 规则」（`dtype.value` 固定 `["int"]`）。
 
@@ -451,6 +466,8 @@ class OperatorRule(BaseModel):
 | `"per-channel/per-group/per-tensor/per-token"` | `["per-channel","per-group","per-tensor","per-token"]` | `enum` | 量化粒度 |
 | `"true/false"` | `[true, false]` | `enum` | bool 列举 |
 | `"支持空或某个固定值"` | `[null, fixed_value]` | `enum` | `type=enum` 时 `null` 是合法离散候选 |
+| `"当前仅支持输入nullptr"`（必选 tensor/attr 参数） | `[null]` | `enum` | 必选参数（`is_optional.value=false`）只支持 `nullptr`；`null` 是"取值语义"（参数出现且值为 `nullptr`），不是"缺席语义"；`src_text` 必须摘含 `nullptr`/`空指针` 原文以过 `_EXPLICIT_NULL_RE`；`dtype.value=[]`；**禁止**写 `value=[]` 或在 `constraints_in_parameters` 追加 `param is None` |
+| `"支持传 nullptr 或 [0,1]"`（混合候选） | `[null, [0, 1]]` | `enum` | `null` 与其他取值并列；`null` 仍为"取值语义"；`src_text` 摘含 `nullptr` 的完整原文段；必选参数须满足 `_EXPLICIT_NULL_RE` 关键词要求 |
 | `"k0=16、n0=16"`（NZ 块尺寸硬约束） | `[]` | `range` | **5D NZ 张量**：块尺寸 16 是 **shape 硬约束**，落 `constraints_in_parameters` 的 `shape_equality`（见 §4.6.5 §C）；`allowed_range_value` 只约束元素数据值，**不**承载块尺寸，故留空 |
 | `"块尺寸为 16"`（NZ 通用，未指明轴位） | `[]` | `range` | 同上，shape 约束走 `shape_equality`；具体轴位在 §4.6.5 识别后落 `mat2.shape[3]/[4]==16` |
 | 文档无任何取值约束 | `[]` | `range` | **不**在数组中产出该参数 |
@@ -463,7 +480,13 @@ class OperatorRule(BaseModel):
 - 当原文中的"空"表示未传值、缺省、空指针或 `nullptr` 时，必须输出 JSON `null`，
   禁止照抄为字符串 `"空"`。只有 API 明确接收字面字符串"空"时才能输出 `"空"`。
 - 参数为必选（`is_optional.value=false`）且原文未明确允许未传值/空指针时，
-  `allowed_range_value` 禁止包含 `null`；C/C++ 签名是指针不等于参数可以为空。
+  `allowed_range_value` 禁止包含 `null`；C/C++ 签名是指针不等于参数可以为空。**但"当前仅支持
+  输入 nullptr"/"仅支持传空指针"/"必须为空指针"属于原文明确允许空指针**：此时必选参数的
+  `allowed_range_value` 应为 `{"value": [null], "type": "enum", "src_text": "<含 nullptr/空指针
+  的原文>"}`，不算违反上述禁令——`null` 在此是"取值语义"（参数出现且值为 `nullptr`），不是
+  "缺席语义"。`allowed_range_value.src_text` 必须摘录含 `nullptr`/`空指针`/`未传`/`缺省`/
+  `支持空`/`可为空`/`配置空` 之一的原文，否则校验层 `_validate_dynamic_allowed_ranges` 会以
+  "必选参数 + `src_text` 无空值语义"为由拦截（见 `scripts/validate_artifacts.py:394-448`）。
 - "未传容器"和"传入零长度容器"不是同一语义：前者为 `null`；只有原文明示传入
   长度为 0 的数组/列表实例时，才将空容器候选表示为 `[[]]`。空 Tensor 应使用
   shape/dimensions 约束表达，不在 `allowed_range_value` 中写 `"空"`。
@@ -518,6 +541,12 @@ bool 参数（`is_xxx`/`xxxFlag` / `transposeX*` 等）**必须**产出 `allowed
 `iter_001/analysis.json` 15/21 failures：把 `transposeX2=True` 的 `x2.shape=(N, H*rankSize)`
 与 `transposeX2=False` 的 `x2.shape=(H*rankSize, N)` 当成独立候选，结果 5 个
 transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
+
+**维数特例（rank-only 门控）**：当门控目标不是具体 shape 元组而是**维数/rank**
+（如「weight 为 2D / 3D」「dimNum=2」「separated → 2D」「单单单 → 3D」），属本节
+特例，按 §4.6.3 H「条件维数 / dimNum 门控（支持场景表）」处理——只门控
+`len(目标.shape)`，不门控具体轴；`dimensions` 留全集，门控单独落库，**禁止**把
+`dimensions=[2,3]` 当无条件并集留下而不配跨参数门控 expr。
 
 **识别信号词**（任一出现即触发本节规则）：
 
@@ -590,6 +619,99 @@ transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
    最后一根输出轴决定，与 `mat2_transposed` 直接相关。
 6. **同一 expr 不得交叉门控**：单一 expr 只对一个隐式 bool 门控；如果同时涉及
    `self_transposed` 与 `mat2_transposed`，拆为两条独立 expr（每条对应一个 bool）。
+
+##### H. 条件维数 / dimNum 门控（支持场景表，v4 增补，通用规则）
+
+> 本节来自 aclnnGroupedMatmulV5 闭环：文档有「groupType 支持场景表」
+> （line 726 groupType -1 splitItem 0/1 → weight 2D；line 727 groupType 0 单单单
+> splitItem 2/3 → weight 3D；line 730 groupType 2 单单单 → weight 2D / out 3D；
+> line 731 groupType 2 单多多 → weight 2D），提取器只把表里 `len()`/value 级约束
+> 提升，**未**把「离散参数组合 → weight 维数」逐行提升为跨参数约束，weight 只留
+> `dimensions=[2,3]` 无条件并集，下游生成器自由产出 `splitItem=1(separated)+weight 3D`
+> 非法组合，ACL `161002` 拒绝（见
+> `runs/aclnnGroupedMatmulV5-20260722-130202-435112/`）。本节是 §4.6.3 G「条件 Shape」
+> 的维数特例：**只门控 rank，不门控具体轴**。
+
+**识别信号**（任一出现即触发本节，**不**依赖算子名）：
+
+- 文档含「支持场景表 / 场景矩阵 / groupType 支持场景 / splitItem 支持场景」类
+  表格，且单元格写 weight/out 的维数；
+- 短语「separated → 2D」「单单单 → 3D」「单多多 → 2D」「dimNum=2」「二维 / 三维」
+  「X 为 2D / 3D」配合 `groupType`/`splitItem`/单-多 tensor 取值出现；
+- 某张量 `dimensions.value` 含 ≥2 个 rank（如 `[2,3]`）且文档同时按离散参数
+  区分该张量用哪个 rank。
+
+**门控参数形态**：同 §4.6.3 G——函数签名里 enum/int 标量
+（`groupType.range_value`、`splitItem.range_value`），`is_operator_param.value=true`。
+
+**必须产出**：场景表**每一合法行**一格 `cross_param_constraint`，析取形式
+`not(门控条件) or (len(目标.shape) == N)`，门控条件合取该行全部离散键值与 tensor 数；
+`relation_params` 同时含门控参数与目标张量（含 tensor 数时一并含相关 TensorList）。
+rank 一律写 `len(param.shape)`，**禁止**写 `param.dimNum`（项目约束语言无此字段，
+见 §4.6.3「维数 vs 长度」与 §9 模式 4）。
+
+```text
+# R1 separated → weight 2D（不含 len()，生成器 length=null 未修时也能挡）
+expr_type: cross_param_constraint
+expr: not(splitItem.range_value == 0 or splitItem.range_value == 1) or (len(weight.shape) == 2)
+relation_params: ["splitItem", "weight"]
+src_text: "weight separated（splitItem=0/1）时 weight 各 tensor 仅支持 2D；groupType 支持场景表 line 726"
+
+# R2 groupType 0 单单单 → weight 3D（含 len(weight)，须生成器先写具体 length）
+expr_type: cross_param_constraint
+expr: not(groupType.range_value == 0 and len(x) == 1 and len(weight) == 1) or (len(weight.shape) == 3)
+relation_params: ["groupType", "x", "weight"]
+src_text: "groupType=0 单单单 splitItem=2/3 时 weight 为 3D；line 727"
+```
+
+**规则要点**：
+
+1. **`dimensions` 留全集、门控单独落库**：`weight.dimensions.value=[2,3]` 作为
+   「该 tensor rank 宇宙」可保留，但 `constraints_in_parameters` **必须**同时有
+   跨参数门控 expr 把 rank 收窄到当前场景；只留并集、无门控 = 漏抽。
+2. **析取必须覆盖场景表全部合法行**：漏一行该组合下 rank 无约束，生成器随机赋值；
+   多 rank 映射（某场景同时允许 2D/3D）在该行用 `or` 表达。
+3. **含 `len(weight)`/`len(x)` 的行依赖 TensorList 具体长度**：若生成器
+   `length=null` 未修，这些行不可求值；不含 tensor 数的行（如 R1）应优先落库，
+   可立即阻断非法组合。
+4. **`expr_type` 选 `cross_param_constraint`**（与 §9.30 dtype×format 交叉表一致）；
+   `derived_value` 不适用（非派生值，是 rank 门控）。
+5. **反例（禁止）**：`weight.dimensions.value=[2,3]` 且 `constraints_in_parameters`
+   无 `len(weight.shape)` 门控 expr → 漏抽；`weight.dimNum == 2` → 字段不存在；
+   把 R1/R2 拆成两条互不引用门控参数的无条件 `shape_equality` → 丢失门控。
+
+##### I. 转置语义的两种编码与落库方式（v4 增补，通用规则）
+
+> 本节来自 `aclnnGroupedMatmulV5` 闭环：文档公共约束写"x 的最后一维指 x 不转置
+> 时的 K 轴或 x 转置时的 M 轴；weight 的最后一维指 weight 不转置时的 N 轴或 weight
+> 转置时的 K 轴，均应 < 65536"。提取器面对"K 轴或 M 轴"条件描述时，易误判"非固定
+> 语义位置"而改用 `shape[:-1]`（漏掉末维）或误套 §4.6.5 B.1 引入隐式 bool。本节
+> 点明转置的两种编码语义，避免误抽。
+
+**语义 A：shape 不反映转置（stride 编码）**——函数签名无转置标志，文档转置定义指向
+stride / 数据排布且 **shape 元组不变**（如"shape 为 [M,K] 时 stride 为 [1,M]、数据
+排布为 [K,M]"）。此时 `shape[-1]` 永远是逻辑末轴，取不到转置后的物理末轴。
+
+- **必须**按 §4.6.5 B.1 新增隐式 bool（`<param>_transposed`）+ §4.6.3 D+ 的
+  if/elif/else 门控分支；
+- 典型算子 `aclnnBatchMatMulWeightNz`（B.1 触发条件即 `operator_name == ...`）。
+
+**语义 B：shape 元组重排编码转置**——文档在不同 groupType / 场景行给出 shape 元组的
+**两种顺序**（如 weight "(g,N,K) 或 (g,K,N)"、groupType=2 时 x shape=(K,M) 而
+groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元组上。
+
+- **不**引入隐式 bool，**不**写 if/else 分支；
+- `shape[-1]` 在两种布局下都等于文档"最后一维"（不转置=K/N，转置=M/K），直接按
+  §6.1 第 6 条写 `shape[-1] < X`；条件映射（"K 轴或 M 轴"）仅放 `src_text`；
+- 转置状态本身（如"groupType=2 → x 必须转置即 x.shape=(K,M)"）落成 groupType /
+  场景门控下的 **shape 等式**约束，沿用本节 H 的 `cross_param_constraint` unless
+  范式，把 `len(weight.shape) == N` 推广为轴等式（共享 K：`x.shape[0]==weight.shape[0]`；
+  M：`x.shape[1]==out.shape[1]`；N：`weight.shape[1]==out.shape[2]`）。
+
+**判别信号**：文档若在 shape 元组里直接列出两种顺序（(M,K)/(K,M) 或 (K,N)/(N,K)），
+即语义 B；若只给 stride / 数据排布描述而 shape 元组保持不变，即语义 A。两者不可混用：
+语义 B 误套 A 的隐式 bool 会引入文档未声明的参数；语义 A 误套 B 的 `shape[-1]` 会
+取错轴。
 
 #### 4.6.4 隐式参数（命名维度变量 / 外部常量）识别
 
@@ -958,6 +1080,8 @@ NDC1HWC0, FRACTAL_NZ_C0_16, FRACTAL_NZ_C0_32, NDHWC, NCHW_VECT_C0_16, NC1HWC0, N
      索引循环强制等长，应根据文档的总量语义对两个完整数组分别求和。
 5. **"维数 vs 长度"**：表达式中的 `len(x.shape)` 表示 rank（仅 `aclTensor` / `aclTensorList` 有 `.shape`），"shape size" 永远指 rank，**不是**各维大小乘积。`aclIntArray` / `aclFloatArray` / `aclBoolArray` **没有 `.shape`**，其元素个数直接写 `len(paramName)`（裸参数名），**禁止** `len(paramName.shape)`。
 6. **负索引优先**：当约束引用了以字母命名的维度（如 `H`、`W`）且该维度在 shape 描述中**始终处于固定语义位置**（如"最后一维"），必须使用 `shape[-1]` 而非固定正索引 `shape[1]` 或 `shape[3]`。
+   - **"固定语义位置"指物理位置固定，非逻辑轴名固定**：shape 元组重排编码转置时（如 `x` 不转置 shape=(M,K)、转置 shape=(K,M)），末维物理位置始终是 `shape[-1]`，逻辑轴名虽变（K 或 M）但物理位置不变，仍适用本条。条件映射（"K 轴或 M 轴"）只放 `src_text`，不因此改用 `[:-1]` 或加 if/else。
+   - **`[-1]` 与 `[:-1]` 不可混用（语义相反）**：`shape[-1]` 取最后一维（单值），`shape[:-1]` 是**排除**最后一维的切片（多值序列）。文档"最后一维 < X"必须写 `shape[-1] < X` 或保守写 `all(d < X for d in shape)`（全维）；**禁止** `all(d < X for d in shape[:-1])`（漏掉末维，约束的是非末维，与文档相反）。`[:-1]` 仅用于第 12 条"排除末维派生轴"的 shape 切片等式。
 7. **命名维度变量 / 外部常量引用**：使用 `变量名.range_value` 形式（如 `BS.range_value`、`rankSize.range_value`），不写 `BS.shape[0]`。
 8. **已知常量直接使用数值**：若文档给出 `k0 = 16` 这种赋值，表达式里直接写 `16`，不需要 `k0.range_value`；NZ 块尺寸硬约束中 `mat2.shape[3] == 16` / `mat2.shape[4] == 16` 即此规则的体现（v2 新增）。
 9. **禁止关键字**：`lambda`、非蕴含三元运算符滥用、`implies`、伪代码、平台值作为判断条件。
@@ -1226,7 +1350,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 30 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 32 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1250,7 +1374,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
     `min <= param.range_value <= max` 或对应的单边/开区间不等式。
 13. **空值枚举序列化**：若 `allowed_range_value.type=enum` 且原文的"空"表示未传值、
     缺省、空指针或 `nullptr`，候选必须是 JSON `null`，不得是字符串 `"空"`；只有
-    原文明示零长度容器时才使用空容器候选 `[[]]`。
+    原文明示零长度容器时才使用空容器候选 `[[]]`。**必选参数 + 原文"仅支持 nullptr"场景**
+    下 `value` 应为单元素 `[null]`，`src_text` 含 `nullptr`/`空指针` 关键词（见 §9.32）。
 14. **bool 参数 allowed_range_value 强枚举**：对所有 `type.value` 为 `"bool"` 的参数，
     `allowed_range_value.type` 必须为 `"enum"`，`value` 必须是 `[false]` / `[true]` /
     `[false, true]` 三者之一；禁止留 `value=[]` 或 `type="range"`（否则生成器按浮点
@@ -1302,7 +1427,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
     a. `allowed_range_value.value` 必须为 `[]`，不得枚举模型猜测的样例值；
     b. 完整关系必须进入每个平台的 `constraints_in_parameters`，并在
        `relation_params` 中包含双方参数；
-    c. 必选参数且原文没有空值语义时禁止包含 `null`；
+    c. 必选参数且原文没有空值语义时禁止包含 `null`；**但原文写"当前仅支持输入 nullptr"/"仅支持传空指针"/"必须为空指针"/"仅支持空指针"时算"有空值语义"**，此时必选参数 `allowed_range_value` 应为 `[null]`（`type=enum`），`src_text` 摘含 `nullptr`/`空指针` 的原文；详见 §9.32；
     d. 例如“padding 两个数值均小于 self 最后一维”应写
        `padding.range_value[0] < self.shape[-1] and padding.range_value[1] < self.shape[-1]`；
     e. 原文未说明 padding 非负时，不得擅自增加 `0 <= padding.range_value[i]`。
@@ -1464,6 +1589,34 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
        `num_blocks.range_value * block_size.range_value)`，不得产出索引生成器或
        `zip()` 生成器。
 
+31. **支持场景表 → 维数联动自检（v4 增补）**：当文档含「支持场景表 / 场景矩阵 /
+    groupType 支持场景」类表格，且单元格按离散参数（`groupType` / `splitItem` /
+    单-多 tensor 等）区分某 tensor 的维数（2D / 3D / dimNum / 二维三维）时，
+    必须满足**全部**：
+    a. 对每个 `dimensions.value` 含 ≥2 个 rank 的 tensor，
+       `constraints_in_parameters[每个支持平台]` 中**必须**存在同时引用
+       `len(目标.shape)` 与门控 enum/int 参数 `.range_value` 的
+       `cross_param_constraint` expr，`relation_params` 同时含两者（含 tensor 数时
+       一并含相关 TensorList）；
+    b. 析取**必须覆盖场景表全部合法行**：遗漏一行会使该组合下 rank 无约束、
+       生成器随机赋值；多 rank 映射在该行用 `or` 表达；
+    c. 不得只留 `dimensions.value=[2,3]` 无条件并集而无门控 expr——视为漏抽，重写
+       （见 §4.6.3 H 要点 1）；
+    d. rank 一律 `len(param.shape)`，**禁止** `param.dimNum`（无此字段，违 §4.6.3
+       「维数 vs 长度」）；
+    e. `src_text` 必须摘场景表对应行原文（含 `groupType`/`splitItem` 取值与维数
+       结论），可溯源；逐平台落库。
+
+32. **必选参数"只支持 nullptr"取值语义自检（v4 增补）**：遍历全部 `inputs`/`outputs`
+    中 `is_optional.value=false` 且原文/description 含"仅支持输入 nullptr"/"当前仅支持输入
+    nullptr"/"只支持传空指针"/"必须为空指针"/"仅支持空指针"等短语的参数，必须满足**全部**：
+    a. `allowed_range_value` 为 `{"value":[null], "type":"enum", "src_text":"<含 nullptr/空指针 的原文>"}`，不得为 `value=[]`、不得为 `type=range`、不得把 `null` 写成字符串 `"null"`/`"空"`；
+    b. `allowed_range_value.src_text` 必须包含 `nullptr`/`空指针`/`未传`/`缺省`/`支持空`/`可为空`/`配置空` 之一，以通过 `validate_artifacts.py` 的 `_EXPLICIT_NULL_RE` 放行（必选 + enum 含 `null` + `src_text` 无关键词会被拦截，见 `scripts/validate_artifacts.py:394-448`）；
+    c. `is_optional.value=false` 保持不变，参数仍为必填；**不得**在 `constraints_in_parameters` 追加 `param is None` 条目（生成器对必选参数强制 `is_present=True`，会使该 expr 归约为 `z3.Not(True)=False` 导致 UNSAT，且 `param is None` 编码"缺席语义"与"取值语义"冲突）；
+    d. `dtype.value=[]`（见 §4.6 dtype 回填规则）；
+    e. 若除 `nullptr` 外原文还允许其他取值（如"支持传 nullptr 或 [0,1]"），`value` 写成混合候选 `[null, [0,1]]`（`type=enum`），`src_text` 摘录完整原文段；
+    f. 典型正例：`aclnnSwinAttentionScoreQuant` 的 `paddingMask2Optional`（参数表"输入/输出"列为"输入"，使用说明"当前仅支持输入nullptr"）→ `is_optional.value=false`、`dtype.value=[]`、`allowed_range_value={"value":[null], "type":"enum", "src_text":"当前仅支持输入nullptr"}`。
+
 ## 10. 调用模板
 
 下面给出一份**可直接复制**的 prompt 调用片段：
@@ -1471,7 +1624,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ```text
 # System
 你是一名昇腾 CANN 算子约束抽取专家。
-请严格遵循《算子约束提取通用提示词 v3》的所有规则，并参考知识库：
+请严格遵循《算子约束提取通用提示词 v4》的所有规则，并参考知识库：
 - 解析 shape/dimensions 时参考 §4.6.3 dimensions 解析表
 - 识别隐式维度变量时参考 §4.6.4（概念词/操作名/类型词需剔除）
 - 处理 NZ / FRACTAL_NZ 张量时参考 §4.6.5（块尺寸硬约束、转置/非转置布局区分）
@@ -1512,10 +1665,10 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 
 ## 你的任务
 1. 完整阅读算子说明文档；
-2. 按《算子约束提取通用提示词 v3》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 30 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
+2. 按《算子约束提取通用提示词 v4》第 3 章 schema 输出 JSON；
+3. 内部执行第 9 章 32 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
    §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0、§9.26 公共互推导/broadcast 知识展开、
-   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表）；
+   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.31 支持场景表→维数联动、§9.32 必选参数"只支持 nullptr"取值语义）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
@@ -1544,3 +1697,19 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | [`knowledge/relation_skills/presence_dependency.md`](knowledge/relation_skills/presence_dependency.md) | 存在性依赖 3 类模板 | §6.3 模式 3 |
 | [`prompts/modules/broadcast.md §A`](prompts/modules/broadcast.md) | CANN aclTensor dtype 互推导关系、推导结果与输出 dtype 绑定、非法组合排除（原 `knowledge/common/type_promotion.md`，已内联） | §4.6.10 A + §9.26 |
 | [`prompts/modules/broadcast.md §B`](prompts/modules/broadcast.md) | broadcast 右对齐、维度为 1 拉伸、输出 broadcast 结果轴、特殊 dtype 限制（原 `knowledge/common/broadcast.md`，已内联） | §4.6.10 B + §9.26 |
+
+## 附录：生成器层 null 语义 gap（v4 提示词已先行，待生成器/执行层跟进）
+
+本提示词 v4 已把"必选 + 只支持 nullptr"的取值语义确立为 `allowed_range_value={value:[null], type:enum, src_text 含 nullptr 关键词}`，并禁止在 `constraints_in_parameters` 追加 `param is None`。**但 GENERATE/执行层尚未支持该语义**，已知后果与后续改造点如下（本次不改，列为后续）：
+
+1. **必选 [null] 丢约束**：`agent/generators/param_constraint_solve/param_constraint_utils.py:636-670` `analysis_param_is_present` 对必选参数在 645-646 行 `continue`，跳过 647-660 行的"`allowed_range_value` 全 `None` → `force_false_params`"分支，并于 670 行 `solver.add(is_present)` 强制 `is_present=True`。后果：必选 + `[null]` 的 `null` 取值语义被丢弃，生成的用例 `is_present=True` 且 `range_values` 被随机采样（非 `None`）。**后续改造点**：必选参数亦应进入 `[null]` 识别分支，把"必选 + `value=[null]` + `type=enum`"识别为"值恒为 None"而非"必出现"——需引入 `is_null`/`value_is_none` 标志，与 `is_present` 解耦。
+
+2. **可选 [null] 误判缺席**：同函数 647-660 行对可选参数 `value=[null]` 走 `force_false_params` → `is_present=False`，把"取值语义"错当"缺席语义"。后果：可选 + `[null]` 的参数在生成用例里被当作"未传"而非"传 nullptr"。**后续改造点**：区分"`is_present=False`（缺席）"与"`is_present=True` 且 `value=None`（出现且为空指针）"两条路径。
+
+3. **`param is None` 无独立建模**：`agent/generators/param_constraint_solve/expression_preprocess_utils.py:237-258` 把 `param is None` 翻成 `z3.Not(is_present)`，`null` 无独立 Z3 变量。后果：即使提示词允许补 `param is None`，也无法表达"出现且值为 None"。**后续改造点**：为每个可空参数引入 `is_null` Bool 变量，`param is None` → `is_null`，`param is not None` → `Not(is_null)`，`is_present` 仅表达"是否传入"。
+
+4. **resolve_model 不落 None**：`agent/generators/param_constraint_solve/param_var_definition.py` 各 `resolve_model` 系列没有把 `range_values` 落成 `None` 的路径；`ScalarVar.resolve_model` 行 1025-1026 early-return `{'type': self.type}`（缺 `is_present`/`range_values` 键）会在下游触发 `KeyError`。**后续改造点**：`resolve_model` 在 `is_null=True` 时输出 `range_values=None`（或专用 `value_is_none=True` 字段），并修复 early-return 丢键。
+
+5. **执行层 attr null crash**：`executer/resources/aclnn_api_template.py.j2:151-176` `handle_attr_param` 行 160 `range_val.encode('utf-8')` 对 `None` 必崩（`AttributeError: 'NoneType' object has no attribute 'encode'`）；行 161 `ctype(None)` 对 `c_int`/`c_bool` 静默归 0/False；仅行 169-176 的 `attr_tuple`/`attrs` 分支正确处理 `None`。后果：单 attr 参数取 `None` 会 crash 或静默变 0/False。**后续改造点**：单 attr 分支增加 `if range_val is None: input_tmp[config.name] = <对应类型的 null 指针>; continue`，对齐 `attr_tuple` 已有逻辑。tensor 必选参数传 nullptr 已有现成兜底（行 67-87），隐式可用。
+
+**`is_null` 建模改造关键点（汇总）**：(a) `param_var_definition` 各 Var 类增 `is_null` Z3 Bool；(b) `analysis_param_is_present` 改为同时设置 `is_present` 与 `is_null`，必选 + `[null]` → `is_present=True, is_null=True`；(c) `expression_preprocess_utils` `is None`/`is not None` 改译 `is_null`/`Not(is_null)`；(d) `resolve_model` 输出 `value_is_none` 字段；(e) 用例序列化层（`create_dataset`/template）按 `value_is_none` 输出 `nullptr`；(f) 校验层 `validate_artifacts.py` 已兼容（`_EXPLICIT_NULL_RE` 放行），无需改；(g) 提示词层 v4 已就绪，待 (a)-(e) 落地后 GENERATE 阶段自然符合。

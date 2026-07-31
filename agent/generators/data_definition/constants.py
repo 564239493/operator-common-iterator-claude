@@ -89,7 +89,7 @@ class ParamModelConfig:
     # 默认的tensor维度值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM = 1
     # 非tensor类的数据的range_value默认值
-    SHAPE_DIM_VALUES = [1, 2, 4, 8]
+    SHAPE_DIM_VALUES = [1, 2, 4, 8, 32, 128, 1024]
     # 默认的tensor维度值最小值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM_MIN = 1
     # 默认的tensor的维度值集合，在文档中如果提取不出来关于dimension的取值集合，那就按照默认的[1,2,3,4,5,6,7,8]设置
@@ -115,6 +115,7 @@ class ParamModelConfig:
     INT_TENSOR_DATA_PROFILE = ["Pos", "Neg", "Zero", "One", "Max", "Min"]
     INT_POS_DATA_PROFILE = ["Pos", "One", "Max"]
     INT_NEG_DATA_PROFILE = ["Neg", "Zero", "Min"]
+
     BOOL_DATA_PROFILE = [True, False]
     # tensor类型参数数据type
     TENSOR_ATK_TYPE = ["tensor", "tensors"]
@@ -219,3 +220,6 @@ class DataMatchMap:
         "float4_e2m1": (-6, 6, False), "float4_e1m2": (-3.5, 3.5, False),
         "bool": (None, None, None), "string": (None, None, None)
     }
+
+    # 异常类的参数range_value转换为对应的模型名字
+    ABNORMAL_RANGE_VALUE_MAP = {"nan": "NaN", "inf": "PosInf", "-inf": "NegInf"}

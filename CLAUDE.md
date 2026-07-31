@@ -15,12 +15,19 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
+> EXTRACT 前可选触发场景扫描（`--scene auto` 默认；`all`/`off` 可选）：
+> `scene-scanner` 读文档枚举涉及的量化方式×位宽组合，产 `inputs/scene_scan.json`；
+> 主协调器据此 AskUserQuestion 单选征询场景（量化方式单选 + 位宽单选），`scripts/render_scene_directive.py` 渲染
+> `inputs/scene_directive.md` 并回写 `run_state.scene`，constraint-extractor 据此
+> 屏蔽非选定场景。为独立子步骤而非新状态，文档无量化场景即跳过（零回归）。
+
 ## 常用命令
 
 ### 算子迭代
 ```text
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 3 --case-count 10
 /iterate-operator D:\operator_docs\aclnnFoo.md  # 支持项目外路径
+/iterate-operator operator_docs/aclnnFoo.md --scene auto  # EXTRACT 前扫描量化场景并征询（默认）；--scene all 取全场景不问；--scene off 跳过
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
 /show-workforce  # 查看可用 Skills、Agents 和调度拓扑
@@ -56,6 +63,7 @@ claude  # 启动 Claude Code CLI
 
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
 |---|---|---|---|
+| 场景扫描（条件，EXTRACT 前） | `scene-scanner` | `scan-scenes` | `inputs/scene_scan.json` |
 | 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
@@ -68,7 +76,7 @@ claude  # 启动 Claude Code CLI
 ## 架构分层
 
 ### Claude Code 编排层（.claude/）
-- `.claude/agents/*.md` — 6 个专职 Agent 定义（角色、上下文、产物格式）
+- `.claude/agents/*.md` — 7 个专职 Agent 定义（角色、上下文、产物格式）
 - `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
 - `.claude/settings.json` — `dontAsk` 权限 + sandbox + Hooks 配置
@@ -107,9 +115,10 @@ claude  # 启动 Claude Code CLI
 - `generate_cases.py` — 调 facade 生成用例
 - `execute_cases.py` — 调 executer 执行用例
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）
-- `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验
+- `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
+- `render_scene_directive.py` — 校验场景选择、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
 
 ### 提示词版本化
 
