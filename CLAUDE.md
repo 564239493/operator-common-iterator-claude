@@ -37,6 +37,25 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 
 所有脚本从项目根目录执行，Python 需先激活 `.venv`：
 
+> Agent 使用 Bash/PowerShell 工具时禁止执行 `source`、`activate` 或
+> `Activate.ps1`。直接调用虚拟环境解释器：Windows 使用
+> `.venv/Scripts/python.exe`，Linux/macOS/WSL2 使用 `.venv/bin/python`。
+> 下面的激活命令仅供用户在交互终端准备环境。
+>
+> Agent 禁止使用 `python -c`、`python -` 或临时内联代码；应直接运行项目内已有
+> `.py` 入口（不限于 `scripts/`，受保护目录中的脚本也允许执行）。文件内容与路径检查
+> 优先使用 Read/Glob/Grep；Shell 工具已返回 exit code，无需追加状态探针。
+> Agent 在迭代任务中禁止执行 `pip install`、`python -m pip`、`uv add` 或其他依赖
+> 安装/升级命令。出现 `ModuleNotFoundError` 时停止当前阶段，报告缺失模块和失败命令；
+> 依赖变更只能由用户在环境准备或显式维护任务中决定。不得根据猜测安装依赖。
+>
+> `init_run.py` 已创建首轮目录。后续轮次只在当前 run 中创建目录，路径由 Hook 校验。
+>
+> 迭代用 Python CLI 的短任务优先前台运行并设置足够的 tool timeout。已知可能超过
+> 前台上限的长任务可以使用 `run_in_background`，但只能通过 TaskOutput 阻塞等待或
+> Read 读取工具返回的 output 文件；禁止用 `while`/`ps`/`sleep`/`grep` 轮询，禁止
+> 用 Shell 读取项目外的 Claude 临时任务目录，也禁止重复启动仍在运行的同一任务。
+
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python scripts/init_run.py --doc operator_docs/aclnnFoo.md --max-iterations 3
@@ -59,6 +78,16 @@ Copy-Item servers.example.json servers.json
 claude  # 启动 Claude Code CLI
 ```
 
+Linux / macOS / WSL2：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp servers.example.json servers.json
+claude
+```
+
 ## Agent 调度表
 
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
@@ -79,7 +108,7 @@ claude  # 启动 Claude Code CLI
 - `.claude/agents/*.md` — 7 个专职 Agent 定义（角色、上下文、产物格式）
 - `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
-- `.claude/settings.json` — `dontAsk` 权限 + sandbox + Hooks 配置
+- `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
 - `.claude/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
 
 > EXTRACT 后可选触发约束补充（`--supplement-constraints` 非空时）：
@@ -140,11 +169,15 @@ runs/<operator>-<timestamp>/
 
 ## 安全边界
 
-- 不读取或输出 `.env`、`servers.json` 中的秘密（deny 规则已配置）
+- 禁止读取 `.env`；允许执行流程读取 `servers.json`，但禁止修改或输出其中的秘密
 - 默认 `mode=real`；`servers.json` 缺失或不完整时停止并提示，禁止静默回退 Mock
 - 算子文档可来自项目外路径；先只读复制到 `runs/<run-id>/inputs/`，后续 Agent 只用项目内快照
-- Edit/Write/删除/移动/重定向写入只能作用于本项目目录（`guard_project_writes.py` Hook 强制）
-- Agent 业务产物只能写当前 `runs/<run-id>/` 和提示词版本文件
+- `executer/` 与 `agent/generators/` 只读、可导入执行，禁止新增、修改或删除任何文件和子目录
+- 活动任务中 Edit/Write/删除/移动/重定向写入只能作用于当前
+  `runs/<run-id>/`（`guard_project_writes.py` Hook 强制）
+- 活动任务不得读取其他 `runs/<other-run-id>/`；批次仅在前一 run 终态后切换
+- Agent 业务产物只能写当前 `runs/<run-id>/`；提示词新版本保留在当前 iter，
+  如需提升到全局 `prompts/`，任务结束后由用户显式批准
 - 不自动提交、推送或删除文件
 - 约束、用例、执行结果和分析结果必须先过 `scripts/validate_artifacts.py`
 

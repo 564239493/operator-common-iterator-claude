@@ -15,13 +15,24 @@ Skills 与 Subagents，Python 只承担确定性业务工具。
 
 ## 快速开始
 
-要求 Python 3.10+，Claude Code 建议 2.1.172+。
+要求 Python 3.10+，Claude Code 建议 2.1.211+（路径权限语义和 Hook 行为依赖新版）。
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item servers.example.json servers.json
+# 编辑 servers.json，填写真实执行机连接信息
+claude
+```
+
+Linux / macOS / WSL2 使用：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp servers.example.json servers.json
 # 编辑 servers.json，填写真实执行机连接信息
 claude
 ```

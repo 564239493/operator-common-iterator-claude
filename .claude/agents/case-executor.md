@@ -34,9 +34,9 @@ dummy executor。
    # END_CPU_GOLDEN` 之间的 dummy 块替换为真实 `torch.*` 计算。
 
 3. **自检（必须通过才进 real-run）**
-   - `grep -E "_dummy_output|FALLBACK|TODO: CPU_GOLDEN" <iter>/cases_executor.py` 无命中；
-   - `python -c "import ast; ast.parse(open('<iter>/cases_executor.py',encoding='utf-8').read())"` 退出 0；
-   - `python scripts/validate_artifacts.py executor <iter>/cases_executor.py` 返回 `valid: true`。
+   - 使用 Grep 工具检查 `_dummy_output|FALLBACK|TODO: CPU_GOLDEN`，必须无命中；
+   - `python scripts/validate_artifacts.py executor <iter>/cases_executor.py` 返回 `valid: true`；
+     该确定性校验同时负责 Python AST 语法检查。
    不过则重试推导最多 3 次。仍不过 → 写 `<iter>/execution_result.json`
    （`status=error`、`engine_error="CPU golden 推导未完成: 标记残留/语法错误"`），
    **不得跑 real-run**，把证据交给 failure-analyst。
