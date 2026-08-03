@@ -211,7 +211,8 @@ Copy-Item servers.example.json servers.json
 }
 ```
 
-> **安全提示**：`servers.json` 含密码等敏感信息，已被 `.gitignore` 忽略且在 Claude Code 权限 deny 列表中（`Read(./servers.json)` 禁止读取）。MCP 工具只校验配置结构是否完整，不读取或输出秘密字段值。
+> **安全提示**：`servers.json` 含密码等敏感信息并已被 `.gitignore` 忽略。执行流程可读取
+> 该文件，但 Claude Code 禁止修改，任何 Agent、Hook、日志和答复都不得输出秘密字段值。
 
 如果仅做**本地验证**（不执行真实用例），可以不创建 `servers.json`，使用 `mode=mock`。
 
@@ -298,7 +299,8 @@ GATE → quality-reviewer Agent → 质量门禁 → 决定下一步
 
 ## 8. MCP 工具一览
 
-OPCI 注册 22 个 MCP 工具，全部通过 `mcp__opci__<工具名>` 引用。Claude Code 的 settings.json 已预授权所有工具（`dontAsk` 模式）。
+OPCI 注册 22 个 MCP 工具，全部通过 `mcp__opci__<工具名>` 引用。Claude Code 的
+settings.json 使用默认询问模式；只预授权正常工作流所需的低风险工具和命令。
 
 ### 运行管理
 
@@ -596,7 +598,10 @@ opci mcp-server   # warmup 日志应为 14 OK, 0 FAIL
 
 ### Q: MCP 工具权限怎么配置？
 
-`opci setup` 生成的 `.claude/settings.json` 已预授权所有 22 个 MCP 工具（`dontAsk` 模式）。工具名格式为 `mcp__opci__<Python函数名>`，如 `mcp__opci__validate_constraints`。如需手动添加，在 settings.json 的 `permissions.allow` 列表中追加。
+`opci setup` 生成的 `.claude/settings.json` 使用默认询问模式和最小预授权。工具名
+格式为 `mcp__opci__<Python函数名>`，如 `mcp__opci__validate_constraints`。只应把
+经过审计、正常流程必需的工具加入 `permissions.allow`；其他命令不配置通用 allow，
+由 `default` 模式在实际调用时询问，不应恢复 `dontAsk` + 全工具放行。
 
 ### Q: 如何查看 MCP server 的 warmup 日志？
 

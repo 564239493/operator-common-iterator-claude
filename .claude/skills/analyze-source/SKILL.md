@@ -108,7 +108,7 @@ uncertain-doc.md 标 `missing_evidence`。
      }]
      ```
    - `doc_expr` 必须从 `constraints.json` 对应平台桶**精确复制**（不得改写），
-     否则 `apply_conflict_resolution.py` 精确匹配失败。先 grep 确认存在。
+     否则 `apply_conflict_resolution.py` 精确匹配失败。先用 Grep 工具确认存在。
 
 ### 自校
 
