@@ -752,6 +752,15 @@ class ParamConstraintUtils(CommonDispatcher):
                 param_attr_ori_status = param_name in self.case_input_map and getattr(
                     self.case_input_map.get(param_name), field_name, None) is not None
                 attr_value = property_dict.get(field_name, None)
-                if param_attr_ori_status and attr_value is not None:
+                if field_name == "length":
+                    # tensor_list 的 length 由 Z3 求解为自由变量（采样器未钉值时 length=None、
+                    # ori_status=False），但 Z3 已解出 len（受 cross_param 如 len(x)<=128、
+                    # len(A)==len(B) 约束，并主动规避触发 sum()/shape 重约束的 len=1）。
+                    # 必须回写该解，否则 cases.json length=None 致执行器默认 len=1 违反约束
+                    # （tensorList-len Z3 逃逸）。仅写 >0 的解，丢弃 resolve_model 的 0 默认（未解）。
+                    # 非 tensor_list 参数其 Var 不返回 length，attr_value=None 自然跳过。
+                    if attr_value is not None and attr_value > 0:
+                        self.case_input_map[param_name].__setattr__(field_name, attr_value)
+                elif param_attr_ori_status and attr_value is not None:
                     self.case_input_map[param_name].__setattr__(field_name, attr_value)
         return True

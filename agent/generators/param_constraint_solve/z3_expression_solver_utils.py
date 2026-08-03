@@ -128,17 +128,21 @@ class Z3ConstraintBuilder:
                                                 kwargs.get("length"))),
     }
 
+    # 类级共享计数器：z3.RecFunction 注册在全局 ctx，跨 case（每次新建 builder）slice_id 若
+    # 复位会致同名 RecFunction（如 __sum_tensor_groupListOptional_2）重复注册→"already defined"。
+    # 改为类级单调，保证 slice_id 全局唯一、func_name 不撞名。每算子独立 subprocess，进程结束即清。
+    _slice_counter = 0
+
     def __init__(self, timeout_ms=60000):
         self.solver = z3.Solver()
         self._timeout_ms = timeout_ms
         if timeout_ms:
             self.solver.set('timeout', timeout_ms)
         self.var_map = {}
-        self._slice_counter = 0
 
     def get_next_slice_id(self):
-        self._slice_counter += 1
-        return self._slice_counter
+        Z3ConstraintBuilder._slice_counter += 1
+        return Z3ConstraintBuilder._slice_counter
 
     def declare_var(self, var_name, type_hint="scalar", dtype=None, allowed_dtypes=None, allowed_formats=None,
                     range_value=None, length=None, is_print_log=False):

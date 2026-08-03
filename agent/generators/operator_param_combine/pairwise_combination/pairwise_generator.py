@@ -121,7 +121,17 @@ class PairwiseCombinationGenerator:
         use_dtype_map = None
         if dtype_combos:
             picked = random.choice(dtype_combos)
-            use_dtype_map = {p: [picked.get(p, dtype_domains[p][0])] for p in self.params}
+            # dtype_support_description 场景表的一行同时含 dtype 列（x/weight/out 等，
+            # 值为 "FLOAT16"/"INT64" 等 dtype 串）与 value 列（actType/groupType/
+            # groupListType 等 int 标量，值为 "0"/"-1/0/2" 取值串）。仅当场景值是合法
+            # dtype token（在 ACL_DTYPE_TRANSFER_TENSOR_MAP 中）时才覆盖该参数 dtype；
+            # 否则保留参数真实 dtype 域。否则取值串会被下游 generate_param_dtype 查表
+            # 失败、回退 DEFAULT_PARAM_DTYPE(fp16)，污染标量参数 dtype。
+            use_dtype_map = {
+                p: [picked.get(p)] if picked.get(p) in DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP
+                else dtype_domains[p]
+                for p in self.params
+            }
 
         for p in self.params:
             domain = self.attr_domain.param_domains[p]

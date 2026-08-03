@@ -10,6 +10,12 @@ description: 使用确定性 Python 生成器从 constraints.json 生成 cases.j
 python scripts/generate_cases.py --constraints <constraints.json> --output <cases.json> --count <N>
 ```
 
+小规模任务优先以前台方式运行，tool timeout 可使用 600000 ms；该值只是单次前台等待
+上限，不是生成器业务超时。多平台、大 case-count 或复杂 Z3 约束预计可能超过 10 分钟
+时，允许 `run_in_background`，随后优先用 TaskOutput 阻塞等待，或用 Read 读取工具返回
+的 output 文件。禁止构造 `while`/`ps`/`sleep` 轮询命令，不要通过 Bash/PowerShell
+访问 Claude 的项目外临时任务目录，也不要重复启动尚未结束的同一生成任务。
+
 生成过程中默认把每个成功用例立即写入
 `<output-dir>/jsonl_checkpoints/<platform>/<operator>.jsonl` 并 flush；各平台目录隔离，
 不会互相覆盖。可用 `--jsonl-save-path <dir>` 覆盖 checkpoint 根目录。
@@ -22,16 +28,6 @@ python scripts/generate_cases.py --constraints <constraints.json> --output <case
 随后执行 `python scripts/validate_artifacts.py cases <cases.json>`。禁止手工补造生成失败
 的 case。保留 `<iter-dir>/generation_summary.json` 作为数量和平台摘要。
 
-## 生成后 Python 侧约束复检（抓 Z3 伪 SAT）
-
-Z3 对 `len(shape)`/`shape[-1]`/`shape[-2]` 等 SeqSort/ForAll 语义不完备：`solver.check()`
-可能声称 sat 但实际用例违反该 expr。生成后须跑 Python 侧复检：读 `constraints_in_parameters[].expr`
-与 `cases_<platform>.json`，用安全内置（`len`/`max`/`min`/`abs`/`sum`/`any`/`all`）逐 case `eval`，
-expr 求值 False 即违反，落 `<iter-dir>/post_check_report.json` 供编排器判 `generator_bug`。
-
-**命名空间约定**：每个 case 参数包成暴露 `.format`/`.dtype`/`.shape`/`.range_value` 的对象
-（`__eq__` 比对 `range_value`，使 `<param> in [..]` 与 `<param> == N` 均可求值）。
-**int 标量参数（`additionalDtype`/`dstFormat` 等）不得映射成裸 int**——必须同样包成该对象，
-否则规范形 `additionalDtype.range_value == -1` 会 `AttributeError`（`int` 无 `.range_value`）。
-约束 expr 一律用 `<param>.range_value` 引用 int 标量取值（对齐 `prompts/modules/acl_format_enum.md`
-§C.4），复检命名空间须能 eval。
+当前正式工作流没有独立 post-check CLI，`post_check_report.json` 也不属于产物契约。
+生成阶段只调用上述生成入口和 `validate_artifacts.py cases`。如以后正式增加复检，
+应先实现项目入口、产物契约与测试，再更新本 Skill。
