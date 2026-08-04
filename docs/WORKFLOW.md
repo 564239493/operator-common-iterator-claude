@@ -55,6 +55,29 @@ flowchart TD
     E -->|超过轮次上限| M["MAX_ITERATIONS"]
 ```
 
+### CLASSIFY（每轮 EXTRACT barrier 后，非独立状态）
+
+主协调器跑 `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，
+读 stdout JSON（`operator_category` + `evidence`），回写 `run_state.json` 的
+`execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
+`operator_category`、`operator_category_evidence`。分类不进 constraints.json、
+不依赖 constraint-extractor 自由文本。此步每轮 EXTRACT 后都执行（覆盖上轮分类）。
+
+### 融合（fusion）执行路径（`run_state.execution_strategy=="fusion"` 时）
+
+EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 `_SPECIAL_TEMPLATES`
+专属 `.tpl`，已是真实实现、无 dummy 标记，`atc-cpu-golden-derivation` skill 天然无操作）：
+
+1. **generate**：`execute_cases.py --generate`（同 default）；
+2. **跳过 CPU golden 推导**（不自检 dummy 标记）；
+3. **real-run（4 步）**：`--mode real --strategy fusion`——① CPU 标杆(dist/gloo)
+   ② NPU 级联标杆(dist/hccl/is_bm) ③ `dist_cpu→cpu_benchmark` 改名
+   ④ 精度对比(`accuracy_load`)。每步远程命令完整落 `execution.log`；
+   路径门禁（rank_0/rank_1 非空）失败写 `engine_error` 终止；
+   精度对比记入 `comparison_result`，**不入成败**——passed/failed 只反映执行成败；
+4. **门禁**：`validate_artifacts.py execution` 校验 `execution_strategy=fusion` 时
+   `fusion_phases` 非空且 `dir_check_passed` 全真，`comparison_result` 可选。
+
 ## 4. 单轮执行协议
 
 ### SCENE_SCAN（条件触发，非独立状态）
