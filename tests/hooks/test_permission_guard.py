@@ -98,7 +98,6 @@ def test_shell_git_log_format_md_not_blocked():
     assert guard.guard_shell(payload, ROOT) is None
 
 
-@pytest.mark.xfail(reason="问题4修复目标：绑定态下 grep 引号内 mkdir 被误伤", strict=True)
 def test_shell_grep_mkdir_not_blocked_when_bound(scope_payload):
     """绑定状态下只读搜索命令同样不应被误伤（问题 4-1 目标）。"""
     payload = _payload(
@@ -122,21 +121,18 @@ def test_shell_inline_python_dash_blocked():
     assert guard.guard_shell(payload, ROOT) is not None
 
 
-@pytest.mark.xfail(reason="问题4修复目标：python -X utf8 -c 可绕过 INLINE_PYTHON", strict=True)
 def test_shell_inline_python_X_utf8_blocked():
     """`python -X utf8 -c` 不应绕过内联 Python 拦截。"""
     payload = _payload("Bash", {"command": 'python -X utf8 -c "print(1)"'})
     assert guard.guard_shell(payload, ROOT) is not None
 
 
-@pytest.mark.xfail(reason="问题4修复目标：py -c 未被识别", strict=True)
 def test_shell_py_c_blocked():
     """`py -c` 启动器同样应被拦截。"""
     payload = _payload("Bash", {"command": 'py -c "print(1)"'})
     assert guard.guard_shell(payload, ROOT) is not None
 
 
-@pytest.mark.xfail(reason="问题4修复目标：pythonw -c 未被识别", strict=True)
 def test_shell_pythonw_c_blocked():
     payload = _payload("Bash", {"command": 'pythonw -c "print(1)"'})
     assert guard.guard_shell(payload, ROOT) is not None
@@ -164,7 +160,6 @@ def test_run_id_normal_returned(scope_payload):
     assert guard.read_scope(payload, ROOT) == "aclnnFoo-123"
 
 
-@pytest.mark.xfail(reason="问题4修复目标：run_id 无格式校验，'*' 残留会锁死会话", strict=True)
 def test_run_id_star_treated_as_unbound(scope_payload):
     """残留的 `{"run_id": "*"}` 必须视为未绑定，而不是锁死整个会话。"""
     payload = _payload("Write", {"file_path": "README.md"}, session_id="s2")
@@ -173,7 +168,6 @@ def test_run_id_star_treated_as_unbound(scope_payload):
     assert guard.read_scope(payload, ROOT) is None
 
 
-@pytest.mark.xfail(reason="问题4修复目标：空 run_id 应视为未绑定", strict=True)
 def test_run_id_empty_treated_as_unbound(scope_payload):
     payload = _payload("Write", {"file_path": "README.md"}, session_id="s3")
     scope = guard.scope_file(payload, ROOT)

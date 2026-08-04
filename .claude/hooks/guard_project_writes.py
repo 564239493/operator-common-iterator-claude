@@ -41,7 +41,7 @@ WRITE_OR_DELETE = re.compile(
       move-item|move|mv|
       copy-item|copy|cp|
       set-content|add-content|out-file|tee|
-      new-item|mkdir|(?<!\.)md|touch
+      new-item|mkdir|touch
     )
     (?![\w-])
     """
@@ -76,6 +76,36 @@ PROTECTED_SHELL_REFERENCE = re.compile(
     r"(?i)(?<![\w.-])(?:executer|agent/generators|servers\.json|\.git)"
     r"(?=$|[/\s\"';&|,)])"
 )
+def _quoted_spans(text: str) -> list[tuple[int, int]]:
+    """Return inclusive-exclusive spans of double/single-quoted substrings.
+
+    Used to skip ``WRITE_OR_DELETE`` keywords that appear inside quoted
+    arguments (e.g. ``grep -n "mkdir"``) — those are data, not commands.
+    Handles ``\\`` escapes inside quotes and unterminated quotes.
+    """
+
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch not in "\"'":
+            i += 1
+            continue
+        quote = ch
+        start = i
+        i += 1
+        while i < n:
+            if text[i] == "\\":
+                i += 2
+                continue
+            if text[i] == quote:
+                break
+            i += 1
+        spans.append((start, i + 1 if i < n else n))
+        i += 1
+    return spans
+
+
 def _shell_refs_exempt(segment: str) -> bool:
     # 维护期临时豁免：受保护引用全部落在豁免前缀内时放行；
     # 豁免前缀为空（常态）时恒为 False，保持原保护语义。
@@ -92,8 +122,8 @@ def _shell_refs_exempt(segment: str) -> bool:
 
 
 INLINE_PYTHON = re.compile(
-    r"(?i)(?<![\w.-])(?:python(?:3(?:\.\d+)?)?|python\.exe)"
-    r"\s+(?:-c(?:\s|$)|-(?:\s|$))"
+    r"(?i)(?<![\w.-])(?:python(?:3(?:\.\d+)?)?|python\.exe|pythonw(?:\.exe)?|py)"
+    r"(?:\s+[^\s;&|]+)*\s+-(?:c(?:\s|$)|(?:\s|$))"
 )
 # Match Python only when it is the executable at the start of a shell segment.
 # Merely listing `.venv/Scripts/python.exe` must not be treated as execution.
@@ -103,7 +133,7 @@ PYTHON_COMMAND = re.compile(
     (?:
       "[^"]*[\\/]python(?:3(?:\.\d+)?)?(?:\.exe)?" |
       '[^']*[\\/]python(?:3(?:\.\d+)?)?(?:\.exe)?' |
-      [^\s;&|]*(?:python(?:3(?:\.\d+)?)?|python\.exe)
+      [^\s;&|]*(?:python(?:3(?:\.\d+)?)?|python\.exe|pythonw(?:\.exe)?|py)
     )
     (?=\s)
     '''
@@ -239,9 +269,26 @@ def read_scope(payload: dict[str, Any], root: Path) -> str | None:
     path = scope_file(payload, root)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-        return str(value["run_id"])
+        run_id = str(value["run_id"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    if not _valid_run_id(run_id):
+        return None
+    return run_id
+
+
+def _valid_run_id(run_id: str) -> bool:
+    """run_id 必须非空且不含路径分隔符/控制字符。
+
+    ``"*"`` 是历史 bug 残留（RUN_REFERENCE 曾把 ``runs/*`` 的星号捕获为
+    run_id），必须视为未绑定，否则整个会话会被锁死在所有 runs 之外。
+    """
+
+    return (
+        bool(run_id)
+        and run_id != "*"
+        and not any(ch in run_id for ch in "/\\\x00")
+    )
 
 
 def write_scope(payload: dict[str, Any], root: Path, run_id: str) -> None:
@@ -373,7 +420,11 @@ def guard_shell(payload: dict[str, Any], root: Path) -> str | None:
         ):
             return f"任务执行期间只允许写入 runs/{current}: {target}"
 
+    quoted = _quoted_spans(command)
     for match in WRITE_OR_DELETE.finditer(command):
+        if any(start <= match.start() < end for start, end in quoted):
+            # 引号内的关键词是数据（如 grep "mkdir"），不是真实写/删命令
+            continue
         segment = re.split(r"(?:&&|\|\||[;&|\n])", command[match.end() :], maxsplit=1)[0]
         normalized_segment = segment.replace("\\", "/").lower()
         if PROTECTED_SHELL_REFERENCE.search(normalized_segment) and not _shell_refs_exempt(normalized_segment):
