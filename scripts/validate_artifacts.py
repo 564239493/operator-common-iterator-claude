@@ -17,6 +17,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+
+
 _CONDITIONAL_SHAPE_SIGNAL_RE = re.compile(
     r"(?:配置|设置|设为|为|等于)\s*(?:true|false|0|1|[-+]?\d+)\s*时"
     r"[^。；;\n]*shape"
@@ -29,20 +31,6 @@ def load(path: str):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def normalize_expr_null(expr: str) -> str:
-    """Normalize JSON-style bare ``null`` tokens to Python ``None``.
-
-    String literals containing ``"null"`` are preserved. This keeps the
-    constraints JSON ergonomic while ensuring expressions remain valid Python.
-    """
-    tokens = []
-    for token in tokenize.generate_tokens(io.StringIO(expr).readline):
-        if token.type == tokenize.NAME and token.string == "null":
-            token = tokenize.TokenInfo(
-                token.type, "None", token.start, token.end, token.line
-            )
-        tokens.append(token)
-    return tokenize.untokenize(tokens)
 
 
 def _iter_param_attributes(value):
@@ -106,6 +94,8 @@ def _is_nested_numeric_interval_membership(node: ast.AST) -> bool:
 
 
 def validate_constraint_semantics(value) -> list[str]:
+    from agent.generators.param_constraint_solve.z3_expression_solver_utils import ExpressionPreprocessor
+
     errors: list[str] = []
 
     for section, param, platform, attributes in _iter_param_attributes(value):
@@ -146,7 +136,7 @@ def validate_constraint_semantics(value) -> list[str]:
             )
             continue
         try:
-            normalized = normalize_expr_null(expr)
+            normalized = ExpressionPreprocessor.normalize_json_null(expr)
             tree = ast.parse(normalized, mode="eval")
         except (SyntaxError, tokenize.TokenError) as exc:
             errors.append(
