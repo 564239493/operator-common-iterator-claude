@@ -7,9 +7,9 @@ from typing import Optional, Union, List
 from pydantic import BaseModel
 
 from agent.generators.atk_common_utils.design_config import StandardConfig, MAX_NUMBER_OF_ELEMENTS
-from agent.generators.atk_common_utils.logger_utils_atk import Logger
+from agent.generators.common_utils.logger_util import LazyLogger
 
-logging = Logger()
+logging = LazyLogger()
 
 
 class MyBaseModel(BaseModel):

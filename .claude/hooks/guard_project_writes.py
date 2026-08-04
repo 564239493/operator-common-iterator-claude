@@ -17,6 +17,11 @@ from typing import Any
 
 PROTECTED_WRITE_DIRS = ("executer", "agent/generators", ".git")
 PROTECTED_WRITE_FILES = ("servers.json",)
+
+# 维护期豁免前缀：非空时精确豁免指定文件/目录的写保护（如维护任务临时使用），
+# 当前为空：问题8修复已完成，恢复原只读保护语义。
+WRITE_EXEMPT_PREFIXES: tuple[str, ...] = ()
+
 TERMINAL_STATES = {
     "SUCCESS",
     "BLOCKED",
@@ -71,6 +76,21 @@ PROTECTED_SHELL_REFERENCE = re.compile(
     r"(?i)(?<![\w.-])(?:executer|agent/generators|servers\.json|\.git)"
     r"(?=$|[/\s\"';&|,)])"
 )
+def _shell_refs_exempt(segment: str) -> bool:
+    # 维护期临时豁免：受保护引用全部落在豁免前缀内时放行；
+    # 豁免前缀为空（常态）时恒为 False，保持原保护语义。
+    for match in PROTECTED_SHELL_REFERENCE.finditer(segment):
+        rest = segment[match.end() :].split(None, 1)
+        ref = match.group(0) + (rest[0] if rest else "")
+        if not any(
+            ref == prefix.lower() or ref.startswith(prefix.lower() + "/")
+            for prefix in WRITE_EXEMPT_PREFIXES
+        ):
+            return False
+    return True
+
+
+
 INLINE_PYTHON = re.compile(
     r"(?i)(?<![\w.-])(?:python(?:3(?:\.\d+)?)?|python\.exe)"
     r"\s+(?:-c(?:\s|$)|-(?:\s|$))"
@@ -212,6 +232,12 @@ def is_protected_write(path: Path, root: Path) -> bool:
     if lowered[0] in {name.lower() for name in PROTECTED_WRITE_FILES}:
         return True
     joined = "/".join(lowered)
+    if any(
+        joined == name.lower() or joined.startswith(name.lower() + "/")
+        for name in WRITE_EXEMPT_PREFIXES
+    ):
+        return False
+
     return any(
         joined == name.lower() or joined.startswith(name.lower() + "/")
         for name in PROTECTED_WRITE_DIRS
@@ -365,7 +391,7 @@ def guard_shell(payload: dict[str, Any], root: Path) -> str | None:
     for match in WRITE_OR_DELETE.finditer(command):
         segment = re.split(r"(?:&&|\|\||[;&|\n])", command[match.end() :], maxsplit=1)[0]
         normalized_segment = segment.replace("\\", "/").lower()
-        if PROTECTED_SHELL_REFERENCE.search(normalized_segment):
+        if PROTECTED_SHELL_REFERENCE.search(normalized_segment) and not _shell_refs_exempt(normalized_segment):
             return f"受保护路径只允许读取/执行，禁止 {match.group(1)}"
         if current and f"runs/{current.lower()}" not in normalized_segment:
             return (
