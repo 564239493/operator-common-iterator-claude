@@ -104,9 +104,13 @@ HIGH_RISK_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
-            r"(?i)(?<![\w-])(?:source|eval|invoke-expression|iex|"
-            r"bash\s+-c|sh\s+-c|powershell(?:\.exe)?\s+-encodedcommand)"
-            r"(?![\w-])"
+            r'''(?ix)
+            (?:^|&&|\|\||[;|\n])\s*
+              (?:source|eval|invoke-expression|iex|bash\s+-c|sh\s+-c)(?=\s|$)
+            |
+            (?<![\w-])powershell(?:\.exe)?\s+
+              (?:-encodedcommand\b|-command\s+["']?\s*(?:invoke-expression|iex)\b)
+            '''
         ),
         "Shell 求值",
     ),
