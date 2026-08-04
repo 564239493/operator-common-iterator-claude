@@ -16,7 +16,8 @@
       "Edit(/servers.json)",
       "Edit(/executer/**)",
       "Edit(/agent/generators/**)",
-      "Edit(/.git/**)"
+      "Edit(/.git/**)",
+      "EnterWorktree"
     ]
   },
   "sandbox": {
@@ -40,7 +41,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Glob|Grep|Edit|Write|NotebookEdit|Bash|PowerShell",
+        "matcher": "Read|Glob|Grep|Edit|Write|NotebookEdit|Bash|PowerShell|Agent|EnterWorktree",
         "hooks": [
           {
             "type": "command",

@@ -52,7 +52,8 @@ EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一�
 constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 directive，
 屏蔽跨轮稳定。
 
-5. 每轮按顺序委派：
+5. 每轮按顺序委派。所有 Agent 均使用当前共享工作树，调用时禁止
+   `isolation: worktree`，确保当前 run 的阶段产物可直接交接：
    - **EXTRACT（fork-join）**：当 `run_state.operator_src_snapshot` 非空时，
      **并行**委派 `constraint-extractor`（产 `constraints.json`）与 `source-analyst`
      （extract 域：产 `<iter>/source_raw.json` + `inputs/supplementary-doc.md` +

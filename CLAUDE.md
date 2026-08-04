@@ -45,6 +45,10 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 > Agent 禁止使用 `python -c`、`python -` 或临时内联代码；应直接运行项目内已有
 > `.py` 入口（不限于 `scripts/`，受保护目录中的脚本也允许执行）。文件内容与路径检查
 > 优先使用 Read/Glob/Grep；Shell 工具已返回 exit code，无需追加状态探针。
+> Agent 也不得在 `runs/<current-run>/` 中生成一次性辅助 `.py`（例如
+> `gen_constraints.py`、`check_*.py`）再执行或删除；结构化产物直接通过 Write/Edit 落盘，
+> 确定性处理只调用项目已有正式入口。确实缺少通用能力时，应作为独立开发任务新增并
+> 审查正式项目脚本，而不是在运行任务中临时造脚本。
 > Agent 在迭代任务中禁止执行 `pip install`、`python -m pip`、`uv add` 或其他依赖
 > 安装/升级命令。出现 `ModuleNotFoundError` 时停止当前阶段，报告缺失模块和失败命令；
 > 依赖变更只能由用户在环境准备或显式维护任务中决定。不得根据猜测安装依赖。
@@ -89,6 +93,11 @@ claude
 ```
 
 ## Agent 调度表
+
+所有流水线 Agent 必须在主会话当前工作树中运行，共享同一个 `runs/<run-id>`。调用
+Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；临时 worktree
+会在 Agent 结束后清理，导致 `constraints.json` 等阶段产物无法交接。并行仅用于写入
+互不重叠产物的阶段，不以文件系统隔离实现。
 
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
 |---|---|---|---|

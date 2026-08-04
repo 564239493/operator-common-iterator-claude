@@ -136,9 +136,20 @@ def project_root(payload: dict[str, Any]) -> Path:
     return Path(value).resolve()
 
 
+def native_path_text(path_text: str) -> str:
+    """Translate Git Bash `/c/...` paths before using Windows pathlib."""
+    expanded = os.path.expandvars(os.path.expanduser(path_text.strip()))
+    if os.name == "nt":
+        match = re.match(r"^/([A-Za-z])(?:/(.*))?$", expanded)
+        if match:
+            tail = match.group(2) or ""
+            return f"{match.group(1).upper()}:/{tail}"
+    return expanded
+
+
 def is_inside(path_text: str, root: Path) -> bool:
     """Return True when a possibly relative path resolves under ``root``."""
-    expanded = os.path.expandvars(os.path.expanduser(path_text.strip()))
+    expanded = native_path_text(path_text)
     candidate = Path(expanded)
     if not candidate.is_absolute():
         candidate = root / candidate
@@ -150,7 +161,7 @@ def is_inside(path_text: str, root: Path) -> bool:
 
 
 def resolved_path(path_text: str, root: Path) -> Path:
-    expanded = os.path.expandvars(os.path.expanduser(path_text.strip()))
+    expanded = native_path_text(path_text)
     candidate = Path(expanded)
     if not candidate.is_absolute():
         candidate = root / candidate
@@ -478,6 +489,18 @@ def main() -> int:
             else:
                 reason = "命令已通过项目边界和高风险分类检查"
                 decision = "allow"
+
+    elif tool_name == "EnterWorktree":
+        reason = "本项目运行产物必须保留在当前共享工作树，禁止任务中途进入临时 worktree"
+        decision = "deny"
+    elif tool_name == "Agent":
+        isolation = str((payload.get("tool_input") or {}).get("isolation") or "")
+        if isolation.lower() == "worktree":
+            reason = "流水线 Agent 必须共享当前工作树以交接 runs 产物，禁止 worktree 隔离"
+            decision = "deny"
+        else:
+            reason = "Agent 使用当前共享工作树，产物可供后续阶段读取"
+            decision = "allow"
 
     if decision:
         print(decision_json(decision, reason or "项目权限策略"))
