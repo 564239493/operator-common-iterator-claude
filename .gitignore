@@ -20,3 +20,6 @@ tests/
 dist/
 cases/
 output/
+
+# 评审报告不入库（本地保留）
+review_0803.md
