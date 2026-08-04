@@ -44,6 +44,10 @@ sandbox”三层控制；`CLAUDE.md` 中的文字约定只负责引导，不作�
 - 禁止读取任意位置的 `.env` 与 `.env.*`。
 - 文件路径权限统一使用 `Read(...)` 与 `Edit(...)`；新版本 Claude Code 不使用
   `Write(path)`、`NotebookEdit(path)`、`Glob(path)` 做路径权限判断。
+- **已知失效场景**：`settings.json` 的静态 `Edit(/runs/**)` 放行是"钩子未运行时的
+  兜底"——当 guard_project_writes 钩子进程启动失败（如 Python 环境损坏）时，
+  静态放行生效，跨 run 目录隔离将失效（可写任意 `runs/<run-id>/`）。真正的隔离
+  依赖钩子运行时绑定；此失效场景无法通过静态配置消除，维护时需确保钩子可执行。
 
 ## 当前任务目录隔离
 

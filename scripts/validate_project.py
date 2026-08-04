@@ -77,10 +77,10 @@ def main() -> int:
 
     agents = list((ROOT / ".claude" / "agents").glob("*.md"))
     skills = list((ROOT / ".claude" / "skills").glob("*/SKILL.md"))
-    if len(agents) < 6:
-        errors.append("expected at least 6 project agents")
-    if len(skills) < 8:
-        errors.append("expected at least 8 project skills")
+    if len(agents) != 9:
+        errors.append(f"expected exactly 9 project agents, found {len(agents)}")
+    if len(skills) != 14:
+        errors.append(f"expected exactly 14 project skills, found {len(skills)}")
     for path in agents:
         errors.extend(has_frontmatter(path, ("name", "description")))
     for path in skills:
