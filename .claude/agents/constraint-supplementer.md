@@ -18,12 +18,3 @@ patch 摘要（add/replace 计数、涉及平台）、校验结果、产物绝�
 注意：本阶段只产 `constraints_patch.json`，**不直接修改 `constraints.json`**；
 合并（写回 constraints.json 并重跑 normalize+validate）由主协调器调用确定性脚本
 `scripts/apply_supplement_constraints.py` 完成。
-
-
-## 跨 sort 比较（int 枚举码 attr ↔ tensor.dtype）
-
-产出的 `expr` 凡涉及 int 枚举码 attr（如 `additionalDtype`）与 `tensor.dtype`
-比较，必须按 `supplement-constraints` skill 的「跨 sort 比较必展开析取」规则展开
-为 `(attr==<int码> and tensor.dtype=="<DType名>")` 的析取，禁止直接
-`attr == tensor.dtype`（触发 Z3 sort mismatch 致整条 `or` 守卫被 `add_constraint`
-丢弃，WeightQuant 条件守卫全部失效）。ACL dtype 码表与示例见 skill。
