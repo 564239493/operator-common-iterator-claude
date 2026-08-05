@@ -3,6 +3,11 @@ import unittest
 from pathlib import Path
 from typing import Dict
 
+import pytest
+
+# 依赖 torch 的生成链路，无完整依赖环境时跳过（如系统 Python）
+pytest.importorskip("torch")
+
 from pydantic import TypeAdapter
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
@@ -50,7 +55,12 @@ class BatchCaseGeneratorCorrectCaseAclnnFFNV3Test(unittest.TestCase):
         adapter = TypeAdapter(Dict[str, ParameterPropertyData])
         combos_obj = adapter.validate_python(combos_data)
 
-        operator_case_generate.correct_case(case_obj, rule_obj, combos_obj)
+        correct_status, corrected_case = operator_case_generate.correct_case(
+            case_obj, rule_obj, combos_obj
+        )
+        self.assertTrue(correct_status, f"case 修正失败: {base_path}")
+        self.assertIsInstance(corrected_case, CaseConfig)
+        self.assertIsNotNone(corrected_case.inputs)
 
 if __name__ == '__main__':
     unittest.main()

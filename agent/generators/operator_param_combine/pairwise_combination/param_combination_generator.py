@@ -40,7 +40,9 @@ class PairwiseParamCombinationGenerator:
         attr_domain = AttributeDomain(self.operator_rule_data)
         constraint_processor = ConstraintProcessor(self.operator_rule_data)
         pairwise_gen = PairwiseCombinationGenerator(attr_domain, constraint_processor)
-        raw_combinations = pairwise_gen.generate()
+        # Cap pairwise generation at case_num to allow early-stop; without this
+        # generate() covers the full 2-pair space (can be millions) and hangs.
+        raw_combinations = pairwise_gen.generate(max_cases=self.case_num)
 
         if not raw_combinations:
             logger.error("Pairwise generation returned no combinations")

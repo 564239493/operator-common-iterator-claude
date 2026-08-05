@@ -33,12 +33,14 @@ python scripts/execute_cases.py --generate \
 对 `<iter>/cases_executor.py` 调用 skill，doc 用 `inputs/<doc>.md` 快照。随后自检：
 
 ```text
-grep -E "_dummy_output|FALLBACK|TODO: CPU_GOLDEN" <iter>/cases_executor.py
-python -c "import ast; ast.parse(open('<iter>/cases_executor.py',encoding='utf-8').read())"
+# 使用 Grep 工具确认 _dummy_output|FALLBACK|TODO: CPU_GOLDEN 无命中
 python scripts/validate_artifacts.py executor <iter>/cases_executor.py
 ```
 
-三者全过（grep 无命中 + ast 退出 0 + valid:true）才进 real-run；否则重试推导最多 3 次；
+`validate_artifacts.py executor` 同时执行 Python AST 语法检查；不要再用会触发权限询问的
+`python -c` 做重复检查。
+
+两项全过（Grep 无命中 + `valid:true`）才进 real-run；否则重试推导最多 3 次；
 仍不过则写 `execution_result.json`（status=error, engine_error="CPU golden 推导未完成"）并停止。
 
 ### 3. real-run（上传 + 跑 atk，不再重生成）
@@ -122,8 +124,8 @@ fusion 的 `cases_executor.py` 走专属 `.tpl`，无 `# TODO: CPU_GOLDEN` 块�
 
 ### 2. 跳过 CPU golden 推导
 
-fusion `.tpl` 已是真实实现，`atc-cpu-golden-derivation` skill 天然无操作。不执行
-dummy 自检（grep `# TODO: CPU_GOLDEN` 自然无命中）。
+fusion `.tpl` 已是真实实现，`atc-cpu-golden-derivation` skill 天然无操作，不执行
+额外的占位自检。
 
 ### 3. real-run（4 步流程）
 

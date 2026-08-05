@@ -485,9 +485,7 @@ def _attr_default_repr(raw_type: str, name: str) -> str:
     return "None"
 
 
-def generate_api_class_for_op(
-    cases: list[dict], signature: str, op_name: str, scene: str | None = None
-) -> str:
+def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str) -> str:
     """
     为同一个算子的所有用例生成一个通用的 ATK API py 文件。
 
@@ -497,33 +495,7 @@ def generate_api_class_for_op(
 
     使用 Jinja2 模板 (aclnn_api_template.py.j2) 渲染输出。
     特殊算子 (aclnnCalculateMatmulWeightSize / V2) 直接返回预定义模板。
-
-    量化场景 (scene): 传入 --scene 时，优先查找 {op_name}-{scene}.tpl
-    (回退 {op_name}-{scene}.py.tpl)；找到即直接返回其内容，不再走
-    Jinja2 / 特殊模板路径。例如 --scene dequant-A8W4 对 aclnnGroupedMatmulV5
-    会查找 aclnnGroupedMatmulV5-dequant-A8W4.tpl。
     """
-    # 量化场景模板优先级最高——用户显式指定 scene 时应使用场景专属模板，
-    # 覆盖特殊算子模板与默认 Jinja2 路径。
-    if scene:
-        # 校验 scene 仅含安全字符，防止路径穿越（/ \ .. 等）
-        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", scene):
-            raise ValueError(
-                f"非法 scene 值: {scene!r}（仅允许字母/数字/下划线/点/连字符，"
-                f"且不能以连字符或点开头）"
-            )
-        scene_dir = os.path.dirname(__file__)
-        # 优先 .tpl（与场景模板约定一致），回退 .py.tpl（与既有特殊模板约定一致）
-        for cand in (f"{op_name}-{scene}.tpl", f"{op_name}-{scene}.py.tpl"):
-            scene_tpl_path = os.path.join(scene_dir, cand)
-            if os.path.isfile(scene_tpl_path):
-                with open(scene_tpl_path, "r", encoding="utf-8") as f:
-                    return f.read()
-        raise FileNotFoundError(
-            f"未找到量化场景模板: 期望 {op_name}-{scene}.tpl (或 .py.tpl)，"
-            f"在目录 {scene_dir} 中均不存在"
-        )
-
     _SPECIAL_TEMPLATES = {
         "aclnnCalculateMatmulWeightSize": "aclnnCalculateMatmulWeightSize.py.tpl",
         "aclnnCalculateMatmulWeightSizeV2": "aclnnCalculateMatmulWeightSizeV2.py.tpl",
@@ -693,13 +665,6 @@ def main():
         default=os.path.join(os.path.dirname(__file__), "acc_config.txt"),
         help="acc_config.txt 路径（默认: 脚本同目录下 acc_config.txt）；"
              "按算子名替换用例 standard.acc 的 \"default\" 值",
-    )
-    parser.add_argument(
-        "--scene",
-        default=None,
-        help="量化场景名（如 dequant-A8W4）。传入后优先查找 {算子名}-{scene}.tpl "
-             "(回退 .py.tpl) 模板并直接使用其内容；找不到则报错退出。"
-             "例如 --scene dequant-A8W4 会查找 aclnnGroupedMatmulV5-dequant-A8W4.tpl",
     )
     args = parser.parse_args()
 
@@ -882,7 +847,7 @@ def main():
     # 每个算子生成一个 py 文件
     op_count = len(op_cases)
     for idx, ((op_name, sig), op_case_list) in enumerate(op_cases.items()):
-        code = generate_api_class_for_op(op_case_list, sig, op_name, scene=args.scene)
+        code = generate_api_class_for_op(op_case_list, sig, op_name)
 
         if args.output and op_count == 1:
             out_path = args.output

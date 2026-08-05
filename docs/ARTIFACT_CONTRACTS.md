@@ -98,9 +98,9 @@ re-EXTRACT。`value=[]`（空）时不强制 `type`（tensor 参数无值域约�
 
 ## constraints_patch.json
 
-约束补充阶段（条件触发，仅 `run_state.supplement_constraints` 非空时执行）的产物。
-`constraint-supplementer` 读 `inputs/supplement_constraints.md` 与已提取
-`constraints.json`，产出 JSON 数组，每项：
+约束补充阶段（条件触发，`inputs/supplementary-doc.md` 与/或
+`inputs/supplement_constraints.md` 任一非空时执行，两者都空则跳过）的产物。
+`constraint-supplementer` 读补充输入与已提取 `constraints.json`，产出 JSON 数组，每项：
 
 ```json
 {

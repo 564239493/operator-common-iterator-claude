@@ -234,20 +234,6 @@ def validate_server_info(
     return None
 
 
-def pick_server(
-    servers: list[dict[str, Any]], platform: str
-) -> dict[str, Any] | None:
-    """Pick the first server whose ``platforms`` list contains ``platform``.
-
-    Falls back to the first server if none match exactly — the original
-    project assumes one Atlas A3 development host.
-    """
-    if not servers:
-        return None
-    for server in servers:
-        if platform in server.get("platforms", []):
-            return server
-    return servers[0] if servers else None
 
 
 # ── Path helpers ───────────────────────────────────────────────────────────
@@ -407,47 +393,6 @@ def _resolve_cache_dir(
 # ── ATK executor generation ────────────────────────────────────────────────
 
 
-def filter_cases_by_platform(
-    cases: list[dict[str, Any]],
-    product_support: list[str],
-    platforms_count: dict[str, int],
-    server_platforms: list[str],
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Keep only the cases whose slice matches a server-supported platform.
-
-    ``cases.json`` from ``scripts/generate_cases.py`` interleaves all
-    supported platforms in :data:`product_support` order — first
-    ``platforms_count[p]`` cases belong to the first product, and so on.
-    The generator emits the xlsx faithfully, so a 3-product operator
-    produces 30 cases even though a given execution server only supports
-    one of them.  This helper slices that matrix down to the platforms
-    the chosen server actually supports.
-
-    Returns ``(filtered_cases, None)`` on success or ``(None, message)``
-    when the server's platforms don't intersect with the operator's
-    product_support list (callers should surface the message as
-    ``engine_error`` — never as a fake case failure).
-    """
-    if not isinstance(server_platforms, list) or not server_platforms:
-        return None, "server_info.platforms 为空, 无法按平台过滤"
-
-    matching = [p for p in product_support if p in server_platforms]
-    if not matching:
-        return None, (
-            "服务器平台与算子 product_support 没有交集: "
-            f"server={server_platforms}, operator={list(product_support)}"
-        )
-
-    out: list[dict[str, Any]] = []
-    cursor = 0
-    for platform in product_support:
-        count = int(platforms_count.get(platform, 0))
-        chunk = cases[cursor:cursor + count]
-        if platform in matching:
-            out.extend(chunk)
-        cursor += count
-
-    return out, None
 
 
 def _read_optional_json(path: Path) -> dict[str, Any] | None:
@@ -1754,7 +1699,6 @@ __all__ = [
     "RemotePaths",
     "RunRequest",
     "load_cases_payload",
-    "pick_server",
     "run_cases",
     "validate_server_info",
 ]

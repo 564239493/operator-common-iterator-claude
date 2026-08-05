@@ -23,11 +23,15 @@ If the operator is **`aclnnCalculateMatmulWeightSize`** or **`aclnnCalculateMatm
 **Before deriving the CPU golden, ALWAYS read the operator's CANN documentation to extract parameter constraints.**
 This is the single most important step — it prevents runtime errors that would otherwise only surface during testing.
 
-**How to find the doc:**
-- Directory: `D:\software\markitdown\CANN-aclnn-api-reference\context\`
-- Sub-directory by domain: `ops-nn/`, `ops-math/`, `ops-cv/`, `ops-transformer/`
-- File: `aclnn{OperatorName}.md` (e.g. `aclnnBinaryCrossEntropyWithLogits.md`)
-- If the user specifies a different path, use that instead
+**Document source (mandatory):**
+- Use only the current task snapshot passed by the caller:
+  `runs/<current-run>/inputs/<operator-doc>.md`.
+- Do not search hard-coded directories or read the original document outside the project,
+  even when the run was initialized from an external path.
+- If the snapshot is missing or unreadable, stop and report the missing snapshot. The main
+  coordinator must rerun `scripts/init_run.py` with the desired source document so it is
+  copied read-only into the current run's `inputs/` directory.
+- All subsequent reasoning and CPU golden derivation must use that immutable snapshot.
 
 **What to extract from the doc's "参数说明" table:**
 
@@ -411,7 +415,7 @@ rstd = rstd.float()            # rstdOut → always fp32
 ### Step 8: Verify
 
 After modifying, verify:
-1. `python -c "import ast; ast.parse(open('file.py', encoding='utf-8').read())"` — syntax is valid
+1. `python scripts/validate_artifacts.py executor <iter>/cases_executor.py` succeeds — this deterministic validator includes the AST syntax check
 2. All input parameters use `_get_param(name)` — NOT direct `input_data.kwargs` or `input_data.args` access
 3. **The return tensor's shape must match what the ACLNN operator expects for `out`** — ATK uses the CPU golden's return to infer the NPU output tensor's shape. If the CPU golden returns a tensor of wrong shape (e.g. `torch.ones([1])` from a dummy fallback), the NPU `GetWorkspaceSize` will fail with `Expected tensor for outputTensor.out to have same size as [correct_shape], but got [1]`. **Always remove the `_dummy_output` fallback completely.**
 4. **The return tensor's dtype must match the NPU `SupportInfo` for the given input dtype combination** — see Step 7 above. Statistics outputs (mean/var/rstd) are always fp32; main outputs follow input dtype.
@@ -707,7 +711,7 @@ if _raw_type in _INT_TYPES and isinstance(data, list) and len(data) == 1:
 
 ## Checklist Before Declaring Done
 
-- [ ] **Read the ACLNN operator doc from `CANN-aclnn-api-reference` (Step 0)**
+- [ ] **Read the ACLNN operator doc from the current run snapshot (Step 0)**
 - [ ] Extracted all parameter constraints from the doc's "使用说明" column
 - [ ] CPU code accounts for all documented broadcast/shape relationships
 - [ ] CPU code clamps/rounds attr values to documented valid ranges (integers are integers, not floats)

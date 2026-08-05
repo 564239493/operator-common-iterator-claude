@@ -51,7 +51,7 @@ depends_on: []
 | `NZ` / `FRACTAL_NZ` | ACL_FORMAT_FRACTAL_NZ | 29 | **`NZ` 与 `FRACTAL_NZ` 同指 29**，二者在 §5.3 字典中并列存在。**字面保真**：`format.value` 与跨参 expr 只用文档为该张量枚举的那一种短名（参数表写 `NZ` 就全程 `"NZ"`、写 `FRACTAL_NZ` 就全程 `"FRACTAL_NZ"`），**不**把二者并列塞进同一 `format.value` 或 expr 的 `in` 集合 |
 | `NCDHW` | ACL_FORMAT_NCDHW | 30 | 5D |
 | `NDC1HWC0` | ACL_FORMAT_NDC1HWC0 | 32 | 6D |
-| `FRACTAL_Z_3D` | ACL_FRACTAL_Z_3D | 33 | 8D storage |
+| `FRACTAL_Z_3D` | ACL_FRACTAL_Z_3D | 33 | 4D storage (`[D*C1*H*W, N1, N0, C0]`) |
 | `FRACTAL_NZ_C0_16` | ACL_FORMAT_FRACTAL_NZ_C0_16 | 50 | 5D，C0=16 |
 | `FRACTAL_NZ_C0_32` | ACL_FORMAT_FRACTAL_NZ_C0_32 | 51 | 5D，C0=32 |
 | `NCL` | （未在上方 15 行表内） | — | 仅作 §5.3 短名出现，本方案不涉及其整数；`aclnnNpuFormatCast` 中 `NCL` 只作 `srcTensor.format` 字符串短名 |

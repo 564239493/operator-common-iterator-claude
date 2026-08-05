@@ -37,6 +37,29 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 
 所有脚本从项目根目录执行，Python 需先激活 `.venv`：
 
+> Agent 使用 Bash/PowerShell 工具时禁止执行 `source`、`activate` 或
+> `Activate.ps1`。直接调用虚拟环境解释器：Windows 使用
+> `.venv/Scripts/python.exe`，Linux/macOS/WSL2 使用 `.venv/bin/python`。
+> 下面的激活命令仅供用户在交互终端准备环境。
+>
+> Agent 禁止使用 `python -c`、`python -` 或临时内联代码；应直接运行项目内已有
+> `.py` 入口（不限于 `scripts/`，受保护目录中的脚本也允许执行）。文件内容与路径检查
+> 优先使用 Read/Glob/Grep；Shell 工具已返回 exit code，无需追加状态探针。
+> Agent 也不得在 `runs/<current-run>/` 中生成一次性辅助 `.py`（例如
+> `gen_constraints.py`、`check_*.py`）再执行或删除；结构化产物直接通过 Write/Edit 落盘，
+> 确定性处理只调用项目已有正式入口。确实缺少通用能力时，应作为独立开发任务新增并
+> 审查正式项目脚本，而不是在运行任务中临时造脚本。
+> Agent 在迭代任务中禁止执行 `pip install`、`python -m pip`、`uv add` 或其他依赖
+> 安装/升级命令。出现 `ModuleNotFoundError` 时停止当前阶段，报告缺失模块和失败命令；
+> 依赖变更只能由用户在环境准备或显式维护任务中决定。不得根据猜测安装依赖。
+>
+> `init_run.py` 已创建首轮目录。后续轮次只在当前 run 中创建目录，路径由 Hook 校验。
+>
+> 迭代用 Python CLI 的短任务优先前台运行并设置足够的 tool timeout。已知可能超过
+> 前台上限的长任务可以使用 `run_in_background`，但只能通过 TaskOutput 阻塞等待或
+> Read 读取工具返回的 output 文件；禁止用 `while`/`ps`/`sleep`/`grep` 轮询，禁止
+> 用 Shell 读取项目外的 Claude 临时任务目录，也禁止重复启动仍在运行的同一任务。
+
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python scripts/init_run.py --doc operator_docs/aclnnFoo.md --max-iterations 3
@@ -59,7 +82,22 @@ Copy-Item servers.example.json servers.json
 claude  # 启动 Claude Code CLI
 ```
 
+Linux / macOS / WSL2：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp servers.example.json servers.json
+claude
+```
+
 ## Agent 调度表
+
+所有流水线 Agent 必须在主会话当前工作树中运行，共享同一个 `runs/<run-id>`。调用
+Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；临时 worktree
+会在 Agent 结束后清理，导致 `constraints.json` 等阶段产物无法交接。并行仅用于写入
+互不重叠产物的阶段，不以文件系统隔离实现。
 
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
 |---|---|---|---|
@@ -76,10 +114,10 @@ claude  # 启动 Claude Code CLI
 ## 架构分层
 
 ### Claude Code 编排层（.claude/）
-- `.claude/agents/*.md` — 7 个专职 Agent 定义（角色、上下文、产物格式）
+- `.claude/agents/*.md` — 9 个专职 Agent 定义（角色、上下文、产物格式）
 - `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
-- `.claude/settings.json` — `dontAsk` 权限 + sandbox + Hooks 配置
+- `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
 - `.claude/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
 
 > EXTRACT 后可选触发约束补充（`--supplement-constraints` 非空时）：
@@ -119,12 +157,29 @@ claude  # 启动 Claude Code CLI
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
 - `render_scene_directive.py` — 校验场景选择、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
+- `select_prompt.py` — 按算子特征装配提示词（base + modules，`MODULE_ORDER` 定序）
+- `classify_operator.py` — 算子分类（含融合/通算等执行路径判定）
+- `collect_operator_source.py` — 算子源码闭包收集（include 不动点 + manifest + 报告）
+- `extract_source_constraints.py` — 从源码快照提取确定性约束事实
+- `locate_operator_source.py` — 在 operators-src 树定位算子源码
+- `apply_supplement_constraints.py` — 补充约束 patch 确定性合并（重跑 normalize + validate）
+- `apply_conflict_resolution.py` — 冲突裁决结果应用（机读合并层）
+- `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
+- `show_registry.py` — 展示 Skills/Agents 注册表
 
 ### 提示词版本化
 
 `prompts/operator_constraints_extract_vN.md`，N 为整数版本号。`init_run.py` 按数值 N
 （而非文件名字典序）自动选择最新版本，并复制快照到 run 目录。迭代优化时 `prompt-optimizer`
-生成 `prompt_v(N+1).md`，写入 `prompts/` 和当前 run 的 iter 目录。
+在 run 内 `iter_<N+1>/prompt_v(N+1).md` 与 `prompt_changes_v(N+1).md` 落盘
+（per-iter 快照，**不**直接写 `prompts/`）。**任务进入终态后**，主协调器读取
+`prompt_changes_v(N+1).md` 摘要（含"改动前后逐 section diff"），结合 iter (N+1)
+的 `execution_result.json` 作为有效性凭证，由 `AskUserQuestion` 显式询问用户是否
+通过 `scripts/promote_prompt.py` 提升到全局 `prompts/operator_constraints_extract_v(N+1).md`
+并同步更新 `prompts/CHANGELOG.md`。`promote_prompt.py` 是唯一允许向 `prompts/` 写入下一版的
+入口，并在 run_state 状态 ∈ {`SUCCESS`,`BLOCKED`,`MAX_ITERATIONS`,
+`STOP_GENERATOR_BUG`,`STOP_EXECUTOR_BUG`} 时才会放行。详细契约见
+`.claude/skills/optimize-prompt/SKILL.md` §5 与 `scripts/promote_prompt.py`。
 
 ### 产物目录结构
 
@@ -147,11 +202,17 @@ runs/<operator>-<timestamp>/
 
 ## 安全边界
 
-- 不读取或输出 `.env`、`servers.json` 中的秘密（deny 规则已配置）
+- 禁止读取 `.env`；允许执行流程读取 `servers.json`，但禁止修改或输出其中的秘密
 - 默认 `mode=real`；`servers.json` 缺失或不完整时停止并提示，禁止静默回退 Mock
 - 算子文档可来自项目外路径；先只读复制到 `runs/<run-id>/inputs/`，后续 Agent 只用项目内快照
-- Edit/Write/删除/移动/重定向写入只能作用于本项目目录（`guard_project_writes.py` Hook 强制）
-- Agent 业务产物只能写当前 `runs/<run-id>/` 和提示词版本文件
+- `executer/` 与 `agent/generators/` 只读、可导入执行，禁止新增、修改或删除任何文件和子目录
+- 活动任务中 Edit/Write/删除/移动/重定向写入只能作用于当前
+  `runs/<run-id>/`（`guard_project_writes.py` Hook 强制）
+- 活动任务不得读取其他 `runs/<other-run-id>/`；批次仅在前一 run 终态后切换
+- Agent 业务产物只能写当前 `runs/<run-id>/`；提示词版本提升到全局 `prompts/`
+  由主协调器在任务终态后经用户显式批准、并调
+  `scripts/promote_prompt.py` 完成（详见「提示词版本化」段与
+  `.claude/skills/iterate-operator/SKILL.md` 第 9 步）
 - 不自动提交、推送或删除文件
 - 约束、用例、执行结果和分析结果必须先过 `scripts/validate_artifacts.py`
 
