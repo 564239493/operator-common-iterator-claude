@@ -164,7 +164,15 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 `prompts/operator_constraints_extract_vN.md`，N 为整数版本号。`init_run.py` 按数值 N
 （而非文件名字典序）自动选择最新版本，并复制快照到 run 目录。迭代优化时 `prompt-optimizer`
-生成 `prompt_v(N+1).md`，写入 `prompts/` 和当前 run 的 iter 目录。
+在 run 内 `iter_<N+1>/prompt_v(N+1).md` 与 `prompt_changes_v(N+1).md` 落盘
+（per-iter 快照，**不**直接写 `prompts/`）。**任务进入终态后**，主协调器读取
+`prompt_changes_v(N+1).md` 摘要（含"改动前后逐 section diff"），结合 iter (N+1)
+的 `execution_result.json` 作为有效性凭证，由 `AskUserQuestion` 显式询问用户是否
+通过 `scripts/promote_prompt.py` 提升到全局 `prompts/operator_constraints_extract_v(N+1).md`
+并同步更新 `prompts/CHANGELOG.md`。`promote_prompt.py` 是唯一允许向 `prompts/` 写入下一版的
+入口，并在 run_state 状态 ∈ {`SUCCESS`,`BLOCKED`,`MAX_ITERATIONS`,
+`STOP_GENERATOR_BUG`,`STOP_EXECUTOR_BUG`} 时才会放行。详细契约见
+`.claude/skills/optimize-prompt/SKILL.md` §5 与 `scripts/promote_prompt.py`。
 
 ### 产物目录结构
 
@@ -194,8 +202,10 @@ runs/<operator>-<timestamp>/
 - 活动任务中 Edit/Write/删除/移动/重定向写入只能作用于当前
   `runs/<run-id>/`（`guard_project_writes.py` Hook 强制）
 - 活动任务不得读取其他 `runs/<other-run-id>/`；批次仅在前一 run 终态后切换
-- Agent 业务产物只能写当前 `runs/<run-id>/`；提示词新版本保留在当前 iter，
-  如需提升到全局 `prompts/`，任务结束后由用户显式批准
+- Agent 业务产物只能写当前 `runs/<run-id>/`；提示词版本提升到全局 `prompts/`
+  由主协调器在任务终态后经用户显式批准、并调
+  `scripts/promote_prompt.py` 完成（详见「提示词版本化」段与
+  `.claude/skills/iterate-operator/SKILL.md` 第 9 步）
 - 不自动提交、推送或删除文件
 - 约束、用例、执行结果和分析结果必须先过 `scripts/validate_artifacts.py`
 

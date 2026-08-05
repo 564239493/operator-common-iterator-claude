@@ -107,9 +107,37 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
    - generator_bug：状态设为 STOP_GENERATOR_BUG，停止。
    - executor_bug：状态设为 STOP_EXECUTOR_BUG，停止。
 8. 达到上限后状态设为 MAX_ITERATIONS。
-9. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
-   不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
-10. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
+9. **（终态前）提示词版本提升询问**：当本 run 内任意 iter 目录含
+   `prompt_changes_v*.md` 时，主协调器在进入第 9 步报告格式前，按下列流程
+   处理：
+
+   1. 对每个 `iter_*/prompt_changes_v*.md`，定"是否有执行证据"：
+      `iter_*/execution_result.json.total > 0 and .passed > 0` 即"初步有效"；
+      否则视为"无验证"。
+   2. 至少一个 `prompt_changes` 通过有效性门槛时，主协调器在主会话输出每条候选
+      的**摘要表 + 有效性凭证段**（直接从 `prompt_changes` 读出 §1 / §3 段），
+      然后调用 `AskUserQuestion` 询问用户，对**每条候选**给出 3 选项：
+      - **提升到 prompts/ 全局基线**：调
+        `python scripts/promote_prompt.py --from runs/<id>/iter_<N+1>/prompt_v<N+1>.md \
+        --to-version <N+1> --run-dir runs/<id> \
+        --changes runs/<id>/iter_<N+1>/prompt_changes_v<N+1>.md`；
+      - **查看完整 diff 再决定**：把该 iter 的 `prompt_changes` 全文贴给用户，等下一步指示；
+      - **本轮不提升**：仅保留在 iter 目录，不写 `prompts/`。
+
+      未通过有效性门槛的候选**也**列出，但选项文案相应弱化为"未验证版本 · 默认推荐不提升"。
+      用户可对不同候选独立选择不同动作。
+   3. 用户选择"提升"分支时，主协调器调 `promote_prompt.py`；该脚本原子写
+      `prompts/operator_constraints_extract_v<N+1>.md` 与 `prompts/CHANGELOG.md`
+      并落 `iter_<N+1>/promotion_record.json`。
+   4. **门卫未动**：`promote_prompt.py` 由主会话在 run 终态调用，无 active scope 绑定；
+      `guard_project_writes.py` 与 `.claude/settings.json` 不允许 Agent 在 task 活跃期内
+      自行写 `prompts/`——本步骤是用户显式批准的人工触发，不视为 Agent 越权。
+
+   详见 `.claude/skills/optimize-prompt/SKILL.md` §5 与 `scripts/promote_prompt.py`
+   的契约。
+10. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
+    不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
+11. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
     `STOP_GENERATOR_BUG` 或 `STOP_EXECUTOR_BUG` 后，调用
     `python scripts/batch_state.py --batch-dir <batch-dir> complete`。如果 run 创建前即因
     文档消失等算子级问题阻断，则调用 `complete --terminal-state BLOCKED --message <原因>`。
