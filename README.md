@@ -115,7 +115,7 @@ claude -p "/iterate-operator D:\operator_docs\aclnnFoo.md --max-iterations 3" `
 
 ```text
 .claude/
-  agents/              # 6 个专职 Agent
+  agents/              # 9 个专职 Agent
   skills/              # 主流程及阶段 Skills
   hooks/               # CLI 生命周期调度观测
   settings.json        # 项目级权限与 Hooks

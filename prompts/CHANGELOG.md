@@ -394,3 +394,34 @@ FRACTAL_NZ_C0_32）。
   按惯例不动。
 - 不改 schema、不改 Python 求解器 / 生成器 / 执行器；`format_rank_consistency` 机制不变。
 - 取代 B++++++++++++ 中「FRACTAL_Z_3D 保留 8」的处置；B++++++++++++ 作为历史记录保留不改写。
+
+### B++++++++++++++：v4 重构记录（modular 提示词 + 自检项扩到 34，取代 B++++ 的 v4 不保留决定）
+
+下列变更记录 v4 重启为独立主版本，并完成 v3→v4 重构收尾。
+背景：B++++ 曾决定"现已回合并到 v3 主提示词；后续不再保留独立 v4 文件"，
+但实际后续仍把 v4 作为主版本启用，并完成大规模重构；该决定已被取代，B++++
+作为历史记录保留不改写。
+
+**变更清单**：
+
+1. **v4 重新作为主版本**：`init_run.py` / `runtime_config.find_latest_operator_prompt`
+   按数值版本号选最大，当前 v4 是活跃版本；v1/v2/v3 仅作历史保留、不再装配。
+2. **modular 提示词（v4 起）**：拆分 `prompts/modules/*.md`（acl_format_enum /
+   backward_partial / broadcast / format_cast / implicit_pos / nz_matmul /
+   transpose_shape），由 `scripts/select_prompt.py` 按算子特征（operator_name_regex /
+   doc_contains / format_any）按需装配到活跃提示词末尾；base 文件不再含
+   这些章节，但保留 §x.x 引用文本（refs into unloaded modules 在条件分支里
+   不触发，是良性 dangling）。
+3. **§9 自检扩到 34 项**：v4 §9 章节头与 §10 调用模板原写"32/33 项"已与实际
+   列表项 1-34 不一致；本条目同步把两处文字改为 34。
+4. **FRACTAL_Z_3D rank 4 漏改处（接续 B+++++++++++++）**：
+   - `modules/acl_format_enum.md` §B 表 `FRACTAL_Z_3D | 8D storage` → `4D storage
+     ([D*C1*H*W, N1, N0, C0])`（该模块经 format_cast depends_on 传递加载，
+     会进入活跃提示词，必须与 format_cast.md:38 / v4 §9 #24 d 对齐）。
+   - `examples.md` `aclnnNpuFormatCast` 行 `FRACTAL_Z_3D=8D` → `=4D`（虽然
+     examples.md 不参与提取，但维护者参考须对齐）。
+
+**范围说明**：
+- B++++ "v4 不保留"决定被取代，原文不改写。
+- v1/v2/v3 仍按 B+++++++++++++ 惯例不动（已不再装配）。
+- 不改 schema、不改 Python 求解器/生成器/执行器。

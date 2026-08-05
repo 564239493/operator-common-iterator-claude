@@ -114,7 +114,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 ## 架构分层
 
 ### Claude Code 编排层（.claude/）
-- `.claude/agents/*.md` — 7 个专职 Agent 定义（角色、上下文、产物格式）
+- `.claude/agents/*.md` — 9 个专职 Agent 定义（角色、上下文、产物格式）
 - `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
 - `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
@@ -150,6 +150,15 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
 - `render_scene_directive.py` — 校验场景选择、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
+- `select_prompt.py` — 按算子特征装配提示词（base + modules，`MODULE_ORDER` 定序）
+- `classify_operator.py` — 算子分类（含融合/通算等执行路径判定）
+- `collect_operator_source.py` — 算子源码闭包收集（include 不动点 + manifest + 报告）
+- `extract_source_constraints.py` — 从源码快照提取确定性约束事实
+- `locate_operator_source.py` — 在 operators-src 树定位算子源码
+- `apply_supplement_constraints.py` — 补充约束 patch 确定性合并（重跑 normalize + validate）
+- `apply_conflict_resolution.py` — 冲突裁决结果应用（机读合并层）
+- `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
+- `show_registry.py` — 展示 Skills/Agents 注册表
 
 ### 提示词版本化
 
