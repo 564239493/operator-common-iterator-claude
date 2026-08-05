@@ -156,7 +156,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `extract_source_constraints.py` — 从源码快照提取确定性约束事实
 - `locate_operator_source.py` — 在 operators-src 树定位算子源码
 - `apply_supplement_constraints.py` — 补充约束 patch 确定性合并（重跑 normalize + validate）
-- `apply_conflict_resolution.py` — 冲突裁决结果应用（机读合并层）
+- `apply_conflict_resolution.py` — 人工冲突裁决的机读合并层（不替用户决定胜负）
 - `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
 - `show_registry.py` — 展示 Skills/Agents 注册表
 
