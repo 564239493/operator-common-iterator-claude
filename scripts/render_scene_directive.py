@@ -31,13 +31,6 @@ Scope (decided by the orchestrator from ``--scene`` + ``has_quant``):
 
 The directive file is written ONLY for ``subset``. Existence of
 ``inputs/scene_directive.md`` is the extractor's signal to prune.
-
-``scene_token`` is written into ``run_state.scene`` for every scope:
-``quant-{width}``/``quant`` (量化), ``dequant-{width}``/``dequant``
-(伪量化), ``noquant`` (非量化) for ``subset``; ``null`` for ``all``/``off``.
-It is a deterministic mapping from the single-select (mode, width), consumed
-later when ``generator.py`` adds ``--scene`` support; the render/extract path
-does not use it.
 """
 
 from __future__ import annotations
@@ -54,25 +47,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _scene_token(mode: str | None, width: str | None) -> str | None:
-    """Map (quant_mode, quant_width) → generator ``--scene`` token.
-
-    量化→ ``quant-{width}``（width 为 null 时 ``quant``）；伪量化→
-    ``dequant-{width}``（null 时 ``dequant``）；非量化→ ``noquant``。
-    mode=None（scope=all/off）→ None。
-
-    Token 落 ``run_state.scene.scene_token``；generator.py 改进支持 ``--scene``
-    后由执行链路透传，本脚本只负责确定性地算出值，render/extract 路径不消费。
-    """
-    if mode == "非量化":
-        return "noquant"
-    if mode == "量化":
-        return f"quant-{width}" if width else "quant"
-    if mode == "伪量化":
-        return f"dequant-{width}" if width else "dequant"
-    return None
 
 
 def _match_selection(
@@ -207,7 +181,6 @@ def _scene_payload(
         "scope": scope,
         "quant_mode": sel_mode,
         "quant_width": sel_width,
-        "scene_token": _scene_token(sel_mode, sel_width),
         "valid_combos": valid_combos or [],
         "directive": str(directive_path) if directive_path else "",
         "scan": str(scan_path),
