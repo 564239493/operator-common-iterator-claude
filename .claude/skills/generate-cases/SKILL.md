@@ -4,11 +4,17 @@ description: 从 constraints.json 生成 ATK JSON、TTK ACLNN CSV 或 torch_npu 
 
 # 用例生成规范
 
-读取约束后直接执行：
+先校验约束，再执行：
 
 ```text
 python scripts/generate_cases.py --constraints <constraints.json> --output <cases.json> --count <N> --test-framework atk
 ```
+
+小规模任务优先以前台方式运行，tool timeout 可使用 600000 ms；该值只是单次前台等待
+上限，不是生成器业务超时。多平台、大 case-count 或复杂 Z3 约束预计可能超过 10 分钟
+时，允许 `run_in_background`，随后优先用 TaskOutput 阻塞等待，或用 Read 读取工具返回
+的 output 文件。禁止构造 `while`/`ps`/`sleep` 轮询命令，不要通过 Bash/PowerShell
+访问 Claude 的项目外临时任务目录，也不要重复启动尚未结束的同一生成任务。
 
 生成过程中默认把每个成功用例立即写入
 `<output-dir>/jsonl_checkpoints/<platform>/<operator>.jsonl` 并 flush；各平台目录隔离，
@@ -19,8 +25,9 @@ python scripts/generate_cases.py --constraints <constraints.json> --output <case
 **禁止**将 count 除以产品数后再传入。脚本和 facade 内部已按 per-platform 处理，
 调用方传入原始期望值即可。
 
-保留 `<iter-dir>/generation_summary.json` 作为数量和平台摘要。校验器产出的
-问题可写入摘要/审计，但不得因语义或覆盖类告警删除用例或中断执行。
+随后执行 `python scripts/validate_artifacts.py cases <cases.json>`。禁止手工补造生成失败
+的 case。保留 `<iter-dir>/generation_summary.json` 作为数量和平台摘要。ATK 路径下 cases
+校验不通过即中断 GENERATE，不得因告警删除已生成用例或绕过校验继续。
 
 若 `run_state.json.test_framework == "ttk"`，改为：
 
@@ -44,8 +51,6 @@ torch_npu TTK 默认使用 `--hs-scenario-mode original`，完全使用原有
 
 `planned` 才做场景拆分和投影。实际值必须从 `run_state.hs_scenario_mode`
 透传；兼容旧 run，该字段缺失时使用 `original`，不得在 GENERATE 阶段重新决定。
-HS 语义、场景覆盖和 TTK 转换审计仅作
-诊断记录，不阻断用例产出。
 
 TTK 与 ATK 一样，`count` 表示每个平台请求生成的统一中间用例数；实际数量以
 `generation_summary.json` 为准，禁止复制相同 baseline 凑数。TTK 必须先由正式约束生成器产生 `<iter>/cases.json`；
@@ -58,10 +63,17 @@ CSV 只是该统一中间模型的框架 adapter 产物。同时检查 `ttk_conv
 
 `post_check_report.json` 不是必需产物，默认不创建。Z3 约束、Python 复检、
 场景覆盖与 domain coverage 的问题可保留在 `generation.log`、
-`generation_summary.json` 或转换 audit 中。一般语义 warning 仍不删除 case；但所选
-执行平台 `semantically_clean_count=0` 时必须由生成器以
-`HS_SEMANTIC_GATE_FAILED` 阻断，禁止进入 TTK 转换/EXECUTE。`planned` 模式缺失其
-计划内必需场景时同样阻断。
+`generation_summary.json` 或转换 audit 中。
+
+- **ATK**：`validate_artifacts.py cases` 不通过即阻断 GENERATE，不得降为 warning 继续。
+- **TTK**：Golden 覆盖率、准确度、场景覆盖率只记 warning，不删除用例、不阻断功能流程；
+  但所选执行平台 `semantically_clean_count=0` 时必须由生成器以
+  `HS_SEMANTIC_GATE_FAILED` 阻断，禁止进入 TTK 转换/EXECUTE。`planned` 模式缺失其
+  计划内必需场景时同样阻断。
+
+当前正式工作流没有独立 post-check CLI，`post_check_report.json` 也不属于产物契约。
+生成阶段只调用上述生成入口和 `validate_artifacts.py cases`。如以后正式增加复检，
+应先实现项目入口、产物契约与测试，再更新本 Skill。
 
 正式生成器调试日志按算子和平台分别写入
 `logs/generate_case_<operator>_<platform>.log`。同一平台的分场景生成共用该平台日志，
