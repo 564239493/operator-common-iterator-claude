@@ -395,6 +395,72 @@ FRACTAL_NZ_C0_32）。
 - 不改 schema、不改 Python 求解器 / 生成器 / 执行器；`format_rank_consistency` 机制不变。
 - 取代 B++++++++++++ 中「FRACTAL_Z_3D 保留 8」的处置；B++++++++++++ 作为历史记录保留不改写。
 
+---
+
+### B+++++++++++++++：复活真机反馈经验（operator_patterns 并入 modules，删除 `knowledge/` 目录）
+
+下列变更把 `knowledge/operator_patterns/` 下两份针对 `aclnnFFNV3` 与
+`aclnnSwinTransformerLnQkvQuant` 的真机反馈经验改写为 `prompts/modules/*.md`，
+由 `scripts/select_prompt.py` 按算子名触发装配，并整体删除 `knowledge/` 目录。
+
+**勘误原 B++++++++++**：原条目（CHANGELOG:286-307）声称"删除 `knowledge/` 顶级目录"，
+措辞实指 `common/` 子目录（`common/{type_promotion,broadcast}.md` 与上层目录一并删除），
+本次变更把 `operator_patterns/` 也并入 modules 后整体删除整个 `knowledge/` 目录。
+B++++++++++ 原条目保留不改写以维持历史可读性；本条作为该条目措辞的实测勘误。
+
+**变更清单**：
+
+1. **新增 `prompts/modules/ffn_v3.md`**：frontmatter
+   `triggers.operator_name_eq="aclnnFFNV3"`，正文按 v4 模块体例（适用判定 →
+   必须产出 → 规则要点 → 表达式模板）整理；Source-backed rules（`knowledge/operator_patterns/ffn_v3.md`
+   L13-47）按算子内可通用形式落库为 §A~F（激活函数/维度耦合、expert 模式 shape 变体、quant
+   vs pseudo-quant dtype 分组与互斥、INT4 末维偶数与 `innerPrecise`、公共形状等价与边界、
+   A2 与 scenes 矩阵）；NPU feedback rules（原 L48-60）整段保留为 §G，并要求
+   `src_text="NPU 真机测量反馈"` 与 source-backed 规则分块；Expression templates（原
+   L62-78）作参考样例段附后。
+
+2. **新增 `prompts/modules/swin_transformer_ln_qkv_quant.md`**：frontmatter
+   `triggers.operator_name_eq="aclnnSwinTransformerLnQkvQuant"`；搬运原文件 6 条
+   JSON expr 模板（`oriHeight`/`oriWeight` 隐式 >0，§A；Q 后三维绑定，§B；Q 首维推导式与
+   文档 `x.shape[2] == headNum * seqLength` 化简，§C；K/V 与 Q 等形，§D；三输出 rank-4 守卫
+   §E）；`src_text` 保留溯源标记 `"swin_transformer_ln_qkv_quant_infershape.cpp"`。
+   `Extraction checks`（原 107-119 行）作模块末尾"校验要点"。
+
+3. **`scripts/select_prompt.py:35` `MODULE_ORDER`** 在尾部追加 `ffn_v3` 与
+   `swin_transformer_ln_qkv_quant`。`trigger_matches()` 已支持
+   `operator_name_eq`（`scripts/select_prompt.py:88`），无新代码。
+
+4. **v4 主提示词附录速查表**（`prompts/operator_constraints_extract_v4.md:1695` 之后）
+   追加两行指向新模块，列示 §A~F/§G（ffn_v3）与 §A~E（swin_transformer_ln_qkv_quant）
+   的覆盖规则。
+
+5. **删除 `knowledge/` 整个目录**：包含 `operator_patterns/{ffn_v3,swin_transformer_ln_qkv_quant}.md`
+   与（若残留的）`common/` 占位。
+
+**范围说明**：
+
+- 不改 v4 公共规则章节（§4.6.x、§6.x、§9）；新约束全部收敛在两个新模块内。
+- 不改 schema 字段、不改 Python 求解器 / 生成器 / 执行器。
+- 不改 v3 旧提示词中 `knowledge/operator_patterns/*.md` 的外部链接（v3 已被 v4 取代、不装配，按惯例不动）。
+- v4 主提示词附录速查表旧行（指向 `knowledge/{dimensions,allowed_range,relation_skills,...}` /
+  `knowledge/common/*`）保留作为 v1→v4 演进的历史溯源；本次仅追加新模块 2 行，不动旧
+  13 行（属于历史索引维护范畴，不在本次目标内）。
+
+**回归确认**：
+
+```bash
+# 模块装载
+python scripts/select_prompt.py --base prompts/operator_constraints_extract_v4.md \
+  --doc operator_docs/aclnnFFNV3.md --list-modules    # 期望 stdout 含 ffn_v3
+python scripts/select_prompt.py --base prompts/operator_constraints_extract_v4.md \
+  --doc operator_docs/aclnnSwinTransformerLnQkvQuant.md --list-modules
+                                                    # 期望 stdout 含 swin_transformer_ln_qkv_quant
+
+# 引用一致性
+grep -r "knowledge/operator_patterns" prompts/ docs/ .claude/ CLAUDE.md || echo "no references"
+# 期望："no references"
+```
+
 ### B++++++++++++++：v4 重构记录（modular 提示词 + 自检项扩到 34，取代 B++++ 的 v4 不保留决定）
 
 下列变更记录 v4 重启为独立主版本，并完成 v3→v4 重构收尾。

@@ -34,7 +34,8 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
    - `epsilon`/`eps` 明确作为除0或分母保护值时推导严格正值，并与文档上界合并。
    - `type.value=="aclDataType"` 的参数：`dtype.value` 固定为 `["string"]`，文档"数据类型"列候选写入 `allowed_range_value`（`type="enum"`），**不**写入 `dtype`（见提示词 §4.6.3 aclDataType 固定 dtype 规则）。
    - `type.value=="aclIntArray"` 的参数：`dtype.value` 固定为 `["int"]`；文档"数据类型"列若列张量 dtype，描述的是关联张量，**不**写入 `dtype`（见提示词 §4.6.3 aclIntArray 固定 dtype 规则）。
-5. 写入 `<iter-dir>/constraints.json`。
+5. 直接写入 `<iter-dir>/constraints.json`；不得创建或执行 `gen_constraints.py`、
+   `check_*.py` 等一次性辅助脚本。
 6. 执行：
    `python scripts/normalize_constraints.py <iter-dir>/constraints.json`
 7. 执行：

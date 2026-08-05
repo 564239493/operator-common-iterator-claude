@@ -1693,6 +1693,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | [`knowledge/relation_skills/presence_dependency.md`](knowledge/relation_skills/presence_dependency.md) | 存在性依赖 3 类模板 | §6.3 模式 3 |
 | [`prompts/modules/broadcast.md §A`](prompts/modules/broadcast.md) | CANN aclTensor dtype 互推导关系、推导结果与输出 dtype 绑定、非法组合排除（原 `knowledge/common/type_promotion.md`，已内联） | §4.6.10 A + §9.26 |
 | [`prompts/modules/broadcast.md §B`](prompts/modules/broadcast.md) | broadcast 右对齐、维度为 1 拉伸、输出 broadcast 结果轴、特殊 dtype 限制（原 `knowledge/common/broadcast.md`，已内联） | §4.6.10 B + §9.26 |
+| [`prompts/modules/ffn_v3.md`](prompts/modules/ffn_v3.md) | aclnnFFNV3 专项：MoE/FFN 专家模式、quant/pseudo-quant dtype 分组与互斥、bias/deqScale/antiquant shape 变体（§A~F）、NPU 真机测量反馈（§G，需 `src_text=NPU 真机测量反馈`） | 模块全文 + §C.1 |
+| [`prompts/modules/swin_transformer_ln_qkv_quant.md`](prompts/modules/swin_transformer_ln_qkv_quant.md) | aclnnSwinTransformerLnQkvQuant 专项：`oriHeight`/`oriWeight` 隐式 >0、Q 输出 4D shape 推导（`src_text` 引用 `swin_transformer_ln_qkv_quant_infershape.cpp`）、K/V shape 与 Q 相等 | 模块 §A~E |
 
 ## 附录：生成器层 null 语义 gap（v4 提示词已先行，待生成器/执行层跟进）
 

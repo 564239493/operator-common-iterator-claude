@@ -22,6 +22,8 @@ sandbox”三层控制；`CLAUDE.md` 中的文字约定只负责引导，不作�
   停止，Agent 不得自行调用 pip/uv。
 - `python -c`、`python -` 与 Python heredoc 由 PreToolUse Hook 直接拒绝，不再进入权限
   询问；JSON 汇总和检查使用 Read/Grep 或已有 `scripts/*.py`。
+- 运行任务不创建一次性辅助 `.py` 后再删除；正式 JSON/Markdown 产物直接写入当前 run，
+  确定性逻辑使用项目已有脚本，避免把删除权限当作临时脚本清理机制。
 - Tool 输出已包含进程 exit code，通常无需追加状态探针；普通管道和状态输出由 Hook
   按实际副作用判定，不再为每种命令形态维护许可清单。
 - 业务 CLI 短任务默认前台执行；可能超过前台上限的长任务允许后台执行，但输出只能
@@ -67,6 +69,10 @@ sandbox”三层控制；`CLAUDE.md` 中的文字约定只负责引导，不作�
 
 Hook 状态保存在 `.claude/runtime/task_scopes/<session-id>.json`，属于权限审计元数据，
 不属于业务产物。
+
+这里的隔离是“同一工作树内按当前 run 路径隔离”，不是 Git worktree 隔离。流水线
+Agent 必须共享当前工作树；配置与 Hook 会拒绝 `EnterWorktree` 和 Agent 的
+`isolation: worktree`，避免临时 worktree 清理后丢失尚未提交的阶段产物。
 
 注意：Claude Code 的 `@file` 提示词引用不会触发 `PreToolUse`。因此动态 Hook 无法单独
 拦截用户主动输入的 `@runs/other-run/...`。执行任务时不要主动引用其他 run；需要不可

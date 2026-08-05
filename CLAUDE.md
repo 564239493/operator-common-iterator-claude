@@ -45,6 +45,10 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 > Agent 禁止使用 `python -c`、`python -` 或临时内联代码；应直接运行项目内已有
 > `.py` 入口（不限于 `scripts/`，受保护目录中的脚本也允许执行）。文件内容与路径检查
 > 优先使用 Read/Glob/Grep；Shell 工具已返回 exit code，无需追加状态探针。
+> Agent 也不得在 `runs/<current-run>/` 中生成一次性辅助 `.py`（例如
+> `gen_constraints.py`、`check_*.py`）再执行或删除；结构化产物直接通过 Write/Edit 落盘，
+> 确定性处理只调用项目已有正式入口。确实缺少通用能力时，应作为独立开发任务新增并
+> 审查正式项目脚本，而不是在运行任务中临时造脚本。
 > Agent 在迭代任务中禁止执行 `pip install`、`python -m pip`、`uv add` 或其他依赖
 > 安装/升级命令。出现 `ModuleNotFoundError` 时停止当前阶段，报告缺失模块和失败命令；
 > 依赖变更只能由用户在环境准备或显式维护任务中决定。不得根据猜测安装依赖。
@@ -89,6 +93,11 @@ claude
 ```
 
 ## Agent 调度表
+
+所有流水线 Agent 必须在主会话当前工作树中运行，共享同一个 `runs/<run-id>`。调用
+Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；临时 worktree
+会在 Agent 结束后清理，导致 `constraints.json` 等阶段产物无法交接。并行仅用于写入
+互不重叠产物的阶段，不以文件系统隔离实现。
 
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
 |---|---|---|---|
@@ -155,7 +164,15 @@ claude
 
 `prompts/operator_constraints_extract_vN.md`，N 为整数版本号。`init_run.py` 按数值 N
 （而非文件名字典序）自动选择最新版本，并复制快照到 run 目录。迭代优化时 `prompt-optimizer`
-生成 `prompt_v(N+1).md`，写入 `prompts/` 和当前 run 的 iter 目录。
+在 run 内 `iter_<N+1>/prompt_v(N+1).md` 与 `prompt_changes_v(N+1).md` 落盘
+（per-iter 快照，**不**直接写 `prompts/`）。**任务进入终态后**，主协调器读取
+`prompt_changes_v(N+1).md` 摘要（含"改动前后逐 section diff"），结合 iter (N+1)
+的 `execution_result.json` 作为有效性凭证，由 `AskUserQuestion` 显式询问用户是否
+通过 `scripts/promote_prompt.py` 提升到全局 `prompts/operator_constraints_extract_v(N+1).md`
+并同步更新 `prompts/CHANGELOG.md`。`promote_prompt.py` 是唯一允许向 `prompts/` 写入下一版的
+入口，并在 run_state 状态 ∈ {`SUCCESS`,`BLOCKED`,`MAX_ITERATIONS`,
+`STOP_GENERATOR_BUG`,`STOP_EXECUTOR_BUG`} 时才会放行。详细契约见
+`.claude/skills/optimize-prompt/SKILL.md` §5 与 `scripts/promote_prompt.py`。
 
 ### 产物目录结构
 
@@ -185,8 +202,10 @@ runs/<operator>-<timestamp>/
 - 活动任务中 Edit/Write/删除/移动/重定向写入只能作用于当前
   `runs/<run-id>/`（`guard_project_writes.py` Hook 强制）
 - 活动任务不得读取其他 `runs/<other-run-id>/`；批次仅在前一 run 终态后切换
-- Agent 业务产物只能写当前 `runs/<run-id>/`；提示词新版本保留在当前 iter，
-  如需提升到全局 `prompts/`，任务结束后由用户显式批准
+- Agent 业务产物只能写当前 `runs/<run-id>/`；提示词版本提升到全局 `prompts/`
+  由主协调器在任务终态后经用户显式批准、并调
+  `scripts/promote_prompt.py` 完成（详见「提示词版本化」段与
+  `.claude/skills/iterate-operator/SKILL.md` 第 9 步）
 - 不自动提交、推送或删除文件
 - 约束、用例、执行结果和分析结果必须先过 `scripts/validate_artifacts.py`
 
