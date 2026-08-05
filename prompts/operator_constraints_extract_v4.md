@@ -29,7 +29,7 @@
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 32 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、表达式求解器兼容性、支持场景表→维数联动、必选参数"只支持 nullptr"取值语义） |
+| 9 | 自检清单 | 提取完成后必须执行 33 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、表达式求解器兼容性、支持场景表→维数联动、必选参数"只支持 nullptr"取值语义、dtype/value 逐字一致性） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 | 知识库路径速查表 | 本提示词与 `knowledge/` 的对应关系（维护参考） |
 | （外部）`CHANGELOG.md` | v1→v3 变更记录 | 不参与提取，维护参考 |
@@ -392,6 +392,14 @@ class OperatorRule(BaseModel):
   规则与 §9.32 自检）；
 - 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`。
 - 注：`aclIntArray` 的 dtype 不走"文档张量 dtype 列回填"——见下方「aclIntArray 参数的固定 dtype 规则」（`dtype.value` 固定 `["int"]`）。
+
+**dtype / value 候选逐字一致性硬规则**：
+
+- 每个约束条目 `value` 数组中的 dtype 字符串（以及 format 字符串、`allowed_range_value` 的字符串枚举候选、`dtype_support_description` / `format_support_description` 的 combo 值）必须**逐字复制**自文档原文 / 该条目 `src_text`，仅允许 §5.2 / §5.3 明确登记的规范化映射（`BF16` / `bfloat16` / `bf16` → `BF16`；`float` / `Float` / `FLOAT` → `FLOAT32`）。**禁止**任何其他形式的缩写、漏字母、字母替换、大小写改写、词干截断或意译。
+- **条目内自洽**：同一条目中，`src_text` 里出现的每个 dtype/format token 必须能在 `value` 数组中找到**逐字一致**的对应项，反之 `value` 数组每个元素也必须能在 `src_text` / 文档原文中找到逐字一致来源。若 `src_text` 记 `HIFLOAT8` 而 `value` 写 `HFLOAT8`（或反之），即为提取错误，必须修正为与文档原文逐字一致。
+- **受控字典缺口处置**：当文档原文使用的 dtype token 不在 §5.2 受控字典中时，**禁止**将其改写为字典中"形似"的项（漏字母 / 截断 / 替换字母以凑出字典里已有的串，如把 `HIFLOAT8` 改成 `HFLOAT8`）；应**原样保留**文档 token、在 `src_text` 摘录原文，并在该参数 `description` 末尾补注 `[DICT_GAP:<token>]` 标记供人工扩容字典。此为字典缺口，不属誊写错误，不受 §9.4「dtype 必须来自 §5.2」的拒绝（以原样 token 为准）。
+- 该规则同样适用于 `allowed_range_value.value` 的字符串枚举候选、`format.value` 的格式串，以及 `dtype_support_description` / `format_support_description` 中的 combo 值。
+- **反例（必须避免）**：算子文档原文与条目 `src_text` 均为 `HIFLOAT8`，但 `value` 数组误写为 `HFLOAT8`（漏字母 `I`）——属本规则明确禁止的誊写错误；下游生成器仅识别 `HIFLOAT8`，`HFLOAT8` 会触发 `_infer_sort` KeyError 并被 try/except 静默吞掉，最终 ZERO_CASES_GENERATED。
 
 **aclDataType 参数的固定 dtype 规则**：
 - 当 `type.value == "aclDataType"` 时，`dtype.value` **固定**为 `["string"]`。`aclDataType` 是表示数据类型的标量枚举，参数本身取值为 dtype 名称字符串，故其"自身 dtype"恒为 `string`。此规则**优先级高于**上面的"类型回填规则"——无论文档"数据类型"列是否给出候选都强制执行，**不**因列值非空而改写，也**不**走"其他非 Tensor 参数使用 `type.value` 回填"分支（否则会错误地产出 `["aclDataType"]`）。
@@ -994,13 +1002,13 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 
 ### 5.2 标准 dtype 字符串（受控字典）
 
-提取 `dtype.value` / `dtype_support_description` 中的 dtype 时，**必须**使用以下字符串之一：
+提取 `dtype.value` / `dtype_support_description` 中的 dtype 时，**必须**使用以下字符串之一（修正：`HFLOAT8` 为误写，正确名为 `HIFLOAT8`，与 `agent/generators/data_definition/constants.py` 及全部算子文档原文一致）：
 
 ##### Tensor 数据类型
 ```
 FLOAT32, FLOAT16, BFLOAT16, BF16, DOUBLE, INT8, UINT8, INT16, UINT16,
 INT32, UINT32, INT64, UINT64, BOOL, COMPLEX64, COMPLEX128,
-FLOAT8_E4M3FN, FLOAT8_E5M2, FLOAT4_E2M1, HFLOAT4, HFLOAT8
+FLOAT8_E4M3FN, FLOAT8_E5M2, FLOAT4_E2M1, HFLOAT4, HIFLOAT8
 ```
 
 ##### 标量参数"类型"（仅用于 `dtype.value`，不用于 `dtype_support_description` 的 combo）
@@ -1347,10 +1355,12 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | **文档组合表只有 dtype 列（纯 dtype 表，跨多参数也行），或只有 format 列（纯 format 表）（v3 增补）** | 纯 dtype 表填 `dtype_support_description`、纯 format 表填 `format_support_description`，**不**落 OR-of-ANDs expr；不属 §6.3 模式 9 适用范围 |
 | **文档组合表同表含 dtype 列与 format 列但二者独立（任意 dtype 配任意 format，拆开不丢失信息）（v3 增补）** | 按"单独 dtype 约束 + 单独 format 约束"处理：dtype 部分填 `dtype_support_description`、format 部分填 `format_support_description`（或用 `type_equality` + format 枚举 + `format_rank_consistency`）；**不**强制 OR-of-ANDs。判据：拆成纯 dtype 表+纯 format 表后是否产生原本非法的 dtype×format 组合——不产生即为独立 |
 | **`constraints_in_parameters` 出现 `expr=""` 空壳条目（`derived_value`/`cross_param_constraint` 等）（v3 增补）** | 违 §4.7.2/§4.6.8 C.1：`derived_value` 在文档存在确定映射时 `expr` 必须编码为可求解 OR-of-ANDs/等式 expr（§6.3 模式 9），不得为空；不可形式化的约束（如「转 NZ 后不许 contiguous/transpose」）**不**产出条目，改记入 `description`/`src_text`。典型反例：aclnnNpuFormatCast iter_001 三平台 `derived_value.expr=""` 与 `cross_param_constraint.expr=""` 空壳 |
+| **条目内 `src_text` 的 dtype/format token 与 `value` 数组元素不逐字一致** | 违 §4.6.3「dtype / value 候选逐字一致性硬规则」与 §9.33：必须修正 `value` 元素使其与 `src_text` / 文档原文逐字一致；典型反例：`src_text` 含 `HIFLOAT8` 而 `dtype.value` 写 `HFLOAT8`（漏字母 `I`），下游生成器 `HIFLOAT8` 之外一律 KeyError 被静默吞掉，终致 ZERO_CASES_GENERATED |
+| **文档原文 dtype token 不在 §5.2 受控字典** | **不得**改写为字典内"形似"项凑数（漏字母/截断/替换字母）；原样保留文档 token，`src_text` 摘录原文，并在该参数 `description` 末尾补注 `[DICT_GAP:<token>]` 供人工扩容字典；此情形不属 §9.4 拒绝，以原样 token 为准 |
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 32 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 33 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1360,7 +1370,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
    `product_support` 中的每一个平台都产出条目**——即使各平台 `ParamAttributes` 内容完全
    一致，也必须逐平台复制；不得用单个平台名"代笔"。常见错误模式：从 `Atlas 350 加速卡`
    文档表格读取约束后，只输出 `Atlas 350 加速卡` 条目，遗漏 `Atlas A3 / A2` 条目。
-4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；非 Tensor 参数若非"仅支持空指针"，`dtype.value` 不得为空，缺失时按 type 回填；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。
+4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；非 Tensor 参数若非"仅支持空指针"，`dtype.value` 不得为空，缺失时按 type 回填；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。各 dtype/format 字符串须与该条目 `src_text` / 文档原文逐字一致（仅允许 §5.2/§5.3 登记的规范化映射，见 §4.6.3「dtype / value 候选逐字一致性硬规则」与 §9.33）。
 5. **表达式合法**：每条 `expr`（非空）先把裸 `null` token 规范化为 `None`，再用
    Python AST 解析；不得有 `SyntaxError`。`null`/`None` 不得作为数值大小比较边界。
 6. **关系参数一致**：`expr` 中**所有出现的标识符**都在 `relation_params` 中；`relation_params` 中所有参数名都在 `inputs`/`outputs` 有对应卡片（隐式维度变量/外部常量允许例外，但须在 `inputs` 中登记）。
@@ -1617,6 +1627,23 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
     e. 若除 `nullptr` 外原文还允许其他取值（如"支持传 nullptr 或 [0,1]"），`value` 写成混合候选 `[null, [0,1]]`（`type=enum`），`src_text` 摘录完整原文段；
     f. 典型正例：`aclnnSwinAttentionScoreQuant` 的 `paddingMask2Optional`（参数表"输入/输出"列为"输入"，使用说明"当前仅支持输入nullptr"）→ `is_optional.value=false`、`dtype.value=[]`、`allowed_range_value={"value":[null], "type":"enum", "src_text":"当前仅支持输入nullptr"}`。
 
+33. **dtype / value 候选逐字一致性自检**：逐平台遍历全部 `inputs`/`outputs`
+    参数及 `constraints_in_parameters` 条目，必须满足**全部**：
+    a. `value` 数组中的每个 dtype/format 字符串逐字复制自文档原文 / 该条目
+       `src_text`，仅允许 §5.2 / §5.3 登记的规范化映射（`BF16`/`bfloat16`/`bf16`→`BF16`，
+       `float`/`Float`/`FLOAT`→`FLOAT32`）；禁止缩写、漏字母、字母替换、大小写改写、
+       词干截断或意译；
+    b. **条目内自洽**：同一条目 `src_text` 中出现的每个 dtype/format token 必须能在
+       `value` 数组中找到逐字一致的对应项，反之 `value` 每个元素也必须能在 `src_text` /
+       文档原文中找到逐字一致来源；`src_text` 记 `HIFLOAT8` 而 `value` 写 `HFLOAT8`
+       （或反之）即为提取错误，必须修正；
+    c. 文档原文 dtype token 不在 §5.2 受控字典时，原样保留该 token、`src_text` 摘录原文、
+       并在该参数 `description` 末尾补注 `[DICT_GAP:<token>]`；此为字典缺口，不属誊写
+       错误，不受 §9.4「dtype 必须来自 §5.2」的拒绝；
+    d. 同样检查 `allowed_range_value.value` 的字符串枚举候选、`format.value` 的格式串，
+       以及 `dtype_support_description` / `format_support_description` 中的
+       combo 表 dtype/format 值；发现不一致即重做该条目。
+
 ## 10. 调用模板
 
 下面给出一份**可直接复制**的 prompt 调用片段：
@@ -1646,6 +1673,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
   条件 Shape 使用模式 6；shape_value_dependency 隐式 bool 门控使用模式 6.1；
   Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0；派生值查找使用模式 9）
 - 写 allowed_range_value 时参考 §4.6.3 allowed_range 文本→结构化映射
+- dtype / format / 枚举候选必须与 src_text / 文档原文逐字一致（见 §4.6.3
+  「dtype / value 候选逐字一致性硬规则」与 §9.33）；文档 token 不在 §5.2 时
+  原样保留并标 `[DICT_GAP:<token>]`，不得改写为字典内形似项凑数
 
 输出必须是**纯 JSON 字符串**，无任何前后缀。
 
@@ -1666,9 +1696,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v4》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 32 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
+3. 内部执行第 9 章 33 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
    §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0、§9.26 公共互推导/broadcast 知识展开、
-   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.31 支持场景表→维数联动、§9.32 必选参数"只支持 nullptr"取值语义）；
+   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.31 支持场景表→维数联动、§9.32 必选参数"只支持 nullptr"取值语义、§9.33 dtype/value 逐字一致性）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 

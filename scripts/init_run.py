@@ -480,14 +480,8 @@ def main() -> int:
         "operator_category": None,  # fusion_comm_compute | default | None
         "operator_category_evidence": [],  # 分类证据 (规则编号 + 原文摘录)
         "current_iteration": 1,
-        # Initialization freezes the plan synchronously; the first actionable
-        # state is EXTRACT.  Persisting PLAN here caused Claude Code runs to
-        # create an empty iter_001 and stop before delegating the extractor.
-        "state": "EXTRACT",
-        "history": [
-            {"state": "PLAN", "at": now},
-            {"state": "EXTRACT", "at": now},
-        ],
+        "state": "PLAN",
+        "history": [{"state": "PLAN", "at": now}],
         "created_at": now,
         "updated_at": now,
     }

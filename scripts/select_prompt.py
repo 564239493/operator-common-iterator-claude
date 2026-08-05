@@ -33,8 +33,16 @@ MODULES_DIR = PROMPTS / "modules"
 
 # Fixed assembly order = original §-order of the sections in the monolith.
 MODULE_ORDER = [
-    "nz_matmul", "backward_partial", "format_cast", "implicit_pos",
-    "broadcast", "acl_format_enum", "scatter_pa_kv_cache",
+    "nz_matmul",
+    "backward_partial",
+    "format_cast",
+    "implicit_pos",
+    "broadcast",
+    "acl_format_enum",
+    "transpose_shape",
+    "ffn_v3",
+    "swin_transformer_ln_qkv_quant",
+    "scatter_pa_kv_cache",
 ]
 
 

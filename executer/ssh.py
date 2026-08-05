@@ -168,7 +168,7 @@ async def sftp_upload(
                     await sftp.makedirs(parent)
                 except OSError:
                     pass
-            await asyncio.wait_for(sftp.put(str(local), remote_path), timeout=30.0)
+            await asyncio.wait_for(sftp.put(str(local), remote_path), timeout=300.0)
     except Exception as exc:
         raise SSHEngineError(
             f"SFTP 上传失败: {local_path} -> {remote_path}: {exc}"
@@ -207,7 +207,7 @@ async def scp_upload(
 
     try:
         await asyncio.wait_for(
-            asyncssh.scp(str(local), (conn, remote_path)), timeout=60.0
+            asyncssh.scp(str(local), (conn, remote_path)), timeout=300.0
         )
     except Exception as exc:
         raise SSHEngineError(
