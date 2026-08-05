@@ -20,6 +20,17 @@ ATTR_RANGE_VALUE_TYPE = "allowed_range_value_type"
 ATTR_IS_OPTIONAL = "is_optional"
 ATTR_IS_OPERATOR_PARAM = "is_operator_param"
 
+_SCALAR_DTYPE_FALLBACK = {
+    "int": "int",
+    "float": "float",
+    "bool": "bool",
+    "str": "string",
+    "string": "string",
+    "aclIntArray": "int",
+    "aclFloatArray": "float",
+    "aclBoolArray": "bool",
+}
+
 
 class AttributeDomain:
     def __init__(self, operator_rule: OperatorRule):
@@ -100,6 +111,10 @@ class AttributeDomain:
     def _extract_dtype_domain(self, param_name: str, param_attr: ParamAttributes) -> List[str]:
         raw, _ = self._get_value(param_name, param_attr.dtype, "dtype")
         if raw is None:
+            raw_type, _ = self._get_value(param_name, param_attr.type, "type")
+            fallback = _SCALAR_DTYPE_FALLBACK.get(str(raw_type))
+            if fallback:
+                return [fallback]
             return [ParamModelConfig.DEFAULT_PARAM_DTYPE_DTYPE_IN_ORIGINAL_DOC]
         if isinstance(raw, list):
             valid_dtype_set = [str(each) for each in raw if each not in ParamModelConfig.UNSUPPORT_DTYPE]

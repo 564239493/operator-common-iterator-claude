@@ -1,0 +1,1 @@
+{"operator":"torch_npu.npu_mla_prolog_v3","status":"verified","plugin":"mla_prolog_v3_golden.py","dtype_inputs":["token_x"],"verified_modes":{"cache_mode":["PA_BSND"],"dtype":["bfloat16"],"weight_quant_mode":[0],"kv_cache_quant_mode":[0],"query_quant_mode":[0],"query_norm_flag":[false]},"unsupported":["quantized modes","other cache modes","query_norm_flag=true"]}

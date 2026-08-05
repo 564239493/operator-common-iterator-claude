@@ -59,10 +59,17 @@ class ParamModelConfig:
     DEFAULT_PARAM_DTYPE = "fp16"
     # 默认的参数数据类型，原始文档中的名称
     DEFAULT_PARAM_DTYPE_DTYPE_IN_ORIGINAL_DOC = "FLOAT16"
+    # 默认的参数数据类型集合，当文档中无法提取到数据类型的集合时，使用此变量
+    DEFAULT_PARAM_DTYPE_SET = ["FLOAT16", "FLOAT32", "FLOAT64", "BFLOAT16", "INT16", "INT8", "INT32", "INT64", "UINT8",
+                               "UINT16", "UINT32", "UINT64", "INT4"]
     # 默认的tensor维度值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM = 1
+    # 非tensor类的数据的range_value默认值
+    SHAPE_DIM_VALUES = [1, 2, 4, 8, 32, 128, 1024]
     # 默认的tensor维度值最小值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM_MIN = 1
+    # 默认的tensor的维度值集合，在文档中如果提取不出来关于dimension的取值集合，那就按照默认的[1,2,3,4,5,6,7,8]设置
+    DEFAULT_TENSOR_SHAPE_SET = [1, 2, 3, 4, 5, 6, 7, 8]
     # 默认的tensor维度值最大值，只有在规则数据中未解析到dim相关的规则时才会使用
     DEFAULT_TENSOR_SHAPE_DIM_MAX = 8
     # 默认数组类参数的长度
@@ -74,17 +81,24 @@ class ParamModelConfig:
                    "float8_e8m0", "float6_e3m2", "float8_e4m3fn", "float6_e2m3", "float4_e2m1", "float4_e1m2"]
     INT_DTYPE = ["int", "int16", "int8", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "int4"]
     BOOL_DTYPE = ["bool"]
+    STRING_DTYPE = ["string"]
 
     # 数值类参数以及bool类参数填充值模型全集
     FLOAT_TENSOR_DATA_PROFILE = ["Typical", "PosNormal", "NegNormal", "Zero", "One",
                                  "SubNormal"]
+    FLOAT_POS_TENSOR_DATA_PROFILE = ["Typical", "PosNormal", "One", "SubNormal"]
+    FLOAT_NEG_TENSOR_DATA_PROFILE = ["Typical", "NegNormal", "Zero"]
     INT_TENSOR_DATA_PROFILE = ["Pos", "Neg", "Zero", "One", "Max", "Min"]
+    INT_POS_DATA_PROFILE = ["Pos", "One", "Max"]
+    INT_NEG_DATA_PROFILE = ["Neg", "Zero", "Min"]
+
     BOOL_DATA_PROFILE = [True, False]
     # tensor类型参数数据type
     TENSOR_ATK_TYPE = ["tensor", "tensors"]
     # 数组类参数的数据类型
     LIST_ATK_TYPE = ["tensors", "scalars", "attrs"]
     # 严格应用人工规则修正的参数间约束类型
+    COMBINATION_USE_CONSTRAINT_TYPE = ["shape_equality", "type_equality", "format_equality"]
     # STRICT_CONSTRAINT_TYPE = ["shape_equality", "type_equality"]
     STRICT_CONSTRAINT_TYPE = []
     # 参数format可取值
@@ -118,17 +132,17 @@ class DataMatchMap:
 
     # 在case_config中只生成数据生成方法字段，不生成实际数据时使用，用于适配ATK框架
     ACL_DTYPE_TRANSFER_TENSOR_MAP = {"INT4": "int4", "int4": "int4", "INT8": "int8", "int8": "int8", "int8_t": "int8",
-                                     "INT16": "int16", "INT32": "int32",
-                                     "UINT8": "uint8", "INT": "int64", "uint64": "uint64", "uint64_t": "uint64",
+                                     "INT16": "int16", "INT32": "int32", "int32": "int32",
+                                     "UINT8": "uint8", "uint8": "uint8", "INT": "int64", "uint64": "uint64", "uint64_t": "uint64",
                                      "UINT16": "uint16", "UINT32": "uint32", "UINT64": "uint64", "INT64": "int64",
-                                     "BFLOAT16": "bf16", "FLOAT16": "fp16", "FLOAT32": "fp32", "FLOAT64": "fp64",
+                                     "BFLOAT16": "bf16", "bfloat16":"bf16", "BF16": "bf16","bf16":"bf16", "FLOAT16": "fp16", "FLOAT32": "fp32", "FLOAT64": "fp64",
                                      "float32": "fp32", "float16": "fp16", "float64": "fp64", "COMPLEX64": "complex64",
                                      "COMPLEX128": "complex128", "FLOAT": "fp32", "DOUBLE": "double", "char": "string",
                                      "ACL_FLOAT16": "fp16", "float": "fp32",
                                      "ACL_FLOAT32": "fp32", "ACL_FLOAT64": "fp64", "ACL_FLOAT": "fp32",
-                                     "ACL_BF16": "bf16", "BOOL": "bool", "STRING": "string", "CHAR": "string",
+                                     "ACL_BF16": "bf16", "BOOL": "bool", "STRING": "string", "CHAR": "string", "str": "string",
                                      "string": "string", "bool": "bool", "double": "double", "int64_t": "int64",
-                                     "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8",
+                                     "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8","HFLOAT8":'hifloat8',
                                      "ACL_HIFLOAT8": "hifloat8", "FLOAT8_E5M2": "float8_e5m2",
                                      "ACL_FLOAT8_E5M2": "float8_e5m2", "FLOAT8_E4M3FN": "float8_e4m3fn",
                                      "ACL_FLOAT8_E4M3FN": "float8_e4m3fn", "FLOAT8_E8M0": "float8_e8m0",
@@ -177,3 +191,6 @@ class DataMatchMap:
         "float4_e2m1": (-6, 6, False), "float4_e1m2": (-3.5, 3.5, False),
         "bool": (None, None, None), "string": (None, None, None)
     }
+
+    # 异常类的参数range_value转换为对应的模型名字
+    ABNORMAL_RANGE_VALUE_MAP = {"nan": "NaN", "inf": "PosInf", "-inf": "NegInf"}

@@ -168,7 +168,7 @@ async def sftp_upload(
                     await sftp.makedirs(parent)
                 except OSError:
                     pass
-            await sftp.put(str(local), remote_path)
+            await asyncio.wait_for(sftp.put(str(local), remote_path), timeout=300.0)
     except Exception as exc:
         raise SSHEngineError(
             f"SFTP 上传失败: {local_path} -> {remote_path}: {exc}"
@@ -206,7 +206,9 @@ async def scp_upload(
         )
 
     try:
-        await asyncssh.scp(str(local), (conn, remote_path))
+        await asyncio.wait_for(
+            asyncssh.scp(str(local), (conn, remote_path)), timeout=300.0
+        )
     except Exception as exc:
         raise SSHEngineError(
             f"SCP upload failed: {local_path} -> {remote_path}: {exc}"
@@ -227,18 +229,21 @@ async def upload_file(
     *,
     transfer_mode: str = "auto",
 ) -> None:
-    """Upload a file via SFTP, SCP, or auto (SFTP-first with SCP fallback).
+    """Upload a file via SFTP, SCP, base64, or auto (try in order).
 
     ``transfer_mode`` selects the transfer strategy:
 
-    * ``"auto"`` (default) — SFTP first, SCP fallback if SFTP is
-      unavailable.  Mirrors the original behaviour.
-    * ``"scp"`` — SCP only, for hosts whose SFTP subsystem is disabled
-      or unsupported.  Skips the SFTP attempt entirely, avoiding the
-      hang/timeout that some restricted hosts exhibit before failing.
-    * ``"sftp"`` — SFTP only, for hosts where SCP is blocked.
+    * ``"auto"`` (default) — SFTP first, SCP second, base64 fallback.
+    * ``"scp"`` — SCP only.
+    * ``"sftp"`` — SFTP only.
+    * ``"base64"`` — SSH base64-encode/decode only (for servers without
+      SFTP/SCP support).
     """
     mode = (transfer_mode or "auto").strip().lower()
+
+    if mode == "base64":
+        await _base64_upload(conn, local_path, remote_path)
+        return
 
     if mode == "scp":
         await scp_upload(conn, local_path, remote_path)
@@ -248,7 +253,7 @@ async def upload_file(
         await sftp_upload(conn, local_path, remote_path)
         return
 
-    # auto: SFTP first, then SCP fallback
+    # auto: SFTP first, then SCP, then base64 fallback
     try:
         await sftp_upload(conn, local_path, remote_path)
     except SSHEngineError as sftp_exc:
@@ -261,10 +266,53 @@ async def upload_file(
         try:
             await scp_upload(conn, local_path, remote_path)
         except SSHEngineError as scp_exc:
-            raise SSHEngineError(
-                "SFTP/SCP upload failed: "
-                f"SFTP=({sftp_exc}); SCP=({scp_exc})"
-            ) from scp_exc
+            logger.warning(
+                "ssh.upload_file: SCP failed for %s -> %s; trying base64: %s",
+                local_path, remote_path, scp_exc,
+            )
+            await _base64_upload(conn, local_path, remote_path)
+
+
+async def _base64_upload(
+    conn: asyncssh.SSHClientConnection,
+    local_path: str | Path,
+    remote_path: str,
+) -> None:
+    """Upload a file by base64-encoding and piping through SSH stdin.
+
+    Used as a fallback when the server does not support SFTP or SCP.
+    The base64 data is sent as stdin to a remote Python one-liner that
+    decodes and writes the target file.  Python is used instead of
+    ``base64 -d`` for portability (some minimal server images lack the
+    base64 CLI tool but always have Python).
+    """
+    local = Path(local_path)
+    if not local.exists():
+        raise SSHEngineError(f"Local file does not exist: {local_path}")
+    encoded = base64.b64encode(local.read_bytes()).decode("ascii")
+    parent = remote_path.rsplit("/", 1)[0] or "."
+    # Python one-liner: read base64 from stdin, decode, write to file
+    command = (
+        f"mkdir -p '{parent}' && "
+        f"python3 -c \"import sys,base64;"
+        f"open('{remote_path}','wb').write(base64.b64decode(sys.stdin.read()))\""
+    )
+    logger.info(
+        "ssh._base64_upload: uploading %s -> %s (%d bytes)",
+        local_path, remote_path, local.stat().st_size,
+    )
+    try:
+        result = await asyncio.wait_for(
+            conn.run(command, input=encoded, check=True), timeout=120.0
+        )
+    except Exception as exc:
+        raise SSHEngineError(
+            f"base64 upload failed: {local_path} -> {remote_path}: {exc}"
+        ) from exc
+    logger.info(
+        "ssh._base64_upload: uploaded %s -> %s (%d bytes)",
+        local_path, remote_path, local.stat().st_size,
+    )
 
 
 async def run(
@@ -378,6 +426,7 @@ async def sftp_download_file(
     local_path: Path,
 ) -> None:
     """Pull a single remote file via SFTP.  Missing file is swallowed."""
+    local_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with conn.start_sftp_client() as sftp:
             await sftp.get(remote_path, str(local_path))
@@ -385,8 +434,36 @@ async def sftp_download_file(
         logger.warning("ssh.sftp_download_file: %s not found", remote_path)
     except Exception as exc:
         logger.warning(
-            "ssh.sftp_download_file: %s failed: %s", remote_path, exc
+            "ssh.sftp_download_file: %s failed, trying SCP: %s", remote_path, exc
         )
+        try:
+            await asyncssh.scp((conn, remote_path), str(local_path))
+        except Exception as scp_exc:
+            logger.warning("ssh.scp_download_file: %s failed: %s", remote_path, scp_exc)
+
+
+async def sftp_download_tree(
+    conn: asyncssh.SSHClientConnection,
+    remote_path: str,
+    local_path: Path,
+) -> None:
+    """Recursively download a remote directory tree."""
+    local_path.mkdir(parents=True, exist_ok=True)
+    try:
+        async with conn.start_sftp_client() as sftp:
+            await sftp.get(remote_path, str(local_path.parent), recurse=True)
+    except FileNotFoundError:
+        logger.warning("ssh.sftp_download_tree: %s not found", remote_path)
+    except Exception as exc:
+        logger.warning("ssh.sftp_download_tree: trying SCP after: %s", exc)
+        try:
+            await asyncssh.scp(
+                (conn, remote_path), str(local_path.parent), recurse=True
+            )
+        except Exception as scp_exc:
+            raise SSHEngineError(
+                f"SFTP/SCP 递归下载失败: {remote_path} -> {local_path}: {scp_exc}"
+            ) from scp_exc
 
 
 async def sftp_list_dir(
@@ -544,6 +621,7 @@ __all__ = [
     "run",
     "scp_upload",
     "sftp_download_file",
+    "sftp_download_tree",
     "sftp_list_dir",
     "sftp_upload",
     "shell_download_file",

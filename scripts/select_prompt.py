@@ -42,6 +42,7 @@ MODULE_ORDER = [
     "transpose_shape",
     "ffn_v3",
     "swin_transformer_ln_qkv_quant",
+    "scatter_pa_kv_cache",
 ]
 
 

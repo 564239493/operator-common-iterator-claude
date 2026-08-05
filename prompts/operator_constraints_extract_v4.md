@@ -1,4 +1,4 @@
-# 算子约束提取通用提示词 · v4 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达 / 分组 MatMul 收缩轴/输出轴 shape 等式与 groupList 结构（语义 B）(2026-07-29 增补))
+# 算子约束提取通用提示词 · v4 (含一段式算子支持 / 修正非 Tensor 数组类型 .shape 误用 / aclDataType 参数 dtype 固定为 string / aclIntArray 参数 dtype 固定为 int / 大小/数量语义参数的隐式 >0 约束 / 联合交叉 dtype/format 组合表用 OR-of-ANDs 析取表达)
 # Operator Constraints Extraction Universal Prompt · v4 (with single-function operator support / fix non-tensor array .shape misuse / fix aclDataType param dtype to string / fix aclIntArray param dtype to int / implicit >0 constraint for size/count semantic parameters / joint cross dtype/format combo table expressed as OR-of-ANDs disjunction)
 
 > **用途**：从昇腾 CANN（Compute Architecture for Neural Networks）算子官方说明文档（Markdown / HTML）中，**人工 + LLM 协同** 提取结构化的算子约束信息，并以**纯 JSON** 形式输出，可直接喂给下游的测试用例生成引擎。
@@ -29,7 +29,7 @@
 | 6 | 表达式编写规范 | Python 表达式（`expr`）语法细则 + TensorList 长度/条件 Shape 等模式模板 |
 | 7 | `expr_type` 取值字典 | 已知值参考表（`expr_type` 为自由 `str`） |
 | 8 | 边缘场景处理 | 缺失、歧义、冲突的统一处置（含 dimensions/allowed_range/隐式参/NZ 格式/条件 Shape） |
-| 9 | 自检清单 | 提取完成后必须执行 33 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、支持场景表→维数联动、必选参数"只支持 nullptr"取值语义、分组/MatMul 收缩轴与 groupList 结构一致性） |
+| 9 | 自检清单 | 提取完成后必须执行 33 项检查（含条件 Shape、TensorList 长度、动态边界、Partial-Shape 自检、大小数量语义隐式 >0、公共互推导/broadcast 知识、derived_value 可求解性、格式转换 dtype 等式、联合交叉 dtype/format 组合表、表达式求解器兼容性、支持场景表→维数联动、必选参数"只支持 nullptr"取值语义、dtype/value 逐字一致性） |
 | 10 | 调用模板 | 完整可复制的 prompt 调用片段（含知识库引用提示） |
 | 附录 | 知识库路径速查表 | 本提示词与 `knowledge/` 的对应关系（维护参考） |
 | （外部）`CHANGELOG.md` | v1→v3 变更记录 | 不参与提取，维护参考 |
@@ -42,13 +42,6 @@
 ### 1.1 你的身份
 
 你是一名 **昇腾 CANN 算子约束抽取专家**（Operator Constraint Extraction Specialist）。你的任务是从算子说明文档中**只抽取文档里已经显式出现**的事实信息，**绝不进行经验补全或外推**。
-
-**「外推」边界厘清**：以下两类信息虽非逐字约束句，但属文档**显式事实**的直接逻辑蕴含，**必须**提取，不算外推：
-
-1. **计算公式蕴含的轴相等**：文档给出计算公式（如 `y_i[m_i,n_i]=x_i[m_i,k_i]×weight_i[k_i,n_i]`）时，收缩轴与输出轴的跨参数相等（x 的 K 轴 == weight 的 K 轴、x 的 M 轴 == out 的 M 轴、weight 的 N 轴 == out 的 N 轴）是公式的直接数学后果，必须落为 `shape_value_dependency`。
-2. **逐场景 shape 元组蕴含的轴位**：文档按 `groupType`/`splitItem`/单-多 tensor 列出某参数 shape 元组（如 `x=(M,K)` 或 `(K,M)`）时，"K 是第几维"由该元组直接确定，据此写出的 `param.shape[i]==other.shape[j]` 是显式事实。
-
-仅当依据算子名/常识/其它算子类比臆造文档未声明的限制时才算"经验补全/外推"，禁止产出。
 
 ### 1.2 输入
 
@@ -107,8 +100,8 @@ class InterConstraintsRuleType(str, Enum):
     SHAPE_EQUALITY          = "shape_equality"          # 形状完全相等
     SHAPE_DEPENDENCY        = "shape_dependency"        # 形状由其他参数推导
     SHAPE_VALUE_DEPENDENCY  = "shape_value_dependency"  # 形状中轴值/元素值依赖
-    TYPE_DEPENDENCY         = "type_dependency"         # dtype 依赖其他参数 / 条件
-    TYPE_EQUALITY           = "type_equality"           # dtype 必须一致
+    TYPE_DEPENDENCY         = "type_dependency"         # dtype 受模式/取值/存在性/条件分支或组合映射影响
+    TYPE_EQUALITY           = "type_equality"           # 无条件、独立的纯 dtype 属性等式
     VALUE_DEPENDENCY        = "value_dependency"        # 取值依赖（含取值范围）
     FORMAT_EQUALITY         = "format_equality"         # 数据格式必须一致
     PRESENCE_DEPENDENCY     = "presence_dependency"     # 共存规则（None / 非 None）
@@ -388,22 +381,6 @@ class OperatorRule(BaseModel):
 - “一般情况下/通常情况下长度相同”属于带条件关系，须继续读取综合约束确定适用条件；
   不得在条件未知时擅自生成无条件长度等式。
 
-**分组类 groupListOptional 结构规则（2026-07-29 增补）**：当算子含 `groupType`（分组轴枚举）与 `groupListOptional`（`aclTensor`，1-2 维 INT64，分组分布）时，其**长度与取值**与分组结构强相关，**必须**逐场景落 `constraints_in_parameters`：
-
-1. **长度 == 分组数 g**：`groupListOptional.shape[0]` 等于分组数 g。g 的来源按场景：weight 为 3 维单 tensor（如 `(g,N,K)`）→ `groupListOptional.shape[0] == weight.shape[0]`；weight 为多 tensor（`aclTensorList`）→ `groupListOptional.shape[0] == len(weight)`。
-2. **取值 vs x 分组轴**（groupType=0 m 轴分组 → x 的 M 轴；groupType=2 k 轴分组 → x 的 K 轴；轴下标由该场景 x shape 元组读出）：`groupListType=0`(cumsum)→`groupListOptional[groupListOptional.shape[0]-1] <= x.shape[<分组轴>]`（场景要求”相等”时写 `==`）；`groupListType=1`(每组大小)→`sum(groupListOptional) <= x.shape[<分组轴>]`（或 `==`）；`groupListType=2`([idx,size] 对)→第二列求和 `<= x.shape[<分组轴>]`，且 `len(groupListOptional.shape) == 2`。
-3. **必为 null 场景**：文档明示”必须传空”的场景（如 groupType=-1 不分组、groupType=2 单多多 splitItem 0/1）落 `presence_dependency: groupListOptional is None`，门控该场景。
-
-```text
-# groupType=0 单单单 groupListType=1：长度==weight.shape[0](g)，取值求和==x.shape[0](M)
-expr_type: cross_param_constraint
-expr: not(groupType.range_value==0 and splitItem.range_value in [2,3] and len(x)==1 and len(weight)==1 and len(out)==1 and groupListType.range_value==1) or (groupListOptional.shape[0] == weight.shape[0] and sum(groupListOptional) == x.shape[0])
-relation_params: [“groupType”,”splitItem”,”groupListType”,”x”,”weight”,”groupListOptional”]
-src_text: “groupType=0 单单单 必传 groupListOptional；groupListType=1 数值总和等于 x 第一维（line 727 + 示例 line 748-750）”
-```
-
-**禁止**：把 groupList 取值样例（如 `[123,0,333,...]`）当 `allowed_range_value` 枚举抄入——这是动态分组分布，必须落取值-轴关系（见 §4.6.3「无约束参数处理」：取值上下界依赖其他参数 shape/长度时禁枚举）。`groupListOptional[-1]` 负索引与 2-d 列切片属生成器侧已知 gap（见文末附录），优先用 `groupListOptional[groupListOptional.shape[0]-1]` 表达末值。
-
 **dtype 为空时的类型回填规则**：
 - 优先使用文档明确给出的 dtype；只有未提取到任何 dtype、即 `dtype.value=[]` 时才执行回填；
 - `aclIntArray` → `["int"]`，`aclFloatArray` → `["float"]`，`aclBoolArray` → `["bool"]`；
@@ -415,6 +392,14 @@ src_text: “groupType=0 单单单 必传 groupListOptional；groupListType=1 �
   规则与 §9.32 自检）；
 - 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`。
 - 注：`aclIntArray` 的 dtype 不走"文档张量 dtype 列回填"——见下方「aclIntArray 参数的固定 dtype 规则」（`dtype.value` 固定 `["int"]`）。
+
+**dtype / value 候选逐字一致性硬规则**：
+
+- 每个约束条目 `value` 数组中的 dtype 字符串（以及 format 字符串、`allowed_range_value` 的字符串枚举候选、`dtype_support_description` / `format_support_description` 的 combo 值）必须**逐字复制**自文档原文 / 该条目 `src_text`，仅允许 §5.2 / §5.3 明确登记的规范化映射（`BF16` / `bfloat16` / `bf16` → `BF16`；`float` / `Float` / `FLOAT` → `FLOAT32`）。**禁止**任何其他形式的缩写、漏字母、字母替换、大小写改写、词干截断或意译。
+- **条目内自洽**：同一条目中，`src_text` 里出现的每个 dtype/format token 必须能在 `value` 数组中找到**逐字一致**的对应项，反之 `value` 数组每个元素也必须能在 `src_text` / 文档原文中找到逐字一致来源。若 `src_text` 记 `HIFLOAT8` 而 `value` 写 `HFLOAT8`（或反之），即为提取错误，必须修正为与文档原文逐字一致。
+- **受控字典缺口处置**：当文档原文使用的 dtype token 不在 §5.2 受控字典中时，**禁止**将其改写为字典中"形似"的项（漏字母 / 截断 / 替换字母以凑出字典里已有的串，如把 `HIFLOAT8` 改成 `HFLOAT8`）；应**原样保留**文档 token、在 `src_text` 摘录原文，并在该参数 `description` 末尾补注 `[DICT_GAP:<token>]` 标记供人工扩容字典。此为字典缺口，不属誊写错误，不受 §9.4「dtype 必须来自 §5.2」的拒绝（以原样 token 为准）。
+- 该规则同样适用于 `allowed_range_value.value` 的字符串枚举候选、`format.value` 的格式串，以及 `dtype_support_description` / `format_support_description` 中的 combo 值。
+- **反例（必须避免）**：算子文档原文与条目 `src_text` 均为 `HIFLOAT8`，但 `value` 数组误写为 `HFLOAT8`（漏字母 `I`）——属本规则明确禁止的誊写错误；下游生成器仅识别 `HIFLOAT8`，`HFLOAT8` 会触发 `_infer_sort` KeyError 并被 try/except 静默吞掉，最终 ZERO_CASES_GENERATED。
 
 **aclDataType 参数的固定 dtype 规则**：
 - 当 `type.value == "aclDataType"` 时，`dtype.value` **固定**为 `["string"]`。`aclDataType` 是表示数据类型的标量枚举，参数本身取值为 dtype 名称字符串，故其"自身 dtype"恒为 `string`。此规则**优先级高于**上面的"类型回填规则"——无论文档"数据类型"列是否给出候选都强制执行，**不**因列值非空而改写，也**不**走"其他非 Tensor 参数使用 `type.value` 回填"分支（否则会错误地产出 `["aclDataType"]`）。
@@ -730,14 +715,6 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
   场景门控下的 **shape 等式**约束，沿用本节 H 的 `cross_param_constraint` unless
   范式，把 `len(weight.shape) == N` 推广为轴等式（共享 K：`x.shape[0]==weight.shape[0]`；
   M：`x.shape[1]==out.shape[1]`；N：`weight.shape[1]==out.shape[2]`）。
-- **显式 bool 变体（v4 增补，`transpose_shape` 模块）**：语义 B 默认不引入隐式 bool（如上，
-  适用于"最后一维 K 轴或 M 轴"这类条件描述，用 `shape[-1]` + `src_text` 即可）；但当需要
-  cases 层 `<param>_transposed` 取值与 shape 转置形态**自洽对应**时，可引入
-  `<param>_transposed` 隐式 bool，通过 `shape_value_dependency` if/else 门控**转置关键轴
-  （K）在 shape 中的位置**（不转置 K 在 shape[1]、转置 K 在 shape[0]）。此变体仍属语义 B
-  （shape 元组重排、维数不变），与语义 A（stride 编码、shape 不变）区别在于 bool 驱动
-  **轴位置**而非 stride；两者不混用。`<param>_transposed` 不得写入 `function_signature`，
-  字段规范同 §4.6.5 B.1；详见 `prompts/modules/transpose_shape.md`。
 
 **判别信号**：文档若在 shape 元组里直接列出两种顺序（(M,K)/(K,M) 或 (K,N)/(N,K)），
 即语义 B；若只给 stride / 数据排布描述而 shape 元组保持不变，即语义 A。两者不可混用：
@@ -885,6 +862,38 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     `互推导关系.md` 或 `broadcast关系.md`，必须按 §4.6.10 产出对应的
     `type_dependency` / `shape_broadcast` / `shape_value_dependency` 约束；不得只在
     `src_text` 中保留链接。
+
+    **`type_equality` 与 `type_dependency` 的强制分界**：
+
+    - `type_equality` **只**用于无条件、无门控、无可选存在性判断、无其他
+      属性参与的纯 dtype 等式。典型形式为 `x.dtype == y.dtype`，或多参数
+      无条件等值链 `x.dtype == y.dtype and x.dtype == z.dtype`。此类约束独立描述
+      两个或多个参数的 dtype 属性始终相等。
+    - 只要 dtype 关系受**任何条件**影响，必须使用 `type_dependency`。包括但不
+      限于：枚举/布尔/标量参数门控，`is None` / `is not None` 可选存在性
+      判断，`if/else`，“某场景下一致”，“某模式下允许不一致”，不同 dtype
+      合法组合的析取表达，以及 dtype 与 value/shape/format/presence 的联合关系。
+    - **不得根据结果子式中出现 `x.dtype == y.dtype` 就选 `type_equality`**；必须
+      对整条 `expr` 分类。整条表达式只要还引用了 `.range_value`、`None`、
+      非 dtype 属性或条件运算符，就是 `type_dependency`。
+
+    ```text
+    # 正例：独立、无条件的属性相等
+    expr_type: type_equality
+    expr: x.dtype == y.dtype
+
+    # 正例：模式参数决定 dtype 是否需要相等
+    expr_type: type_dependency
+    expr: (mode.range_value == "PA_NZ") or (x.dtype == y.dtype)
+
+    # 正例：可选参数存在时才要求 dtype 一致
+    expr_type: type_dependency
+    expr: optional is None or x.dtype == optional.dtype
+
+    # 反例：以下两条都不得标为 type_equality
+    (cacheModeOptional.range_value == "PA_NZ") or (key.dtype == value.dtype)
+    compressLensOptional is None or slotMapping.dtype == compressLensOptional.dtype
+    ```
 12. **MatMul Reduce 维度相等必须落库（v3 增补）**：当文档写
     "mat2 的 Reduce 维度需要与 self 的 Reduce 维度大小相等"、"self 的 last dim 与
     mat2 的 penultimate dim 相同" 等语义时，必须按实际布局落为 `shape_value_dependency`。
@@ -921,25 +930,6 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     布局变换类，文档 dtype 表每行 src.dtype == dst.dtype）时，必须在
     `constraints_in_parameters[每个支持平台]` 中追加 `srcTensor.dtype == dstTensor.dtype`
     的 `type_equality` 约束；dstTensor 值域沿用 src，不得按不同 dtype 负值域生成。
-
-15. **分组 / MatMul 收缩轴与输出轴 shape 等式必须落库（语义 B，2026-07-29 增补）**：当算子计算公式为矩阵乘（`y[m,n]=x[m,k]×weight[k,n]` 及分组/转置变体），且文档按 `groupType`/`splitItem`/单-多 tensor 逐场景给出 x/weight/out 的 shape 元组（语义 B：转置由 shape 元组顺序编码，**不**引入隐式 bool，见 §4.6.3 I），**必须**为每个合法场景行产出轴等式约束，编码：①收缩轴 K 相等 `x.shape[K_i]==weight.shape[K_j]`；②输出 M 相等 `x.shape[M_i]==out.shape[M_i]`；③输出 N 相等 `weight.shape[N_i]==out.shape[N_j]`。轴下标 i/j 由该场景 x/weight/out 的 shape 元组读出。多场景用 `cross_param_constraint` 的 unless 析取范式（与 §4.6.3 H 一致）：
-
-```text
-# groupType=0 单单单 非量化：x=(M,K) weight=(g,N,K) out=(M,N)
-expr_type: cross_param_constraint
-expr: not(groupType.range_value == 0 and splitItem.range_value in [2,3] and len(x)==1 and len(weight)==1 and len(out)==1) or (x.shape[1] == weight.shape[2])
-relation_params: ["groupType","splitItem","x","weight","out"]
-src_text: "groupType=0 单单单 splitItem 2/3：x(M,K) weight(g,N,K) out(M,N)；公式 y_i[m_i,n_i]=x_i[m_i,k_i]×weight_i[k_i,n_i]（line 18/727）"
-# 同场景补两条：x.shape[0]==out.shape[0] (M) ; weight.shape[1]==out.shape[1] (N)
-
-# groupType=2 单单单 非量化：x=(K,M)转置 weight=(K,N) out=(g,M,N)
-expr: not(groupType.range_value == 2 and splitItem.range_value in [2,3] and len(x)==1 and len(weight)==1 and len(out)==1) or (x.shape[0] == weight.shape[0])
-# 同场景补：x.shape[1]==out.shape[1] (M) ; weight.shape[1]==out.shape[2] (N)
-```
-
-**weight 双顺序 `(g,N,K)/(g,K,N)`**：若同场景文档同时给两顺序且未由 groupType 区分，K 轴等式写析取 `weight.shape[1]==x.shape[K_i] or weight.shape[2]==x.shape[K_i]`，N 轴同理；该析取会让"非 K 轴"无约束漂移，属生成器侧已知 gap（见文末附录），但**仍必须落库**以阻断 K 不一致的最严重错误。
-
-**禁止**：只在 `description` 写"x 与 weight 维度一致"而不落 `shape_value_dependency`；或用 `x.shape == weight.shape`（二者 shape 本不等，仅某轴相等）。本项与 §4.7.3 item 12（语义 A，`aclnnBatchMatMulWeightNz` 隐式 bool）互补：item 12 覆盖 stride 编码转置，本项覆盖 shape 元组重排编码转置。
 
 ### 4.8 `return_info`（错误返回码）
 
@@ -1012,13 +1002,13 @@ expr: not(groupType.range_value == 2 and splitItem.range_value in [2,3] and len(
 
 ### 5.2 标准 dtype 字符串（受控字典）
 
-提取 `dtype.value` / `dtype_support_description` 中的 dtype 时，**必须**使用以下字符串之一：
+提取 `dtype.value` / `dtype_support_description` 中的 dtype 时，**必须**使用以下字符串之一（修正：`HFLOAT8` 为误写，正确名为 `HIFLOAT8`，与 `agent/generators/data_definition/constants.py` 及全部算子文档原文一致）：
 
 ##### Tensor 数据类型
 ```
 FLOAT32, FLOAT16, BFLOAT16, BF16, DOUBLE, INT8, UINT8, INT16, UINT16,
 INT32, UINT32, INT64, UINT64, BOOL, COMPLEX64, COMPLEX128,
-FLOAT8_E4M3FN, FLOAT8_E5M2, FLOAT4_E2M1, HFLOAT4, HFLOAT8
+FLOAT8_E4M3FN, FLOAT8_E5M2, FLOAT4_E2M1, HFLOAT4, HIFLOAT8
 ```
 
 ##### 标量参数"类型"（仅用于 `dtype.value`，不用于 `dtype_support_description` 的 combo）
@@ -1076,6 +1066,26 @@ NDC1HWC0, FRACTAL_NZ_C0_16, FRACTAL_NZ_C0_32, NDHWC, NCHW_VECT_C0_16, NC1HWC0, N
    - ✅ `all(v >= 1 for v in padding.range_value)`
    - ✅ `all(d > 0 for d in x.shape)`（不允许空 Tensor）
    - ❌ `[v >= 1 for v in padding.range_value]`（返回 list，不返回 bool）
+   - `all()` / `any()` 的生成器仅用于逐元素布尔判定；**不得**将生成器
+     传给 `sum()`，当前求解器不支持 `sum(expr for ... in ...)`、
+     `sum(... for ... in zip(...))` 或带索引循环的求和。
+   - 数组整体求和只使用 `sum(param.range_value)`。若被求和项是线性组合，
+     必须先做代数等价变换：
+
+     ```text
+     # 文档：reduceSum(A[i] - B[i]) <= capacity
+     # 正例：分别对完整数组求和，再做标量运算
+     sum(A.range_value) - sum(B.range_value) <= capacity.range_value
+
+     # 反例：当前求解器无法翻译
+     sum(A.range_value[i] - B.range_value[i]
+         for i in range(min(len(A.range_value), len(B.range_value)))) <= capacity.range_value
+     sum(a - b for a, b in zip(A.range_value, B.range_value)) <= capacity.range_value
+     ```
+
+   - 代数改写不得擅自加入 `min(len(...))` 截断。若文档明确要求数组等长，
+     另建 shape/长度约束；若合法场景中两数组长度本来不同，不得为了
+     索引循环强制等长，应根据文档的总量语义对两个完整数组分别求和。
 5. **"维数 vs 长度"**：表达式中的 `len(x.shape)` 表示 rank（仅 `aclTensor` / `aclTensorList` 有 `.shape`），"shape size" 永远指 rank，**不是**各维大小乘积。`aclIntArray` / `aclFloatArray` / `aclBoolArray` **没有 `.shape`**，其元素个数直接写 `len(paramName)`（裸参数名），**禁止** `len(paramName.shape)`。
 6. **负索引优先**：当约束引用了以字母命名的维度（如 `H`、`W`）且该维度在 shape 描述中**始终处于固定语义位置**（如"最后一维"），必须使用 `shape[-1]` 而非固定正索引 `shape[1]` 或 `shape[3]`。
    - **"固定语义位置"指物理位置固定，非逻辑轴名固定**：shape 元组重排编码转置时（如 `x` 不转置 shape=(M,K)、转置 shape=(K,M)），末维物理位置始终是 `shape[-1]`，逻辑轴名虽变（K 或 M）但物理位置不变，仍适用本条。条件映射（"K 轴或 M 轴"）只放 `src_text`，不因此改用 `[:-1]` 或加 if/else。
@@ -1265,8 +1275,8 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | `shape_equality` | 形状完全相等 | `out.shape == x.shape` |
 | `shape_dependency` | 输出 shape 由输入 + 辅助参数推导 | `out.shape[0] == pad + x.shape[0]` |
 | `shape_value_dependency` | shape 中具体轴值/元素值依赖 | `x1.shape[0] == x2.shape[1] and x2.shape[1] == BS.range_value` |
-| `type_equality` | dtype 必须一致 | `x1.dtype == x2.dtype` |
-| `type_dependency` | dtype 依赖其他参数/条件（含互推导关系） | `(bias.dtype == "FLOAT16") if (x.dtype == "FLOAT16") else (bias.dtype == "FLOAT32")`；互推导用合法 dtype 组合析取表达 |
+| `type_equality` | 无条件、独立的纯 dtype 属性相等；整条 expr 不得含门控、`None`、`.range_value` 或非 dtype 属性 | `x1.dtype == x2.dtype`；`x.dtype == y.dtype and x.dtype == z.dtype` |
+| `type_dependency` | dtype 依赖模式/取值/存在性/条件分支/合法组合（含互推导关系） | `optional is None or x.dtype == optional.dtype`；`(mode.range_value == "PA_NZ") or (x.dtype == y.dtype)`；互推导用合法 dtype 组合析取表达 |
 | `value_dependency` | 取值依赖/取值范围 | `BS.range_value % rankSize.range_value == 0` |
 | `format_equality` | 数据格式必须一致 | `x1.format == x2.format` |
 | `presence_dependency` | 共存规则（None/非None） | `(scale is None) == (zeroPoint is None)` |
@@ -1298,7 +1308,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | 参数是 `aclDataType xxx`（标量数据类型枚举） | `type.value="aclDataType"`、`dtype.value=["string"]`（固定，见 §4.6.3 aclDataType 规则）；文档"数据类型"列候选写入 `allowed_range_value`（`type="enum"`），**不**写入 `dtype` |
 | 文档出现 `Optional` 后缀但未说明是否可空 | `is_optional.value=false`（保守），`src_text` 摘录原文待人工复核 |
 | 文档写"shape 为 [B,H] 或 [B,1,H]" | 拆为 `shape_choice` / `shape_dependency` 约束；不要并成模糊规则 |
-| 文档写"x 和 y 数据类型必须一致" | `expr_type="type_equality"`，`expr="x.dtype == y.dtype"`，`relation_params=["x","y"]` |
+| 文档写"x 和 y 数据类型必须一致"，且不受任何模式/场景/可选性条件影响 | `expr_type="type_equality"`，`expr="x.dtype == y.dtype"`，`relation_params=["x","y"]` |
+| 文档写"当 mode=M 时 dtype 一致/可以不一致" | `expr_type="type_dependency"`；expr 保留 `mode.range_value` 门控，不得因子式含 dtype 等式而标为 `type_equality` |
+| 文档写"可选参数 y 存在时与 x 数据类型一致" | `expr_type="type_dependency"`，`expr="y is None or x.dtype == y.dtype"`；存在性判断使其不再是纯等式 |
 | 文档引用 `互推导关系.md` 或写"数据类型推导规则" | 按 §4.6.10 A 的推导表生成 `type_dependency`；输出若要求与推导后 dtype 一致，必须绑定输出 dtype；推导结果不在输出 dtype 允许集合内的输入组合必须排除 |
 | 文档引用 `broadcast关系.md` 或写"满足 broadcast 关系" | 按 §4.6.10 B 的广播规则生成 `shape_broadcast`；若输出轴由 broadcast 推导得到，还要生成输出轴等于 broadcast 结果的 `shape_value_dependency` |
 | MatMul 文档写"Reduce 维度需要相等" | 生成 `shape_value_dependency` 绑定真实 Reduce 轴；若存在转置/非转置布局，必须按对应 bool 门控分支；不得只写 `ceil(k,k0)=k1` 而允许 NPU 逻辑 Reduce 维度不等 |
@@ -1343,10 +1355,12 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | **文档组合表只有 dtype 列（纯 dtype 表，跨多参数也行），或只有 format 列（纯 format 表）（v3 增补）** | 纯 dtype 表填 `dtype_support_description`、纯 format 表填 `format_support_description`，**不**落 OR-of-ANDs expr；不属 §6.3 模式 9 适用范围 |
 | **文档组合表同表含 dtype 列与 format 列但二者独立（任意 dtype 配任意 format，拆开不丢失信息）（v3 增补）** | 按"单独 dtype 约束 + 单独 format 约束"处理：dtype 部分填 `dtype_support_description`、format 部分填 `format_support_description`（或用 `type_equality` + format 枚举 + `format_rank_consistency`）；**不**强制 OR-of-ANDs。判据：拆成纯 dtype 表+纯 format 表后是否产生原本非法的 dtype×format 组合——不产生即为独立 |
 | **`constraints_in_parameters` 出现 `expr=""` 空壳条目（`derived_value`/`cross_param_constraint` 等）（v3 增补）** | 违 §4.7.2/§4.6.8 C.1：`derived_value` 在文档存在确定映射时 `expr` 必须编码为可求解 OR-of-ANDs/等式 expr（§6.3 模式 9），不得为空；不可形式化的约束（如「转 NZ 后不许 contiguous/transpose」）**不**产出条目，改记入 `description`/`src_text`。典型反例：aclnnNpuFormatCast iter_001 三平台 `derived_value.expr=""` 与 `cross_param_constraint.expr=""` 空壳 |
+| **条目内 `src_text` 的 dtype/format token 与 `value` 数组元素不逐字一致** | 违 §4.6.3「dtype / value 候选逐字一致性硬规则」与 §9.33：必须修正 `value` 元素使其与 `src_text` / 文档原文逐字一致；典型反例：`src_text` 含 `HIFLOAT8` 而 `dtype.value` 写 `HFLOAT8`（漏字母 `I`），下游生成器 `HIFLOAT8` 之外一律 KeyError 被静默吞掉，终致 ZERO_CASES_GENERATED |
+| **文档原文 dtype token 不在 §5.2 受控字典** | **不得**改写为字典内"形似"项凑数（漏字母/截断/替换字母）；原样保留文档 token，`src_text` 摘录原文，并在该参数 `description` 末尾补注 `[DICT_GAP:<token>]` 供人工扩容字典；此情形不属 §9.4 拒绝，以原样 token 为准 |
 
 ## 9. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 34 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 33 项。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -1356,7 +1370,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
    `product_support` 中的每一个平台都产出条目**——即使各平台 `ParamAttributes` 内容完全
    一致，也必须逐平台复制；不得用单个平台名"代笔"。常见错误模式：从 `Atlas 350 加速卡`
    文档表格读取约束后，只输出 `Atlas 350 加速卡` 条目，遗漏 `Atlas A3 / A2` 条目。
-4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；非 Tensor 参数若非"仅支持空指针"，`dtype.value` 不得为空，缺失时按 type 回填；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。
+4. **dtype/format 字典一致**：所有 `dtype.value` 元素来自 §5.2（含标量类型）；非 Tensor 参数若非"仅支持空指针"，`dtype.value` 不得为空，缺失时按 type 回填；所有 `format.value` 元素来自 §5.3 或为 `"N/A"`。各 dtype/format 字符串须与该条目 `src_text` / 文档原文逐字一致（仅允许 §5.2/§5.3 登记的规范化映射，见 §4.6.3「dtype / value 候选逐字一致性硬规则」与 §9.33）。
 5. **表达式合法**：每条 `expr`（非空）先把裸 `null` token 规范化为 `None`，再用
    Python AST 解析；不得有 `SyntaxError`。`null`/`None` 不得作为数值大小比较边界。
 6. **关系参数一致**：`expr` 中**所有出现的标识符**都在 `relation_params` 中；`relation_params` 中所有参数名都在 `inputs`/`outputs` 有对应卡片（隐式维度变量/外部常量允许例外，但须在 `inputs` 中登记）。
@@ -1557,6 +1571,33 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
        （`srcTensor.dtype == dstTensor.dtype`）+ `dstTensor.format` 枚举 + `format_rank_consistency`
        表达即可，不强求 OR-of-ANDs；三平台均不得出现 `additionalDtype="2"`/`dstFormat="29"`
        这类数值枚举码混入 dtype/format 字段。
+31. **`type_equality` / `type_dependency` 分类自检**：逐平台遍历
+    `constraints_in_parameters` 的所有 dtype 关系，必须满足：
+    a. 标为 `type_equality` 的 expr 只能由参数 `.dtype` 间的 `==` 及用于
+       连接多个无条件等式的 `and` 组成；
+    b. `type_equality` expr 若出现 `.range_value`、`.shape`、`.format`、
+       `is None`、`is not None`、`if/else`、否定门控或析取分支，必须改为
+       `type_dependency`；
+    c. 重新阅读每条 `src_text`；若含“当…时”、“对应场景”、“仅当”、
+       “除…外”、“可以不一致”、“参数存在时”等条件语义，其 dtype
+       关系必须标为 `type_dependency`；
+    d. 专项反例检查：
+       `(cacheModeOptional.range_value == "PA_NZ") or (...)` 和
+       `optional is None or x.dtype == optional.dtype` 必须均为
+       `type_dependency`，不得为 `type_equality`。
+32. **聚合表达式求解器兼容性自检**：遍历所有 `expr`：
+    a. 不得出现 `sum(... for ... in ...)`、`sum(... for ... in zip(...))` 或
+       `sum([comprehension])`；当前生成器只支持 `sum(param.range_value)` 这类
+       对完整数组的直接求和；
+    b. 对 `reduceSum(A[i] - B[i])` 等线性聚合，必须改写为
+       `sum(A.range_value) - sum(B.range_value)`，并保留原有门控与容量不等式；
+    c. 不得用 `range(min(len(A), len(B)))` 静默截断较长数组；只在文档
+       明确要求等长时另建长度约束；
+    d. `aclnnScatterPaKvCache` 专项形式必须为
+       `(seqLensOptional is None or compressLensOptional is None) or `
+       `(sum(seqLensOptional.range_value) - sum(compressLensOptional.range_value) <= `
+       `num_blocks.range_value * block_size.range_value)`，不得产出索引生成器或
+       `zip()` 生成器。
 
 31. **支持场景表 → 维数联动自检（v4 增补）**：当文档含「支持场景表 / 场景矩阵 /
     groupType 支持场景」类表格，且单元格按离散参数（`groupType` / `splitItem` /
@@ -1586,32 +1627,22 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
     e. 若除 `nullptr` 外原文还允许其他取值（如"支持传 nullptr 或 [0,1]"），`value` 写成混合候选 `[null, [0,1]]`（`type=enum`），`src_text` 摘录完整原文段；
     f. 典型正例：`aclnnSwinAttentionScoreQuant` 的 `paddingMask2Optional`（参数表"输入/输出"列为"输入"，使用说明"当前仅支持输入nullptr"）→ `is_optional.value=false`、`dtype.value=[]`、`allowed_range_value={"value":[null], "type":"enum", "src_text":"当前仅支持输入nullptr"}`。
 
-33. **分组 / MatMul 收缩轴与 groupList 结构一致性自检（2026-07-29 增补）**：当算子 `function_explanation` 或正文含矩阵乘公式（`y=x×weight[+bias]` 及分组/转置变体），且文档含逐场景 shape 元组（如 `x=(M,K)`、`weight=(g,N,K)`，按 groupType/splitItem/单-多 tensor 分行）时，必须满足**全部**：
-    a. `constraints_in_parameters[每个支持平台]` 含收缩轴 K 等式（`x.shape[K_i]==weight.shape[K_j]`）、输出 M 等式（`x.shape[M_i]==out.shape[M_i]`）、输出 N 等式（`weight.shape[N_i]==out.shape[N_j]`），轴下标由该场景 shape 元组读出；
-    b. 含 `groupListOptional` 的算子：含"长度==分组数"等式（`groupListOptional.shape[0]==weight.shape[0]` 或 `==len(weight)`）、含 groupList 取值 vs x 分组轴的 ≤/== 关系（按 groupListType 0/1/2）、含 groupList 必 null 场景的 `presence_dependency`；
-    c. 上述约束用 `cross_param_constraint` unless 范式门控 groupType/splitItem/单-多 tensor，析取覆盖场景表全部合法行（§9.31 只查 rank，本项查**轴值**）；
-    d. 反例：只在 `description` 写"维度一致"而不落 `shape_value_dependency` → 判漏抽重写（后果：生成器产 x.K≠weight.K 不可计算用例，ACL `161002`）。
-
-34. **转置 shape 重排隐式变量完整性自检（2026-07-29 增补，`transpose_shape` 模块）**：
-    当算子文档含转置且对某张量参数 `<param>` 给出 shape 元组两种顺序（如 `(M,K)`/`(K,M)`，
-    语义 B 显式 bool 变体，见 §4.6.3 I 与 `prompts/modules/transpose_shape.md`），且函数签名
-    无真实 transpose bool 参数时，必须满足**全部**：
-    a. `inputs` 含 `<param>_transposed`，覆盖 `product_support` 全平台；`type.value="bool"`、
-       `dtype.value=["bool"]`、`is_operator_param.value=false`、`dimensions.value=[]`、
-       `allowed_range_value.type="enum"`；
-    b. `<param>_transposed` 不出现在 `function_signature`；
-    c. `allowed_range_value.value` 按场景：文档"不支持转置"场景 `[false]`、"必须转置"场景
-       `[true]`、"支持转置"场景 `[false, true]`；
-    d. `constraints_in_parameters[每个支持平台]` 含 `shape_value_dependency` if/else，把
-       `<param>` 转置关键轴（K）在 shape 中的位置由 `<param>_transposed.range_value` 门控
-       （不转置 K 在 shape[1]、转置 K 在 shape[0]），`relation_params` 含 `<param>` 与
-       `<param>_transposed`（及轴等式对端张量）；禁止把 bool 当孤立场景标志而不落配套
-       `shape_value_dependency`（否则 cases 层 bool 与 shape 对应失败）；
-    e. 不转置/必须转置场景另落 `value_dependency` 场景门控（如 A8W8 dtype 组合 →
-       `<param>_transposed==False`、`groupType==2` → `<param>_transposed==True`）；
-    f. 反例：只在 `description` 写"支持转置"而不引入 `<param>_transposed` + 配套
-       `shape_value_dependency` if/else → 判漏抽重写（后果：cases 层无 bool 与 shape 对应，
-       executor 无法据 bool 区分转置用例）。
+33. **dtype / value 候选逐字一致性自检**：逐平台遍历全部 `inputs`/`outputs`
+    参数及 `constraints_in_parameters` 条目，必须满足**全部**：
+    a. `value` 数组中的每个 dtype/format 字符串逐字复制自文档原文 / 该条目
+       `src_text`，仅允许 §5.2 / §5.3 登记的规范化映射（`BF16`/`bfloat16`/`bf16`→`BF16`，
+       `float`/`Float`/`FLOAT`→`FLOAT32`）；禁止缩写、漏字母、字母替换、大小写改写、
+       词干截断或意译；
+    b. **条目内自洽**：同一条目 `src_text` 中出现的每个 dtype/format token 必须能在
+       `value` 数组中找到逐字一致的对应项，反之 `value` 每个元素也必须能在 `src_text` /
+       文档原文中找到逐字一致来源；`src_text` 记 `HIFLOAT8` 而 `value` 写 `HFLOAT8`
+       （或反之）即为提取错误，必须修正；
+    c. 文档原文 dtype token 不在 §5.2 受控字典时，原样保留该 token、`src_text` 摘录原文、
+       并在该参数 `description` 末尾补注 `[DICT_GAP:<token>]`；此为字典缺口，不属誊写
+       错误，不受 §9.4「dtype 必须来自 §5.2」的拒绝；
+    d. 同样检查 `allowed_range_value.value` 的字符串枚举候选、`format.value` 的格式串，
+       以及 `dtype_support_description` / `format_support_description` 中的
+       combo 表 dtype/format 值；发现不一致即重做该条目。
 
 ## 10. 调用模板
 
@@ -1642,6 +1673,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
   条件 Shape 使用模式 6；shape_value_dependency 隐式 bool 门控使用模式 6.1；
   Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0；派生值查找使用模式 9）
 - 写 allowed_range_value 时参考 §4.6.3 allowed_range 文本→结构化映射
+- dtype / format / 枚举候选必须与 src_text / 文档原文逐字一致（见 §4.6.3
+  「dtype / value 候选逐字一致性硬规则」与 §9.33）；文档 token 不在 §5.2 时
+  原样保留并标 `[DICT_GAP:<token>]`，不得改写为字典内形似项凑数
 
 输出必须是**纯 JSON 字符串**，无任何前后缀。
 
@@ -1662,9 +1696,9 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按《算子约束提取通用提示词 v4》第 3 章 schema 输出 JSON；
-3. 内部执行第 9 章 34 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
+3. 内部执行第 9 章 33 项自检（含 §9.15 NZ 块尺寸、§9.16 一段式一致性自检、§9.17 非 Tensor 数组禁用、§9.18 条件 Shape 与 shape_value_dependency 门控完整性、
    §9.19 TensorList 长度关系、§9.20 动态取值边界、§9.21 Partial-Shape 自检、§9.25 大小/数量语义隐式 >0、§9.26 公共互推导/broadcast 知识展开、
-   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.31 支持场景表→维数联动、§9.32 必选参数"只支持 nullptr"取值语义、§9.33 分组/MatMul 收缩轴与 groupList 结构一致性）；
+   §9.28 derived_value 可求解性、§9.29 格式转换 dtype 等式、§9.30 联合交叉 dtype/format 组合表、§9.31 支持场景表→维数联动、§9.32 必选参数"只支持 nullptr"取值语义、§9.33 dtype/value 逐字一致性）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 
@@ -1693,8 +1727,6 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | [`knowledge/relation_skills/presence_dependency.md`](knowledge/relation_skills/presence_dependency.md) | 存在性依赖 3 类模板 | §6.3 模式 3 |
 | [`prompts/modules/broadcast.md §A`](prompts/modules/broadcast.md) | CANN aclTensor dtype 互推导关系、推导结果与输出 dtype 绑定、非法组合排除（原 `knowledge/common/type_promotion.md`，已内联） | §4.6.10 A + §9.26 |
 | [`prompts/modules/broadcast.md §B`](prompts/modules/broadcast.md) | broadcast 右对齐、维度为 1 拉伸、输出 broadcast 结果轴、特殊 dtype 限制（原 `knowledge/common/broadcast.md`，已内联） | §4.6.10 B + §9.26 |
-| [`prompts/modules/ffn_v3.md`](prompts/modules/ffn_v3.md) | aclnnFFNV3 专项：MoE/FFN 专家模式、quant/pseudo-quant dtype 分组与互斥、bias/deqScale/antiquant shape 变体（§A~F）、NPU 真机测量反馈（§G，需 `src_text=NPU 真机测量反馈`） | 模块全文 + §C.1 |
-| [`prompts/modules/swin_transformer_ln_qkv_quant.md`](prompts/modules/swin_transformer_ln_qkv_quant.md) | aclnnSwinTransformerLnQkvQuant 专项：`oriHeight`/`oriWeight` 隐式 >0、Q 输出 4D shape 推导（`src_text` 引用 `swin_transformer_ln_qkv_quant_infershape.cpp`）、K/V shape 与 Q 相等 | 模块 §A~E |
 
 ## 附录：生成器层 null 语义 gap（v4 提示词已先行，待生成器/执行层跟进）
 
@@ -1711,17 +1743,3 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 5. **执行层 attr null crash**：`executer/resources/aclnn_api_template.py.j2:151-176` `handle_attr_param` 行 160 `range_val.encode('utf-8')` 对 `None` 必崩（`AttributeError: 'NoneType' object has no attribute 'encode'`）；行 161 `ctype(None)` 对 `c_int`/`c_bool` 静默归 0/False；仅行 169-176 的 `attr_tuple`/`attrs` 分支正确处理 `None`。后果：单 attr 参数取 `None` 会 crash 或静默变 0/False。**后续改造点**：单 attr 分支增加 `if range_val is None: input_tmp[config.name] = <对应类型的 null 指针>; continue`，对齐 `attr_tuple` 已有逻辑。tensor 必选参数传 nullptr 已有现成兜底（行 67-87），隐式可用。
 
 **`is_null` 建模改造关键点（汇总）**：(a) `param_var_definition` 各 Var 类增 `is_null` Z3 Bool；(b) `analysis_param_is_present` 改为同时设置 `is_present` 与 `is_null`，必选 + `[null]` → `is_present=True, is_null=True`；(c) `expression_preprocess_utils` `is None`/`is not None` 改译 `is_null`/`Not(is_null)`；(d) `resolve_model` 输出 `value_is_none` 字段；(e) 用例序列化层（`create_dataset`/template）按 `value_is_none` 输出 `nullptr`；(f) 校验层 `validate_artifacts.py` 已兼容（`_EXPLICIT_NULL_RE` 放行），无需改；(g) 提示词层 v4 已就绪，待 (a)-(e) 落地后 GENERATE 阶段自然符合。
-
----
-
-## 附录：生成器层 shape 一致性 gap（提示词已先行，待生成器跟进）
-
-本提示词已把"matmul 收缩轴/输出轴等式 + groupList 结构"确立为 `constraints_in_parameters`（§4.7.3 item 15、§4.6.3 groupList 结构规则、§9.33 自检）。**但 GENERATE 层对部分形态尚未完全支持**，已知后果与后续改造点（本次不改，列为后续）：
-
-1. **语义 B weight 双顺序析取漂移**：`weight.shape[1]==x.K or weight.shape[2]==x.K` 析取会让非 K 轴无约束漂移（如 `weight.shape[1]==x.K` 成立则 `weight.shape[2]` 任意），可能产不对应任一布局的 shape。**改造点**：提示词按 groupType 行单选一种顺序（若文档将顺序与 groupType 绑定），或生成器引入隐藏 bool `weight_layout` 约束两轴互换。
-2. **2-d groupList 列切片**：`groupListType=2` 的"第二列求和"需对 2-d tensor 取列；生成器 `TensorVar.range_value` 为 1-d Array，2-d 切片未支持。**改造点**：TensorVar 增 2-d 建模，或对 `groupListOptional` 特化为 2-d Seq-of-Seq。
-3. **groupListOptional 负索引**：`groupListOptional[-1]`（末值，groupListType=0）在 TensorVar 上走 `z3.Select(range_value, -1)`，负索引返回未定义默认值；提示词已改用 `groupListOptional[groupListOptional.shape[0]-1]` 规避。**改造点**：TensorVar `get_element_at` 对负索引补 `If(idx<0, Length+idx, idx)` 归一（目前仅 Seq 分支补，TensorVar 分支未补）。
-4. **shape 值无上界采样**：轴等式落库后，Z3 协调 shape 时非末轴仅 `>0` 与元素总数上界，可能采大值。**改造点**：为 shape 各轴补 `TENSOR_SHAPE_MAX_VALUE`(65535) 上界 ForAll（常量已存未落约束）。
-5. **pairwise shape 共享组未识别单轴等式**：pairwise `apply_shape_equality` 目前只处理**全 shape 相等**，不识别 `shape_value_dependency` 的单轴等式；故 pairwise 仍独立采 shape，Z3 校正期丢弃冲突静态值后自由求解（已 Z3 实测可产出一致 shape，但 pairwise 覆盖计数虚高）。**改造点**：pairwise 增对单轴等式的共享组识别。
-
-本轮先落单顺序场景（groupType=0 单单单 `(g,N,K)`、groupType=2 单单单等，占大多数）验证；双顺序/2-d groupList 场景标为已知 gap，不阻塞主路径。

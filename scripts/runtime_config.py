@@ -12,6 +12,28 @@ PROMPT_DIRECTORY = ROOT / "prompts"
 OPERATOR_PROMPT_PATTERN = re.compile(
     r"^operator_constraints_extract_v(?P<version>\d+)\.md$"
 )
+TORCH_NPU_PROMPT_PATTERN = re.compile(
+    r"^torch_npu_constraints_extract_v(?P<version>\d+)\.md$"
+)
+TTK_SUPPORTED_TORCH_NPU_OPERATORS = frozenset({
+    "torch_npu.npu_fused_infer_attention_score",
+    "torch_npu.npu_mla_prolog_v3",
+    "torch_npu.npu_lightning_indexer",
+    "torch_npu.npu_quant_lightning_indexer",
+    "torch_npu.npu_sparse_flash_attention",
+    "torch_npu.npu_kv_quant_sparse_flash_attention",
+})
+
+
+def default_test_framework(operator_family: str, operator_name: str = "") -> str:
+    """Select a safe auto framework without routing unsupported APIs to TTK."""
+    if operator_family != "hs":
+        return "atk"
+    return (
+        "ttk"
+        if operator_name in TTK_SUPPORTED_TORCH_NPU_OPERATORS
+        else "constraints"
+    )
 
 
 def resolve_input_path(value: str | Path) -> Path:
@@ -37,6 +59,28 @@ def find_latest_operator_prompt(directory: Path | None = None) -> Path | None:
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
+def find_latest_hs_prompt(directory: Path | None = None) -> Path | None:
+    """Return the latest isolated prompt for torch_npu documents."""
+    prompt_dir = (directory or PROMPT_DIRECTORY).resolve()
+    candidates: list[tuple[int, Path]] = []
+    if not prompt_dir.is_dir():
+        return None
+    for path in prompt_dir.iterdir():
+        match = (
+            TORCH_NPU_PROMPT_PATTERN.fullmatch(path.name)
+            if path.is_file()
+            else None
+        )
+        if match:
+            candidates.append((int(match.group("version")), path.resolve()))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def find_latest_torch_npu_prompt(directory: Path | None = None) -> Path | None:
+    """Named alias for new callers; keeps the old public helper compatible."""
+    return find_latest_hs_prompt(directory)
+
+
 def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
     """Validate server config without exposing credential values."""
     path = resolve_input_path(value)
@@ -52,7 +96,9 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
     if not isinstance(servers, list) or not servers:
         return path, ["服务器配置必须包含非空 servers 数组"]
 
-    valid_transfer_modes = {"auto", "scp", "sftp", ""}
+    # 与 executer/ssh.py upload_file 支持的传输方式保持一致：base64 用于
+    # 不支持 SFTP/SCP 的服务器（SSH stdin base64 编码传输），是合法值。
+    valid_transfer_modes = {"auto", "scp", "sftp", "base64", ""}
     errors: list[str] = []
     required = ("ip", "username", "password")
     for index, server in enumerate(servers):
@@ -69,12 +115,20 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
         tm = server.get("transfer_mode")
         if tm is not None and str(tm).strip().lower() not in valid_transfer_modes:
             errors.append(
-                f"servers[{index}].transfer_mode 必须是 auto / scp / sftp 之一"
+                f"servers[{index}].transfer_mode 必须是 auto / scp / sftp / base64 之一"
             )
         # Optional: validate remote_paths structure
         rp = server.get("remote_paths")
         if rp is not None and not isinstance(rp, dict):
             errors.append(f"servers[{index}].remote_paths 必须是 object")
+        ttk = server.get("ttk")
+        if ttk is not None:
+            if not isinstance(ttk, dict):
+                errors.append(f"servers[{index}].ttk 必须是 object")
+            else:
+                for key in ("remote_root", "repo_path", "python"):
+                    if not str(ttk.get(key) or "").strip():
+                        errors.append(f"servers[{index}].ttk.{key} 不能为空")
         # Optional: validate fusion config (supports_fusion + fusion_devices)
         supports_fusion = server.get("supports_fusion")
         if supports_fusion is not None and not isinstance(supports_fusion, bool):

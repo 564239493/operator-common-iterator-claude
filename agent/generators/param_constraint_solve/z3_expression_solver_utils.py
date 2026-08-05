@@ -28,92 +28,17 @@
     builder.solve()
 """
 import ast
-import io
-import re
-import tokenize
-from typing import List, Dict
+from typing import Dict
 
 import z3
 
+from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.common_utils.logger_util import LazyLogger
-from agent.generators.data_definition.constants import DataMatchMap
 from agent.generators.param_constraint_solve.expression_preprocess_utils import ASTtoZ3Converter, TensorVar, ScalarVar, \
     ListVar
 from agent.generators.param_constraint_solve.param_var_definition import TensorListVar
 
 logger = LazyLogger()
-
-
-class ExpressionPreprocessor:
-    """Preprocesses expressions before solving."""
-
-    @staticmethod
-    def normalize_json_null(expr: str) -> str:
-        """Convert bare JSON ``null`` tokens to Python ``None`` safely.
-
-        Quoted string values such as ``"null"`` are intentionally unchanged.
-        """
-        tokens = []
-        for token in tokenize.generate_tokens(io.StringIO(expr).readline):
-            if token.type == tokenize.NAME and token.string == "null":
-                token = tokenize.TokenInfo(
-                    token.type, "None", token.start, token.end, token.line
-                )
-            tokens.append(token)
-        return tokenize.untokenize(tokens)
-
-    @staticmethod
-    def apply_keyword_replace(expr: str) -> str:
-        # expr = ExpressionPreprocessor.normalize_json_null(expr)
-        for keyword, replacement in DataMatchMap.EXPR_KEYWORD_REPLACE.items():
-            if replacement is None:
-                expr = expr.replace(keyword, 'None')
-            elif isinstance(replacement, str):
-                expr = expr.replace(keyword, f"'{replacement}'")
-            else:
-                expr = expr.replace(keyword, str(replacement))
-        for keyword, replacement in DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.items():
-            replacement_str = f"{replacement}" if isinstance(replacement, str) else str(replacement)
-            expr = re.sub(rf"\b{re.escape(keyword)}\b", replacement_str, expr)
-        return expr
-
-    @staticmethod
-    def preprocess_expressions(expressions: List[str]) -> List[str]:
-        processed = []
-        for expr in expressions:
-            expr = ExpressionPreprocessor.apply_keyword_replace(expr)
-            processed.append(expr)
-        return processed
-
-    @staticmethod
-    def validate_expression(expr: str) -> bool:
-        try:
-            ast.parse(expr, mode='eval')
-            return True
-        except SyntaxError as e:
-            logger.error(f"Expression '{expr}' is invalid by ast validation, err msg : {str(e)}")
-            return False
-
-    @staticmethod
-    def validate_expression_without_bool(expr: str) -> bool:
-        """
-        判断expr是否为合法表达式，且本身不为True/False
-        """
-        try:
-            tree = ast.parse(expr, mode='eval')
-            # tree.body 是表达式节点
-            node = tree.body
-
-            # 布尔字面量是 ast.Constant 且值为 bool
-            if isinstance(node, ast.Constant) and isinstance(node.value, bool):
-                return False
-            # 其他情况（包括其他类型的表达式）都认为是有效的
-            return True
-        except SyntaxError as e:
-            # 解析失败，说明不是合法的表达式
-            logger.error(f"Validate expression without bool failed, err msg : {str(e)}")
-            return False
-
 
 class Z3ConstraintBuilder:
     _VAR_FACTORY = {
@@ -128,21 +53,20 @@ class Z3ConstraintBuilder:
                                                 kwargs.get("length"))),
     }
 
-    # 类级共享计数器：z3.RecFunction 注册在全局 ctx，跨 case（每次新建 builder）slice_id 若
-    # 复位会致同名 RecFunction（如 __sum_tensor_groupListOptional_2）重复注册→"already defined"。
-    # 改为类级单调，保证 slice_id 全局唯一、func_name 不撞名。每算子独立 subprocess，进程结束即清。
-    _slice_counter = 0
-
-    def __init__(self, timeout_ms=60000):
+    def __init__(self, timeout_ms=300000):
         self.solver = z3.Solver()
         self._timeout_ms = timeout_ms
         if timeout_ms:
             self.solver.set('timeout', timeout_ms)
         self.var_map = {}
+        self._slice_counter = 0
+        # 仅用于兼容历史 constraints 中已经存在的 ``# TODO:`` 前缀。
+        # 新版 torch_npu 提示词禁止再生成该前缀，但恢复旧任务时不能因列表未初始化崩溃。
+        self.dropped_constraints = []
 
     def get_next_slice_id(self):
-        Z3ConstraintBuilder._slice_counter += 1
-        return Z3ConstraintBuilder._slice_counter
+        self._slice_counter += 1
+        return self._slice_counter
 
     def declare_var(self, var_name, type_hint="scalar", dtype=None, allowed_dtypes=None, allowed_formats=None,
                     range_value=None, length=None, is_print_log=False):
@@ -173,33 +97,88 @@ class Z3ConstraintBuilder:
             if is_print_log:
                 logger.debug(f"[Declare] {var_name} -> {type_hint} (dtype: {dtype}, range_value: {range_value})")
         except Exception as e:
-            logger.error(f"[Declare] Failed to create var '{var_name}', err msg : {e}")
+            logger.error(f"[Declare] Failed to create var '{var_name}', kwargs : '{kwargs}', err msg : '{e}'")
 
-    def get_or_create_var(self, var_name):
+    def get_var(self, var_name):
         if var_name not in self.var_map:
-            self.declare_var(var_name, type_hint="tensor")
+            logger.warning("Var not in var map, the parameter was not declared, it's is_present is False")
+            return None
         return self.var_map[var_name]
 
     def add_constraints(self, expr_str_dict: Dict[str, str]):
         for expr_str_name, expr_str in expr_str_dict.items():
+            # 通用 TODO 标记：在 apply_keyword_replace 与 validate_expression 之前先
+            # 检测前缀，避免 `# TODO:` 被 ast.parse 拒为 invalid syntax。前缀检测
+            # 与 add_constraint 内 TODO 分支一致，确保 solver 与 validator 行为统一。
+            if isinstance(expr_str, str) and expr_str.lstrip().startswith("# TODO:"):
+                self.add_constraint(expr_str_name, expr_str)
+                continue
             replace_expr = ExpressionPreprocessor.apply_keyword_replace(expr_str)
             if ExpressionPreprocessor.validate_expression(replace_expr):
                 self.add_constraint(expr_str_name, replace_expr)
 
     def add_constraint(self, expr_name, expr_str, is_print_log=False):
+        # 通用规则：约束文本以 `# TODO:` 开头时跳过 solver（Z3 求解不完备或约束语义
+        # 需人工 channel 时使用），但仍记录到 dropped_constraints 携带 reason="todo_skip"，
+        # PostCheck 区分真实 drop 与 todo_skip，前者阻断、后者放行。Prefix 是文本层标记，
+        # 不依赖 AST；任何 family 通用。
+        if isinstance(expr_str, str) and expr_str.lstrip().startswith("# TODO:"):
+            dropped = {
+                "name": expr_name,
+                "expr": expr_str,
+                "error": "todo_skip",
+                "reason": "todo_skip",
+            }
+            self.dropped_constraints.append(dropped)
+            if is_print_log:
+                logger.debug(f"[TODO-SKIP] {expr_str}")
+            return
         try:
             tree = ast.parse(expr_str, mode='eval')
             converter = ASTtoZ3Converter(self)
             z3_constraint = converter.visit(tree.body)
             if z3_constraint is not None:
                 self.solver.assert_and_track(z3_constraint, expr_name)
+                # 通用规则：检测到 z3.Or(z3.Bool==False, z3.String!=X) 形式时，附加
+                # Implies(X, ==False) 作为 hint。该形式 Z3 对 Or 的传播不完备（mixed-sort：
+                # Bool/String），Implies 形式 Z3 watch-list 处理更优，能让 solver 拒绝
+                # spurious SAT。等价性：`Or(A==False, B!=X) ⇔ Implies(B==X, A==False)`。
+                # Z3 simplify 后节点变换：`A==False` → `Not(A)`；`B!=X` → `Not(B==X)`，
+                # 必须同时探测两种表示，否则 hint 加入失败。
+                try:
+                    if z3.is_or(z3_constraint):
+                        children = z3_constraint.children()
+                        if len(children) == 2:
+                            a, b = children
+                            bool_side = None  # a 候选：==False 或 Not(x)
+                            str_side = None   # b 候选：!=X 或 Not(x=="X")
+                            # 模式 (i)：a 是 ==BoolVal(False)，b 是 !=X
+                            if (z3.is_eq(a) and a.num_args() == 2
+                                    and z3.is_false(a.arg(1))):
+                                bool_side = a
+                            elif z3.is_not(a) and z3.is_bool(a.arg(0)):
+                                bool_side = z3.Not(a.arg(0))  # Not(x) 表示 x==False 等价
+                            # 模式 (ii)：b 是 !=X (Not(x==X))
+                            if z3.is_not(b) and z3.is_eq(b.arg(0)):
+                                str_side = b
+                            if bool_side is not None and str_side is not None:
+                                target = str_side.arg(0).arg(0)
+                                x_val = str_side.arg(0).arg(1)
+                                hint = z3.Implies(
+                                    target == x_val,
+                                    z3.Not(bool_side.arg(0))
+                                )
+                                self.solver.assert_and_track(
+                                    hint, f"{expr_name}#implies_hint")
+                except Exception:
+                    pass
                 if is_print_log:
                     logger.debug(f"[OK] {expr_str}")
             else:
                 if is_print_log:
-                    logger.debug(f"[SKIP] {expr_str}: converter returned None, ignored")
+                    logger.debug(f"[SKIP] '{expr_str}': converter returned None, ignored")
         except Exception as e:
-            logger.error(f"[FAIL] {expr_str}: {e}")
+            logger.error(f"[FAIL] expr : '{expr_str}': err msg : '{e}'")
 
     def solve(self):
         if self._timeout_ms:

@@ -12,13 +12,17 @@ from pathlib import Path
 from runtime_config import (
     ROOT,
     config_error_payload,
+    default_test_framework,
     find_latest_operator_prompt,
+    find_latest_hs_prompt,
     resolve_input_path,
     validate_server_config,
 )
-from select_prompt import assemble
-
-
+from select_prompt import assemble as assemble_aclnn_prompt
+from select_torch_npu_prompt import (
+    assemble as assemble_torch_npu_prompt,
+    extract_operator_name as extract_torch_npu_operator_name,
+)
 # L1 算子名 stem 全树闭包：路径含以下任一段的命中视为噪声跳过。
 CLOSURE_NOISE_PARTS = frozenset({
     "tests", "ut", "examples", "binary_config", "tbe",
@@ -249,6 +253,34 @@ def main() -> int:
     )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
+    parser.add_argument(
+        "--operator-family",
+        choices=("auto", "aclnn", "hs", "torch_npu"),
+        default="auto",
+        help=(
+            "算子文档类型；auto 根据文档名/首行识别。torch_npu 是 hs 的显式别名，"
+            "二者均选择隔离的 torch_npu 提示词和 TTK 流程。"
+        ),
+    )
+    parser.add_argument(
+        "--test-framework",
+        choices=("auto", "atk", "ttk", "constraints"),
+        default="auto",
+        help=(
+            "测试框架；auto 对已适配的六个 torch_npu 算子选 ttk，其他 torch_npu "
+            "文档选 constraints（仅约束提取），ACLNN 选 atk；ACLNN 可显式选择 ttk "
+            "进入原生 TTK ACLNN 流程。"
+        ),
+    )
+    parser.add_argument(
+        "--hs-scenario-mode",
+        choices=("original", "planned"),
+        default="original",
+        help=(
+            "torch_npu + TTK 用例生成策略；original（默认）直接使用原生生成器，"
+            "planned 显式启用 TND/BSND/paged-attention 场景拆分和投影。"
+        ),
+    )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
     parser.add_argument(
@@ -273,12 +305,6 @@ def main() -> int:
         )
 
     doc = resolve_input_path(args.doc)
-    if args.prompt:
-        prompt = resolve_input_path(args.prompt)
-        explicit_prompt = True
-    else:
-        prompt = find_latest_operator_prompt()
-        explicit_prompt = False
     if not doc.is_file():
         print(json.dumps(
             {
@@ -291,6 +317,33 @@ def main() -> int:
             ensure_ascii=False,
         ))
         return 2
+    doc_text = doc.read_text(encoding="utf-8", errors="ignore")
+    doc_head = doc_text[:4096]
+    is_hs = args.operator_family in {"hs", "torch_npu"} or (
+        args.operator_family == "auto"
+        and (
+            "torch_npu" in doc_head
+            or "torch\\_npu" in doc_head
+            or "torch.npu." in doc_head
+            or "torch_npu" in doc.name
+        )
+    )
+    operator_family = "hs" if is_hs else "aclnn"
+    documented_operator_name = (
+        extract_torch_npu_operator_name(doc_text) if is_hs else ""
+    )
+    if args.test_framework == "auto":
+        test_framework = default_test_framework(
+            operator_family, documented_operator_name
+        )
+    else:
+        test_framework = args.test_framework
+    prompt = (
+        resolve_input_path(args.prompt)
+        if args.prompt
+        else (find_latest_hs_prompt() if is_hs else find_latest_operator_prompt())
+    )
+    explicit_prompt = bool(args.prompt)
     if prompt is None or not prompt.is_file():
         print(json.dumps(
             {
@@ -299,9 +352,11 @@ def main() -> int:
                 "code": "PROMPT_NOT_FOUND",
                 "message": (
                     "约束提取提示词不存在。请通过 --prompt 指定文件，或在 prompts "
-                    "目录提供 operator_constraints_extract_vN.md。"
+                    "目录提供对应 family 的 operator_constraints_extract_vN.md 或 "
+                    "torch_npu_constraints_extract_vN.md。"
                 ),
                 "prompt": str(prompt) if prompt else "",
+                "operator_family": operator_family,
             },
             ensure_ascii=False,
         ))
@@ -346,7 +401,7 @@ def main() -> int:
         raise SystemExit("max-iterations and case-count must be positive")
 
     server_config: Path | None = None
-    if args.mode == "real":
+    if args.mode == "real" and test_framework != "constraints":
         server_config, config_errors = validate_server_config(args.server_config)
         if config_errors:
             print(json.dumps(
@@ -387,12 +442,18 @@ def main() -> int:
         operator_src_source = str(src_path)
         operator_src_snapshot = str(src_snapshot)
     if explicit_prompt:
-        # --prompt 逃生口：原样复制指定文件，不装配模块（用于固定版本/外部提示词）
+        # --prompt 是原样复制的逃生口，不隐式追加任何 family 知识。
         shutil.copy2(prompt, prompt_snapshot)
         loaded_modules = []
+    elif is_hs:
+        # torch_npu 使用完全独立的 baseline + knowledge 装配器；该装配器不会
+        # 扫描 prompts/modules，因此不会混入 ACLNN workspace/API 假设。
+        loaded_modules = assemble_torch_npu_prompt(
+            prompt, doc_snapshot, prompt_snapshot
+        )
     else:
         # 默认：按算子特征装配 base + 命中模块 -> prompt_snapshot
-        loaded_modules = assemble(prompt, doc_snapshot, prompt_snapshot)
+        loaded_modules = assemble_aclnn_prompt(prompt, doc_snapshot, prompt_snapshot)
 
     now = datetime.now(timezone.utc).isoformat()
     state = {
@@ -410,6 +471,10 @@ def main() -> int:
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
         "case_count": args.case_count,
+        "operator_family": operator_family,
+        "test_framework": test_framework,
+        "hs_scenario_mode": args.hs_scenario_mode,
+        "run_scope": "constraints_only" if test_framework == "constraints" else "full",
         "scene": None,  # EXTRACT 前 SCENE_SCAN 子步骤回写 {enabled, scope, quant_mode, quant_width, valid_combos, ...}
         "execution_strategy": None,  # EXTRACT 后 orchestrator 跑 classify_operator.py 回写: fusion | default
         "operator_category": None,  # fusion_comm_compute | default | None
@@ -445,6 +510,10 @@ def main() -> int:
                 else ""
             ),
             "mode": args.mode,
+            "operator_family": operator_family,
+            "test_framework": test_framework,
+            "hs_scenario_mode": args.hs_scenario_mode,
+            "run_scope": "constraints_only" if test_framework == "constraints" else "full",
             "server_config": str(server_config) if server_config else "",
         },
         ensure_ascii=False,

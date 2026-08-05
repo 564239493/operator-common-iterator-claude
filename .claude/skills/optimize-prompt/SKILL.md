@@ -6,11 +6,25 @@ description: 根据 constraint_extraction 分析结果产生下一版完整通�
 
 前置条件：analysis.json 的 root_cause 必须是 constraint_extraction。
 
-只修改由 specific_issues 支持的章节，保留原提示词整体结构和所有无关规则。输出
-`prompt_v<N+1>.md` 与 `prompt_changes_v<N+1>.md`（**两份**——见第 §3 节契约）。
-变更说明逐项映射：失败 case、文档证据、原规则缺陷、新规则。禁止写入当前算子名称的硬编码特例。
+先读取 `run_state.json.operator_family`。只修改由 specific_issues 支持的章节，保留原
+提示词整体结构和所有无关规则。输出 `prompt_v<N+1>.md` 与
+`prompt_changes_v<N+1>.md`（**两份**——见第 §3 节契约）。变更说明逐项映射：失败 case、
+文档证据、原规则缺陷、新规则。禁止写入当前算子名称的硬编码特例。
 
 **模块化提示词（v4 起）**：提示词为 `prompts/operator_constraints_extract_v4.md`（基线）+ `prompts/modules/*.md`（按算子类按需装配的模块）。读取 `run_state.json` 的 `current_prompt_modules` 可知本轮命中的模块。在 `prompt_changes_v<N+1>.md` 中，逐项标注 specific_issues 指向的规则所属文件（基线章节或 `modules/<name>.md` 的 §<节>），便于后续将修复定位到 canonical 模块。当前仍沿用 per-iter `prompt_v<N+1>.md` 输出契约（round 2+ 使用该覆盖快照，不走模块装配）。提升到全局 `prompts/` 由任务终态后用户显式批准并调用 `scripts/promote_prompt.py` 完成，详见 §5。
+
+## family 隔离
+
+- `operator_family=aclnn`：canonical 来源只能是
+  `prompts/operator_constraints_extract_vN.md` 与 `prompts/modules/*.md`。禁止把
+  torch_npu 的 Python 签名、layout、TensorList/返回槽规则写入 ACLNN 模块；禁止为
+  单一算子在通用基线中硬编码名称特例。
+- `operator_family=hs`（torch_npu）：canonical 来源只能是
+  `prompts/torch_npu_constraints_extract_vN.md` 与
+  `knowledge/torch_npu/**/*.md`。禁止引用或修改 `prompts/modules/*.md`，也禁止引入
+  ACLNN workspace/GetWorkspaceSize/两段式 API 假设。通用缺陷定位到 torch_npu 基线或
+  family 模块；仅对某个算子成立且有该文档证据的修复，可定位到其精确算子知识模块，
+  不得写进通用模块。
 
 ---
 

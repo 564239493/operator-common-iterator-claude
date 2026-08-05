@@ -27,6 +27,7 @@ runs/<operator>-<timestamp>/
     supplement_additions.md            # 可选：failure-analyst 推的补充增量
     generation_summary.json
     cases.json
+    cases_ttk.csv
     execution_result.json
     quality_gate.json
     analysis.json
@@ -38,8 +39,11 @@ runs/<operator>-<timestamp>/
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
-`server_config`、`max_iterations`、`case_count`、`scene`、`current_iteration`、`state`、`history` 和时间戳。
-state 只能取 WORKFLOW.md 定义的状态。
+`server_config`、`max_iterations`、`case_count`、`operator_family`、`test_framework`、
+`hs_scenario_mode`、
+`run_scope`、`scene`、`current_iteration`、`state`、
+`history` 和时间戳。state 只能取
+WORKFLOW.md 定义的状态。
 
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
 目录内的快照，后续 Agent 只使用快照。
@@ -48,12 +52,31 @@ state 只能取 WORKFLOW.md 定义的状态。
 `supplement_constraints` 指向 run 内 `inputs/supplement_constraints.md` 快照。为空串时跳过
 约束补充阶段，回退纯文档驱动流程。
 
-`current_prompt_source` 指向项目内 `prompts/operator_constraints_extract_vN.md` 基线
-（v4 起为模块化基线）；`current_prompt` 指向 run 内 `inputs/prompt_v1.md` 快照。
-默认（未传 `--prompt`）由 `scripts/select_prompt.py` 按算子文档特征装配基线 + 命中的
-`prompts/modules/*.md` 模块写入该快照，`current_prompt_modules` 记录命中的模块名清单
-（可为空）；显式 `--prompt` 为逃生口，原样复制指定文件、`current_prompt_modules=[]`。
-constraint-extractor 始终只读 `current_prompt` 快照，不感知装配过程。
+`current_prompt_source` 指向项目内当前 family 的基线：ACLNN 为
+`prompts/operator_constraints_extract_vN.md`，torch_npu 为
+`prompts/torch_npu_constraints_extract_vN.md`；`current_prompt` 指向 run 内
+`inputs/prompt_v1.md` 完整快照。
+
+ACLNN canonical 版本以及 torch_npu v3+ 都是独立完整基线，不使用跨版本继承或
+“沿用 vN”占位。selector 只在选定基线后追加当前文档命中的知识模块；torch_npu
+v1/v2 仅作为历史任务复现材料。
+
+默认（未传 `--prompt`）时，ACLNN 由 `scripts/select_prompt.py` 装配
+`prompts/modules/*.md`；torch_npu 由 `scripts/select_torch_npu_prompt.py` 装配
+`knowledge/torch_npu/**/*.md`。两个选择器不扫描对方的根目录。
+`current_prompt_modules` 记录命中的模块名清单（torch_npu 始终含
+`common/documentation_conventions`）；显式 `--prompt` 为逃生口，原样复制指定文件、
+`current_prompt_modules=[]`。constraint-extractor 始终只读 `current_prompt` 快照，
+不感知装配过程。
+
+`run_scope` 为 `full` 或 `constraints_only`。后者由尚未适配 TTK 的 torch_npu API 在
+auto 模式下使用：约束 normalize/validate 通过后可进入 SUCCESS，但 history 必须包含
+`CONSTRAINTS_ONLY_SUCCESS`；不得生成 cases 或宣称执行/精度成功。
+
+`hs_scenario_mode` 为 `original` 或 `planned`，默认 `original`。它只影响
+torch_npu + TTK 的 GENERATE：`original` 使用原生生成器，`planned` 才启用
+TND/BSND/paged-attention 场景拆分和投影。case-generator 必须从 run_state
+透传该值。
 
 ## constraints.json
 
@@ -156,7 +179,11 @@ error_string 模糊匹配命中）/`conflict_pending`（未裁决冲突提示）
 
 JSON 数组，每项为生成器 CaseConfig 的 model_dump 结果。禁止 Agent 手工伪造。
 
-`cases.json` 是执行前的紧凑表示。对于带 `length` 的列表类输入，只保留一个输入
+`cases.json` 是 ATK/TTK 共用的统一具体场景中间模型，也是执行前的紧凑表示。TTK
+必须先生成该文件，再由 adapter 产生 `cases_ttk.csv`；禁止直接跳过中间模型硬编码 CSV。
+adapter 按 case id 将标量属性的 `range_values` 确定性选择为具体值；Tensor 的
+`range_values` 映射为 `input_data_ranges`，具体 Tensor 数据由 TTK 执行期生成。
+对于带 `length` 的列表类输入，只保留一个输入
 描述，由执行阶段生成 `cases_expanded.json`：
 
 - `range_values` 为标量时，表示列表中每个元素共用该取值规格；
@@ -166,6 +193,30 @@ JSON 数组，每项为生成器 CaseConfig 的 model_dump 结果。禁止 Agent
 诊断用例格式问题时必须同时检查 `cases.json` 和 `cases_expanded.json`。如果紧凑
 表示已被正确展开，不能把标量 `range_values` 判为 generator_bug；如果展开过程
 本身有误，应归入执行适配层的 executor_bug。
+
+## cases_ttk.csv
+
+仅当 `run_state.test_framework == "ttk"` 时使用。必须具有 `testcase_name`、
+`api_name`、`tensor_view_shapes`、`tensor_dtypes`。`api_name=aclnn*` 时使用 TTK
+ACLNN 模式；`api_name=torch_npu.*` 时使用 TTK E2E 模式。使用：
+
+`python scripts/validate_artifacts.py ttk_cases <iter>/cases_ttk.csv`
+
+TTK 路径消费统一 `cases.json`，但不得生成或消费 ATK `cases_executor.py/cases_expanded.json`。
+所有 TTK 模式都生成 `ttk_conversion_audit.json`。只有 torch_npu/E2E 生成
+`golden_manifest.json` 和算子独立 Golden plugin；manifest 未标记 `verified` 时不得进入
+远程精度执行。ACLNN 调用原生 `ttk aclnn`，不要求 E2E Golden plugin/manifest。
+
+torch_npu/TTK 在转换前必须按所选平台逐条执行 `constraints_in_parameters`；HS 手写专项
+检查只能作为 schema 无法表达内容的补充，不能代替完整关系复核。任一硬关系为 false、
+无法求值、TTK positional self-check 失败或转换审计存在 case issue 时，生成阶段必须
+fail-closed，不得产出可执行成功结论。
+
+当前 TTK CSV 只支持 `input_data_ranges`，不能无损表达动态前缀和、单调序列和有效/无效
+索引排序。适配器必须在 `ttk_conversion_audit.json` 与 `generation_summary.json` 记录
+`content_generation_mode`/`content_generation_limitations`。对需要这些内容语义的算子，
+只能生成适配器能够证明正确的受限场景（当前 kv quant sparse attention 为精确 B=1），
+不能把随机范围伪装成多元素前缀和支持。
 
 ## execution_result.json
 
@@ -187,7 +238,8 @@ JSON 数组，每项为生成器 CaseConfig 的 model_dump 结果。禁止 Agent
 
 ## analysis.json
 
-root_cause 只能为 constraint_extraction、generator_bug、executor_bug。每项
+root_cause 只能为 constraint_extraction、generator_bug、executor_bug、ttk_adapter、
+golden_derivation、execution_environment。每项
 specific_issues 应关联 case id、日志或文档证据。
 
 ## quality_gate.json
@@ -204,8 +256,11 @@ runs/batches/<batch-id>/
 ```
 
 `batch_state.json` 必须冻结 source_directory、glob、recursive、prompt、
-max_iterations、case_count、mode、server_config、supplement_constraints（可选，整批共享）、
-continue_on_error 和有序 operators。
+`prompt_explicit`、`prompt_sources`、operator_family、test_framework、max_iterations、
+case_count、mode、server_config、supplement_constraints（可选，整批共享）、
+continue_on_error 和有序 operators。`prompt` 只在用户显式指定原样 prompt 时非空；
+自动模式通过 `prompt_sources` 记录初始化时可用的各 family baseline，并让每个单算子
+`init_run` 自行选择/装配，防止混合目录把一个 family 的 prompt 传给另一个 family。
 每个 operator 包含原文档绝对路径、PENDING/RUNNING/COMPLETED 状态、单算子 run_id、
 run_dir 与 terminal_state。任意时刻最多只能有一个 RUNNING 项。
 

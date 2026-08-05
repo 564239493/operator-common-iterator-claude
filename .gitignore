@@ -14,11 +14,20 @@ runs/
 runs/
 logs/
 execution_results/
+tests/
 
 /operators-src/
+/op-plugin-7.3.0/
+/.claude/settings.local.json
+/.claude/worktrees/
+/.ttk-deps/
+/.ttk-reference/
+/cli_report_*.html
+/cli_report_*.zip
+
+op-plugin-26.0.0/
+operators-src/
 dist/
 cases/
 output/
-
-# 评审报告不入库（本地保留）
-review_0803.md
+ops-test-kit-master/

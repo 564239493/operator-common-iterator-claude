@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -10,14 +10,22 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
 先读 `docs/WORKFLOW.md` 与 `docs/ARTIFACT_CONTRACTS.md`，然后严格执行：
 
 1. 解析参数。算子文档支持绝对路径、项目相对路径和包含 `..` 的外部相对路径。
-   未传 `--prompt` 时，由 `init_run.py` 自动选择
-   `prompts/operator_constraints_extract_vN.md` 中数值版本 N 最大的文件；
+   `operator-family=auto`、`test-framework=auto`；未传 `--prompt` 时由
+   `init_run.py` 按文档类型选择并装配最新 ACLNN prompt 或隔离的 torch_npu prompt；
+   `torch_npu` 是内部 family 名 `hs` 的显式 CLI 别名。
+   auto 仅对已有 TTK adapter 的六个重点算子选择 `ttk`；其余 torch_npu API 选择
+   `constraints`，只运行约束提取/补充/校验，不误入必然失败的用例生成。
    max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
+   `hs-scenario-mode=original`；只有用户显式传入
+   `--hs-scenario-mode planned` 时，torch_npu + TTK 才启用 TND/BSND/
+   paged-attention 场景拆分和投影。该参数对 ACLNN/ATK 不生效。
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
-2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src` 等参数，`--batch-dir`
-   是目录批次内部参数不传）。该命令把外部文档只读复制到 run 的 `inputs/` 目录，
+2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
+   `--supplement-constraints`、`--operator-family`、`--test-framework`、
+   `--hs-scenario-mode` 等参数，
+   `--batch-dir` 是目录批次内部参数不传）。该命令把外部文档只读复制到 run 的 `inputs/` 目录，
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。若传入 `--src`，把算子
    源码关键文件浅快照到 `inputs/src_snapshot/`，写入 `run_state.operator_src_snapshot`
    （为空则第 5 步跳过 source-analyst，退回纯文档驱动）。若传入
@@ -26,10 +34,16 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    如果提供了 `--batch-dir`，创建成功后必须立刻调用
    `python scripts/batch_state.py --batch-dir <batch-dir> attach-run --run-dir <run-dir>`，
    再进入 EXTRACT；这样会话中断时目录批次可以定位并恢复该 run。
-3. 若默认真实模式缺少服务器配置或配置字段不完整，立即停止并把命令返回的
+3. full scope 若默认真实模式缺少服务器配置或配置字段不完整，立即停止并把命令返回的
    `message`、`server_config` 和 `errors` 提示给用户。不得自动切换到 mock。
-   只有用户显式传入 `--mode mock` 才能执行 Mock。
+   只有用户显式传入 `--mode mock` 才能执行 Mock。constraints-only 不执行远端，
+   不要求服务器配置。
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
+5. `init_run.py` 成功后 state 为 `PLAN`；主协调器必须继续推进到 EXTRACT，不能仅创建 run 后结束。
+   **委派 constraint-extractor 之前**，主协调器必须先把 `run_state.json` 的 `state` 推进为
+   `EXTRACT`（写 `"state": "EXTRACT"`，并 append history `{"state": "EXTRACT", "at": <ISO8601>}`）。
+   extract-constraints 在写 `constraints.json` 前会校验 state 已是 `EXTRACT`，未推进会被拦截并
+   空跑一轮。re-EXTRACT（OPTIMIZE→EXTRACT）轮同理：委派提取器前先把 state 推进为 `EXTRACT`。
 
 **SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
 `scene-scanner`（读 `inputs/<doc>.md` + `prompts/scan_scenes.md`，产
@@ -52,8 +66,7 @@ EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一�
 constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 directive，
 屏蔽跨轮稳定。
 
-5. 每轮按顺序委派。所有 Agent 均使用当前共享工作树，调用时禁止
-   `isolation: worktree`，确保当前 run 的阶段产物可直接交接：
+6. 每轮按顺序委派：
    - **EXTRACT（fork-join）**：当 `run_state.operator_src_snapshot` 非空时，
      **并行**委派 `constraint-extractor`（产 `constraints.json`）与 `source-analyst`
      （extract 域：产 `<iter>/source_raw.json` + `inputs/supplementary-doc.md` +
@@ -75,12 +88,19 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
      空则跳过本步。每轮 EXTRACT 后都重新触发 source-analyst + 补充。
    - **conflict 异步提示**：若 `inputs/conflict-doc.md` 非空，主协调器输出结构化
      `requires_user_action` 提示（`code=CONFLICT_REQUIRES_REVIEW`，列出冲突条目），
-     **不阻塞**，继续进 `case-generator`。用户在任意时刻回
+     **不阻塞**；full scope 继续进 `case-generator`，constraints-only 在记录提示后按
+     下一条终止。用户在任意时刻回
      `inputs/conflict_resolution.json`（`[{conflict_id, winner: "source"|"doc"}]`），
      下轮 re-supplement 前运行
      `python scripts/apply_conflict_resolution.py <iter>/constraints.json --candidates <inputs>/conflict_candidates.json --resolution <inputs>/conflict_resolution.json`
      把 source-wins 并入（replace patch + revalidate）。
-   - `case-generator`
+   - **constraints-only 终止**：若 `run_state.test_framework="constraints"`，在 EXTRACT
+     和可能的 SUPPLEMENT 完成后运行 constraints normalize/validate；通过则把
+     `run_state.state` 更新为 `SUCCESS`，history 记录 `CONSTRAINTS_ONLY_SUCCESS`，并明确
+     报告成功范围仅为约束提取。跳过 case-generator、executor、Golden 和执行质量门禁。
+   - `case-generator`：读取 `run_state.hs_scenario_mode`，调用
+     `generate_cases.py` 时原样透传 `--hs-scenario-mode`；旧 run 缺少该字段时使用
+     `original`，不得自行改成 `planned`。
    - `case-executor`：
      - **default**（`run_state.execution_strategy != "fusion"`）：real 模式内部完成
        generate→`atc-cpu-golden-derivation` 推导→real-run 三子步骤；推导须清除
@@ -91,10 +111,14 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
        skill 天然无操作）；real-run 替换为 4 步流程（CPU 标杆→NPU 级联标杆→改名→
        精度对比），拼 `execute_cases.py --mode real --strategy fusion --num <case_count>`
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
-       `engine_error` 终止流程。
+      `engine_error` 终止流程。
    - `quality-reviewer`
-6. 若门禁确认全部通过，更新 run_state 为 SUCCESS 并结束。
-7. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
+7. 若基础产物可读、至少生成一条用例且执行器已完成运行，更新 run_state 为 SUCCESS
+   并结束。Golden 覆盖率和准确度 warning 当前不作为门禁。HS+TTK 所选执行平台
+   `semantically_clean_count=0`，或 `planned` 模式缺失计划内必需场景时，生成器必须
+   以 `HS_SEMANTIC_GATE_FAILED` 停在 GENERATE，不得进入 EXECUTE；其他部分语义
+   warning 仍按非阻断处理。
+8. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
    diagnose 域（读 execution_result + uncertain-doc + source_raw，error_string
    匹配，命中的 uncertain 追加到 `inputs/supplementary-doc.md`，产
    `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence
@@ -106,9 +130,9 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
      送入下一轮。
    - generator_bug：状态设为 STOP_GENERATOR_BUG，停止。
    - executor_bug：状态设为 STOP_EXECUTOR_BUG，停止。
-8. 达到上限后状态设为 MAX_ITERATIONS。
-9. **（终态前）提示词版本提升询问**：当本 run 内任意 iter 目录含
-   `prompt_changes_v*.md` 时，主协调器在进入第 9 步报告格式前，按下列流程
+9. 达到上限后状态设为 MAX_ITERATIONS。
+10. **（终态前）提示词版本提升询问**：当本 run 内任意 iter 目录含
+   `prompt_changes_v*.md` 时，主协调器在进入最终报告前，按下列流程
    处理：
 
    1. 对每个 `iter_*/prompt_changes_v*.md`，定"是否有执行证据"：
@@ -135,12 +159,27 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
 
    详见 `.claude/skills/optimize-prompt/SKILL.md` §5 与 `scripts/promote_prompt.py`
    的契约。
-10. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
-    不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
-11. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
+11. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
+   不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
+12. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
     `STOP_GENERATOR_BUG` 或 `STOP_EXECUTOR_BUG` 后，调用
     `python scripts/batch_state.py --batch-dir <batch-dir> complete`。如果 run 创建前即因
     文档消失等算子级问题阻断，则调用 `complete --terminal-state BLOCKED --message <原因>`。
     不得把真实执行配置缺失静默记为算子失败；目录批次初始化时应先统一校验该配置。
+
+## 框架分流（强制）
+
+- 每个 Agent 委派前读取 `run_state.json` 的 `operator_family` 与 `test_framework`。
+- `atk`：产物为每平台 compact JSON，沿用原 ACLNN 生成和 ATK executor。
+- `ttk`：先产出统一 `cases.json`，再适配为 `cases_ttk.csv`；generator 命令必须带
+  `--test-framework ttk`。`operator_family=hs` 默认加载可用的自主推导或源码 Golden，
+  但不以 Golden manifest 或精度结果阻塞流程；只有用户明确要求完全跳过 Golden 时
+  才使用 `--no-golden`。`operator_family=aclnn` 直接走原生 `ttk aclnn`。两者均不得调用
+  ATK golden 推导。
+- `constraints`：只产出并校验 `constraints.json`，不调用任何 case/executor 命令；
+  SUCCESS 必须注明 `run_scope=constraints_only`，不能表述成用例或精度闭环成功。
+- EXTRACT 阶段与测试框架无关，任何 framework 都必须先产生非空且校验通过的
+  `constraints.json`。如果 state 仍为 PLAN 或文件不存在，说明未委派提取器，不能报告
+  “约束为空”。
 
 不要在主协调器中亲自完成专职 Agent 的工作，不要并行运行存在数据依赖的阶段。

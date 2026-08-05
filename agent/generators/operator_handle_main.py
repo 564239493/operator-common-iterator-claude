@@ -19,7 +19,7 @@ from agent.generators.data_definition.constants import GlobalConfig
 from agent.generators.data_definition.param_models_def import RunPlatform
 # [PAIRWISE] 替换旧随机生成器为 Pairwise 策略生成器
 from agent.generators.operator_param_combine.param_combination_generate import ParamCombinationGenerator
-from agent.generators.operator_param_combine.pairwise_combination import PairwiseParamCombinationGenerator
+from agent.generators.operator_param_combine.combination_generator_main import PairwiseParamCombinationGenerator
 from agent.generators.operator_param_models.batch_case_generate import OperatorCaseGenerator
 
 logger = LazyLogger()
@@ -119,11 +119,12 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
         return []
     # param_combination_generator = ParamCombinationGenerator(operator_rule_data=effective_operator_constraint_data,
     #                                                                 case_num=case_num)
-    param_combination_generator = PairwiseParamCombinationGenerator(operator_rule_data=effective_operator_constraint_data,
-                                                                    case_num=case_num)
-    param_combination_list = param_combination_generator.get_param_combination_input()
+    param_combination_generator = PairwiseParamCombinationGenerator(
+        operator_rule_data=effective_operator_constraint_data, case_num=case_num,
+        combination_data_save_path=jsonl_save_path)
+    param_domain_data, param_combination_list = param_combination_generator.get_param_combination_input()
     case_list = operator_case_generate.handle_single_operator(
-        operator_constraint_data=effective_operator_constraint_data,
+        operator_constraint_data=effective_operator_constraint_data, param_domain_data=param_domain_data,
         param_combination_list=param_combination_list, target_platform=platform,
         case_num=case_num, jsonl_save_path=jsonl_save_path)
     return case_list

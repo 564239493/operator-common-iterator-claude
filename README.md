@@ -15,24 +15,20 @@ Skills 与 Subagents，Python 只承担确定性业务工具。
 
 ## 快速开始
 
-要求 Python 3.10+，Claude Code 建议 2.1.211+（路径权限语义和 Hook 行为依赖新版）。
+海思 `torch_npu.*` + TTK 兼容流程见
+[docs/HS_TTK_WORKFLOW.md](docs/HS_TTK_WORKFLOW.md)。原 ACLNN/ATK 流程仍是默认；
+六个已适配的重点海思算子会自动启用 TTK，其余 torch_npu API 默认只执行约束提取；
+也可以用 `--test-framework` 显式覆盖。
+torch_npu 全量文档审计、提示词分层和 schema 缺口见
+[docs/TORCH_NPU_CONSTRAINT_PROMPT.md](docs/TORCH_NPU_CONSTRAINT_PROMPT.md)。
+
+要求 Python 3.10+，Claude Code 建议 2.1.172+。
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item servers.example.json servers.json
-# 编辑 servers.json，填写真实执行机连接信息
-claude
-```
-
-Linux / macOS / WSL2 使用：
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp servers.example.json servers.json
 # 编辑 servers.json，填写真实执行机连接信息
 claude
 ```
@@ -47,9 +43,28 @@ PyTorch/昇腾镜像，请按内部源安装后再执行其余依赖。
 /iterate-operator operator_docs/aclnnAlltoAllMatmul.md --max-iterations 3 --case-count 10
 ```
 
+ACLNN 默认使用 ATK；如需完整 TTK ACLNN 流程，显式指定：
+
+```text
+/iterate-operator operator_docs/aclnnFoo.md --operator-family aclnn --test-framework ttk --mode real
+```
+
+该模式仍使用 ACLNN 隔离提示词提取约束，随后由统一生成器产生 `cases.json`，转换为
+`cases_ttk.csv`，并通过远端 `python3 -m ttk aclnn` 执行；不需要 torch_npu E2E
+Golden plugin。
+
+torch_npu + TTK 默认直接使用原生生成器。只有需要启用 TND/BSND/
+paged-attention 场景拆分和投影时才显式指定：
+
+```text
+/iterate-operator operator_docs/hs/torch_npu-npu_sparse_flash_attention.md --test-framework ttk --hs-scenario-mode planned
+```
+
 未指定 `--prompt` 时，项目会自动选择
-`prompts/operator_constraints_extract_vN.md` 中数值版本最大的文件。需要复现指定版本
-时仍可显式传入：
+当前文档 family 数值版本最大的提示词：ACLNN 使用
+`prompts/operator_constraints_extract_vN.md`，torch_npu 使用
+`prompts/torch_npu_constraints_extract_vN.md`；两者的知识模块完全隔离。需要复现指定
+版本时仍可显式传入：
 
 ```text
 /iterate-operator operator_docs/aclnnAlltoAllMatmul.md --prompt prompts/operator_constraints_extract_v1.md

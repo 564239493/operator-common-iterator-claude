@@ -125,6 +125,13 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 > `scripts/apply_supplement_constraints.py` 确定性合并并重跑 normalize+validate，
 > 失败阻断、不进 GENERATE。为独立子步骤而非新状态，空即跳过。
 
+- 全部通过：`SUCCESS`
+- 有失败：`DIAGNOSE`
+- `constraint_extraction`：`OPTIMIZE -> EXTRACT`，进入下一轮
+- `generator_bug`：`STOP_GENERATOR_BUG`
+- `executor_bug`：`STOP_EXECUTOR_BUG`
+- 达到最大轮数：`MAX_ITERATIONS`
+
 ### Python 确定性层
 
 **agent/generators/** — 保留的正式用例生成器（Z3 约束求解 + pairwise 组合）：
