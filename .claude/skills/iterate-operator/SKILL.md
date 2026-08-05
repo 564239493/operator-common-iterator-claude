@@ -39,7 +39,11 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    只有用户显式传入 `--mode mock` 才能执行 Mock。constraints-only 不执行远端，
    不要求服务器配置。
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
-5. `init_run.py` 成功后 state 为 PLAN；主协调器必须立即委派进入 EXTRACT，不能仅创建 run 后结束。
+5. `init_run.py` 成功后 state 为 `PLAN`；主协调器必须继续推进到 EXTRACT，不能仅创建 run 后结束。
+   **委派 constraint-extractor 之前**，主协调器必须先把 `run_state.json` 的 `state` 推进为
+   `EXTRACT`（写 `"state": "EXTRACT"`，并 append history `{"state": "EXTRACT", "at": <ISO8601>}`）。
+   extract-constraints 在写 `constraints.json` 前会校验 state 已是 `EXTRACT`，未推进会被拦截并
+   空跑一轮。re-EXTRACT（OPTIMIZE→EXTRACT）轮同理：委派提取器前先把 state 推进为 `EXTRACT`。
 
 **SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
 `scene-scanner`（读 `inputs/<doc>.md` + `prompts/scan_scenes.md`，产
