@@ -1,3 +1,12 @@
+---
+module: documentation_conventions
+scope: foundation
+description: torch_npu 文档约定与通用审校知识
+default_load: true
+triggers: []
+depends_on: []
+---
+
 # torch_npu 文档约定与通用审校知识
 
 这份知识只服务于 Python 端 `torch_npu` API 文档。它不是 ACLNN 规则的补丁，也不得把 ACLNN 的 workspace、两段式 C 接口、物理存储格式或参数命名习惯带入结果。

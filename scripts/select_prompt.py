@@ -1,178 +1,126 @@
 #!/usr/bin/env python3
-"""Select and assemble operator-class prompt modules for a given operator doc.
-
-Deterministic classifier (the "A" mechanism): reads module manifests under
-prompts/modules/, scans the operator doc for structural signals, and assembles
-the base prompt + matched modules into a single snapshot file. Returns the list
-of loaded module names for run_state logging.
-
-This runs at init time, BEFORE the constraint-extractor agent reads the prompt.
-The agent still reads one whole file (inputs/prompt_v1.md) — behavior unchanged;
-only the file's content is now a focused subset instead of the full monolith.
-
-Design:
-- Manifests are YAML-ish frontmatter in each modules/*.md (module/description/
-  triggers/depends_on). Parsed by a minimal parser (no PyYAML dependency).
-- Triggers are OR-ed within a module; any match loads the module.
-- depends_on is resolved transitively.
-- Loaded modules are appended at the end in a fixed order; original §-headings
-  are preserved so cross-references resolve by heading text whether or not the
-  module is loaded (refs into unloaded modules live inside conditional checks
-  that don't fire — benign dangling).
-"""
+"""Freeze ACLNN base + routed knowledge and write an auditable assembly record."""
 from __future__ import annotations
 
 import argparse
-import re
-import sys
+import hashlib
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    from scripts.route_aclnn_knowledge import DEFAULT_KNOWLEDGE, render_bundle, route
+except ModuleNotFoundError:
+    from route_aclnn_knowledge import DEFAULT_KNOWLEDGE, render_bundle, route
+
+
 ROOT = Path(__file__).resolve().parents[1]
-PROMPTS = ROOT / "prompts"
-MODULES_DIR = PROMPTS / "modules"
-
-# Fixed assembly order = original §-order of the sections in the monolith.
-MODULE_ORDER = [
-    "nz_matmul",
-    "backward_partial",
-    "format_cast",
-    "implicit_pos",
-    "broadcast",
-    "acl_format_enum",
-    "transpose_shape",
-    "ffn_v3",
-    "swin_transformer_ln_qkv_quant",
-    "scatter_pa_kv_cache",
-]
+DEFAULT_BASE = ROOT / "prompts" / "operator_constraints" / "base.md"
 
 
-def parse_manifest(md_text: str) -> dict:
-    """Parse YAML-ish frontmatter from a module .md file. Returns {manifest, body}."""
-    if not md_text.startswith("---"):
-        raise ValueError("module file must start with --- frontmatter")
-    end = md_text.find("\n---", 3)
-    if end < 0:
-        raise ValueError("module frontmatter not closed")
-    fm = md_text[3:end]
-    body = md_text[end + 4:].lstrip("\n")
-    manifest: dict = {"triggers": [], "depends_on": []}
-    cur = None
-    for line in fm.splitlines():
-        s = line.rstrip()
-        if s.startswith("  - kind:"):
-            cur = {"kind": s[len("  - kind:"):].strip()}
-            manifest["triggers"].append(cur)
-        elif s.startswith("    value:") and cur is not None:
-            cur["value"] = _parse_value(s[len("    value:"):].strip())
-        elif s.startswith("module:"):
-            manifest["module"] = s[len("module:"):].strip()
-        elif s.startswith("description:"):
-            manifest["description"] = s[len("description:"):].strip()
-        elif s.startswith("depends_on:"):
-            manifest["depends_on"] = _parse_list(s[len("depends_on:"):].strip())
-    if "module" not in manifest:
-        raise ValueError("manifest missing module: field")
-    return {"manifest": manifest, "body": body}
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
-def _parse_value(raw: str):
-    if raw.startswith("["):
-        return _parse_list(raw)
-    return raw.strip().strip('"')
+def _write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _parse_list(raw: str) -> list:
-    return re.findall(r'"([^"]*)"', raw)
-
-
-def extract_operator_name(doc_text: str) -> str:
-    """Operator name = first aclnn* token (prefer a leading # heading)."""
-    m = re.search(r"^#\s*(aclnn[A-Za-z0-9_]+)", doc_text, re.MULTILINE)
-    if m:
-        return m.group(1)
-    m = re.search(r"(aclnn[A-Za-z0-9_]+)", doc_text)
-    return m.group(1) if m else ""
-
-
-def trigger_matches(kind: str, value, op_name: str, doc_text: str) -> bool:
-    if kind == "operator_name_eq":
-        return bool(op_name) and op_name == value
-    if kind == "operator_name_regex":
-        return bool(op_name) and bool(re.search(value, op_name))
-    if kind == "name_contains":
-        return bool(op_name) and value in op_name
-    if kind == "doc_contains":
-        return bool(re.search(value, doc_text, re.MULTILINE))
-    if kind == "format_any":
-        vals = value if isinstance(value, list) else [value]
-        return any(str(f) in doc_text for f in vals)
-    raise ValueError(f"unknown trigger kind: {kind!r}")
-
-
-def classify(doc_text: str) -> list[str]:
-    """Return matched module names in MODULE_ORDER."""
-    op_name = extract_operator_name(doc_text)
-    module_files = {p.stem: p for p in MODULES_DIR.glob("*.md")}
-    if not module_files:
-        return []
-    parsed = {n: parse_manifest(p.read_text(encoding="utf-8")) for n, p in module_files.items()}
-    loaded: set[str] = set()
-    for name, item in parsed.items():
-        if any(
-            trigger_matches(t["kind"], t.get("value"), op_name, doc_text)
-            for t in item["manifest"]["triggers"]
-        ):
-            loaded.add(name)
-    # transitive depends_on
-    changed = True
-    while changed:
-        changed = False
-        for name in list(loaded):
-            for dep in parsed[name]["manifest"]["depends_on"]:
-                if dep in parsed and dep not in loaded:
-                    loaded.add(dep)
-                    changed = True
-    return [n for n in MODULE_ORDER if n in loaded] + sorted(
-        n for n in loaded if n not in MODULE_ORDER
-    )
-
-
-def assemble(base_path: Path, doc_path: Path, output_path: Path) -> list[str]:
-    """Assemble base prompt + matched modules -> output_path. Return module names."""
-    base = base_path.read_text(encoding="utf-8")
-    doc_text = doc_path.read_text(encoding="utf-8")
-    names = classify(doc_text)
-    parts = [base.rstrip(), ""]
-    if names:
-        parts.append("---")
-        parts.append("## 加载的算子类模块（由 scripts/select_prompt.py 按算子特征装配）")
-        parts.append("")
-        for name in names:
-            item = parse_manifest((MODULES_DIR / f"{name}.md").read_text(encoding="utf-8"))
-            parts.append(item["body"].rstrip())
-            parts.append("")
+def assemble(
+    base_path: Path,
+    doc_path: Path,
+    output_path: Path,
+    knowledge_path: Path = DEFAULT_KNOWLEDGE,
+    record_path: Path | None = None,
+    preanalysis_path: Path | None = None,
+) -> list[str]:
+    base_path, doc_path, output_path = base_path.resolve(), doc_path.resolve(), output_path.resolve()
+    knowledge_path = knowledge_path.resolve()
+    result = route(doc_path, knowledge_path)
+    base = base_path.read_text(encoding="utf-8").rstrip()
+    bundle = render_bundle(result, knowledge_path).rstrip()
+    snapshot = "\n".join([
+        base, "", "---", "", "<!-- assembled-knowledge-begin -->",
+        bundle, "<!-- assembled-knowledge-end -->", "",
+    ])
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(parts) + "\n", encoding="utf-8")
-    return names
+    output_path.write_text(snapshot, encoding="utf-8")
+    if preanalysis_path is not None:
+        _write_json(preanalysis_path.resolve(), result["preanalysis"])
+    if record_path is not None:
+        manifest_path = knowledge_path / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        by_id = {item["id"]: item for item in manifest["modules"]}
+        decisions = {item["module_id"]: item for item in result["applicability"]["selected_modules"]}
+        components = []
+        for order, module_id in enumerate(result["resolved_modules"], 1):
+            path = knowledge_path / by_id[module_id]["path"]
+            components.append({
+                "order": order,
+                "module_id": module_id,
+                "scope": by_id[module_id]["scope"],
+                "path": str(path.resolve()),
+                "sha256": _sha256(path),
+                "selection_decision": decisions[module_id],
+            })
+        record = {
+            "schema_version": "1.0",
+            "assembled_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "aclnn_routed_knowledge",
+            "family": "aclnn",
+            "frozen": True,
+            "source_document": {"path": str(doc_path), "sha256": _sha256(doc_path)},
+            "preanalysis_artifact": {
+                "path": str(preanalysis_path.resolve()) if preanalysis_path else "",
+                "sha256": _sha256(preanalysis_path.resolve()) if preanalysis_path else "",
+            },
+            "base_prompt": {"path": str(base_path), "sha256": _sha256(base_path)},
+            "knowledge": {
+                "root": str(knowledge_path),
+                "manifest_path": str(manifest_path.resolve()),
+                "manifest_sha256": _sha256(manifest_path),
+                "route_source": result["route_source"],
+            },
+            "applicability": result["applicability"],
+            "assembly": {
+                "order": ["base_prompt", "knowledge_modules"],
+                "module_ids": result["resolved_modules"],
+                "knowledge_components": components,
+                "output_path": str(output_path),
+                "output_sha256": _sha256(output_path),
+                "boundary_markers": ["assembled-knowledge-begin", "assembled-knowledge-end"],
+            },
+        }
+        _write_json(record_path.resolve(), record)
+    return result["resolved_modules"]
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(
-        description="Assemble base prompt + matched operator-class modules for an operator doc."
-    )
-    p.add_argument("--base", required=True, help="base prompt path (e.g. prompts/operator_constraints_extract_v4.md)")
-    p.add_argument("--doc", required=True, help="operator doc path")
-    p.add_argument("--output", help="assembled snapshot output path (omit with --list-modules)")
-    p.add_argument("--list-modules", action="store_true", help="just print matched module names, do not write")
-    args = p.parse_args()
-
-    doc_text = Path(args.doc).read_text(encoding="utf-8")
+    parser = argparse.ArgumentParser(description="Assemble ACLNN base + routed knowledge.")
+    parser.add_argument("--base", default=str(DEFAULT_BASE))
+    parser.add_argument("--doc", required=True)
+    parser.add_argument("--knowledge", default=str(DEFAULT_KNOWLEDGE))
+    parser.add_argument("--output")
+    parser.add_argument("--record")
+    parser.add_argument("--preanalysis-output")
+    parser.add_argument("--list-modules", action="store_true")
+    args = parser.parse_args()
+    doc, knowledge = Path(args.doc).resolve(), Path(args.knowledge).resolve()
     if args.list_modules:
-        print(",".join(classify(doc_text)))
+        print(",".join(route(doc, knowledge)["resolved_modules"]))
         return 0
     if not args.output:
-        p.error("--output is required unless --list-modules is set")
-    names = assemble(Path(args.base), Path(args.doc), Path(args.output))
+        parser.error("--output is required unless --list-modules is set")
+    names = assemble(
+        Path(args.base), doc, Path(args.output), knowledge,
+        Path(args.record) if args.record else None,
+        Path(args.preanalysis_output) if args.preanalysis_output else None,
+    )
     print(",".join(names))
     return 0
 

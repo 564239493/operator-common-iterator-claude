@@ -59,9 +59,19 @@ def find_latest_operator_prompt(directory: Path | None = None) -> Path | None:
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
-def find_latest_hs_prompt(directory: Path | None = None) -> Path | None:
-    """Return the latest isolated prompt for torch_npu documents."""
+def find_active_aclnn_prompt(directory: Path | None = None) -> Path | None:
+    """Return the split ACLNN base, falling back to the historical latest vN."""
     prompt_dir = (directory or PROMPT_DIRECTORY).resolve()
+    split_base = prompt_dir / "operator_constraints" / "base.md"
+    return split_base.resolve() if split_base.is_file() else find_latest_operator_prompt(prompt_dir)
+
+
+def find_latest_hs_prompt(directory: Path | None = None) -> Path | None:
+    """Return the split torch_npu base, falling back to the historical latest vN."""
+    prompt_dir = (directory or PROMPT_DIRECTORY).resolve()
+    split_base = prompt_dir / "torch_npu_constraints" / "base.md"
+    if split_base.is_file():
+        return split_base.resolve()
     candidates: list[tuple[int, Path]] = []
     if not prompt_dir.is_dir():
         return None

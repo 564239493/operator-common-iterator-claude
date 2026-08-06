@@ -376,10 +376,10 @@ settings.json 使用默认询问模式；只预授权正常工作流所需的低
     agents/*.md              # 6 个 Agent 定义
     skills/*/SKILL.md        # 10 个 Skill 定义
     hooks/*.py               # trace_hook + guard_project_writes
-  prompts/                   # 约束提取提示词版本
-    operator_constraints_extract_v1.md
-    operator_constraints_extract_v2.md
-    operator_constraints_extract_v3.md
+  prompts/                   # 约束提取提示词
+    operator_constraints/      # ACLNN canonical base.md（直接编辑）
+    torch_npu_constraints/     # torch_npu canonical base.md（直接编辑）
+    history/                   # v1-v4 / v1-v3 历史来源归档（provenance only）
   operator_docs/             # 算子文档（可自行添加）
   docs/                      # 设计文档
   knowledge/                 # 算子模式参考

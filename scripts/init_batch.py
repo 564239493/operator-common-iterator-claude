@@ -13,7 +13,7 @@ from runtime_config import (
     ROOT,
     config_error_payload,
     find_latest_hs_prompt,
-    find_latest_operator_prompt,
+    find_active_aclnn_prompt,
     resolve_input_path,
     validate_server_config,
 )
@@ -47,7 +47,7 @@ def main() -> int:
         default=None,
         help=(
             "显式原样约束提取提示词路径；省略时每个文档按 family 选择并装配 "
-            "operator_constraints_extract_vN.md 或 torch_npu_constraints_extract_vN.md"
+            "ACLNN active base/knowledge 或 torch_npu_constraints_extract_vN.md"
         ),
     )
     parser.add_argument(
@@ -184,7 +184,7 @@ def main() -> int:
             else {normalized_family}
         )
         selected = {
-            "aclnn": find_latest_operator_prompt() if "aclnn" in required_families else None,
+            "aclnn": find_active_aclnn_prompt() if "aclnn" in required_families else None,
             "hs": find_latest_hs_prompt() if "hs" in required_families else None,
         }
         missing = sorted(name for name in required_families if selected.get(name) is None)

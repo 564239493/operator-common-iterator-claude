@@ -11,7 +11,7 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt pat
 `docs/ARTIFACT_CONTRACTS.md`，然后严格执行：
 
 1. 解析参数。默认 glob=`*.md`、不递归；未传 `--prompt` 时保持逐文档 family 自动
-   选择：ACLNN 使用 `operator_constraints_extract_vN.md`，torch_npu 使用
+   选择：ACLNN 使用 `operator_constraints/base.md` + `knowledge/aclnn`，torch_npu 使用
    `torch_npu_constraints_extract_vN.md`，并各自装配隔离知识；
    max-iterations、case-count、mode、server-config 和 hs-scenario-mode 与
    `/iterate-operator` 相同；

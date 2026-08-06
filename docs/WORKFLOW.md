@@ -35,12 +35,12 @@ run；校验通过后将外部文档复制为项目内快照并创建 run_state�
 计划，用户能在真正执行前看见：
 哪些 Agent 会参与、每个 Agent 接收什么、产出什么、为何停止或继续。
 
-未显式传入 `--prompt` 时，初始化脚本按 family 扫描：ACLNN 使用
-`prompts/operator_constraints_extract_vN.md` 并由 `scripts/select_prompt.py` 装配
-`prompts/modules/**`；torch_npu 使用 `prompts/torch_npu_constraints_extract_vN.md`
-并由 `scripts/select_torch_npu_prompt.py` 装配 `knowledge/torch_npu/**`。版本按整数 N
-（而非文件名字典序）选择。两套装配根互斥。选中的源路径、命中模块和 run 内完整快照
-均写入 run_state，因此后续新增版本不会改变已经创建的 run。
+未显式传入 `--prompt` 时，ACLNN 使用 `prompts/operator_constraints/base.md`，由
+`scripts/select_prompt.py` 执行预分析、路由 `knowledge/aclnn/manifest.json`、适用性
+判断并冻结组装记录；torch_npu 使用 `prompts/torch_npu_constraints/base.md`
+（canonical 直接编辑）并装配
+`knowledge/torch_npu/**`。两套装配根互斥。源路径、命中模块、哈希和 run 内完整快照
+写入 run_state，因此 canonical 后续变化不会静默改变已有 run。
 
 ## 3. 执行状态机
 

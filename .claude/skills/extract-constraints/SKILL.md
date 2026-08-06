@@ -8,7 +8,7 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 存在（由 SCENE_SCAN 子步骤产出），也必须读取并严格按其场景指令屏蔽非选定场景。
 
 > 当前提示词是 family 隔离的完整快照（见 `run_state.current_prompt_modules`）：ACLNN
-> 可能由 `scripts/select_prompt.py` 装配，torch_npu 由
+> 由 `scripts/select_prompt.py` 经预分析、知识路由、适用性判断后冻结，torch_npu 由
 > `scripts/select_torch_npu_prompt.py` 装配。只按快照中实际存在的章节工作；不得从另一
 > family 的 canonical prompt/模块补规则。
 
@@ -42,6 +42,9 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 
 1. 逐节阅读文档，区分明确约束、示例和说明性文字。
 2. **模式判定**：先读取 `run_state.json.operator_family`。
+   - `aclnn` 且 `run_state.prompt_assembly_record` 非空时，先执行
+     `python scripts/validate_prompt_assembly.py --record <prompt_assembly_record>`；失败说明
+     冻结上下文已漂移，必须阻断，不得在提取阶段重新路由或绕过哈希。
    - `hs`：按当前海思 prompt 处理 Python `torch_npu.*` 函数原型；不得要求
      `GetWorkspaceSize`，不得伪造 ACLNN 名称；`*` 和默认值决定 optional。
    - `aclnn`：看"函数原型"章节是否含 `aclnnXxxGetWorkspaceSize`。
@@ -70,15 +73,19 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
        dtype 误写给数组。
 6. 写入 `<iter-dir>/constraints.json`。
 7. 执行：
-   `python scripts/normalize_constraints.py <iter-dir>/constraints.json`
+   `python scripts/validate_operator_rule.py <iter-dir>/constraints.json`
 8. 执行：
+   `python scripts/normalize_constraints.py <iter-dir>/constraints.json`
+9. 执行：
    `python scripts/validate_artifacts.py constraints <iter-dir>/constraints.json`
-9. 写入后逐项复核有限标量候选：原文出现“传入 A 或 B”“仅支持 A、B、C”“共有
+   该命令会实际构造 `agent.generators.common_model_definition.OperatorRule`；只有 Python
+   返回码为 0 才是有效数据结构，模型文字自检不能替代。
+10. 写入后逐项复核有限标量候选：原文出现“传入 A 或 B”“仅支持 A、B、C”“共有
    N 种模式”等明确候选语义时，必须使用扁平 `enum`；不得使用 `range` 或
    `[[A,B]]`。特别是 `src_text="传入0或1"` 必须为
    `{"value":[0,1],"type":"enum"}`。
-10. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因。
-11. **场景屏蔽完整性自检**（仅当 `inputs/scene_directive.md` 存在时）：确认被屏蔽
+11. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因。
+12. **场景屏蔽完整性自检**（仅当 `inputs/scene_directive.md` 存在时）：确认被屏蔽
     场景的专属 Optional 参数其 `presence_dependency` 未产出、通用约束
     （shape/dtype/format 等）未被误删、`allowed_range_value` 候选已按场景收窄。
     自检不通过则回到步骤 1 重提，不放过半屏蔽的 constraints.json。

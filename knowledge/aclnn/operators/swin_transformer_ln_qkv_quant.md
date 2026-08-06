@@ -141,5 +141,5 @@ src_text: "swin_transformer_ln_qkv_quant_infershape.cpp：三个输出均为4D"
 1. **`src_text` 标注源码**：所有引用源码推导的 `constraints_in_parameters` 条目必须在 `src_text` 中写出 `swin_transformer_ln_qkv_quant_infershape.cpp`，与文档约束区分。
 2. **化简公式唯一性**：化简后的 §C 与未化简形式**只保留一个**；默认保留化简形式以减少生成器求解负担。
 3. **不传染到其它算子**：本模块是算子内专用，不抽取为通用 §X.Y 规则；其它 LN+QKV 类算子若有需要另建模块。
-4. **不替代通用 broadcast / dtype 互推导 / 形状-秩守卫**：本模块只覆盖算子特异性；通用规则由 `prompts/modules/broadcast.md` 与主提示词 §4.6.10 / §4.6.7 承载。
+4. **不替代通用 broadcast / dtype 互推导 / 形状-秩守卫**：本模块只覆盖算子特异性；通用规则由 `knowledge/aclnn/features/broadcast.md` 与命中的 feature 模块承载。
 5. **`<param>_range_value` 引用规范**：与 v4 §6.1 一致，用 `param.range_value` 形式取标量参数值；shape 索引用 `param.shape[k]`。

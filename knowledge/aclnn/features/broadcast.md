@@ -8,12 +8,15 @@ triggers:
     value: "MatMul"
   - kind: doc_contains
     value: "broadcast|广播|互推导|type_promotion"
+reject_on:
+  - kind: doc_contains
+    value: "不支持广播|不满足.*broadcast|不兼容.*broadcast|无需广播|不进行广播"
 depends_on: []
 ---
 
 # 模块 broadcast（按需加载）
 
-> 本模块原为 `operator_constraints_extract_v4.md` §4.6.10，按算子特征由 `scripts/select_prompt.py` 装配到活跃提示词末尾。原 § 编号保留，便于交叉引用按标题文本定位。
+> 本模块原为 `prompts/history/operator_constraints_extract_v4.md` §4.6.10，按算子特征由 `scripts/select_prompt.py` 装配到活跃提示词末尾。原 § 编号保留，便于交叉引用按标题文本定位。
 
 #### 4.6.10 公共知识展开（互推导关系 / broadcast 关系）
 

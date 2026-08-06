@@ -157,7 +157,14 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
 - `render_scene_directive.py` — 校验场景选择、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
-- `select_prompt.py` — 按算子特征装配提示词（base + modules，`MODULE_ORDER` 定序）
+- `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 `base + 命中知识` → 冻结 `prompt_v1.md`+`prompt_preanalysis.json`+`prompt_assembly.json`
+- `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
+- `route_aclnn_knowledge.py` / `route_torch_npu_knowledge.py` — manifest 驱动知识路由（正向 trigger + `reject_on` 负向否决 + `depends_on` 依赖闭包）
+- `validate_aclnn_knowledge.py` / `validate_torch_npu_knowledge.py` — 知识完整性预校验（manifest 字段、默认集、依赖闭包、跨 family 隔离、`reject_on` 合法性）
+- `validate_prompt_assembly.py` — 校验冻结装配记录的全部 sha256 与模块顺序标记
+- `validate_prompt_update_proposal.py` — 校验运行内沉淀的 `prompt_update_proposal.json`、目标边界（base_prompt / knowledge_* / torch_npu / no_update / run_only）与证据门禁
+- `record_prompt_update_decision.py` — 仅在用户显式确认（`--confirmed-by-user`）后记录 approve/reject/defer，不改 canonical
+- `record_prompt_update_application.py` — 记录已批准提案的 canonical 应用结果（`sha256_after`）与重跑校验，proposal 状态 approved→applied
 - `classify_operator.py` — 算子分类（含融合/通算等执行路径判定）
 - `collect_operator_source.py` — 算子源码闭包收集（include 不动点 + manifest + 报告）
 - `extract_source_constraints.py` — 从源码快照提取确定性约束事实
@@ -167,19 +174,23 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
 - `show_registry.py` — 展示 Skills/Agents 注册表
 
-### 提示词版本化
+### 提示词与知识演进
 
-`prompts/operator_constraints_extract_vN.md`，N 为整数版本号。`init_run.py` 按数值 N
-（而非文件名字典序）自动选择最新版本，并复制快照到 run 目录。迭代优化时 `prompt-optimizer`
-在 run 内 `iter_<N+1>/prompt_v(N+1).md` 与 `prompt_changes_v(N+1).md` 落盘
-（per-iter 快照，**不**直接写 `prompts/`）。**任务进入终态后**，主协调器读取
-`prompt_changes_v(N+1).md` 摘要（含"改动前后逐 section diff"），结合 iter (N+1)
-的 `execution_result.json` 作为有效性凭证，由 `AskUserQuestion` 显式询问用户是否
-通过 `scripts/promote_prompt.py` 提升到全局 `prompts/operator_constraints_extract_v(N+1).md`
-并同步更新 `prompts/CHANGELOG.md`。`promote_prompt.py` 是唯一允许向 `prompts/` 写入下一版的
-入口，并在 run_state 状态 ∈ {`SUCCESS`,`BLOCKED`,`MAX_ITERATIONS`,
-`STOP_GENERATOR_BUG`,`STOP_EXECUTOR_BUG`} 时才会放行。详细契约见
-`.claude/skills/optimize-prompt/SKILL.md` §5 与 `scripts/promote_prompt.py`。
+ACLNN 与 torch_npu 现同构：`prompts/<family>_constraints/base.md` 为 **canonical
+直接编辑**的提示词（只保留流程与未迁移规则，不复制 Pydantic schema）；`v4`/`v3`
+为历史来源（provenance only），一次性机械拆分已完成、不再作为生成源（原迁移工具
+`build_*_prompt_base.py` 已退场归档于 `archive/builders/`，仅留审计、不再 gate）。
+再由 manifest 驱动的知识路由在 run
+初始化（PLAN）阶段装配 `base + 命中知识模块`，并冻结为 `prompt_v1.md` +
+`prompt_preanalysis.json` + `prompt_assembly.json`（含 sha256）。两 family 知识根
+相互隔离（`knowledge/aclnn` / `knowledge/torch_npu`，由各自 validator 禁跨 family
+引用）；extractor 只读冻结快照，不重走路由。v1-v4（torch v1-v3）仅作历史来源。
+迭代优化只在 run 内写候选、变更说明和 `prompt_update_proposal.json`，按
+base/common/feature/exact-operator/torch_npu/no-update 选择最小目的地。任务终态由
+主协调器展示证据、适用范围和试验结果并逐条询问用户；只有明确批准后才能修改
+canonical 文件（提升后须重跑 `validate_*_knowledge` + 路由 + 组装冻结校验，即
+`init_run` + `validate_prompt_assembly.py --record`）。
+详细契约见 `docs/PROMPT_ASSEMBLY.md` 与 `docs/PROMPT_EVOLUTION.md`。
 
 ### 产物目录结构
 
@@ -209,10 +220,13 @@ runs/<operator>-<timestamp>/
 - 活动任务中 Edit/Write/删除/移动/重定向写入只能作用于当前
   `runs/<run-id>/`（`guard_project_writes.py` Hook 强制）
 - 活动任务不得读取其他 `runs/<other-run-id>/`；批次仅在前一 run 终态后切换
-- Agent 业务产物只能写当前 `runs/<run-id>/`；提示词版本提升到全局 `prompts/`
-  由主协调器在任务终态后经用户显式批准、并调
-  `scripts/promote_prompt.py` 完成（详见「提示词版本化」段与
-  `.claude/skills/iterate-operator/SKILL.md` 第 9 步）
+- Agent 业务产物只能写当前 `runs/<run-id>/`；canonical 文件（`prompts/**/base.md`、
+  `knowledge/**`）修改只在任务终态后经用户**显式逐条批准**（AskUserQuestion），按
+  `prompt_update_proposal.json` 的 `change.content` 由主协调器应用、
+  `record_prompt_update_decision.py` 记裁决、`record_prompt_update_application.py` 记应用
+  与重跑校验，随后重跑 `validate_*_knowledge` + `init_run` +
+  `validate_prompt_assembly.py --record`。用户沉默、运行成功或批处理模式均不构成批准
+  （详见 `docs/PROMPT_EVOLUTION.md` 与 `.claude/skills/iterate-operator/SKILL.md` 第 10 步）
 - 不自动提交、推送或删除文件
 - 约束、用例、执行结果和分析结果必须先过 `scripts/validate_artifacts.py`
 

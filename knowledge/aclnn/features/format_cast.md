@@ -11,7 +11,7 @@ depends_on: ["acl_format_enum"]
 
 # 模块 format_cast（按需加载）
 
-> 本模块原为 `operator_constraints_extract_v4.md` §4.6.7 + §4.6.8 + §4.6.11 + §4.6.12 + §6.3 模式9，按算子特征由 `scripts/select_prompt.py` 装配到活跃提示词末尾。原 § 编号保留，便于交叉引用按标题文本定位。
+> 本模块原为 `prompts/history/operator_constraints_extract_v4.md` §4.6.7 + §4.6.8 + §4.6.11 + §4.6.12 + §6.3 模式9，按算子特征由 `scripts/select_prompt.py` 装配到活跃提示词末尾。原 § 编号保留，便于交叉引用按标题文本定位。
 
 #### 4.6.7 格式-秩（format↔rank）硬对应表（v7 新增，通用规则）
 
@@ -34,7 +34,7 @@ depends_on: ["acl_format_enum"]
 | `NCDHW` / `NDHWC` | 5 | 5D 排布 |
 | `NC1HWC0` / `NC1HWC0_C04` | 5 | 5D，`C1`/`C0` 为分块轴（`_C04` 为 `C0=4` 变体） |
 | `NDC1HWC0` | 6 | 6D，`C1`/`C0` 为分块轴 |
-| `NZ` / `FRACTAL_NZ` / `FRACTAL_NZ_C0_16` / `FRACTAL_NZ_C0_32` | 5 | 沿用 §4.6.5 既有 NZ 块尺寸规则（不重复块尺寸细节，仅引用 rank） |
+| `NZ` / `FRACTAL_NZ` / `FRACTAL_NZ_C0_16` / `FRACTAL_NZ_C0_32` | 5 | 沿用 `knowledge/aclnn/features/nz_matmul.md` §4.6.5 既有 NZ 块尺寸规则（不重复块尺寸细节，仅引用 rank） |
 | `FRACTAL_Z_3D` | 4 | storage shape 4D（`[D*C1*H*W, N1, N0, C0]`） |
 | `FRACTAL_Z` | 4 | storage shape 4D（若文档涉及） |
 | `NCHW_VECT_C0_16` | 5 | 5D 向量化排布 |
@@ -82,7 +82,7 @@ shape 维度不在[4, 8]的范围；Input Tensor format not match it's shape。"
    的扁平 `[min,max]` 区间而省略逐格式守卫。
 2. **合并为单一 expr**：所有分支用 `or` 串接为**一条** `format_rank_consistency`
    条目，**不**拆成多条独立 `shape_equality`（否则生成器会把它们当作并列候选
-   而丢失 format 门控上下文，与 §6.3 模式 6 反例同理）。
+   而丢失 format 门控上下文，与 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 6 反例同理）。
 3. **`dimensions.value` 仍可保留**文档给出的 `[min,max]` 作为弱范围（供生成器
    初筛 rank 槽数），但**必须**同时落库上述逐格式守卫，作为不可违反的硬约束。
 4. **src 必须可溯**：`src_text` 摘录文档中"维度区间""format↔shape 一致性"等
@@ -90,11 +90,11 @@ shape 维度不在[4, 8]的范围；Input Tensor format not match it's shape。"
    落库，`src_text` 摘录 format 列表与维度区间原文并补注"format↔rank 由 §4.6.7
    标准对应表推导"。
 5. **NZ 族不重复块尺寸**：NZ/FRACTAL_NZ 等只在本节写 rank==5 的守卫，块尺寸
-   硬约束（`shape[3]==16`/`shape[4]==16`）仍按 §4.6.5 落库，不在此重复。
+   硬约束（`shape[3]==16`/`shape[4]==16`）仍按 `knowledge/aclnn/features/nz_matmul.md` §4.6.5 落库，不在此重复。
 6. **平台差异**：若不同平台 format 列表不同（如 A2 含 `NCL`、A3 不含），逐平台
    分别落库对应分支；同一平台 format 列表里的每个格式都必须出现在该平台的 expr 中。
 7. **`format.value` 字面保真（不外扩同义别名）**：`format.value` 只列文档为该
-   张量枚举的 §5.3 字面短名，**不**为同义短名做别名外扩。`NZ` 与 `FRACTAL_NZ`
+   张量枚举的 `knowledge/aclnn/common/platform_dtype.md` §format 字面短名，**不**为同义短名做别名外扩。`NZ` 与 `FRACTAL_NZ`
    虽同指 29，但文档参数表只写其中一种（如 `ND、NZ、NCDHW、...`），`format.value`
    就只列 `"NZ"`，**不**额外追加 `"FRACTAL_NZ"`。expr 里的 `==`/`in` 集合必须与
    `format.value` 严格同源——不引入 `format.value` 里没有的别名分支，也不遗漏
@@ -261,7 +261,7 @@ src_text: "dstTensor 的 storage shape 维度不在[4, 8]的范围；actualForma
   存在确定映射时）→ 生成器未识别文本标记、独立随机赋值，违 §4.6.8 C.1。
 - 把 `dstTensor.shape == aclnnNpuFormatCastCalculateSizeAndFormat(...).dstShape`
   写进 `expr` 当布尔表达式 → 该签名无法在生成期 `eval()`（子接口是 NPU 侧运行期
-  调用），违 §6.1 合法 Python 布尔表达式要求。
+  调用），违 `knowledge/aclnn/common/expression_language.md` §语法 合法 Python 布尔表达式要求。
 - 因 `dstTensor` 是派生量就省略 §4.6.7 的 `format_rank_consistency` 守卫 →
   派生量仍须满足 format↔rank 一致性，二者职责不同，不得互相替代。
 
@@ -299,7 +299,7 @@ src_text: "dstTensor 的 storage shape 维度不在[4, 8]的范围；actualForma
 **不**把总表候选统一套用到所有平台：
 
 1. **逐平台候选**：`allowed_range_value.type="enum"`，`value` 为该平台实际候选
-   列表（数值候选用裸数字，如 `[1, 27, 2, 36]`、`[-1]`；字符串候选用 §5.2
+   列表（数值候选用裸数字，如 `[1, 27, 2, 36]`、`[-1]`；字符串候选用 `knowledge/aclnn/common/platform_dtype.md` §dtype
    受控字典标签）；各平台 `value` **可以不同**，这正是本节要捕获的产品差异；
 2. **占位/未用值**：若某产品分节表明 `P` 不参与计算（改由其它参数推导）且
    示例固定写 `P = -1`（或文档指定的其它占位值），该平台 `value` 必须为**仅含
@@ -432,7 +432,7 @@ src_text: "<摘录文档 dtype 组合表或功能说明中 src dtype == dst dtyp
    即使各平台 expr 完全相同。
 3. **src_text 可溯源**：必须摘录文档中表明 src dtype == dst dtype 的原文（dtype 表
    行、功能说明"数据值不变"或示例代码用 srcDtype 构造 dstTensor 的行）。
-4. **不替代互推导规则**：若算子同时引用 `互推导关系.md`，互推导约束（§4.6.10 A）
+4. **不替代互推导规则**：若算子同时引用 `互推导关系.md`，互推导约束（`knowledge/aclnn/features/broadcast.md` §A）
    仍须落库；本规则仅补充“格式转换场景下 src == dst”的等式约束。
 
 #### 4.6.13 srcTensor.format → dstFormat 条件约束（v8 新增，仅 aclnnNpuFormatCast）
@@ -483,8 +483,8 @@ src_text: "<摘录文档 dtype 组合表或功能说明中 src dtype == dst dtyp
    自然只留下该平台可满足的行（350 仅 `==29` 行可满足 → src 必须是 `ND`/`NCL`；
    A2/A3 全行可满足），无需逐平台改写 expr；
 2. **dst 侧必须用整数**：`dstFormat` 是 `int` 型，expr 里写 `dstFormat.range_value == 29`
-   等裸整数，**禁止**写 `dstFormat.range_value == "29"` 字符串（违 §9.30 f）；
-3. **src 侧用 §5.3 短名字符串，且与 `srcTensor.format.value` 字面一致**：
+   等裸整数，**禁止**写 `dstFormat.range_value == "29"` 字符串（违 §6.30 f）；
+3. **src 侧用 `knowledge/aclnn/common/platform_dtype.md` §format 短名字符串，且与 `srcTensor.format.value` 字面一致**：
    `srcTensor.format == "NZ"`；**不**为 `NZ`/`FRACTAL_NZ` 同义别名做外扩——
    文档参数表写 `NZ` 就用 `"NZ"`、写 `FRACTAL_NZ` 就用 `"FRACTAL_NZ"`，expr 的
    `==`/`in` 集合与 `format.value` 严格同源（见 `acl_format_enum.md` §B）；
@@ -522,14 +522,14 @@ src_text: "功能说明：完成 ND←→NZ、NCDHW←→NDC1HWC0、NCDHW←→F
   `value_dependency` → 生成器独立采样出 `src=ND, dstFormat=30(NCDHW)` 等非法
   组合，违规则 B.1（正是 iter_001 现状）；
 - expr 里写 `dstFormat.range_value == "29"` 字符串 → 与 `dstFormat` 的 `int`
-  类型不符，Z3 IntSort 与 str 无法比较，违 §9.30 f 与规则 B.2；
+  类型不符，Z3 IntSort 与 str 无法比较，违 §6.30 f 与规则 B.2；
 - NZ 行的 expr 引用了 `format.value` 里没有的短名（如 `srcTensor.format.value=["NZ"]`
   但 expr 写 `srcTensor.format in ("NZ","FRACTAL_NZ")`，多出未列出的 `FRACTAL_NZ`
   分支；或反过来 `format.value=["FRACTAL_NZ"]` 但 expr 写 `== "NZ"`）→ expr 与
   `format.value` 字面不一致，生成器采到的值命中不了该分支，违规则 B.3 与
   §4.6.7 C.7；二者必须同源：文档参数表写哪个短名，`format.value` 与 expr 就用哪个；
 - 把本条拆成 5 条独立 `value_dependency`（每 src 一条）→ 生成器把并列候选当
-  独立分支丢失 src 门控上下文，与 §4.6.7 C.2 / §6.3 模式 6 反例同理；
+  独立分支丢失 src 门控上下文，与 §4.6.7 C.2 / `knowledge/aclnn/common/expression_language.md` §常用模式 模式 6 反例同理；
 - 因落库了本条就省略 §4.6.8 C 的 `derived_value`（dstFormat→dstTensor.format）
   → 二者职责不同，违规则 B.5。
 
@@ -593,7 +593,7 @@ src_text: "<摘录 actualFormat → format 对应原文>"
 **不得**把这类联合表拆进 `dtype_support_description` / `format_support_description`
 （见 §4.9/§4.10），必须落库为**一条** `derived_value`（或 `cross_param_constraint`）
 expr，析取所有合法行、每行合取键值与目标值。以 `aclnnNpuFormatCast` Atlas 350
-`GetWorkspaceSize` 表为例（format 用 §5.3 受控字典短名，`FLOAT`→`FLOAT32`）：
+`GetWorkspaceSize` 表为例（format 用 `knowledge/aclnn/common/platform_dtype.md` §format 受控字典短名，`FLOAT`→`FLOAT32`）：
 
 ```text
 expr_type: derived_value
@@ -625,7 +625,7 @@ dstTensor.dtype`）与本条并行落库不冲突（本条更严，生成器两�
    不产出 `derived_value` 条目，派生语义由 `[DERIVED]` description 承载（§4.6.8 C.2）。
 4. **逐平台落库**：各平台映射表不同时 `expr` 按该平台表分别编码。
 5. **format 短名与 `format.value` 对齐（字面保真）**：combo 表里若用 `ACL_FORMAT_FRACTAL_NZ(29)`
-   等全名，expr 须归一化为该张量 `format.value` 里实际使用的 §5.3 短名（如 `format.value`
+   等全名，expr 须归一化为该张量 `format.value` 里实际使用的 `knowledge/aclnn/common/platform_dtype.md` §format 短名（如 `format.value`
    写 `"NZ"` 则 expr 用 `dstTensor.format == "NZ"`，**不**写 `"FRACTAL_NZ"`），否则生成器
    从 `format.value` 采到的值命中不了 expr 分支；同一张量的 `format.value` 与所有引用它的
    expr 必须用同一短名，不为同义别名做外扩（见 §4.6.7 C.7）。
