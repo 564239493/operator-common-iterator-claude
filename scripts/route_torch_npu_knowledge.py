@@ -24,7 +24,13 @@ def _sha_text(text: str) -> str:
 
 
 def _parse_list(raw: str) -> list[str]:
-    return re.findall(r'["\']([^"\']+)["\']', raw)
+    """解析 YAML 内联列表，兼容带引号项与无引号裸名（与 route_aclnn_knowledge 对齐）。"""
+    items: list[str] = []
+    for tok in raw.strip().strip("[]").split(","):
+        tok = tok.strip().strip("\"'")
+        if tok:
+            items.append(tok)
+    return items
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:

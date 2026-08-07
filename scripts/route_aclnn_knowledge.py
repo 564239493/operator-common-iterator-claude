@@ -19,7 +19,19 @@ def _sha_text(text: str) -> str:
 
 
 def _parse_list(raw: str) -> list[str]:
-    return re.findall(r'["\']([^"\']+)["\']', raw)
+    """解析 YAML 内联列表，兼容带引号项与无引号裸名。
+
+    之前用 ``r'["\\']([^"\\']+)["\\']'`` 只匹配带引号项，导致无引号的
+    ``depends_on: [type_derivation, broadcast_relation]`` 被解析为空列表——
+    depends_on 闭包长期静默失效（被依赖模块恰好都 default_load 或独立触发而掩盖）。
+    现按逗号分割、剥外层括号与引号，覆盖两种写法。
+    """
+    items: list[str] = []
+    for tok in raw.strip().strip("[]").split(","):
+        tok = tok.strip().strip("\"'")
+        if tok:
+            items.append(tok)
+    return items
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:

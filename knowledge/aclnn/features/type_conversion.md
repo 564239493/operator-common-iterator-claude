@@ -6,14 +6,15 @@ default_load: false
 triggers:
   - kind: doc_contains
     value: "互转换关系|输出.*数据类型.*推导|计算结果转换成输出类型"
-depends_on: [broadcast, platform_dtype, expression_language]
+depends_on: [broadcast, platform_dtype, expression_language, type_conversion_foundation]
 ---
 
-# 官方 dtype 互转换关系
+# dtype 互转换的派生约束规则
+
+> 官方互转换关系表（整数/浮点/复数/BOOL 的合法转换组合）见 `foundation/type_conversion`（由 depends_on 拉入）；本模块只给派生规则，不重复概念表。
 
 当前文档明确引用“互转换关系”或声明输出 dtype 可不同于输入推导后的计算 dtype 时才
-加载。整数可向整数/浮点/复数转换，浮点可向浮点/复数转换，复数只在复数间转换，
-BOOL 可向整数/浮点/复数转换；其他场景不支持。
+加载该规则。
 
 该表用于检查输入推导结果与输出候选的合法组合，不能给当前算子补 dtype。若当前文档
 要求输出等于推导结果，写 `type_dependency`；若允许合法转换，则约束必须同时保留输入

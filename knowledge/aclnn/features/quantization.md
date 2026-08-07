@@ -6,23 +6,17 @@ default_load: false
 triggers:
   - kind: doc_contains
     value: "量化|反量化|pertensor|perchannel|pertoken|pergroup|perblock|伪量化|mx量化"
-depends_on: [expression_language]
+depends_on: [expression_language, quantization_intro]
 ---
 
-# 官方量化概念（特征命中后加载）
+# 量化参数 shape 检查（派生规则）
 
-本模块只解释当前文档出现的量化术语，不自动启用任何量化场景。
+> 官方量化粒度概念（pertensor/perchannel/pertoken/pergroup/perblock 及全量化/伪量化/mx 组合的典型参数 shape）见 `foundation/quantization_intro`（由 depends_on 拉入）；本模块只给派生规则，不重复粒度概念表。
 
-- pertensor：每个 Tensor 一组参数，典型 shape `(1,)`；
-- perchannel：右矩阵按 channel，典型参数 shape `(n,)`；
-- pertoken：左矩阵按 token，典型参数 shape `(m,)`；
-- pergroup：沿 reduce 轴分组，参数 shape 与 `group size` 有除法关系；
-- perblock：多个轴按 block size 分块；
-- 全量化、伪量化和 mx 量化是不同组合场景，presence/dtype/shape 必须由当前算子文档
-  的场景表或参数说明证明并联合门控。
+本模块不自动启用任何量化场景——量化场景的启用由 `scene_directive` 决定。
 
 若当前文档给出 `m/n/k/group size/block size` 的实际绑定，将关系写为可执行 expr；只
-出现概念介绍而未绑定当前参数时，不得把上述典型 shape 当作算子事实。
+出现概念介绍而未绑定当前参数时，不得把典型 shape 当作算子事实。
 
 ## 量化场景的 presence 必须落到张量级候选（通用规则）
 
