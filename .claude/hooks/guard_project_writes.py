@@ -304,17 +304,18 @@ def read_scope(payload: dict[str, Any], root: Path) -> str | None:
 
 
 def _valid_run_id(run_id: str) -> bool:
-    """run_id 必须非空且不含路径分隔符/控制字符。
+    """run_id 必须非空、不含路径分隔符/控制字符，也不含 glob 元字符。
 
-    ``"*"`` 是历史 bug 残留（RUN_REFERENCE 曾把 ``runs/*`` 的星号捕获为
-    run_id），必须视为未绑定，否则整个会话会被锁死在所有 runs 之外。
+    拒绝任何含 ``*`` ``?`` ``[`` ``]`` 的 run_id：bash 未展开的 glob
+    （如命令文本里的 ``runs/*FlashAttentionScoreGrad*``）会被
+    ``RUN_REFERENCE`` 捕获为 run_id。若只拒精确 ``"*"``（历史补丁），
+    形如 ``*FlashAttentionScoreGrad*`` 的 glob 仍会被 ``bind_scope`` 绑定
+    成会话 scope，把整个会话锁死在一个 Windows 上无法存在的目录之外。
     """
-
     return (
         bool(run_id)
-        and run_id != "*"
         and run_id.lower() not in {"runs", "batches"}
-        and not any(ch in run_id for ch in "/\\\x00")
+        and not any(ch in run_id for ch in "/\\\x00*?[]")
     )
 
 

@@ -101,6 +101,48 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
    - `case-generator`：读取 `run_state.hs_scenario_mode`，调用
      `generate_cases.py` 时原样透传 `--hs-scenario-mode`；旧 run 缺少该字段时使用
      `original`，不得自行改成 `planned`。
+   - **生成的等待由主协调器负责，不由 case-generator 子 Agent 负责**（关键）：case-generator
+     是子 Agent，寿命只有 ~1-2 分钟，只能用**前台** `Bash` 跑 `scripts/generation_progress.py launch`
+     （~1 秒、exit 0）后报告生成子进程 `pid`/`<iter>` 路径/cases 路径/count/platforms 后**结束本轮**
+     （不等待、不"等通知"、不 read-poll；详见 case-generator 与 generate-cases skill）。该 launcher 用
+     `CREATE_BREAKAWAY_FROM_JOB|CREATE_NEW_PROCESS_GROUP`（Windows）/ `start_new_session=True`（POSIX）
+     把 `generate_cases.py` 拉成**脱离会话 job/session 的子进程**后自身立即退出——从此无长寿命 bg 任务
+     可被会话生命周期（中断/重启/上下文压缩，无 60 分钟上限）杀死；唯一长寿命进程是脱离的
+     `generate_cases.py`，`scripts/probe_breakaway.py` 已证其在 launcher 退出后存活到完成。
+     当 case-generator 报告"生成在脱离会话的进程里跑（pid=…）"时，主协调器**接管等待**：
+       1. 每 ~60 秒**前台**跑一次 `python scripts/generation_progress.py status --output-dir <iter>`，
+          读 stdout 那行 JSON 的 `state`：`running` 则再等一轮（到点返回属正常轮询节奏、不是失败），
+          `complete` 则进第 4 步，`failed` 则进第 4 步。`status` 自身 ~1 秒 exit、stdout 只一行，反复调
+          不撑爆上下文。**禁止**据此改用 shell `while`/`sleep`/`grep`/`ps` 轮询 `cases.json`
+          或 `generation_progress.json`（弹非业务询问且无进展）。
+       2. **每次 `status` 返回后必须向用户报告** `per_platform` 各平台 `done`/`total`/`elapsed`/
+          `pid_alive`（`done` 递增、`pid_alive=true` 即活跃）——输出这四项是**强制**，**不得**用"平台名
+          看起来不对"之类的旁支判断替换进度数字。这样用户每 ~60 秒看到一次进度，而不是长时间空白。
+       2a. **轮询回合排他（强制，防进度丢失）**：`state=running` 期间，主协调器每回合的**唯一**动作
+          是——跑一次 `status` → 报告进度 → 决定下一回合。**禁止**在轮询回合发起探查性
+          `Read`/`Grep`/源码或平台选择调查/记忆回溯/长思考；任何旁支疑虑推迟到 `state=complete`/`failed`
+          之后，或先发完本次进度、下一回合再处理，**绝不可**用调查取代一次轮询。进度展示一旦从某回合起
+          长时间空白，根因几乎都是"本该轮询的回合被旁支调查/长考占用"——这是"有时有进度、有时没进度"
+          的唯一可控根因，必须在本层杜绝。轮询节奏由本回合主动发起 `status` 保证，不依赖模型"想起来才轮询"。
+       3. `state=running` 期间即使 `per_platform` 暂时空或残缺也是平台间过渡的正常现象
+          （某平台一完成其 JSONL 即被 convert 删掉转成 `cases_<plat>.json`、从进度里"消失"），
+          **绝不**据此停掉生成进程。**`per_platform` 语义（关键，防误判调查）**：running 期间 `per_platform`
+          列出的是**当前正在被生成的目标平台**（`generate_platform_outputs` 按 `product_support` 顺序逐平台
+          生成全部平台，每个产 `cases_<plat>.json`），**不是执行/canonical 平台**；canonical/CSV 平台是在
+          生成**全部完成后**由 `_select_ttk_platform` 按 `servers.json` 服务器顺序及各 `platforms` 顺序选定的，
+          与 running 期间 `per_platform` 出现哪个平台无关。故 `per_platform` 里出现 `servers.json` 未覆盖的
+          平台（如 A3 训练/推理）属**正常**、不是选错平台，**禁止**据此调查 `generate_cases.py` 平台选择逻辑
+          或 kill 重启——平台是否选对只在 `state=complete` 后、`generation_summary.json.selected_platform`
+          不符 `servers.json` 时才处理（EXECUTE 前的事）。
+       4. `state=complete`（`generation_summary.json` 已产出）后跑
+          `python scripts/validate_artifacts.py cases <cases 路径>`，通过再进 EXECUTE；
+          `state=failed` 读 `status` JSON 的 `error` 字段（已有界摘录）报告 `generator_bug`，不自行解析日志。
+       5. **绝不在已有 `cases_<plat>.json` 时重跑 `generate_cases.py`**（`generate_platform_outputs:192`
+          先 `target.unlink` 删 `cases_<plat>.json` 再生成，重跑=丢弃已完成平台数小时成果）；
+          脱离进程被异常中止（部分平台有 cases、部分没有、缺 `generation_summary.json`）时
+          **报告现状**让用户定夺，不自行重跑。
+     （无论长短，case-generator 都只脱离启动+交棒，不前台跑长任务、不等待；主协调器统一 `status`
+     轮询 + `validate_artifacts.py cases` 校验。）
    - `case-executor`：
      - **default**（`run_state.execution_strategy != "fusion"`）：real 模式内部完成
        generate→`atc-cpu-golden-derivation` 推导→real-run 三子步骤；推导须清除
