@@ -39,11 +39,11 @@ runs/<operator>-<timestamp>/
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
-`server_config`、`max_iterations`、`case_count`、`operator_family`、`test_framework`、
+`server_config`、`max_iterations`、`case_count`、`human_checkpoint_round`、`human_checkpoint_resolved_iteration`、`operator_family`、`test_framework`、
 `hs_scenario_mode`、
 `run_scope`、`scene`、`current_iteration`、`state`、
 `history` 和时间戳。state 只能取
-WORKFLOW.md 定义的状态。
+WORKFLOW.md 定义的状态（含 `STOPPED_BY_USER`：人工补充检查点"立即停止"终态）。
 
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
 目录内的快照，后续 Agent 只使用快照。
@@ -281,4 +281,4 @@ run_dir 与 terminal_state。任意时刻最多只能有一个 RUNNING 项。
 
 `batch_summary.json` 是由批次状态确定性生成的只读汇总视图，包含 total、pending、
 running、completed、success 和 failed。仅 `SUCCESS` 计入 success；`BLOCKED`、
-`MAX_ITERATIONS`、`STOP_GENERATOR_BUG` 和 `STOP_EXECUTOR_BUG` 计入 failed。
+`MAX_ITERATIONS`、`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计入 failed。

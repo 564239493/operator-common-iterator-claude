@@ -275,6 +275,16 @@ def main() -> int:
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument(
+        "--human-checkpoint-round",
+        type=int,
+        default=3,
+        help=(
+            "人工补充检查点触发轮次：迭代到该轮仍以 constraint_extraction 失败时，"
+            "在下一轮开始前暂停并向用户征询人工补充/自主迭代/立即停止。"
+            "默认 3；0 表示禁用（全程自主，不弹检查点）。"
+        ),
+    )
+    parser.add_argument(
         "--operator-family",
         choices=("auto", "aclnn", "hs", "torch_npu"),
         default="auto",
@@ -420,6 +430,8 @@ def main() -> int:
         return 2
     if args.max_iterations < 1 or args.case_count < 1:
         raise SystemExit("max-iterations and case-count must be positive")
+    if args.human_checkpoint_round < 0:
+        raise SystemExit("human-checkpoint-round must be >= 0 (0 disables the checkpoint)")
 
     server_config: Path | None = None
     if args.mode == "real" and test_framework != "constraints":
@@ -535,6 +547,8 @@ def main() -> int:
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
         "case_count": args.case_count,
+        "human_checkpoint_round": args.human_checkpoint_round,  # 0=禁用；>=1 时第 N 轮 constraint_extraction 失败触发人工补充检查点
+        "human_checkpoint_resolved_iteration": 0,  # 已决断到的最大轮次；防上下文压缩后对同一轮重复询问
         "operator_family": operator_family,
         "test_framework": test_framework,
         "hs_scenario_mode": args.hs_scenario_mode,
