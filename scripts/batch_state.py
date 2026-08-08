@@ -84,7 +84,56 @@ def refresh_batch(batch: dict[str, Any]) -> None:
     batch["updated_at"] = utc_now()
 
 
+def prompt_update_proposals_for(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose compact proposal metadata; batch mode never auto-promotes it."""
+    raw_run_dir = item.get("run_dir")
+    if not raw_run_dir:
+        return []
+    run_dir = Path(raw_run_dir).resolve()
+    state_path = run_dir / "run_state.json"
+    if not state_path.is_file():
+        return []
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    result = []
+    for raw in state.get("prompt_update_proposals", []):
+        path = Path(raw).resolve()
+        try:
+            path.relative_to(run_dir)
+            proposal = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError, json.JSONDecodeError):
+            continue
+        result.append({
+            "proposal_id": proposal.get("proposal_id", ""),
+            "path": str(path),
+            "status": proposal.get("status", ""),
+            "destination": proposal.get("classification", {}).get("destination", ""),
+            "promotion_gate": proposal.get("classification", {}).get("promotion_gate", ""),
+            "target_path": proposal.get("target", {}).get("path", ""),
+            "summary": proposal.get("change", {}).get("summary", ""),
+            "trial_status": proposal.get("trial", {}).get("status", ""),
+        })
+    return result
+
+
 def summary_for(batch: dict[str, Any]) -> dict[str, Any]:
+    operators = []
+    all_proposals = []
+    for item in batch["operators"]:
+        proposals = prompt_update_proposals_for(item)
+        all_proposals.extend({"operator_index": item["index"], **proposal} for proposal in proposals)
+        operators.append({
+            "index": item["index"],
+            "operator_doc_source": item["operator_doc_source"],
+            "status": item["status"],
+            "terminal_state": item.get("terminal_state"),
+            "run_id": item.get("run_id"),
+            "run_dir": item.get("run_dir"),
+            "message": item.get("message", ""),
+            "prompt_update_proposals": proposals,
+        })
     return {
         "batch_id": batch["batch_id"],
         "state": batch["state"],
@@ -93,18 +142,12 @@ def summary_for(batch: dict[str, Any]) -> dict[str, Any]:
         "created_at": batch["created_at"],
         "updated_at": batch["updated_at"],
         "completed_at": batch.get("completed_at"),
-        "operators": [
-            {
-                "index": item["index"],
-                "operator_doc_source": item["operator_doc_source"],
-                "status": item["status"],
-                "terminal_state": item.get("terminal_state"),
-                "run_id": item.get("run_id"),
-                "run_dir": item.get("run_dir"),
-                "message": item.get("message", ""),
-            }
-            for item in batch["operators"]
-        ],
+        "prompt_update_review": {
+            "policy": "deferred_user_review_only",
+            "proposal_count": len(all_proposals),
+            "proposals": all_proposals,
+        },
+        "operators": operators,
     }
 
 

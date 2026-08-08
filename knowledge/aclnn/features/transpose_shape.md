@@ -34,7 +34,7 @@ depends_on: []
 3. 该参数转置前后**维数不变**（仅轴顺序重排）。维数变化的（如 2D↔3D）不属本模块，
    按 §4.6.3 G 条件 shape 处理。
 
-#### 隐式 bool 卡片（复用 §4.6.5 B.1 字段规范）
+#### 隐式 bool 卡片（复用 `knowledge/aclnn/operators/batch_matmul_weight_nz.md` §B.1 字段规范）
 
 为 `<param>` 新增 `<param>_transposed`，**不得**写入 `function_signature`，为
 `product_support` 每个平台生成完整 `ParamAttributes`：
@@ -90,7 +90,7 @@ src_text: "x 不转置 shape=(M,K)，K 在 shape[1]；转置 shape=(K,M)，K 在
 
 `<weight_K_axis>` 由该场景 weight 的 shape 元组读出（weight 自身是否转置、是否 3D
 等决定 K 落在 weight.shape 的第几位）。多场景（不同 groupType/splitItem）按
-§4.6.3 H 的 `cross_param_constraint` unless 范式叠加门控，析取覆盖场景表全部合法行。
+`knowledge/aclnn/operators/grouped_matmul_v5.md` §4.6.3 H 的 `cross_param_constraint` unless 范式叠加门控，析取覆盖场景表全部合法行。
 
 ##### 场景门控（value_dependency）
 
@@ -155,4 +155,4 @@ expr: not(x.dtype == "INT8" and weight.dtype == "INT8") or (x_transposed.range_v
 
 `src_text` **必须同时摘录**转置与非转置两种 shape 元组原文（如"x 不转置 shape=(M,K)"
 与"转置 shape=(K,M)"），不可只摘默认布局；变量名与布尔值是生成器补充的结构化控制信息，
-不得伪造成函数签名原文（与 §4.6.5 B.1 规则 5 一致）。
+不得伪造成函数签名原文（与 `knowledge/aclnn/operators/batch_matmul_weight_nz.md` §B.1 规则 5 一致）。

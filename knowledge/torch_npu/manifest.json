@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "family": "torch_npu",
+  "policy": "v3_split_operator_name_eq_gated",
+  "modules": [
+    {"id":"documentation_conventions","scope":"foundation","path":"common/documentation_conventions.md","default_load":true,"priority":100},
+    {"id":"collections_and_grouped_ops","scope":"feature","path":"operator_patterns/collections_and_grouped_ops.md","default_load":false,"priority":70},
+    {"id":"matrix_product_family","scope":"feature","path":"operator_patterns/matrix_product_family.md","default_load":false,"priority":70},
+    {"id":"distributed_collectives","scope":"feature","path":"operator_patterns/distributed_collectives.md","default_load":false,"priority":69},
+    {"id":"indexed_access_and_update","scope":"feature","path":"operator_patterns/indexed_access_and_update.md","default_load":false,"priority":68},
+    {"id":"normalization_family","scope":"feature","path":"operator_patterns/normalization_family.md","default_load":false,"priority":67},
+    {"id":"selection_reduction_sampling","scope":"feature","path":"operator_patterns/selection_reduction_sampling.md","default_load":false,"priority":67},
+    {"id":"attention_family","scope":"feature","path":"operator_patterns/attention_family.md","default_load":false,"priority":66},
+    {"id":"quantization","scope":"feature","path":"operator_patterns/quantization.md","default_load":false,"priority":66},
+    {"id":"inplace_and_stateful_ops","scope":"feature","path":"operator_patterns/inplace_and_stateful_ops.md","default_load":false,"priority":65},
+    {"id":"npu_fused_infer_attention_score","scope":"operator","path":"operator_patterns/npu_fused_infer_attention_score.md","default_load":false,"priority":85},
+    {"id":"npu_kv_quant_sparse_flash_attention","scope":"operator","path":"operator_patterns/npu_kv_quant_sparse_flash_attention.md","default_load":false,"priority":85},
+    {"id":"npu_lightning_indexer","scope":"operator","path":"operator_patterns/npu_lightning_indexer.md","default_load":false,"priority":85},
+    {"id":"npu_mla_prolog_v3","scope":"operator","path":"operator_patterns/npu_mla_prolog_v3.md","default_load":false,"priority":85},
+    {"id":"npu_quant_lightning_indexer","scope":"operator","path":"operator_patterns/npu_quant_lightning_indexer.md","default_load":false,"priority":85},
+    {"id":"npu_sparse_flash_attention","scope":"operator","path":"operator_patterns/npu_sparse_flash_attention.md","default_load":false,"priority":85}
+  ]
+}

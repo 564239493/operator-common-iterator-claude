@@ -17,7 +17,7 @@ supplementary-doc.md（源码分析）为准。
 
 先读取 `run_state.operator_family` 和 `run_state.current_prompt`。补充阶段必须沿用当前
 family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能读 torch_npu 快照和
-已装配知识，禁止读取 `prompts/modules/**`。
+已装配知识，禁止跨 family 读取另一知识根。
 
 > 本阶段**不重新提取约束**，只对 EXTRACT 已产出的 `constraints.json` 做关系
 > 补充：追加（add）补充文件描述的新关系约束、替换（replace）文档提取过宽/过窄
@@ -30,7 +30,7 @@ family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能�
    （裸 `null` 规范化为 Python `None`、数值范围用不等式、禁止 `.array_length`、
    容器长度用 `len(container)`），保证生成器可消费。
    - `operator_family=aclnn` 时，只有 ACLNN 快照实际加载 broadcast 模块才应用
-     `prompts/modules/broadcast.md` 的右对齐与 dtype 规则，并按 ACLNN 规则处理
+     已冻结 prompt 中 `knowledge/aclnn/features/broadcast.md` 的右对齐与 dtype 规则，并按 ACLNN 规则处理
      `aclDataType`。
    - `operator_family=hs` 时，不得读取 ACLNN broadcast/aclDataType/枚举码规则；
      layout、TensorList、dtype 和 presence 只按 torch_npu 当前快照及补充证据表达。
@@ -39,7 +39,7 @@ family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能�
    `additionalDtype`、`actualFormat`）在跨参 expr 里引用其取值时**必须**用
    `<param>.range_value`（如 `dstFormat.range_value == 29`、
    `additionalDtype.range_value in [1,27,2,36]`、`additionalDtype.range_value == -1`），
-   对齐 `prompts/modules/acl_format_enum.md` §C.4 与 extractor 产出；**禁止**裸名
+   对齐 `knowledge/aclnn/reference/acl_format_enum.md` §C.4 与 extractor 产出；**禁止**裸名
    （`dstFormat in [...]` / `additionalDtype == -1`）。裸名虽对 `ScalarVar` 在 Z3 编码
    上等价（都解析到同一 `z3_var`），但违反规范、与 extractor 不一致，且 post_check 把
    int 标量映射成对象后裸名会 `AttributeError`（见 generate-cases 的 post_check 命名空间

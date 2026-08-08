@@ -32,13 +32,13 @@ depends_on: []
 | ACL_FORMAT_FRACTAL_NZ_C0_16 | 50 | C0=16的分形格式 | 内部矩阵计算优化 |
 | ACL_FORMAT_FRACTAL_NZ_C0_32 | 51 | C0=32的分形格式 | 内部矩阵计算优化 |
 
-## B. §5.3 受控字典短名 ↔ ACL_FORMAT 全名 对照
+## B. format 受控字典短名 ↔ ACL_FORMAT 全名 对照
 
-`constraints.json` 中**张量**参数的 `format.value` 始终用 §5.3 受控字典短名
+`constraints.json` 中**张量**参数的 `format.value` 始终用 `knowledge/aclnn/common/platform_dtype.md` §format 受控字典短名
 （字符串），不带 `ACL_FORMAT_` 前缀、不带括号数值。下表给出短名 ↔ 全名 ↔ 数值
 的对照，便于在跨参 expr 里把短名与整数对齐：
 
-| §5.3 短名 | ACL_FORMAT 全名 | 数值 | 备注 |
+| 短名 | ACL_FORMAT 全名 | 数值 | 备注 |
 |-----------|----------------|------|------|
 | `ND` | ACL_FORMAT_ND | 2 | 自由 rank |
 | `NCHW` | ACL_FORMAT_NCHW | 0 | 4D |
@@ -48,23 +48,23 @@ depends_on: []
 | `FRACTAL_Z` | ACL_FORMAT_FRACTAL_Z | 4 | 4D 权重 |
 | `HWCN` | ACL_FORMAT_HWCN | 16 | 图像 |
 | `NDHWC` | ACL_FORMAT_NDHWC | 27 | 5D |
-| `NZ` / `FRACTAL_NZ` | ACL_FORMAT_FRACTAL_NZ | 29 | **`NZ` 与 `FRACTAL_NZ` 同指 29**，二者在 §5.3 字典中并列存在。**字面保真**：`format.value` 与跨参 expr 只用文档为该张量枚举的那一种短名（参数表写 `NZ` 就全程 `"NZ"`、写 `FRACTAL_NZ` 就全程 `"FRACTAL_NZ"`），**不**把二者并列塞进同一 `format.value` 或 expr 的 `in` 集合 |
+| `NZ` / `FRACTAL_NZ` | ACL_FORMAT_FRACTAL_NZ | 29 | **`NZ` 与 `FRACTAL_NZ` 同指 29**，二者在 `knowledge/aclnn/common/platform_dtype.md` §format 字典中并列存在。**字面保真**：`format.value` 与跨参 expr 只用文档为该张量枚举的那一种短名（参数表写 `NZ` 就全程 `"NZ"`、写 `FRACTAL_NZ` 就全程 `"FRACTAL_NZ"`），**不**把二者并列塞进同一 `format.value` 或 expr 的 `in` 集合 |
 | `NCDHW` | ACL_FORMAT_NCDHW | 30 | 5D |
 | `NDC1HWC0` | ACL_FORMAT_NDC1HWC0 | 32 | 6D |
 | `FRACTAL_Z_3D` | ACL_FRACTAL_Z_3D | 33 | 4D storage (`[D*C1*H*W, N1, N0, C0]`) |
 | `FRACTAL_NZ_C0_16` | ACL_FORMAT_FRACTAL_NZ_C0_16 | 50 | 5D，C0=16 |
 | `FRACTAL_NZ_C0_32` | ACL_FORMAT_FRACTAL_NZ_C0_32 | 51 | 5D，C0=32 |
-| `NCL` | （未在上方 15 行表内） | — | 仅作 §5.3 短名出现，本方案不涉及其整数；`aclnnNpuFormatCast` 中 `NCL` 只作 `srcTensor.format` 字符串短名 |
+| `NCL` | （未在上方 15 行表内） | — | 仅作 `knowledge/aclnn/common/platform_dtype.md` §format 短名出现，本方案不涉及其整数；`aclnnNpuFormatCast` 中 `NCL` 只作 `srcTensor.format` 字符串短名 |
 
 ## C. 用法说明
 
-1. **张量参数** `format.value`：始终用 §5.3 受控字典短名（字符串列表，如
+1. **张量参数** `format.value`：始终用 `knowledge/aclnn/common/platform_dtype.md` §format 受控字典短名（字符串列表，如
    `["ND","NZ","NCDHW"]`），**不**写 `ACL_FORMAT_` 前缀，**不**写括号数值。
 2. **int 型标量参数**（如 `aclnnNpuFormatCast` 的 `dstFormat`、`actualFormat`、
    `additionalDtype`）：其 `allowed_range_value.value` 与跨参 expr 里的取值用本
    表 §A 的**整数**（如 `29`、`2`、`30`），与参数的 `int` 类型一致。
 3. **不得混用**：不得在 `format.value` 里写裸整数 `29`，也不得在 int 参数的
-   expr 里写字符串 `"29"`（违 §9.30 d/f）。
+   expr 里写字符串 `"29"`（违 §6.30 d/f）。
 4. 跨参 expr 里引用张量 format 时用短名字符串（如 `srcTensor.format == "NZ"`），
    引用 int 参数时用整数（如 `dstFormat.range_value == 29`）；二者通过同表 §B
    的「短名↔整数」对照保证语义一致。

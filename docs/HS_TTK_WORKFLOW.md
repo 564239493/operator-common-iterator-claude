@@ -20,14 +20,14 @@ python scripts/init_run.py operator_docs/hs/torch_npu-npu_fused_infer_attention_
 ```
 
 文档首行或文件名含 `torch_npu` 时，自动选择 `hs` 和隔离提示词；六个已有 adapter 的
-重点算子自动选择 `ttk`，其余 API 自动选择 `constraints`（仅约束提取）。提示词使用
-`prompts/torch_npu_constraints_extract_vN.md` 的最新数值版本，并由
+重点算子自动选择 `ttk`，其余 API 自动选择 `constraints`（仅约束提取）。提示词使用 `prompts/torch_npu_constraints/base.md`
+（canonical 直接编辑），并由
 `scripts/select_torch_npu_prompt.py` 装配通用文档知识和命中的算子知识。也可用
 `--operator-family torch_npu`（`hs` 为兼容名）、`--test-framework` 显式覆盖。
 选择结果和模块清单会写入 `run_state.json`。
 
 torch_npu 装配器只读取 `knowledge/torch_npu/**`，不会读取 ACLNN 的
-`prompts/modules/**`；ACLNN 装配器也不会读取 torch_npu 知识。显式 `--prompt` 是原样
+`knowledge/aclnn/**`；ACLNN 装配器也不会读取 torch_npu 知识。显式 `--prompt` 是原样
 复制的逃生口，不隐式追加任何模块。
 
 海思约束输出 schema 仍为 `OperatorRule`，但必须从 Python 函数原型确定

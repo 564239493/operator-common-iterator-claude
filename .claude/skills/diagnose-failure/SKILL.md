@@ -8,6 +8,10 @@ description: 基于落盘证据将失败分类为 constraint_extraction、genera
 cases_expanded.json、execution_result.json。先检查 engine_error，再检查生成用例
 是否违反已提取约束，最后检查约束是否遗漏或误解文档。
 
+ACLNN 还必须读取 `prompt_preanalysis.json` 与 `prompt_assembly.json`：区分“模块未被
+路由”“模块已加载但适用性判断/规则不足”“提取器未执行已加载规则”三种原因。分析中
+记录相关 module_id 和命中证据，供沉淀时选择 common/feature/exact operator 目的地。
+
 先读取 `run_state.operator_family`，诊断规则与当前 family 快照保持隔离。不得用 ACLNN
 prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项知识。
 

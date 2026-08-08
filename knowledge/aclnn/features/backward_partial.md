@@ -11,7 +11,7 @@ depends_on: []
 
 # 模块 backward_partial（按需加载）
 
-> 本模块原为 `operator_constraints_extract_v4.md` §4.6.6 + §6.3 模式7，按算子特征由 `scripts/select_prompt.py` 装配到活跃提示词末尾。原 § 编号保留，便于交叉引用按标题文本定位。
+> 本模块原为 `prompts/history/operator_constraints_extract_v4.md` §4.6.6 + §6.3 模式7，按算子特征由 `scripts/select_prompt.py` 装配到活跃提示词末尾。原 § 编号保留，便于交叉引用按标题文本定位。
 
 #### 4.6.6 Forward-Output Partial-Shape 跟随约束（两轮实测闭环）
 

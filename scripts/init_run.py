@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from runtime_config import (
     ROOT,
     config_error_payload,
     default_test_framework,
-    find_latest_operator_prompt,
+    find_active_aclnn_prompt,
     find_latest_hs_prompt,
     resolve_input_path,
     validate_server_config,
@@ -23,6 +24,18 @@ from select_torch_npu_prompt import (
     assemble as assemble_torch_npu_prompt,
     extract_operator_name as extract_torch_npu_operator_name,
 )
+try:
+    from validate_aclnn_knowledge import DEFAULT_KNOWLEDGE as ACLNN_KNOWLEDGE_ROOT
+    from validate_aclnn_knowledge import validate as validate_aclnn_knowledge
+except ModuleNotFoundError:  # pragma: no cover - alternate package path
+    from scripts.validate_aclnn_knowledge import DEFAULT_KNOWLEDGE as ACLNN_KNOWLEDGE_ROOT
+    from scripts.validate_aclnn_knowledge import validate as validate_aclnn_knowledge
+try:
+    from validate_torch_npu_knowledge import DEFAULT_KNOWLEDGE as TORCH_KNOWLEDGE_ROOT
+    from validate_torch_npu_knowledge import validate as validate_torch_npu_knowledge
+except ModuleNotFoundError:  # pragma: no cover - alternate package path
+    from scripts.validate_torch_npu_knowledge import DEFAULT_KNOWLEDGE as TORCH_KNOWLEDGE_ROOT
+    from scripts.validate_torch_npu_knowledge import validate as validate_torch_npu_knowledge
 # L1 算子名 stem 全树闭包：路径含以下任一段的命中视为噪声跳过。
 CLOSURE_NOISE_PARTS = frozenset({
     "tests", "ut", "examples", "binary_config", "tbe",
@@ -31,6 +44,14 @@ CLOSURE_NOISE_PARTS = frozenset({
 })
 # 闭包匹配的源码后缀（与 source_exts 一致）。
 CLOSURE_EXTS = ("cc", "cpp", "h", "hpp", "c")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _closure_by_stem(
@@ -227,8 +248,8 @@ def main() -> int:
         "--prompt",
         default=None,
         help=(
-            "约束提取提示词路径；省略时自动选择 "
-            "prompts/operator_constraints_extract_vN.md 中数值版本最大的文件"
+            "约束提取提示词路径；省略时 ACLNN 使用拆分后的 active base 并路由知识，"
+            "torch_npu 使用其数值版本最大的独立基线"
         ),
     )
     parser.add_argument(
@@ -341,7 +362,7 @@ def main() -> int:
     prompt = (
         resolve_input_path(args.prompt)
         if args.prompt
-        else (find_latest_hs_prompt() if is_hs else find_latest_operator_prompt())
+        else (find_latest_hs_prompt() if is_hs else find_active_aclnn_prompt())
     )
     explicit_prompt = bool(args.prompt)
     if prompt is None or not prompt.is_file():
@@ -352,7 +373,7 @@ def main() -> int:
                 "code": "PROMPT_NOT_FOUND",
                 "message": (
                     "约束提取提示词不存在。请通过 --prompt 指定文件，或在 prompts "
-                    "目录提供对应 family 的 operator_constraints_extract_vN.md 或 "
+                    "目录恢复 ACLNN operator_constraints/base.md 或提供 "
                     "torch_npu_constraints_extract_vN.md。"
                 ),
                 "prompt": str(prompt) if prompt else "",
@@ -421,6 +442,9 @@ def main() -> int:
     # inside this project so they never edit the user's original document.
     doc_snapshot = input_dir / doc.name
     prompt_snapshot = input_dir / "prompt_v1.md"
+    prompt_preanalysis = input_dir / "prompt_preanalysis.json"
+    prompt_assembly_record = input_dir / "prompt_assembly.json"
+    prompt_update_decisions = input_dir / "prompt_update_decisions.json"
     supplement_snapshot = input_dir / "supplement_constraints.md"
     shutil.copy2(doc, doc_snapshot)
     if supplement_path is not None:
@@ -446,14 +470,47 @@ def main() -> int:
         shutil.copy2(prompt, prompt_snapshot)
         loaded_modules = []
     elif is_hs:
+        # 预校验 torch_npu 知识库 canonical 完整性（manifest/默认集/依赖/跨 family
+        # 隔离/reject_on），任一不通过即终止。
+        knowledge_errors = validate_torch_npu_knowledge(TORCH_KNOWLEDGE_ROOT)
+        if knowledge_errors:
+            print(json.dumps(
+                {"ok": False, "code": "TORCH_NPU_KNOWLEDGE_INVALID",
+                 "errors": knowledge_errors},
+                ensure_ascii=False, indent=2,
+            ))
+            return 2
         # torch_npu 使用完全独立的 baseline + knowledge 装配器；该装配器不会
-        # 扫描 prompts/modules，因此不会混入 ACLNN workspace/API 假设。
+        # 扫描 knowledge/aclnn，因此不会混入 ACLNN workspace/API 假设。
         loaded_modules = assemble_torch_npu_prompt(
-            prompt, doc_snapshot, prompt_snapshot
+            prompt, doc_snapshot, prompt_snapshot,
+            record_path=prompt_assembly_record,
+            preanalysis_path=prompt_preanalysis,
         )
     else:
-        # 默认：按算子特征装配 base + 命中模块 -> prompt_snapshot
-        loaded_modules = assemble_aclnn_prompt(prompt, doc_snapshot, prompt_snapshot)
+        # 预校验 ACLNN 知识库 canonical 完整性：manifest/默认集/依赖/跨 family
+        # 隔离/reject_on 合法性等任一不通过即终止，避免装配出不可用快照。
+        knowledge_errors = validate_aclnn_knowledge(ACLNN_KNOWLEDGE_ROOT)
+        if knowledge_errors:
+            print(json.dumps(
+                {"ok": False, "code": "ACLNN_KNOWLEDGE_INVALID",
+                 "errors": knowledge_errors},
+                ensure_ascii=False, indent=2,
+            ))
+            return 2
+        # ACLNN：文档预分析 -> 知识路由 -> 适用性判断 -> 冻结快照与组装记录。
+        loaded_modules = assemble_aclnn_prompt(
+            prompt,
+            doc_snapshot,
+            prompt_snapshot,
+            record_path=prompt_assembly_record,
+            preanalysis_path=prompt_preanalysis,
+        )
+
+    prompt_update_decisions.write_text(
+        json.dumps({"schema_version": "1.0", "decisions": []}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     now = datetime.now(timezone.utc).isoformat()
     state = {
@@ -463,6 +520,13 @@ def main() -> int:
         "current_prompt_source": str(prompt),
         "current_prompt": str(prompt_snapshot),
         "current_prompt_modules": loaded_modules,
+        "prompt_preanalysis": str(prompt_preanalysis) if not explicit_prompt else "",
+        "prompt_preanalysis_sha256": _file_sha256(prompt_preanalysis) if prompt_preanalysis.is_file() else "",
+        "prompt_assembly_record": str(prompt_assembly_record) if not explicit_prompt else "",
+        "prompt_assembly_record_sha256": _file_sha256(prompt_assembly_record) if prompt_assembly_record.is_file() else "",
+        "current_prompt_sha256": _file_sha256(prompt_snapshot),
+        "prompt_update_decisions": str(prompt_update_decisions),
+        "prompt_update_proposals": [],
         "supplement_constraints_source": str(supplement_path) if supplement_path else "",
         "supplement_constraints": str(supplement_snapshot) if supplement_path else "",
         "operator_src_source": operator_src_source,
@@ -497,6 +561,8 @@ def main() -> int:
             "operator_doc_snapshot": str(doc_snapshot),
             "prompt_snapshot": str(prompt_snapshot),
             "prompt_modules": loaded_modules,
+            "prompt_preanalysis": str(prompt_preanalysis) if prompt_preanalysis.is_file() else "",
+            "prompt_assembly_record": str(prompt_assembly_record) if prompt_assembly_record.is_file() else "",
             "supplement_constraints_source": str(supplement_path) if supplement_path else "",
             "supplement_constraints_snapshot": str(supplement_snapshot) if supplement_path else "",
             "operator_src_source": operator_src_source,

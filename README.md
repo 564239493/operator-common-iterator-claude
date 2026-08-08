@@ -60,14 +60,14 @@ paged-attention 场景拆分和投影时才显式指定：
 /iterate-operator operator_docs/hs/torch_npu-npu_sparse_flash_attention.md --test-framework ttk --hs-scenario-mode planned
 ```
 
-未指定 `--prompt` 时，项目会自动选择
-当前文档 family 数值版本最大的提示词：ACLNN 使用
-`prompts/operator_constraints_extract_vN.md`，torch_npu 使用
-`prompts/torch_npu_constraints_extract_vN.md`；两者的知识模块完全隔离。需要复现指定
+未指定 `--prompt` 时，ACLNN 使用 `prompts/operator_constraints/base.md`（canonical
+直接编辑），并按当前文档装配 `knowledge/aclnn`；torch_npu 使用
+`prompts/torch_npu_constraints/base.md`（canonical 直接编辑）并装配自己的
+知识根。两者完全隔离。需要复现指定历史
 版本时仍可显式传入：
 
 ```text
-/iterate-operator operator_docs/aclnnAlltoAllMatmul.md --prompt prompts/operator_constraints_extract_v1.md
+/iterate-operator operator_docs/aclnnAlltoAllMatmul.md --prompt prompts/history/operator_constraints_extract_v1.md
 ```
 
 串行执行一个目录中的全部算子文档：

@@ -52,17 +52,20 @@ WORKFLOW.md 定义的状态。
 `supplement_constraints` 指向 run 内 `inputs/supplement_constraints.md` 快照。为空串时跳过
 约束补充阶段，回退纯文档驱动流程。
 
-`current_prompt_source` 指向项目内当前 family 的基线：ACLNN 为
-`prompts/operator_constraints_extract_vN.md`，torch_npu 为
-`prompts/torch_npu_constraints_extract_vN.md`；`current_prompt` 指向 run 内
+`current_prompt_source` 指向项目内当前 family 的基线：ACLNN 默认基础提示词为
+`prompts/operator_constraints/base.md`（canonical 直接编辑，`v4` 为历史来源），
+运行时结合 `knowledge/aclnn/manifest.json` 路由装配；历史版本归档于
+`prompts/history/operator_constraints_extract_vN.md`。torch_npu 为
+`prompts/torch_npu_constraints/base.md`；`current_prompt` 指向 run 内
 `inputs/prompt_v1.md` 完整快照。
 
 ACLNN canonical 版本以及 torch_npu v3+ 都是独立完整基线，不使用跨版本继承或
-“沿用 vN”占位。selector 只在选定基线后追加当前文档命中的知识模块；torch_npu
+“沿用 vN”占位。ACLNN selector 先生成 `prompt_preanalysis.json` 与适用性判断，再追加
+当前文档命中的知识模块并写 `prompt_assembly.json`；torch_npu
 v1/v2 仅作为历史任务复现材料。
 
 默认（未传 `--prompt`）时，ACLNN 由 `scripts/select_prompt.py` 装配
-`prompts/modules/*.md`；torch_npu 由 `scripts/select_torch_npu_prompt.py` 装配
+`knowledge/aclnn/manifest.json` 中的模块；torch_npu 由 `scripts/select_torch_npu_prompt.py` 装配
 `knowledge/torch_npu/**/*.md`。两个选择器不扫描对方的根目录。
 `current_prompt_modules` 记录命中的模块名清单（torch_npu 始终含
 `common/documentation_conventions`）；显式 `--prompt` 为逃生口，原样复制指定文件、

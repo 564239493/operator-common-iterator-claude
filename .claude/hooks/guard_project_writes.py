@@ -289,6 +289,17 @@ def read_scope(payload: dict[str, Any], root: Path) -> str | None:
         return None
     if not _valid_run_id(run_id):
         return None
+    if run_is_terminal(root, run_id):
+        # 终态自动释放会话 scope：run 进入 SUCCESS/BLOCKED/MAX_ITERATIONS/
+        # STOP_*_BUG 后，同会话即可落地 canonical（base.md / knowledge / docs），
+        # 让 SKILL 第10步「用户批准 → 主协调器直接 Edit canonical」可行。
+        # 运行期保护仍由 PROTECTED_WRITE_DIRS 与高风险 shell 分类兜底；
+        # 批准语义由 SKILL 第10步 AskUserQuestion 把关，hook 不替代。
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
     return run_id
 
 
@@ -302,6 +313,7 @@ def _valid_run_id(run_id: str) -> bool:
     return (
         bool(run_id)
         and run_id != "*"
+        and run_id.lower() not in {"runs", "batches"}
         and not any(ch in run_id for ch in "/\\\x00")
     )
 

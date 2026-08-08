@@ -9,7 +9,7 @@ depends_on: []
 
 # 模块 implicit_pos（按需加载）
 
-> 本模块原为 `operator_constraints_extract_v4.md` §4.6.9，按算子特征由 `scripts/select_prompt.py` 装配到活跃提示词末尾。原 § 编号保留，便于交叉引用按标题文本定位。
+> 本模块原为 `prompts/history/operator_constraints_extract_v4.md` §4.6.9，按算子特征由 `scripts/select_prompt.py` 装配到活跃提示词末尾。原 § 编号保留，便于交叉引用按标题文本定位。
 
 #### 4.6.9 隐式 >0 约束（大小/数量语义参数，v3 增补，通用规则）
 
@@ -39,11 +39,11 @@ depends_on: []
 以下场景**不得**套用本规则：
 
 1. `aclTensor` / `aclTensorList` 参数的 shape / dimensions —— shape 各维大小约束
-   由 §4.6.3 dimensions 规则与 §6.3 模式 4 `all(d > 0 for d in x.shape)` 处理；
+   由 `knowledge/aclnn/common/dimensions.md` §解析表 与 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 4 `all(d > 0 for d in x.shape)` 处理；
 2. `aclIntArray` / `aclFloatArray` / `aclBoolArray` 参数的元素值或长度 —— 数组长度
    约束由 `array_length` 字段和 `len(param)` 表达式处理；
 3. `aclDataType`、`aclFormat` 等枚举型参数 —— 其取值是离散标签，不是数值计数；
-4. bool 参数 —— 由 §4.6.3 bool 类型参数子节强制 enum 处理；
+4. bool 参数 —— 由 `knowledge/aclnn/common/allowed_range.md` §bool类型参数 强制 enum 处理；
 5. 描述中虽出现"大小""数量"等词，但上下文明确指代 shape 维度、dtype 位宽等非
    标量计数语义的参数。
 
@@ -61,20 +61,20 @@ src_text: "<摘录 description 中空间大小/数据量/元素个数/数量等�
 
 **规则要点**：
 
-1. **expr 模板**：`P.range_value > 0`（与 §4.6.3 allowed_range 映射表"大于0"行的
+1. **expr 模板**：`P.range_value > 0`（与 `knowledge/aclnn/common/allowed_range.md` §映射表 "大于0"行的
    `value_dependency: param.range_value > 0` 惯例一致）；`expr_type` 使用
-   `value_dependency`（亦可使用 §7.2 的 `self_value_range`，二者均合规，以项目
+   `value_dependency`（亦可使用 `knowledge/aclnn/common/expression_language.md` §expr_type 的 `self_value_range`，二者均合规，以项目
    既有惯例为准）。
 2. **禁止用 `allowed_range_value` 伪造 0 下界**：`allowed_range_value.value` 保持
-   `[]`（与 §4.6.3 "大于0"行规则一致：单边/开区间不在 `allowed_range_value` 中
+   `[]`（与 `knowledge/aclnn/common/allowed_range.md` §映射表 "大于0"行规则一致：单边/开区间不在 `allowed_range_value` 中
    伪造边界）；`allowed_range_value.type` 保持 `"range"`。不得写成 `[[0, ...]]`
    或 `[[0, null]]` 等。
 3. **逐平台落库**：与其它约束一致，`product_support` 中每个平台都必须有对应条目，
    即使各平台 expr 完全相同。
 4. **src_text 可溯源**：`src_text` 必须摘录 description 中表示"大小/数量/个数"的
    原文字句，并补注"大小/数量语义隐含 >0"，使隐式下界的推导依据可追溯。
-5. **不重复落库**：若文档已显式写明 `P > 0` 或 `P >= 1` 等取值约束并已按 §4.6.3
-   allowed_range 映射表"大于0"行落库了对应的 `value_dependency` 条目，则**不再**
+5. **不重复落库**：若文档已显式写明 `P > 0` 或 `P >= 1` 等取值约束并已按 `knowledge/aclnn/common/allowed_range.md` §映射表
+   "大于0"行落库了对应的 `value_dependency` 条目，则**不再**
    追加本节隐式 >0 条目（避免重复）。
 6. **仅针对标量取值参数**：本规则只针对"表示大小/数量/个数"的标量取值参数（如
    `uint64_t*` / `int64_t*` / `size_t*` 等标量指针输出或标量输入），不针对
