@@ -47,21 +47,39 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
 
 **SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
 `scene-scanner`（读 `inputs/<doc>.md` + `prompts/scan_scenes.md`，产
-`inputs/scene_scan.json`，自跑 `python scripts/validate_artifacts.py scene_scan
-inputs/scene_scan.json`）。完成后主协调器读 `scene_scan.json`：
-- `has_quant_scenarios=false` → 跳过（无 directive，按全场景提取，行为不变）；
-- `has_quant_scenarios=true` 且 `--scene all` → 跑
+`inputs/scene_scan.json`（`schema_version=2`），自跑
+`python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json`）。
+完成后主协调器读 `scene_scan.json`（`schema_version=2`）：
+- `has_scenarios=false` → 跳过（无 directive，按全场景提取，行为不变）。`scan_notes`
+  含 `quant_signal_no_scene` warning 时仅记录性提示用户"文档含量化参数信号但未提取到
+  场景，可能遗漏剪枝"，**不**置 `has_scenarios`、**不**阻断、**不**补造场景。
+- `has_scenarios=true` 且 `--scene all` → 跑
   `python scripts/render_scene_directive.py --scan <scene_scan.json> --run-dir <run-dir> --scope all`
-  （scope=all，不剪枝、不弹窗）；
-- `has_quant_scenarios=true` 且 `--scene auto`（默认）→ 主会话用 AskUserQuestion
-  两段征询（**均单选**）：Q1 量化方式（single-select，选项=`scene_scan.quant_modes`，
-  选了伪量化就不能选量化）→ 据 Q1 答案取所选方式的位宽列表（`quant_widths_by_mode`
-  或 `valid_combos` 中该方式的 width 并集）→ Q2 位宽（single-select；列表为空如纯非量化
-  或该方式无位宽细分则跳过 Q2，`quant_width=null`）→ 把单选答案写入 `selection.json`
-  为 `{"quant_mode": <Q1>, "quant_width": <Q2 或 null>}`（单值）→ 跑
-  `python scripts/render_scene_directive.py --scan <scene_scan.json> --selection <selection.json> --run-dir <run-dir> --scope subset`
-  （校验选定 (mode,width) ∈ scan、算 valid_combos、写 `inputs/scene_directive.md`、回写
-  `run_state.scene`；非法选择 exit 2 阻断，提示用户重选，不静默回退）。
+  （scope=all：全部设备全部场景，不剪枝、不弹窗、不写 directive）。
+- `has_scenarios=true` 且 `--scene auto`（默认）→ 主会话用 AskUserQuestion
+  **两级多选**征询（每问选项≤4，超出部分在 question body 编号列全；支持 Other 自定义
+  输入，Other 输入须落在已识别列表内，否则提示重新输入符合的）：
+  - **Q1 设备类型**（multiSelect）：选项 = `scene_scan.device_types` 前 3 个 +
+    "全部设备"；question body 按编号列出全部 `device_types`（用户可按编号 Other
+    输入选中列表外的设备，或直接选"全部设备"）。`device_types` 中的 "通用" 是通配符
+    （文档无设备标注 = 适用所有设备），选中它等价于选中算子文档"产品支持情况"表的
+    全部 √ 行；"通用" 原样写入 directive，由 constraint-extractor 展开为 √ 行。
+  - **Q2 逐设备场景**（对 Q1 选中的每个设备各问一次，multiSelect）：选项 = 该设备下
+    场景列表（`scenes` 中 `device_types` 含该设备的条目）前 3 个 + "全部该设备场景"；
+    body 按编号列出该设备全部场景。同一条场景可在多个设备下被选（分开记录、不跨设备
+    去重）。
+  - 汇总答案写入 `selection.json` 为 `{"device_types": [<...>], "scenes_by_device":
+    {<device>: [<id...>]}}`（"全部"展开为实际清单，不写字符串"全部"）→ 跑
+    `python scripts/render_scene_directive.py --scan <scene_scan.json> --selection <selection.json> --run-dir <run-dir> --scope subset`
+    （校验设备/场景 ∈ scan、算 `quant_combos`（选定量化场景的 distinct (mode,width)
+    并集）、写 `inputs/scene_directive.md`（含机读
+    `<!-- scene: {device_types, scenes_by_device, quant_combos} -->` 块）、回写
+    `run_state.scene`；非法选择 exit 2 阻断，提示用户重选，不静默回退。`quant_combos`
+    ≥2 时 directive 指示按并集保留；=1 时单组合 prose；=0 时纯上下文不剪枝）。
+    EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`
+    （"通用" 展开为文档"产品支持情况"表全部 √ 行，其余设备与 √ 行取交集）；该
+    `product_support` 随后驱动 `generate_cases.py` 逐平台生成——**设备选择经约束
+    提取驱动生成，不直接改生成逻辑**。
 EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入
 constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 directive，
 屏蔽跨轮稳定。

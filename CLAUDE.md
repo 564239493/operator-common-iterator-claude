@@ -16,10 +16,17 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
 > EXTRACT 前可选触发场景扫描（`--scene auto` 默认；`all`/`off` 可选）：
-> `scene-scanner` 读文档枚举涉及的量化方式×位宽组合，产 `inputs/scene_scan.json`；
-> 主协调器据此 AskUserQuestion 单选征询场景（量化方式单选 + 位宽单选），`scripts/render_scene_directive.py` 渲染
-> `inputs/scene_directive.md` 并回写 `run_state.scene`，constraint-extractor 据此
-> 屏蔽非选定场景。为独立子步骤而非新状态，文档无量化场景即跳过（零回归）。
+> `scene-scanner` 读文档提取全部"场景"表述（开放类目）并按设备类型分组、量化场景标
+> `quant_mode`/`quant_width`，产 `inputs/scene_scan.json`（`schema_version=2`）；
+> 主协调器据此 AskUserQuestion 两级多选征询（设备类型 + 逐设备场景，均支持全选），
+> `scripts/render_scene_directive.py` 渲染
+> `inputs/scene_directive.md`（含机读块 `device_types`/`scenes_by_device`/`quant_combos`，
+> "通用" 作通配符原样保留）并回写 `run_state.scene`，constraint-extractor 据此屏蔽非选定
+> 场景（`quant_combos`≥2 按并集保留）并按 `device_types` 收窄 `product_support`——
+> "通用" 展开为文档"产品支持情况"表的全部 √ 行，其余设备与 √ 行取交集；`product_support`
+> 随后驱动用例生成（`generate_cases.py` 按 `product_support` 逐平台生成，不读场景）。
+> 为独立子步骤而非新状态，文档无
+> 场景即跳过（零回归）；仅有量化参数信号而未提取到场景时只写 `scan_notes` 警告，不补造。
 
 ## 常用命令
 

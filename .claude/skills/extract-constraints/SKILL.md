@@ -5,7 +5,9 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 # 约束提取规范
 
 输入必须包含：算子文档、当前提示词、当前轮目录。若 `inputs/scene_directive.md`
-存在（由 SCENE_SCAN 子步骤产出），也必须读取并严格按其场景指令屏蔽非选定场景。
+存在（由 SCENE_SCAN 子步骤产出），也必须读取并严格按其场景指令屏蔽非选定场景，
+并按其 `device_types` 收窄 `product_support`（`通用` 展开为文档 √ 行全集；详见
+下文「设备→`product_support` 规则」）。
 
 > 当前提示词是 family 隔离的完整快照（见 `run_state.current_prompt_modules`）：ACLNN
 > 由 `scripts/select_prompt.py` 经预分析、知识路由、适用性判断后冻结，torch_npu 由
@@ -32,13 +34,33 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 保留为空或按提示词标注不确定性，不得从历史产物补齐。
 
 **场景屏蔽规则**（仅当 `inputs/scene_directive.md` 存在时执行；不存在则按全场景
-提取，行为不变）：按 directive 中列出的合法 (方式, 位宽) 组合，仅保留符合该组合的
-参数存在性路径与约束——屏蔽非选定场景的专属 Optional 参数（其
-`presence_dependency` 不产出）、剔除 `allowed_range_value` 中与未选场景绑定的枚举
-候选、删除未选场景专属的 `constraints_in_parameters` 约束行；**保留**与所有场景
-通用的约束（`shape_equality`、维度、`dtype`、`format`、`groupType` 等）。场景只做
-"屏蔽"，不臆造文档未声明的限制；结果仍须满足 `OperatorRule` 与
-`validate_artifacts.py constraints` 校验。
+提取，行为不变）：优先读取 directive 末尾机读块 `<!-- scene: {device_types,
+scenes_by_device, quant_combos} -->` 作为权威锚点（prose 段仅供人读）。
+
+**设备→`product_support` 规则**（同一 directive 存在条件下，覆盖提示词 §4.3 的
+"仅取 √ 行"为"按选定设备收窄"）：先读文档"产品支持情况"表得到 √ 行全集 `D`；再按
+机读块 `device_types` 决定本次 `product_support`——`通用` 通配符展开为 `D` 全部 √ 行；
+其余设备名原样保留；最后将展开结果与 `D` 取交集（剔除文档标 × 的设备，绝不生成算子
+不支持的平台），并按文档表格自上而下排序。`device_types` 缺失或展开/交集后为空时
+回退为 `D`（行为与无 directive 一致）。机读块 `scenes_by_device` 中的 `通用` 键表示
+设备无关场景，其约束对 `product_support` 中每个设备均适用。本规则与 §4.6.2 的"逐平台
+复制 `ParamAttributes`"一致：`product_support` 收窄后，`inputs`/`outputs`/
+`deterministic_computing`/`constraints_in_parameters` 的二级平台 key 仅按收窄后的
+`product_support` 逐平台产出（仍不得用单一平台代笔）。
+
+按 `quant_combos`（选定量化场景的 distinct (方式, 位宽) 并集）分三种语义：
+- `quant_combos` 长度 = 1：单组合——仅保留符合该 (方式, 位宽) 组合的参数存在性路径
+  与约束，屏蔽非选定场景的专属 Optional 参数（其 `presence_dependency` 不产出）；
+- `quant_combos` 长度 ≥ 2：**并集保留**——任一选定量化场景在场的 Optional 参数（如
+  `scaleOptional`/`offsetOptional`/`antiquantScaleOptional`/`antiquantOffsetOptional`/
+  `perTokenScaleOptional` 等）均视为可能存在，**仅屏蔽所有选定场景均不在场的**专属
+  参数；剔除 `allowed_range_value` 中与所有选定场景均无关的枚举候选、删除未选场景
+  专属的 `constraints_in_parameters` 约束行；
+- `quant_combos` 长度 = 0：未选量化场景，不剪枝；非量化/布局/分离/MASK/MLA 场景仅
+  作上下文，Optional 参数存在性路径原样保留。
+无论哪种语义，**保留**与所有场景通用的约束（`shape_equality`、维度、`dtype`、
+`format`、`groupType` 等）。场景只做"屏蔽"，不臆造文档未声明的限制；结果仍须满足
+`OperatorRule` 与 `validate_artifacts.py constraints` 校验。
 
 1. 逐节阅读文档，区分明确约束、示例和说明性文字。
 2. **模式判定**：先读取 `run_state.json.operator_family`。
@@ -88,7 +110,10 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 12. **场景屏蔽完整性自检**（仅当 `inputs/scene_directive.md` 存在时）：确认被屏蔽
     场景的专属 Optional 参数其 `presence_dependency` 未产出、通用约束
     （shape/dtype/format 等）未被误删、`allowed_range_value` 候选已按场景收窄。
-    自检不通过则回到步骤 1 重提，不放过半屏蔽的 constraints.json。
+    并确认 `product_support` 已按机读块 `device_types` 收窄（`通用` 展开为文档 √ 行
+    全集，其余设备与 √ 行取交集），`inputs`/`outputs` 等二级平台 key 仅含收窄后
+    的平台、无遗漏无代笔。自检不通过则回到步骤 1 重提，不放过半屏蔽的
+    constraints.json。
 
 开始写文件前必须确认调度已将 run state 更新为 `EXTRACT`。成功后回报非空
 `constraints.json` 的绝对路径；不得只返回聊天中的摘要。
