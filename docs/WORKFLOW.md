@@ -96,15 +96,17 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 ### SCENE_SCAN（条件触发，非独立状态）
 
 输入：`inputs/<doc>.md`（只读）。
-执行者：scene-scanner（产 `inputs/scene_scan.json`，枚举文档涉及的量化方式×位宽组合）+ 主协调器（AskUserQuestion 两段**单选**征询：Q1 量化方式单选 → Q2 位宽单选，写 `selection.json={quant_mode, quant_width}`）+ `scripts/render_scene_directive.py`（渲染 `inputs/scene_directive.md`、回写 `run_state.scene`）。
-`--scene off` 跳过；`--scene auto`（默认）文档有量化场景则征询、无则跳过；`--scene all` 取全场景不剪枝（批处理默认）。文档无量化场景（`has_quant_scenarios=false`）跳过，退回纯文档驱动。
+执行者：scene-scanner（产 `inputs/scene_scan.json`（`schema_version=2`），提取文档明确以"场景"表述的全部场景并按设备分组、量化场景标 `quant_mode`/`quant_width`）+ 主协调器（AskUserQuestion 两级**多选**征询：Q1 设备类型多选（支持全选）→ Q2 逐设备场景多选（支持全选），写 `selection.json={device_types, scenes_by_device}`）+ `scripts/render_scene_directive.py`（算 `quant_combos` 并集、渲染 `inputs/scene_directive.md`（含机读块）、回写 `run_state.scene`）。
+`--scene off` 跳过；`--scene auto`（默认）文档有场景则征询、无则跳过；`--scene all` 取全场景不剪枝（批处理默认）。文档无场景（`has_scenarios=false`）跳过，退回纯文档驱动；仅有量化参数信号而未提取到场景时只写 `scan_notes` 警告，不补造。
 完成条件：`scene_scan.json` 过 `validate_artifacts.py scene_scan`；选定场景落 `run_state.scene` + `inputs/scene_directive.md`（仅 subset）。
 失败策略：scene-scanner 自修正最多三次；`render_scene_directive.py` 对非法选择 exit 2 阻断，提示重选，不静默回退。为独立子步骤而非新状态，空即跳过。
 
 ### EXTRACT
 
 输入：run/inputs 中的算子文档快照、prompt_vN，以及（若存在）`inputs/scene_directive.md`。
-执行者：constraint-extractor。
+执行者：constraint-extractor。若 directive 存在，按其 `device_types` 收窄
+`product_support`（"通用" 展开为文档"产品支持情况"表全部 √ 行，其余设备与 √ 行取
+交集）并屏蔽非选定场景；该 `product_support` 随后驱动 `generate_cases.py` 逐平台生成。
 完成条件：constraints.json 通过 Pydantic/结构校验。
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。
 

@@ -146,28 +146,40 @@ join 两者，source-wins 转 `replace_constraint` patch（`origin="conflict_res
 
 ## scene_scan.json / scene_directive.md / run_state.scene
 
-`scene_scan.json`（scene-scanner 产，落 `inputs/`）：枚举该算子文档实际涉及的
-「量化方式 × 量化位宽组合」场景。`has_quant_scenarios` 为 bool；`=true` 时
-`quant_modes`/`quant_widths_by_mode`/`valid_combos`/`evidence` 必须完整，且每条
-`valid_combos` 必须有对应 (mode, width) 的 `evidence.src_text` 摘自原文。`=false`
-（非量化算子）时其余字段留空，主协调器跳过场景征询。结构由
-`validate_artifacts.py scene_scan` 校验。
+`scene_scan.json`（scene-scanner 产，落 `inputs/`，`schema_version=2`）：提取该算子
+文档**明确以"场景"表述的全部场景**（开放类目：量化/卷积/band/TND/MLA/MASK/KV分离…），
+**先按设备类型划分、再每设备列场景**，一场景一条，过滤 ACLNN_ERR_*/校验场景；
+每条含 `id`/`name`/`category`/`description`/`device_types`/`quant_mode`/`quant_width`/
+`evidence.src_text`。`has_scenarios` 为 bool（= `scenes` 非空）；`=true` 时
+`device_types`/`scenes` 必须完整，派生字段 `has_quant_scenarios`/`quant_modes`/
+`quant_widths_by_mode`/`valid_combos` 从 `scenes` 重算须与声明一致。`=false`（文档无
+场景）时其余字段留空，主协调器跳过场景征询；仅有量化参数信号而未提取到场景时只写
+`scan_notes`（`kind=quant_signal_no_scene`）警告，不补造场景、不置 `has_scenarios`。
+结构由 `validate_artifacts.py scene_scan` 校验（缺 `schema_version` 按 v1 老规则跑兼容）。
 
 `run_state.scene`（`init_run` 写 `null`，SCENE_SCAN 子步骤由
-`scripts/render_scene_directive.py` 回写）：`{enabled, scope, quant_mode,
-quant_width, valid_combos, directive, scan}`（单选字段）。`scope=subset` 时
-`quant_mode`/`quant_width` 为用户单选值（各 1 个，`quant_width` 在非量化/无位宽细分时
-为 `null`），`valid_combos` 恰 1 条，`directive` 指向 `inputs/scene_directive.md`；
-`scope=all`/`off` 时 `quant_mode`/`quant_width` 为 `null`、`directive=""` 且不写
-directive 文件（extractor 见无 directive 即按全场景提取，行为不变）。
+`scripts/render_scene_directive.py` 回写）：`{enabled, scope, schema_version,
+device_types, scenes_by_device, selected_scene_ids, quant_combos, quant_mode,
+quant_width, valid_combos, directive, scan}`。`scope=subset` 时
+`scenes_by_device` 为逐设备场景 id 列表（同一 id 可在多设备重复，不跨设备去重）、
+`selected_scene_ids` 为 distinct 并集（便捷、非权威）、`quant_combos` 为选定量化场景
+的 distinct (mode, width) 并集（=1 时填 `quant_mode`/`quant_width` 单值，否则 `null`）、
+`directive` 指向 `inputs/scene_directive.md`；`scope=all`/`off` 时 `quant_mode`/
+`quant_width` 为 `null`、`directive=""` 且不写 directive 文件（extractor 见无 directive
+即按全场景提取，行为不变）。
 
-纯非量化算子（`has_quant_scenarios=false`）不触发场景征询，`run_state.scene=null`，
+纯无场景算子（`has_scenarios=false`）不触发场景征询，`run_state.scene=null`，
 执行时不传 `--scene`。
 
 `scene_directive.md`（`render_scene_directive.py` 渲染，落 `inputs/`，仅 `scope=subset`
-时存在）：列合法 (方式, 位宽) 组合与屏蔽规则，constraint-extractor 据此屏蔽非选定
-场景的 Optional 参数 presence 与专属约束，保留通用约束（shape/dtype/format 等）。
-轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动本文件，屏蔽跨轮稳定。
+时存在）：按设备→类目→名称列出选定场景，按 `quant_combos` 给屏蔽语义（=1 单组合、
+≥2 并集保留、=0 不剪枝），末尾附机读块 `<!-- scene: {device_types,
+scenes_by_device, quant_combos} -->`（`device_types` 中 "通用" 原样保留为通配符）；
+constraint-extractor 据此屏蔽非选定场景的 Optional 参数 presence 与专属约束，保留
+通用约束（shape/dtype/format 等），并按 `device_types` 收窄 `product_support`
+（"通用" 展开为文档"产品支持情况"表全部 √ 行，其余设备与 √ 行取交集；该列表随后
+驱动 `generate_cases.py` 逐平台生成）。轮 2+ `optimize-prompt` 重写 `prompt_vN`
+不动本文件，屏蔽跨轮稳定。
 
 ## source_raw.json / source_evidence.json
 
