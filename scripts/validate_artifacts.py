@@ -860,17 +860,181 @@ def validate_source_raw(value) -> list[str]:
     return errors
 
 
-def validate_scene_scan(value) -> tuple[list[str], list[str]]:
-    """Validate inputs/scene_scan.json produced by the scene-scanner Agent.
+def _validate_scene_scan_v2(value: dict) -> tuple[list[str], list[str]]:
+    """v2 rules (schema_version=2): device types + open-category scenes.
 
-    has_quant_scenarios=false →其余字段可空（非量化算子）。=true 时校验
-    quant_modes/quant_widths_by_mode/valid_combos/evidence 结构与一致性，
-    并要求每条 valid_combo 都有 evidence 溯源原文。
+    Each scene carries its own ``evidence.src_text``; there is no top-level
+    ``evidence`` array. Derived fields (``has_quant_scenarios`` /
+    ``quant_modes`` / ``quant_widths_by_mode`` / ``valid_combos``) are recomputed
+    from ``scenes`` and compared to the declared values.
     """
     errors: list[str] = []
     warnings: list[str] = []
+    if "has_scenarios" not in value:
+        return ["missing field: has_scenarios"], warnings
+    has_scn = value.get("has_scenarios")
+    if not isinstance(has_scn, bool):
+        return ["has_scenarios must be bool"], warnings
+
+    if not has_scn:
+        for fld in ("device_types", "scenes", "quant_modes", "valid_combos"):
+            if value.get(fld):
+                warnings.append(f"has_scenarios=false but {fld} non-empty")
+        if value.get("quant_widths_by_mode"):
+            warnings.append("has_scenarios=false but quant_widths_by_mode non-empty")
+        if value.get("has_quant_scenarios") is True:
+            warnings.append("has_scenarios=false but has_quant_scenarios=true")
+        # scan_notes allowed even when no scenes (e.g. quant_signal_no_scene)
+        return errors, warnings
+
+    device_types = value.get("device_types")
+    if not isinstance(device_types, list) or not device_types:
+        errors.append("device_types must be a non-empty list[str] when has_scenarios=true")
+        device_types = []
+    elif not all(isinstance(d, str) and d.strip() for d in device_types):
+        errors.append("device_types entries must be non-empty strings")
+    device_set = set(device_types)
+
+    scenes = value.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        errors.append("scenes must be a non-empty list[dict] when has_scenarios=true")
+        scenes = []
+
+    seen_ids: set[str] = set()
+    quant_scenes: list[dict] = []
+    for i, s in enumerate(scenes):
+        if not isinstance(s, dict):
+            errors.append(f"scenes[{i}] must be an object")
+            continue
+        sid = s.get("id")
+        if not isinstance(sid, str) or not sid.strip():
+            errors.append(f"scenes[{i}].id must be a non-empty string")
+            sid = f"__no_id_{i}"
+        if sid in seen_ids:
+            errors.append(f"duplicate scene id: {sid!r}")
+        seen_ids.add(sid)
+        for f in ("name", "category", "description"):
+            v = s.get(f)
+            if not isinstance(v, str) or not v.strip():
+                errors.append(f"scenes[{i}].{f} must be a non-empty string")
+        sdev = s.get("device_types")
+        if not isinstance(sdev, list) or not sdev:
+            errors.append(f"scenes[{i}].device_types must be a non-empty list")
+        else:
+            for d in sdev:
+                if d not in device_set:
+                    errors.append(
+                        f"scenes[{i}].device_types has {d!r} not in top-level device_types"
+                    )
+        qm = s.get("quant_mode")
+        qw = s.get("quant_width")
+        if qm is not None:
+            if not isinstance(qm, str) or not qm.strip():
+                errors.append(f"scenes[{i}].quant_mode must be a string when set")
+            if qw is not None and (not isinstance(qw, str) or not qw.strip()):
+                errors.append(f"scenes[{i}].quant_width must be a string or null")
+            quant_scenes.append(s)
+        else:
+            if qw is not None:
+                warnings.append(
+                    f"scenes[{i}] quant_mode=null but quant_width={qw!r} (should be null)"
+                )
+        ev = s.get("evidence")
+        if not isinstance(ev, dict):
+            errors.append(f"scenes[{i}].evidence must be an object")
+        elif not str(ev.get("src_text", "")).strip():
+            errors.append(f"scenes[{i}].evidence.src_text must be non-empty")
+
+    if "evidence" in value:
+        warnings.append(
+            "v2 scene_scan should not carry top-level evidence "
+            "(use per-scene evidence.src_text instead)"
+        )
+
+    notes = value.get("scan_notes")
+    if notes is not None:
+        if not isinstance(notes, list):
+            errors.append("scan_notes must be a list")
+        else:
+            for j, n in enumerate(notes):
+                if not isinstance(n, dict):
+                    errors.append(f"scan_notes[{j}] must be an object")
+                elif not str(n.get("kind", "")).strip() or not str(n.get("message", "")).strip():
+                    errors.append(f"scan_notes[{j}] must have non-empty kind and message")
+
+    # derived-field consistency (recompute from scenes)
+    r_has_quant = len(quant_scenes) > 0
+    r_modes: list[str] = []
+    r_widths: dict[str, list[str]] = {}
+    r_combos: list[dict] = []
+    seen_m: set[str] = set()
+    seen_c: set[tuple] = set()
+    for s in quant_scenes:
+        m = s.get("quant_mode")
+        w = s.get("quant_width")
+        if m not in seen_m:
+            seen_m.add(m)
+            r_modes.append(m)
+            r_widths[m] = []
+        if w is not None and w not in r_widths[m]:
+            r_widths[m].append(w)
+        ck = (m, w)
+        if ck not in seen_c:
+            seen_c.add(ck)
+            r_combos.append({"mode": m, "width": w})
+
+    decl_has_quant = value.get("has_quant_scenarios")
+    if decl_has_quant is None:
+        warnings.append("has_quant_scenarios missing (should be recomputed=%s)" % r_has_quant)
+    elif not isinstance(decl_has_quant, bool):
+        errors.append("has_quant_scenarios must be bool")
+    elif decl_has_quant != r_has_quant:
+        errors.append(f"has_quant_scenarios={decl_has_quant} but recomputed={r_has_quant}")
+
+    decl_modes = value.get("quant_modes")
+    if decl_modes is None:
+        warnings.append("quant_modes missing (should be recomputed)")
+    elif decl_modes != r_modes:
+        if set(decl_modes) != set(r_modes):
+            errors.append(f"quant_modes {decl_modes} != recomputed {r_modes}")
+        else:
+            warnings.append(f"quant_modes order mismatch: {decl_modes} vs {r_modes}")
+
+    decl_wbm = value.get("quant_widths_by_mode")
+    if decl_wbm is None:
+        warnings.append("quant_widths_by_mode missing (should be recomputed)")
+    elif decl_wbm != r_widths:
+        errors.append(f"quant_widths_by_mode {decl_wbm} != recomputed {r_widths}")
+
+    decl_combos = value.get("valid_combos")
+    if decl_combos is None:
+        warnings.append("valid_combos missing (should be recomputed)")
+    else:
+        decl_set = {
+            (c.get("mode"), c.get("width")) for c in decl_combos if isinstance(c, dict)
+        }
+        if decl_set != seen_c:
+            errors.append(f"valid_combos {decl_combos} != recomputed {r_combos}")
+
+    return errors, warnings
+
+
+def validate_scene_scan(value) -> tuple[list[str], list[str]]:
+    """Validate inputs/scene_scan.json produced by the scene-scanner Agent.
+
+    Dispatches on ``schema_version``: ``2`` → v2 device/scene rules (per-scene
+    ``evidence.src_text``, derived-field consistency); missing → v1 single
+    quant-mode/width rules (``has_quant_scenarios`` + top-level ``evidence``).
+    v1 path is unchanged so old runs can resume.
+    """
     if not isinstance(value, dict):
-        return ["scene_scan must be an object"], warnings
+        return ["scene_scan must be an object"], []
+    if value.get("schema_version") == 2:
+        return _validate_scene_scan_v2(value)
+
+    # ---- v1 path (has_quant_scenarios + top-level evidence) ----
+    errors: list[str] = []
+    warnings: list[str] = []
     if "has_quant_scenarios" not in value:
         errors.append("missing field: has_quant_scenarios")
         return errors, warnings
