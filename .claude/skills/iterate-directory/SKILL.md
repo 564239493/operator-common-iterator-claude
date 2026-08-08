@@ -40,7 +40,8 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt pat
      `--prompt <prompt>`，自动模式不得把某一 family 的 baseline 当作显式 prompt
      传给另一 family；始终透传 `--hs-scenario-mode <hs_scenario_mode>`；若
      `supplement_constraints` 非空，一并透传 `--supplement-constraints <path>`；
-     默认透传 `--scene all`（批处理无头不能 AskUserQuestion，取全场景不剪枝）。
+     默认透传 `--scene all`、`--human-checkpoint-round 0`（批处理无头不能
+     AskUserQuestion，取全场景不剪枝且禁用人工补充检查点）。
    - `action=resume`：若已有 `run_dir`，读取其 `run_state.json`，按
      `/iterate-operator` 的恢复协议从最后完成状态继续；若尚无 `run_dir`，按 start 处理。
    - `action=complete`：停止循环并展示 `batch_summary.json`。

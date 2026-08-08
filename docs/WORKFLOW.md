@@ -63,6 +63,10 @@ flowchart TD
     Q -->|产物不合法| B["BLOCKED"]
     D -->|constraint_extraction| O["OPTIMIZE<br/>prompt-optimizer"]
     O -->|下一轮| E
+    D -->|constraint_extraction + N 轮失败| HC["HUMAN_CHECKPOINT<br/>人工补充/自主/停止"]
+    HC -->|人工补充| E
+    HC -->|自主迭代| O
+    HC -->|立即停止| SU["STOPPED_BY_USER"]
     D -->|generator_bug| GB["STOP_GENERATOR_BUG"]
     D -->|executor_bug| EB["STOP_EXECUTOR_BUG"]
     E -->|超过轮次上限| M["MAX_ITERATIONS"]
@@ -232,7 +236,7 @@ prompt-optimizer 也按 `run_state.operator_family` 隔离：ACLNN 的修复只�
 不会为没有 callable 的索引创建 run。
 
 默认 `continue-on-error`：`SUCCESS` 计为成功，`BLOCKED`、`MAX_ITERATIONS`、
-`STOP_GENERATOR_BUG` 和 `STOP_EXECUTOR_BUG` 计为失败，但不会阻止后续文档执行。
+`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计为失败，但不会阻止后续文档执行。
 `--fail-fast` 会在首个非 SUCCESS 终态后把批次置为 STOPPED。这里的“全部执行完毕”
 表示所有队列项都进入终态，不等价于全部成功。
 

@@ -12,6 +12,9 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 - 有失败 → `DIAGNOSE`；只有根因为 `constraint_extraction` 时才进入 `OPTIMIZE → EXTRACT` 循环
 - `generator_bug` / `executor_bug` → 立即止损
 - 达到 max-iterations → `MAX_ITERATIONS`
+- `constraint_extraction` 迭代到 `--human-checkpoint-round`（默认 3，0=禁用）轮仍失败时，下一轮
+  开始前弹人工补充检查点（AskUserQuestion 三选一：人工补充 / 自主迭代 / 立即停止）；
+  人工补充 append 进 `inputs/supplement_constraints.md` 复用 SUPPLEMENT 管线；"立即停止" → `STOPPED_BY_USER`
 
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
@@ -33,6 +36,7 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ### 算子迭代
 ```text
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 3 --case-count 10
+/iterate-operator operator_docs/aclnnFoo.md --max-iterations 5 --human-checkpoint-round 3  # 第3轮仍失败弹人工补充检查点（0=禁用）
 /iterate-operator D:\operator_docs\aclnnFoo.md  # 支持项目外路径
 /iterate-operator operator_docs/aclnnFoo.md --scene auto  # EXTRACT 前扫描量化场景并征询（默认）；--scene all 取全场景不问；--scene off 跳过
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子
@@ -135,9 +139,11 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - 全部通过：`SUCCESS`
 - 有失败：`DIAGNOSE`
 - `constraint_extraction`：`OPTIMIZE -> EXTRACT`，进入下一轮
+- `constraint_extraction` 到 `human_checkpoint_round` 轮仍失败：人工补充检查点（补充/自主/停止）
 - `generator_bug`：`STOP_GENERATOR_BUG`
 - `executor_bug`：`STOP_EXECUTOR_BUG`
 - 达到最大轮数：`MAX_ITERATIONS`
+- 检查点"立即停止"：`STOPPED_BY_USER`
 
 ### Python 确定性层
 

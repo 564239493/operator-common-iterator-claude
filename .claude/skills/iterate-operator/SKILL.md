@@ -16,6 +16,8 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    auto 仅对已有 TTK adapter 的六个重点算子选择 `ttk`；其余 torch_npu API 选择
    `constraints`，只运行约束提取/补充/校验，不误入必然失败的用例生成。
    max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
+   human-checkpoint-round=3（0=禁用）；迭代到该轮仍以 constraint_extraction 失败时，
+   在下一轮开始前弹人工补充检查点（AskUserQuestion 三选一）。需 `max-iterations > 该值` 才有意义。
    `hs-scenario-mode=original`；只有用户显式传入
    `--hs-scenario-mode planned` 时，torch_npu + TTK 才启用 TND/BSND/
    paged-attention 场景拆分和投影。该参数对 ACLNN/ATK 不生效。
@@ -183,14 +185,37 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
    匹配，命中的 uncertain 追加到 `inputs/supplementary-doc.md`，产
    `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence
    下根因）。`operator_src_snapshot` 为空时直接委派 `failure-analyst`。
+   - **HUMAN_CHECKPOINT 门（人工补充检查点；分析完成后、自主分支决策前）**：当且仅当
+     **全部**满足时触发——`analysis.json.root_cause == constraint_extraction`、
+     `run_state.human_checkpoint_round > 0`、`current_iteration >= human_checkpoint_round`
+     且 `current_iteration < max_iterations`（还有下一轮可用补充）、
+     `human_checkpoint_resolved_iteration < current_iteration`（本轮尚未决断，防上下文压缩
+     后对同一轮重复询问）。触发后：
+     1. 读当前轮 `<iter>/analysis.json`（`root_cause`/`analysis` 摘要/`specific_issues`
+        带 case id 与文档证据）+ 当前 `constraints.json` 摘要 + 已尝试轮次，结构化展示给用户。
+     2. `AskUserQuestion` 三选一（首次触发与后续每轮重复询问用同一 prompt）：
+        - **提供人工补充**：随后在主会话以文本请用户输入自由补充（思路/约束/线索）；收到后
+          **append** 到 `inputs/supplement_constraints.md`，带分节标题
+          `## 人工补充（第 <N> 轮失败后，<ISO8601>）`（用 markdown 分节与初始
+          `--supplement-constraints` 内容区分 provenance）；置
+          `run_state.human_checkpoint_resolved_iteration = current_iteration`；进下一轮
+          re-EXTRACT（下轮 SUPPLEMENT 步自动拾取该补充，无需新代码）。
+        - **继续自主迭代**：置 `human_checkpoint_resolved_iteration = current_iteration`，
+          落回下列自主分支。
+        - **立即停止**：`run_state.state = STOPPED_BY_USER`，append history
+          `{"state":"STOPPED_BY_USER","at":<ISO8601>}`，终止流程（不进下一轮）。
+     3. `generator_bug`/`executor_bug` 根因**不进本门**（立即止损，见下）。
    - constraint_extraction + 补充已扩充（`source_evidence.log_match` 非空，或
-     failure-analyst 产了 `supplement_additions.md`）：**不走 prompt-optimizer**，
-     直接 re-EXTRACT + re-SUPPLEMENT + re-GENERATE + re-EXECUTE 进下一轮。
-   - constraint_extraction + 补充无可提取：委派 `prompt-optimizer`，将新 prompt
-     送入下一轮。
+     failure-analyst 产了 `supplement_additions.md`，或上一步人工补充已 append 进
+     `supplement_constraints.md`）：**不走 prompt-optimizer**，直接 re-EXTRACT +
+     re-SUPPLEMENT + re-GENERATE + re-EXECUTE 进下一轮。
+   - constraint_extraction + 补充无可提取：委派 `prompt-optimizer`，将新 prompt 送入下一轮。
    - generator_bug：状态设为 STOP_GENERATOR_BUG，停止。
    - executor_bug：状态设为 STOP_EXECUTOR_BUG，停止。
-9. 达到上限后状态设为 MAX_ITERATIONS。
+   - **轮次簿记（关键，原为缺口）**：凡分支决定"进下一轮"，主协调器须先把
+     `run_state.current_iteration += 1` 并 append history `{"state":"ITER_<N>","at":<ISO8601>}`，
+     随即检查 `current_iteration > max_iterations` → 置 `MAX_ITERATIONS` 终止（不再 re-EXTRACT）。
+9. 达到上限（`current_iteration > max_iterations`）后状态设为 `MAX_ITERATIONS`。
 10. **（终态前）分层沉淀询问**：若存在 `prompt_update_proposal.json`，先按
    `docs/PROMPT_EVOLUTION.md` 核验试验结果，再逐条展示目标 canonical 文件、摘要、
    失败/文档证据、适用范围与候选 diff，向用户询问“应用 / 暂缓 / 拒绝”。
@@ -205,7 +230,7 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
 11. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
    不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
 12. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
-    `STOP_GENERATOR_BUG` 或 `STOP_EXECUTOR_BUG` 后，调用
+    `STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 或 `STOPPED_BY_USER` 后，调用
     `python scripts/batch_state.py --batch-dir <batch-dir> complete`。如果 run 创建前即因
     文档消失等算子级问题阻断，则调用 `complete --terminal-state BLOCKED --message <原因>`。
     不得把真实执行配置缺失静默记为算子失败；目录批次初始化时应先统一校验该配置。
