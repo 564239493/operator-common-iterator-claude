@@ -49,9 +49,9 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
 
 **SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
 `scene-scanner`（读 `inputs/<doc>.md` + `prompts/scan_scenes.md`，按**设备类型 →
-量化模板 → 特性参数**三级提取，产 `inputs/scene_scan.json`（`schema_version=3`），
+量化模板 → 特性参数**三级提取，产 `inputs/scene_scan.json`，
 自跑 `python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json`）。
-完成后主协调器读 `scene_scan.json`（`schema_version=3`）：
+完成后主协调器读 `scene_scan.json`：
 - `has_scenarios=false` → 跳过（无 directive，按全场景提取，行为不变）。`scan_notes`
   含 `quant_signal_no_template` warning 时仅记录性提示用户"文档含量化参数信号但未提取到
   模板，可能遗漏剪枝"，**不**置 `has_scenarios`、**不**阻断、**不**补造场景。
@@ -89,11 +89,11 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
     （校验设备/模板/特性名 ∈ scan、按 `param_modes` 三态解析每设备每参数的
     展开/固定/缺键、写 `inputs/scene_directive.md`（含机读块
     `<!-- scene: {device_types, param_modes} -->`，`param_modes[device][param]` ∈
-    `"expand"` 保留全枚举候选 | `{"fix": <默认值>}` 单值候选 | 缺键 presence 丢）、
+    `{"expand": [取值清单]}` 清单=所选模板 values 并集（禁止回文档拉全集） | `{"fix": <默认值>}` 单值候选 | 缺键 presence 丢）、
     回写 `run_state.scene`；非法选择 exit 2 阻断，提示用户重选，不静默回退）。
     EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`
-    （v3 设备类型为具体设备名，直接与文档 √ 行取交集，无"通用"展开）；按 `param_modes`
-    三态产 `allowed_range_value`（`expand` 全枚举、`fix` 单值、缺键 Optional 参数不产
+    （设备类型为具体设备名，直接与文档 √ 行取交集，无"通用"展开）；按 `param_modes`
+    三态产 `allowed_range_value`（`expand` 用机读块取值清单、`fix` 单值、缺键 Optional 参数不产
     `presence_dependency`）。该 `product_support` 随后驱动 `generate_cases.py` 逐平台
     生成——**设备选择经约束提取驱动生成，不直接改生成逻辑**。
 EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入

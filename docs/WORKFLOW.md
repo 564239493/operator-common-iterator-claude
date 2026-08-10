@@ -100,7 +100,7 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 ### SCENE_SCAN（条件触发，非独立状态）
 
 输入：`inputs/<doc>.md`（只读）。
-执行者：scene-scanner（产 `inputs/scene_scan.json`（`schema_version=3`），按**设备类型
+执行者：scene-scanner（产 `inputs/scene_scan.json`，按**设备类型
 → 量化模板 → 特性参数**三级提取，不设"通用"组、特性参数只提取枚举/分档可选项）+ 主
 协调器（AskUserQuestion **Q1→Q2→Q3 三轮顺序征询**，每轮一次调用、其内问题并行作答；
 必须分三轮而非一次：Q2 问题集依赖 Q1 选中设备、Q3 问题集依赖 Q2 选中模板，同调用内
@@ -118,16 +118,15 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 完成条件：`scene_scan.json` 过 `validate_artifacts.py scene_scan`；选定场景落
 `run_state.scene` + `inputs/scene_directive.md`（仅 subset）。
 失败策略：scene-scanner 自修正最多三次；`render_scene_directive.py` 对非法选择 exit 2
-阻断，提示重选，不静默回退。为独立子步骤而非新状态，空即跳过。旧 run 的 v2/v1 路径
-作 legacy 保留以支持 `--continue` 恢复。
+阻断，提示重选，不静默回退。为独立子步骤而非新状态，空即跳过。
 
 ### EXTRACT
 
 输入：run/inputs 中的算子文档快照、prompt_vN，以及（若存在）`inputs/scene_directive.md`。
 执行者：constraint-extractor。若 directive 存在，按其 `device_types` 收窄
-`product_support`（v3 设备类型为"产品支持情况"具体设备名，直接与文档 √ 行取交集，
-无"通用"展开；v2 legacy 的"通用"展开为 √ 行全集）并按机读块 `param_modes` 三态屏蔽
-（`"expand"` 全枚举候选 / `{"fix": X}` 单值候选 / 缺键 Optional 参数 presence 丢）；
+`product_support`（设备类型为"产品支持情况"具体设备名，直接与文档 √ 行取交集，
+无"通用"展开）并按机读块 `param_modes` 三态屏蔽
+（`{"expand": [取值清单]}` 清单=所选模板 values 并集、禁止回文档拉全集 / `{"fix": X}` 单值候选 / 缺键 Optional 参数 presence 丢）；
 该 `product_support` 随后驱动 `generate_cases.py` 逐平台生成。
 完成条件：constraints.json 通过 Pydantic/结构校验。
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。

@@ -15,7 +15,7 @@ runs/<operator>-<timestamp>/
     conflict_candidates.json           # 可选：source-analyst 产，结构化冲突候选（机读）
     conflict_resolution.json           # 可选：用户裁决 [{conflict_id, winner}]
     supplement_constraints.md          # 可选：--supplement-constraints 手写快照
-    scene_scan.json                    # 可选：scene-scanner 产，设备→量化模板→特性参数三级嵌套（schema_version=3）
+    scene_scan.json                    # 可选：scene-scanner 产，设备→量化模板→特性参数三级嵌套
     scene_directive.md                 # 可选：render_scene_directive.py 渲染（含 param_modes 三态机读块），extractor 据此屏蔽
   iter_001/
     constraints.json
@@ -146,7 +146,7 @@ join 两者，source-wins 转 `replace_constraint` patch（`origin="conflict_res
 
 ## scene_scan.json / scene_directive.md / run_state.scene
 
-`scene_scan.json`（scene-scanner 产，落 `inputs/`，`schema_version=3`）：按**设备类型
+`scene_scan.json`（scene-scanner 产，落 `inputs/`）：按**设备类型
 → 量化模板 → 特性参数**三级嵌套提取文档中有测试需求的场景，**不设"通用"组**（无设备
 标注内容合并到每个具体设备组下），特性参数**只提取枚举/分档类可选项**（单个取值范围/
 固定取值不提取，归 `definition`），过滤 ACLNN_ERR_*/校验场景。顶层含 `operator`/
@@ -159,31 +159,28 @@ bullet 拆成独立 `params[]` 条目；"与 X 相同"的设备直接内联复�
 `same_as` 引用字段）。`has_scenarios` 为 bool（= 任一设备 `templates` 非空）；`=false`
 （文档无场景）时 `device_types`/`devices` 留空，主协调器跳过场景征询；仅有量化参数信号
 而未提取到模板时只写 `scan_notes`（`kind=quant_signal_no_template`）警告，不补造、不置
-`has_scenarios`。结构由 `validate_artifacts.py scene_scan` 的 v3 分支校验（派生一致性：
-`device_types` == `devices[].device` 全集；`==2` 走旧 v2 规则、缺 `schema_version` 按 v1
-跑兼容——旧 run resume 用）。
+`has_scenarios`。结构由 `validate_artifacts.py scene_scan` 校验（派生一致性：
+`device_types` == `devices[].device` 全集）。
 
 `run_state.scene`（`init_run` 写 `null`，SCENE_SCAN 子步骤由
-`scripts/render_scene_directive.py` 回写）：v3 形态 `{enabled, scope, schema_version,
-device_types, selection, directive, scan}`。`scope=subset` 时 `selection` 为
+`scripts/render_scene_directive.py` 回写）：形态 `{enabled, scope, device_types,
+selection, param_modes, directive, scan}`。`scope=subset` 时 `selection` 为
 `{device:{template:[feature]|null}}`（`null`=该模板全展开、缺模板键=该模板未选），
 `directive` 指向 `inputs/scene_directive.md`；`scope=all` 全设备全模板全特性参数
 全展开（不剪枝）；`scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件
-（extractor 见无 directive 即按全场景提取，行为不变）。v2 legacy 形态含
-`scenes_by_device`/`selected_scene_ids`/`quant_combos`/`quant_mode`/`quant_width`/
-`valid_combos`（旧 run resume 用）。
+（extractor 见无 directive 即按全场景提取，行为不变）。
 
 纯无场景算子（`has_scenarios=false`）不触发场景征询，`run_state.scene=null`，
 执行时不传 `--scene`。
 
 `scene_directive.md`（`render_scene_directive.py` 渲染，落 `inputs/`，仅 `scope=subset`
 时存在）：逐设备逐模板列出选定模板及其特性参数取值，按 `param_modes` 三态给屏蔽语义
-（`"expand"` 保留全枚举候选 / `{"fix": X}` 单值候选 / 缺键 Optional 参数 presence 丢），
-末尾附机读块 `<!-- scene: {device_types, param_modes} -->`（v3 设备类型为具体设备名，
+（`{"expand": [取值清单]}` 清单=所选模板 values 并集、禁止回文档拉全集 / `{"fix": X}` 单值候选 / 缺键 Optional 参数 presence 丢），
+末尾附机读块 `<!-- scene: {device_types, param_modes} -->`（设备类型为具体设备名，
 无"通用"）；constraint-extractor 据此按 `param_modes` 三态产 `allowed_range_value`、
 屏蔽未选模板专属 Optional 参数的 `presence_dependency` 与专属约束，保留通用约束
-（shape/dtype/format 等），并按 `device_types` 收窄 `product_support`（v3 直接与文档
-"产品支持情况" √ 行取交集，无"通用"展开；v2 legacy 的"通用"展开为 √ 行全集）；该列表
+（shape/dtype/format 等），并按 `device_types` 收窄 `product_support`（直接与文档
+"产品支持情况" √ 行取交集，无"通用"展开）；该列表
 随后驱动 `generate_cases.py` 逐平台生成）。轮 2+ `optimize-prompt` 重写 `prompt_vN`
 不动本文件，屏蔽跨轮稳定。
 

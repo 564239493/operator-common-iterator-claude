@@ -3,7 +3,7 @@
 > 本文件是 scene-scanner Agent 的工作提示词。输入算子文档快照（`inputs/<doc>.md`，
 > 只读），按 **设备类型 → 量化模板 → 特性参数** 三级分层提取，**不设"通用"组**（无
 > 设备标注内容合并到每个具体设备组下），特性参数**只提取枚举/分档类可选项**，产出
-> `inputs/scene_scan.json`（`schema_version=3`），供主协调器向用户分轮征询"设备类型 →
+> `inputs/scene_scan.json`，供主协调器向用户分轮征询"设备类型 →
 > 量化模板 → 特性参数"（Q1→Q2→Q3 三轮；`device_types` 仅 1 个时跳过 Q1）、再由 `scripts/render_scene_directive.py` 渲染
 > `inputs/scene_directive.md` 指导 constraint-extractor 做屏蔽式提取。
 >
@@ -50,10 +50,9 @@ op-scene 提取出的"量化模板"是**具体量化场景**，模板名直接�
 
 ```json
 {
-  "schema_version": 3,
   "operator": "aclnnXxx",
   "has_scenarios": true,
-  "device_types": ["Atlas 350 加速卡", "Atlas A2 训练/推理系列"],
+  "device_types": ["Atlas 350 加速卡", "Atlas A2 训练系列产品/Atlas A2 推理系列产品"],
   "devices": [
     {
       "device": "Atlas A2 训练/推理系列",
@@ -109,13 +108,14 @@ op-scene 提取出的"量化模板"是**具体量化场景**，模板名直接�
 
 字段语义：
 
-- `schema_version` (int, 必填=3)：v3 标识。validator/render 见 `3` 走 v3 规则；缺/=`2`
-  按旧 v2 跑老规则（旧 run resume 用）。
 - `operator` (str, 必填)：算子名，与文档一致。
 - `has_scenarios` (bool, 必填)：= 任一设备 `templates` 非空（参数信号不置 true，只写
   `scan_notes`）。false → `device_types`/`devices` 留空。
 - `device_types` (list[str])：文档"产品支持情况"涉及的**全部具体设备组**（**无"通用"**），
-  按 350→A2→A3→推理系列→训练系列→200I/500→其他 顺序。
+  按 350→A2→A3→推理系列→训练系列→200I/500→其他 顺序。**逐字照抄"产品支持情况"表
+  `<term>…</term>` 标签内的原文作为元素，不得简写/合并/改写**（如文档写
+  `Atlas A2 训练系列产品/Atlas A2 推理系列产品` 则逐字照抄，**禁止**改成
+  `Atlas A2 训练/推理系列`）——此名随后要与约束表 √ 行原文取交集，改写会导致交集落空。
 - `devices[]` (list[dict])：每个设备 `device`（⊂顶层 `device_types`）、`templates[]`。
   - **"与 X 相同"的设备直接内联复制 X 的 `templates`**（不写 `same_as` 引用字段，各设备
     `templates` 自洽，消费者无需做引用解析）。
@@ -160,8 +160,8 @@ op-scene 提取出的"量化模板"是**具体量化场景**，模板名直接�
 python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json
 ```
 
-校验项（见 `validate_artifacts.py: validate_scene_scan` 的 v3 分支）：
-- `schema_version=3`；`has_scenarios` 必填且为 bool；`operator` 非空。
+校验项（见 `validate_artifacts.py: validate_scene_scan`）：
+- `has_scenarios` 必填且为 bool；`operator` 非空。
 - `has_scenarios=true` 时 `device_types` 非空 list[str] 且**无"通用"**、`devices` 非空
   list[dict]；每个设备 `device`⊂顶层、`templates` 非空、`template` 组内唯一；
   `feature_params` 每条 `feature` 非空、`params` 非空、每条 `name`/`values`（非空

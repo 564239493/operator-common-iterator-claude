@@ -553,7 +553,7 @@ def main() -> int:
         "test_framework": test_framework,
         "hs_scenario_mode": args.hs_scenario_mode,
         "run_scope": "constraints_only" if test_framework == "constraints" else "full",
-        "scene": None,  # EXTRACT 前 SCENE_SCAN 子步骤回写 v3: {enabled, scope, schema_version, device_types, selection, directive, scan}（v2 legacy 形态见 docs/ARTIFACT_CONTRACTS.md）
+        "scene": None,  # EXTRACT 前 SCENE_SCAN 子步骤回写: {enabled, scope, device_types, selection, param_modes, directive, scan}
         "execution_strategy": None,  # EXTRACT 后 orchestrator 跑 classify_operator.py 回写: fusion | default
         "operator_category": None,  # fusion_comm_compute | default | None
         "operator_category_evidence": [],  # 分类证据 (规则编号 + 原文摘录)

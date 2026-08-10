@@ -1,5 +1,5 @@
 ---
-description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 inputs/scene_scan.json v3 供 scene-scanner 使用。
+description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 inputs/scene_scan.json 供 scene-scanner 使用。
 ---
 
 # 场景扫描规范
@@ -24,7 +24,7 @@ description: 扫描算子文档按设备类型→量化模板→特性参数三�
      只能取唯一值的固定条件（"仅支持 X"/"必传"）归入 `definition`，不作为特性参数。
    - 按"特性名"分组（布局（inputLayout）/Mask/PagedAttention/DequantChecker（反量化）/
      转置…），关联参数取值牵动其他选择型参数时作为该条目的 `related`。
-2. **不设"通用"组**：设备类型来自文档"产品支持情况"表；无设备标注的内容合并到每个
+2. **不设"通用"组**：设备类型来自文档"产品支持情况"表，**逐字照抄 `<term>…</term>` 原文、不得简写/合并**（如 `Atlas A2 训练系列产品/Atlas A2 推理系列产品` 不得改成 `Atlas A2 训练/推理系列`，否则后续 √ 行交集落空）；无设备标注的内容合并到每个
    具体设备组下（不单独成"通用"组）。场景/模板同属多设备 → 在每个相关设备组下都列出。
    **"与 X 相同"的设备直接内联复制 X 的 `templates`**（不写 `same_as` 引用字段，各设备
    `templates` 自洽，下游无需引用解析）。
@@ -37,7 +37,7 @@ description: 扫描算子文档按设备类型→量化模板→特性参数三�
 5. 若未提取到量化模板但文档含量化参数信号 → `scan_notes` 写一条
    `{"kind":"quant_signal_no_template","message":…}` warning，不补造、不置
    `has_scenarios`。宁可放过少数算子剪枝，也不臆造场景。
-6. 输出 `inputs/scene_scan.json`（`schema_version=3`，schema 与字段语义见
+6. 输出 `inputs/scene_scan.json`（schema 与字段语义见
    `prompts/scan_scenes.md` §4）；只写 JSON，不在文件外夹带解释。
 7. 执行：`python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json`
 8. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因（不静默放过）。
