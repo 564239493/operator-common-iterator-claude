@@ -276,8 +276,7 @@ def _build_atk_command(
         f"{node_prefix}"
         f"-c {cases_remote} "
         f"-p {executor_remote} "
-        f"--task {task_type} "
-        f"--bind_cpu_type 1"
+        f"--task {task_type}"
     )
 
 
