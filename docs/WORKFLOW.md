@@ -100,17 +100,34 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 ### SCENE_SCAN（条件触发，非独立状态）
 
 输入：`inputs/<doc>.md`（只读）。
-执行者：scene-scanner（产 `inputs/scene_scan.json`（`schema_version=2`），提取文档明确以"场景"表述的全部场景并按设备分组、量化场景标 `quant_mode`/`quant_width`）+ 主协调器（AskUserQuestion 两级**多选**征询：Q1 设备类型多选（支持全选）→ Q2 逐设备场景多选（支持全选），写 `selection.json={device_types, scenes_by_device}`）+ `scripts/render_scene_directive.py`（算 `quant_combos` 并集、渲染 `inputs/scene_directive.md`（含机读块）、回写 `run_state.scene`）。
-`--scene off` 跳过；`--scene auto`（默认）文档有场景则征询、无则跳过；`--scene all` 取全场景不剪枝（批处理默认）。文档无场景（`has_scenarios=false`）跳过，退回纯文档驱动；仅有量化参数信号而未提取到场景时只写 `scan_notes` 警告，不补造。
-完成条件：`scene_scan.json` 过 `validate_artifacts.py scene_scan`；选定场景落 `run_state.scene` + `inputs/scene_directive.md`（仅 subset）。
-失败策略：scene-scanner 自修正最多三次；`render_scene_directive.py` 对非法选择 exit 2 阻断，提示重选，不静默回退。为独立子步骤而非新状态，空即跳过。
+执行者：scene-scanner（产 `inputs/scene_scan.json`，按**设备类型
+→ 量化模板 → 特性参数**三级提取，不设"通用"组、特性参数只提取枚举/分档可选项）+ 主
+协调器（AskUserQuestion **Q1→Q2→Q3 三轮顺序征询**，每轮一次调用、其内问题并行作答；
+必须分三轮而非一次：Q2 问题集依赖 Q1 选中设备、Q3 问题集依赖 Q2 选中模板，同调用内
+拿不到前轮答案且预枚举 (设备,模板) 全组合会爆炸。Q1 设备类型（`device_types` 仅 1 个
+时直接默认选中、跳过 Q1 进 Q2）→ Q2 逐设备量化模板（批量 ≤4 问/次）→ Q3 逐（设备,
+模板）特性参数（批量 ≤4 问/次，question 文本显式提示"可以不选择"，不选/全选=该模板
+全展开、多选=展开选中项取值分支、未选项取默认值固定），写
+`selection.json={device_types, selection:{device:{template:[feature]|null}}}`）+
+`scripts/render_scene_directive.py`（解析 `param_modes` 三态、渲染 `inputs/scene_directive.md`
+（含机读块 `{device_types, param_modes}`）、回写 `run_state.scene`）。
+`--scene off` 跳过；`--scene auto`（默认）文档有场景则征询、无则跳过；`--scene all` 取
+全设备全模板全特性参数不剪枝（批处理默认）。文档无场景（`has_scenarios=false`）跳过，
+退回纯文档驱动；仅有量化参数信号而未提取到模板时只写 `scan_notes`
+（`quant_signal_no_template`）警告，不补造。
+完成条件：`scene_scan.json` 过 `validate_artifacts.py scene_scan`；选定场景落
+`run_state.scene` + `inputs/scene_directive.md`（仅 subset）。
+失败策略：scene-scanner 自修正最多三次；`render_scene_directive.py` 对非法选择 exit 2
+阻断，提示重选，不静默回退。为独立子步骤而非新状态，空即跳过。
 
 ### EXTRACT
 
 输入：run/inputs 中的算子文档快照、prompt_vN，以及（若存在）`inputs/scene_directive.md`。
 执行者：constraint-extractor。若 directive 存在，按其 `device_types` 收窄
-`product_support`（"通用" 展开为文档"产品支持情况"表全部 √ 行，其余设备与 √ 行取
-交集）并屏蔽非选定场景；该 `product_support` 随后驱动 `generate_cases.py` 逐平台生成。
+`product_support`（设备类型为"产品支持情况"具体设备名，直接与文档 √ 行取交集，
+无"通用"展开）并按机读块 `param_modes` 三态屏蔽
+（`{"expand": [取值清单]}` 清单=所选模板 values 并集、禁止回文档拉全集 / `{"fix": X}` 单值候选 / 缺键 Optional 参数 presence 丢）；
+该 `product_support` 随后驱动 `generate_cases.py` 逐平台生成。
 完成条件：constraints.json 通过 Pydantic/结构校验。
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。
 

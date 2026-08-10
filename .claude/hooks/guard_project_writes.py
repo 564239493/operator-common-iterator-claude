@@ -481,8 +481,68 @@ def guard_shell(payload: dict[str, Any], root: Path) -> str | None:
     return None
 
 
+_TOKEN_RE = re.compile(
+    r'''\s*(?:"(?P<double>[^"]+)"|'(?P<single>[^']+)'|(?P<bare>[^\s;&|]+))'''
+)
+_INTERPRETER_NAME = re.compile(
+    r"^(?:python3(?:\.\d+)?|python|pythonw|py)(?:\.exe)?$"
+)
+# Python interpreter switches that take NO argument (e.g. -O, -u, -B, -E, -I,
+# -3, and combos like -Ou). These may sit between the interpreter and the
+# .py entry without changing which file is run. Arg-taking options (-m, -c,
+# -W, -X) are deliberately excluded so module/stdin mode stays untrusted.
+# Lowercase -x is no-arg; uppercase -X takes an argument, so X is NOT here.
+_PY_NOARG_SWITCH = re.compile(r"^-[bBdEIPqSsUuVvx34Oo]+$")
+
+
+def _is_interpreter_token(tok: str) -> bool:
+    """True if tok names a python interpreter (python/python3/py/venv python.exe)."""
+    name = tok.replace("\\", "/").split("/")[-1].lower()
+    return _INTERPRETER_NAME.match(name) is not None
+
+
+def _python_entry_token(segment: str) -> str | None:
+    """First token after the interpreter that is itself a real script path.
+
+    Skips leading interpreter tokens (handles LLM variant forms like
+    ``python .venv/Scripts/python.exe scripts/foo.py`` where two interpreters
+    are stacked) and option flags (``-O``/``-u``/``-3``) so the entry is the
+    actual ``.py`` being run. Returns None for module mode (``-m foo``) and
+    stdin mode (``-``), which are intentionally not auto-trusted.
+    """
+    pos = 0
+    n = len(segment)
+    while pos < n:
+        m = _TOKEN_RE.match(segment, pos)
+        if not m:
+            return None
+        tok = m.group("double") or m.group("single") or m.group("bare")
+        if tok is None:
+            return None
+        pos = m.end()
+        if _is_interpreter_token(tok):
+            continue
+        if _PY_NOARG_SWITCH.match(tok):
+            continue
+        if tok.startswith("-"):
+            # -m/-c/-W/-X/--opt/bare '-': no .py entry -> not auto-trusted.
+            # (-c and bare '-' are also blocked earlier by INLINE_PYTHON.)
+            return None
+        return tok
+    return None
+
+
 def all_python_entries_are_project_files(command: str, root: Path) -> bool:
-    """Allow Python file entry points anywhere inside this repository."""
+    """Allow Python file entry points anywhere inside this repository.
+
+    Tolerates interpreter-stacking and flag-prefixed variant forms that
+    different LLMs emit (e.g. ``python .venv/Scripts/python.exe scripts/foo.py``
+    where two interpreters are stacked, or ``python -O scripts/foo.py``).
+    Leading interpreter tokens and option flags are skipped so the entry is
+    the actual ``.py`` being run. Module mode (``-m foo``) and stdin mode
+    (``-``) have no ``.py`` entry and are intentionally not auto-trusted
+    (``-c``/``-`` are blocked earlier by ``INLINE_PYTHON``).
+    """
     matches = list(PYTHON_COMMAND.finditer(command))
     if not matches:
         return True
@@ -490,18 +550,9 @@ def all_python_entries_are_project_files(command: str, root: Path) -> bool:
         segment = re.split(
             r"(?:&&|\|\||[;&|\n])", command[match.end() :], maxsplit=1
         )[0]
-        token_match = re.match(
-            r'''\s*(?:"(?P<double>[^"]+)"|'(?P<single>[^']+)'|(?P<bare>\S+))''',
-            segment,
-        )
-        if not token_match:
+        entry = _python_entry_token(segment)
+        if entry is None:
             return False
-        entry = (
-            token_match.group("double")
-            or token_match.group("single")
-            or token_match.group("bare")
-            or ""
-        )
         if not entry.lower().endswith(".py") or not is_inside(entry, root):
             return False
     return True

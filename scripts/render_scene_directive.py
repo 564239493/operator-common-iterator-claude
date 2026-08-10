@@ -1,23 +1,22 @@
-#!/usr/bin/env python3
-"""Render the run-level scene directive and persist the scene selection.
+"""Render ``inputs/scene_directive.md`` from ``inputs/scene_scan.json`` + the
+user's three-level selection, and persist the scene payload to
+``run_state.json``.
 
-Deterministic glue between the scene-scan Agent output and the
-constraint-extractor Agent input. It does three things:
+Scene model (three-level): 设备类型 → 量化模板 → 特性参数. The scanner emits
+``scene_scan.json`` with nested ``devices[].templates[].feature_params[].params[]``;
+no ``通用`` wildcard group (``device_types`` come verbatim from the doc "产品支持
+情况" table). The orchestrator asks the user Q1 (devices) → Q2 (templates) → Q3
+(feature params; "可以不选择" = expand all), producing ``selection.json``:
+``{device_types:[...]|"全部", selection:{device:{template:[features]|None}}}``.
 
-1. Validates the user's selection against what the scene-scan found in the
-   operator doc. An inconsistent selection exits 2 and blocks EXTRACT (no
-   silent fallback).
-   - v2 (schema_version=2): selection is ``{device_types, scenes_by_device}``
-     — a per-device multi-select of scene ids; the same scene id may be picked
-     under more than one device (kept separately, not flattened).
-   - v1 (no schema_version): single-select ``{quant_mode, quant_width}``.
-2. Derives ``quant_combos`` (distinct (mode, width) from the selected scenes'
-   ``quant_mode``/``quant_width``), renders ``inputs/scene_directive.md`` —
-   the prose + machine-readable block the extractor reads to scope
-   presence/Constraints. ≥2 quant_combos → union pruning; 1 → old single-combo
-   prose; 0 → no pruning (non-quant context only).
-3. Writes the ``scene`` field back into ``run_state.json`` (single source of
-   truth), bumping ``updated_at``. Other run_state fields are preserved.
+``_param_modes`` resolves that selection into per-device per-param three states:
+``{"expand": [values]}`` (candidate set = order-preserving de-duplicated union of
+the param's ``values`` across the selected templates that expand it — NOT the doc
+full enum; the extractor must not fall back to the doc) | ``{"fix": X}`` (single
+value, ``values[0]``) | missing key (Optional param under a deselected template →
+no ``presence_dependency``, presence dropped). The directive carries these in a
+machine block ``<!-- scene: {device_types, param_modes} -->`` (the extractor reads
+only the directive, never the scan).
 
 Scope (decided by the orchestrator from ``--scene`` + ``has_scenarios``):
 
@@ -26,14 +25,11 @@ Scope (decided by the orchestrator from ``--scene`` + ``has_scenarios``):
 - ``all``  — all scenarios in the doc; write run_state.scene(scope=all) with
   the full per-device scene set, do NOT write a directive file (no pruning).
 - ``subset`` — user-chosen per-device scenes; write run_state.scene(scope=
-  subset, scenes_by_device, selected_scene_ids, quant_combos) AND write
+  subset, device_types, selection, param_modes) AND write
   inputs/scene_directive.md with the pruning instructions.
 
 The directive file is written ONLY for ``subset``. Existence of
 ``inputs/scene_directive.md`` is the extractor's signal to prune.
-
-v1 compatibility: when ``scene_scan.json`` lacks ``schema_version`` (or it is
-not 2), the v1 single-select path is used unchanged so old runs can resume.
 """
 
 from __future__ import annotations
@@ -53,99 +49,276 @@ def _load_json(path: Path) -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# v1 path (kept for old-run resume; schema_version missing)
+# Scene model: device → 量化模板 → 特性参数 (three-level)
 # --------------------------------------------------------------------------- #
 
-def _match_selection(
-    scan_combos: list[dict],
-    sel_mode: str,
-    sel_width: str | None,
-) -> tuple[list[dict], list[dict]]:
-    """Return (selected_combos, dropped_combos) from scan.valid_combos.
-
-    Single-select: a scan combo {mode, width} is "selected" when its mode
-    equals sel_mode AND (its width is None OR its width equals sel_width).
-    """
-    selected: list[dict] = []
-    dropped: list[dict] = []
-    for combo in scan_combos:
-        mode = combo.get("mode")
-        width = combo.get("width")
-        if mode == sel_mode and (width is None or width == sel_width):
-            selected.append(combo)
-        else:
-            dropped.append(combo)
-    return selected, dropped
+def _devices_by_name(scan: dict) -> dict[str, dict]:
+    return {
+        d.get("device"): d
+        for d in (scan.get("devices") or [])
+        if isinstance(d, dict) and d.get("device") is not None
+    }
 
 
-def _validate_selection(
+def _templates_by_name(device: dict) -> dict[str, dict]:
+    return {
+        t.get("template"): t
+        for t in (device.get("templates") or [])
+        if isinstance(t, dict) and t.get("template") is not None
+    }
+
+
+def _feature_names(template: dict) -> list[str]:
+    return [
+        fp.get("feature")
+        for fp in (template.get("feature_params") or [])
+        if isinstance(fp, dict) and fp.get("feature")
+    ]
+
+
+def _resolve_selection(
     scan: dict, selection: dict
-) -> tuple[list[str], list[str], str | None, str | None]:
-    """Return (errors, warnings, sel_mode, sel_width). errors non-empty → abort."""
+) -> tuple[list[str], list[str], list[str], dict]:
+    """Validate + resolve a three-level selection.
+
+    selection = {"device_types": [...] | "全部",
+                 "selection": {device: {template: [features] | None | "全部"}}}
+
+    Returns (errors, warnings, sel_devices, selection_resolved) where
+    selection_resolved = {device: {template: [features] | None}} with "全部"
+    normalized to None (expand all features). A template absent from
+    selection[device] = deselected (Q2 not chosen) → its params' presence is
+    dropped (unless the param also appears in a selected template — union
+    semantics resolved in ``_param_modes``).
+    """
     errors: list[str] = []
     warnings: list[str] = []
-    sel_mode = selection.get("quant_mode")
-    sel_width = selection.get("quant_width")
+    devices_by_name = _devices_by_name(scan)
+    scan_devices = [d for d in (scan.get("device_types") or []) if isinstance(d, str)]
 
-    if not isinstance(sel_mode, str) or not sel_mode:
-        errors.append("selection.quant_mode must be a non-empty string")
-        return errors, warnings, sel_mode, sel_width
+    raw_devices = selection.get("device_types")
+    if raw_devices in ("全部", "all"):
+        sel_devices = list(scan_devices)
+    elif isinstance(raw_devices, list):
+        sel_devices = [d for d in raw_devices if isinstance(d, str)]
+    else:
+        errors.append("selection.device_types must be a list or '全部'")
+        sel_devices = []
+    for d in sel_devices:
+        if d not in scan_devices:
+            errors.append(f"selected device not in scan device_types: {d!r}")
 
-    scan_modes = set(scan.get("quant_modes") or [])
-    if sel_mode not in scan_modes:
-        errors.append(f"selected quant_mode not in scan: {sel_mode!r}")
+    raw_sel = selection.get("selection")
+    if raw_sel in ("全部", "all"):
+        raw_sel = {d: "全部" for d in sel_devices}
+    if not isinstance(raw_sel, dict):
+        errors.append("selection.selection must be a dict {device: {template: features|None}}")
+        raw_sel = {}
 
-    if sel_width is not None:
-        if not isinstance(sel_width, str) or not sel_width:
-            errors.append("selection.quant_width must be a string or null")
-        else:
-            widths_for_selected_mode: set[str] = set()
-            for combo in scan.get("valid_combos") or []:
-                if combo.get("mode") == sel_mode and combo.get("width") is not None:
-                    widths_for_selected_mode.add(combo["width"])
-            if sel_width not in widths_for_selected_mode:
-                errors.append(
-                    f"selected quant_width {sel_width!r} not valid for mode {sel_mode!r}"
+    resolved: dict[str, dict] = {}
+    for d in sel_devices:
+        dev_entry = devices_by_name.get(d)
+        if dev_entry is None:
+            continue  # device not in scan devices (already errored above)
+        tpls = _templates_by_name(dev_entry)
+        raw_dev = raw_sel.get(d)
+        if raw_dev in ("全部", "all"):
+            raw_dev = {t: "全部" for t in tpls}
+        if raw_dev is None:
+            raw_dev = {}
+        if not isinstance(raw_dev, dict):
+            warnings.append(
+                f"selection.selection[{d!r}] must be a dict or '全部'; treated as no templates"
+            )
+            raw_dev = {}
+        dev_resolved: dict[str, list[str] | None] = {}
+        for t, feats in raw_dev.items():
+            if t not in tpls:
+                warnings.append(f"template {t!r} not in device {d!r} templates; ignored")
+                continue
+            if feats in ("全部", "all") or feats is None:
+                dev_resolved[t] = None  # expand all features (Q3 skipped / 全选)
+            elif isinstance(feats, list):
+                feat_set = _feature_names(tpls[t])
+                for f in feats:
+                    if isinstance(f, str) and f not in feat_set:
+                        warnings.append(
+                            f"feature {f!r} not in template {t!r} (device {d!r}); dropped"
+                        )
+                dev_resolved[t] = [f for f in feats if isinstance(f, str)]
+            else:
+                warnings.append(
+                    f"selection.selection[{d!r}][{t!r}] must be list/None/'全部'; "
+                    f"treated as expand-all"
                 )
-    return errors, warnings, sel_mode, sel_width
+                dev_resolved[t] = None
+        if not dev_resolved:
+            warnings.append(f"DEVICE_NO_TEMPLATES_SELECTED: device {d!r} has 0 selected templates")
+        else:
+            resolved[d] = dev_resolved
+
+    if not resolved:
+        errors.append("EMPTY_SCENE: selection yields no selected templates (all devices empty)")
+
+    return errors, warnings, sel_devices, resolved
+
+
+def _param_modes(
+    scan: dict, sel_devices: list[str], selection_resolved: dict
+) -> dict[str, dict]:
+    """Resolve per-device per-param expand/fix decision (union semantics).
+
+    For each device, iterate its templates in scan order. A param appearing in
+    ANY selected template under an expanded feature (Q3 selected the feature, or
+    the template's Q3 was skipped/全选 = expand all) → ``{"expand": [values]}``
+    where ``[values]`` is the union of the param's ``values`` across expanding
+    selected templates. A param
+    appearing only under unexpanded features of selected templates →
+    ``{"fix": <values[0]>}`` (first-seen default kept). A param appearing ONLY in
+    deselected templates is absent from ``param_modes[device]`` → presence drop.
+
+    ``expand`` wins over ``fix``: if a param is expanded in any selected
+    template it is expanded, and only the expanding selected templates
+    contribute values (a fix-only template does not add its value).
+    """
+    devices_by_name = _devices_by_name(scan)
+    out: dict[str, dict] = {}
+    for d in sel_devices:
+        dev = devices_by_name.get(d)
+        if dev is None:
+            continue
+        sel_templates = selection_resolved.get(d, {})
+        param_state: dict[str, object] = {}
+        for t in (dev.get("templates") or []):
+            if not isinstance(t, dict):
+                continue
+            tname = t.get("template")
+            if tname not in sel_templates:
+                continue  # deselected template
+            feats = sel_templates.get(tname)
+            for fp in (t.get("feature_params") or []):
+                if not isinstance(fp, dict):
+                    continue
+                expand_this = (feats is None) or (fp.get("feature") in (feats or []))
+                for p in (fp.get("params") or []):
+                    if not isinstance(p, dict):
+                        continue
+                    pname = p.get("name")
+                    if not isinstance(pname, str) or not pname:
+                        continue
+                    vals = p.get("values") or []
+                    if expand_this:
+                        cur = param_state.get(pname)
+                        if isinstance(cur, dict) and "expand" in cur:
+                            for v in vals:
+                                if v not in cur["expand"]:
+                                    cur["expand"].append(v)
+                        else:
+                            param_state[pname] = {"expand": list(vals)}
+                    elif pname not in param_state:
+                        default = vals[0] if vals else None
+                        param_state[pname] = {"fix": default}
+        if param_state:
+            out[d] = param_state
+    return out
 
 
 def _render_directive(
-    sel_mode: str, sel_width: str | None, valid_combos: list[dict]
+    scan: dict,
+    sel_devices: list[str],
+    selection_resolved: dict,
+    param_modes: dict[str, dict],
 ) -> str:
-    """Render the v1 prose directive consumed by constraint-extractor."""
-    width_str = sel_width if sel_width is not None else "null（非量化/无位宽细分）"
-    combo_lines: list[str] = []
-    for c in valid_combos:
-        w = c.get("width")
-        combo_lines.append(f"  - ({c['mode']}, {w if w is not None else 'null'})")
-    combos_block = "\n".join(combo_lines) if combo_lines else "  (none)"
+    """Render the directive: per-device per-template listing + three-state
+    masking prose + machine block ``{device_types, param_modes}``."""
+    devices_by_name = _devices_by_name(scan)
+    dev_sections: list[str] = []
+    for d in sel_devices:
+        dev = devices_by_name.get(d)
+        if dev is None:
+            continue
+        sel_templates = selection_resolved.get(d, {})
+        lines = [f"**{d}**:"]
+        for t in (dev.get("templates") or []):
+            if not isinstance(t, dict):
+                continue
+            tname = t.get("template")
+            if tname not in sel_templates:
+                continue
+            feats = sel_templates.get(tname)
+            lines.append(f"- **{tname}**: {t.get('definition', '')}")
+            uf = t.get("unsupported_features") or []
+            if uf:
+                lines.append(f"  - 本模板不支持：{', '.join(str(x) for x in uf)}")
+            for fp in (t.get("feature_params") or []):
+                if not isinstance(fp, dict):
+                    continue
+                feat = fp.get("feature", "")
+                expand_this = (feats is None) or (feat in (feats or []))
+                tag = "展开取值分支" if expand_this else "固定取默认值"
+                lines.append(f"  - **{feat}** （{tag}）:")
+                for p in (fp.get("params") or []):
+                    if not isinstance(p, dict):
+                        continue
+                    pname = p.get("name", "")
+                    vals = p.get("values", [])
+                    lines.append(
+                        f"    - {pname}: 取值：{vals}；描述：{p.get('description', '')}"
+                    )
+        dev_sections.append("\n".join(lines))
+    listing = "\n\n".join(dev_sections) if dev_sections else "(无)"
+
+    expand_params: list[str] = []
+    fix_params: list[str] = []
+    for d in sel_devices:
+        pm = param_modes.get(d, {})
+        for p, v in pm.items():
+            if isinstance(v, dict) and "expand" in v:
+                expand_params.append(f"{d}/{p}")
+            elif isinstance(v, dict) and "fix" in v:
+                fix_params.append(f"{d}/{p}={v.get('fix')}")
+
+    machine = json.dumps(
+        {"device_types": sel_devices, "param_modes": param_modes},
+        ensure_ascii=False,
+    )
 
     return f"""## 场景指令（run 级，本次提取范围）
 
-由 `scripts/render_scene_directive.py` 渲染；源 `inputs/scene_scan.json` + 用户选择。
-提取器必须读本文件并据此屏蔽非选定场景的参数与约束。
+由 `scripts/render_scene_directive.py` 渲染；源 `inputs/scene_scan.json` + 用户三级选择
+（设备类型 → 量化模板 → 特性参数）。提取器必须读本文件并据此屏蔽非选定场景的参数与约束。
 
-本次仅提取以下单个量化场景的约束，屏蔽其他所有场景（单选）：
-- 量化方式：{sel_mode}
-- 量化位宽组合：{width_str}
-- 选定 (方式, 位宽) 组合：
-{combos_block}
+### 选定模板（逐设备逐模板）
+
+{listing}
+
+### 特性参数剪枝（三级语义）
+
+- **展开**（保留取值分支）：选中模板下、Q3 选中特性（或 Q3 跳过/全选=全展开）的特性参数，
+  保留其枚举/分档取值分支参与组合生成。
+- **固定**（取默认值不展开）：选中模板下、Q3 未选中的特性参数，取该参数 `values[0]` 为默认值，
+  仅产单值候选，不展开取值分支。
+- **丢弃 presence**（不测试）：未选模板（Q2 未选）的专属参数，其 `presence_dependency` 不产出
+  （若该参数同时出现在已选模板下，按已选模板的展开/固定决策处理——并集语义）。
+- 展开参数：{expand_params or '(无)'}
+- 固定参数：{fix_params or '(无)'}
 
 提取要求：
-1. 仅保留符合上述组合的参数存在性路径。例如选定量化时：`scaleOptional`
-   /`offsetOptional` 视为可能存在；`antiquantScaleOptional`
-   /`antiquantOffsetOptional` 视为必 None（屏蔽），其 `presence_dependency`
-   不产出。`perTokenScaleOptional` 按"动态"是否在选定组合内决定。
-2. `constraints_in_parameters` 仅保留与选定场景一致的约束行；与未选场景绑定的
-   专属约束（如伪量化 weight=INT4 仅 perchannel、A16W4 非对称仅 perchannel）不产出。
-3. 与所有场景通用的约束（`shape_equality`、维度、`dtype`、`format`、`groupType`
-   等）原样保留，不得因场景删除。
-4. `allowed_range_value` 中与本场景无关的枚举候选（如未选位宽、未选场景专属值）
-   剔除；保留通用候选。
-5. 不得臆造文档未声明的限制；场景仅做"屏蔽"，不做"扩展"。提取结果必须仍满足
-   `OperatorRule` 与 `scripts/validate_artifacts.py constraints` 校验。
-6. 落盘后照常跑 `normalize_constraints.py` + `validate_artifacts.py constraints`。
+1. **选择内容是基本限制，未提及的按文档原文提取**——按机读块 `param_modes` 三态收窄：
+   `{{"expand": [取值清单]}}` → 所选清单是该特性参数的基本限制：凡依赖该参数取值的约束均按清单收窄——
+   无论体现为该参数自身的 `allowed_range_value` 枚举候选，还是以该取值为条件的 `dtype`/`format`/`dimensions`
+   分支或 `constraints_in_parameters` 行（保留命中清单内取值的候选/分支、丢弃绑定清单外取值者，清单为所选模板
+   values 并集，**禁止回文档拉全集**）；`{{"fix": X}}` → 该参数取单值 `X`，依赖其取值的约束同此收窄；
+   缺键（仅出现在未选模板下的 Optional 参数）→ 不产 `presence_dependency`（presence 丢）。
+2. `constraints_in_parameters` 仅保留与选定模板一致的约束行，未选模板绑定的专属约束不产出；其内以取值为条件的分支按条 1 随选择收窄。
+3. 与参数取值**无关**的通用约束（`shape_equality`、维度、`groupType` 等）原样保留，不得因场景删除；
+   `dtype`/`format`/`dimensions` 以取值为条件分支者按条 1 收窄，无条件者原样保留。
+4. `product_support` 按机读块 `device_types` 与文档"产品支持情况"√ 行取交集（无"通用"展开）。
+   不得臆造文档未声明的限制；提取结果必须仍满足 `OperatorRule` 与
+   `scripts/validate_artifacts.py constraints` 校验。
+5. 落盘后照常跑 `normalize_constraints.py` + `validate_artifacts.py constraints`。
+
+<!-- scene: {machine} -->
 """
 
 
@@ -153,311 +326,17 @@ def _scene_payload(
     scope: str,
     scan_path: Path,
     scan: dict,
-    sel_mode: str | None = None,
-    sel_width: str | None = None,
-    valid_combos: list[dict] | None = None,
+    device_types: list[str] | None = None,
+    selection: dict | None = None,
+    param_modes: dict[str, dict] | None = None,
     directive_path: Path | None = None,
 ) -> dict:
     return {
         "enabled": scope != "off",
         "scope": scope,
-        "quant_mode": sel_mode,
-        "quant_width": sel_width,
-        "valid_combos": valid_combos or [],
-        "directive": str(directive_path) if directive_path else "",
-        "scan": str(scan_path),
-    }
-
-
-# --------------------------------------------------------------------------- #
-# v2 path (schema_version=2): device types + per-device scene multi-select
-# --------------------------------------------------------------------------- #
-
-def _scenes_by_id(scan: dict) -> dict[str, dict]:
-    return {
-        s.get("id"): s
-        for s in (scan.get("scenes") or [])
-        if isinstance(s, dict) and s.get("id") is not None
-    }
-
-
-_GENERAL_DEVICE = "通用"  # op-scene wildcard: "无设备标注 = 适用所有设备"
-
-
-def _concrete_devices(scan: dict) -> list[str]:
-    """Scan device_types with the '通用' wildcard marker removed."""
-    return [d for d in (scan.get("device_types") or []) if d != _GENERAL_DEVICE]
-
-
-def _scene_applies_to(scene: dict, device: str) -> bool:
-    """A scene applies to a concrete device when the device is explicitly
-    listed, OR the scene is tagged '通用' (no device annotation = all devices).
-    """
-    sdev = scene.get("device_types") or []
-    return device in sdev or _GENERAL_DEVICE in sdev
-
-
-def _ids_for_device(scan: dict, device: str) -> list[str]:
-    """Scene ids applicable to ``device`` — includes '通用'-tagged scenes."""
-    out: list[str] = []
-    for s in (scan.get("scenes") or []):
-        if not isinstance(s, dict) or s.get("id") is None:
-            continue
-        if _scene_applies_to(s, device):
-            out.append(s["id"])
-    return out
-
-
-def _normalize_id_list(ids: Any, scan: dict, device: str) -> list[str]:
-    if ids in ("全部", "all"):
-        return _ids_for_device(scan, device)
-    if isinstance(ids, list):
-        return [i for i in ids if isinstance(i, str)]
-    return []
-
-
-def _resolve_selection_v2(
-    scan: dict, selection: dict
-) -> tuple[list[str], list[str], dict[str, list[str]], list[str]]:
-    """Validate + resolve a v2 selection.
-
-    Returns (errors, warnings, scenes_by_device_resolved, selected_scene_ids).
-    ``scenes_by_device_resolved`` keeps per-device lists without cross-device
-    dedup (the same id may appear under several devices). ``selected_scene_ids``
-    is the distinct id union (convenience, non-authoritative).
-
-    '通用' is a wildcard meaning "applies to all devices the operator supports".
-    It is kept verbatim in the resolved ``device_types`` and as a
-    ``scenes_by_device`` key when selected as a device — render never expands
-    it, because ``scene_scan.device_types`` only lists devices that have scenes,
-    which may be a proper subset of the doc's supported products. The
-    constraint-extractor (which reads the operator doc's product-support table)
-    expands '通用' to the doc's √-marked products when writing ``product_support``.
-    """
-    errors: list[str] = []
-    warnings: list[str] = []
-    scenes_by_id = _scenes_by_id(scan)
-    scan_devices = list(scan.get("device_types") or [])
-
-    raw_devices = selection.get("device_types")
-    raw_sbd = selection.get("scenes_by_device")
-
-    # Resolve device_types verbatim — '通用' is kept as the wildcard marker
-    # (the constraint-extractor expands it against the doc's √-marked products).
-    if raw_devices in ("全部", "all"):
-        sel_devices = [d for d in scan_devices if isinstance(d, str)]
-    elif isinstance(raw_devices, list):
-        sel_devices = [d for d in raw_devices if isinstance(d, str)]
-    else:
-        errors.append("selection.device_types must be a list or '全部'")
-        sel_devices = []
-
-    for d in sel_devices:
-        if d not in scan_devices:
-            warnings.append(f"selected device not in scan device_types: {d!r} (kept)")
-
-    # Resolve scenes_by_device: keys mirror the selected device_types. A '通用'
-    # key is kept as-is (device-agnostic scenes); a scene tagged '通用' applies
-    # to every device, so it is valid under any concrete key too.
-    sbd: dict[str, list[str]] = {}
-    if raw_sbd in ("全部", "all"):
-        for d in sel_devices:
-            sbd[d] = _ids_for_device(scan, d)
-    elif isinstance(raw_sbd, dict):
-        for d, ids in raw_sbd.items():
-            if d not in sel_devices:
-                warnings.append(
-                    f"scenes_by_device has device {d!r} not in selection.device_types; ignored"
-                )
-                continue
-            sbd[d] = _normalize_id_list(ids, scan, d)
-            if not isinstance(ids, (list, str)) and ids not in ("全部", "all"):
-                warnings.append(
-                    f"scenes_by_device[{d!r}] must be a list or '全部'; ignored"
-                )
-                sbd[d] = []
-    else:
-        errors.append("selection.scenes_by_device must be a dict or '全部'")
-
-    # Existence + device-applicability check (通用-tagged scenes apply everywhere);
-    # drop empty devices (partial-empty handling).
-    for d in list(sbd.keys()):
-        kept: list[str] = []
-        for sid in sbd[d]:
-            s = scenes_by_id.get(sid)
-            if s is None:
-                warnings.append(f"scene id not in scan: {sid!r} (device {d!r}); dropped")
-                continue
-            if not _scene_applies_to(s, d):
-                warnings.append(
-                    f"SCENE_DEVICE_MISMATCH: scene {sid!r} not applicable to device {d!r} (kept)"
-                )
-            kept.append(sid)
-        if not kept:
-            warnings.append(f"DEVICE_NO_SCENES_SELECTED: device {d!r} has 0 scenes; removed")
-            sbd.pop(d, None)
-        else:
-            sbd[d] = kept
-
-    if not sbd:
-        errors.append("EMPTY_SCENE: selection yields no scenes (all devices empty)")
-
-    selected_scene_ids: list[str] = []
-    for ids in sbd.values():
-        for sid in ids:
-            if sid not in selected_scene_ids:
-                selected_scene_ids.append(sid)
-    return errors, warnings, sbd, selected_scene_ids
-
-
-def _quant_combos_from_scenes(
-    selected_scene_ids: list[str], scan: dict
-) -> list[dict]:
-    """Distinct (mode, width) derived from selected quant scenes."""
-    scenes_by_id = _scenes_by_id(scan)
-    combos: list[dict] = []
-    seen: set[tuple] = set()
-    for sid in selected_scene_ids:
-        s = scenes_by_id.get(sid)
-        if not s:
-            continue
-        mode = s.get("quant_mode")
-        if mode is None:
-            continue
-        width = s.get("quant_width")
-        key = (mode, width)
-        if key in seen:
-            continue
-        seen.add(key)
-        combos.append({"mode": mode, "width": width})
-    return combos
-
-
-def _render_directive_v2(
-    scan: dict,
-    scenes_by_device: dict[str, list[str]],
-    selected_scene_ids: list[str],
-    quant_combos: list[dict],
-) -> str:
-    """Render the v2 directive: per-device listing + quant branch + machine block."""
-    scenes_by_id = _scenes_by_id(scan)
-
-    dev_sections: list[str] = []
-    for d, ids in scenes_by_device.items():
-        lines = [f"**{d}**:"]
-        for sid in ids:
-            s = scenes_by_id.get(sid, {})
-            cat = s.get("category", "")
-            name = s.get("name", sid)
-            desc = s.get("description", "")
-            lines.append(f"- {sid} {cat}: {name} — {desc}")
-        dev_sections.append("\n".join(lines))
-    listing = "\n\n".join(dev_sections) if dev_sections else "(无)"
-
-    n = len(quant_combos)
-    if n == 1:
-        m = quant_combos[0]["mode"]
-        w = quant_combos[0].get("width")
-        width_str = w if w is not None else "null（非量化/无位宽细分）"
-        quant_block = (
-            "本次仅提取以下单个量化场景的约束，屏蔽其他所有场景（单选）：\n"
-            f"- 量化方式：{m}\n"
-            f"- 量化位宽组合：{width_str}\n"
-            "- 选定 (方式, 位宽) 组合：\n"
-            f"  - ({m}, {w if w is not None else 'null'})"
-        )
-        req1 = (
-            "1. 仅保留符合上述组合的参数存在性路径。例如选定量化时：`scaleOptional`"
-            "/`offsetOptional` 视为可能存在；`antiquantScaleOptional`"
-            "/`antiquantOffsetOptional` 视为必 None（屏蔽），其 `presence_dependency`"
-            " 不产出。`perTokenScaleOptional` 按“动态”是否在选定组合内决定。"
-        )
-    elif n == 0:
-        quant_block = "未选量化场景，不剪枝；非量化/布局/分离/MASK/MLA 场景仅作上下文。"
-        req1 = "1. 无量化剪枝：所有 Optional 参数存在性路径原样保留，不因量化场景屏蔽。"
-    else:
-        combo_lines = "\n".join(
-            f"  - ({c['mode']}, {c.get('width') if c.get('width') is not None else 'null'})"
-            for c in quant_combos
-        )
-        quant_block = (
-            "多量化并选，按并集保留：任一选定量化场景在场的 Optional 参数视为可能存在，"
-            "仅屏蔽所有选定场景均不在场的专属参数。\n"
-            "- 选定 quant_combos：\n"
-            f"{combo_lines}"
-        )
-        req1 = (
-            "1. 按并集保留：任一选定量化场景在场的 Optional 参数"
-            "（`scaleOptional`/`offsetOptional`/`antiquantScaleOptional`/"
-            "`antiquantOffsetOptional`/`perTokenScaleOptional` 等）视为可能存在；"
-            "仅屏蔽所有选定场景均不在场的专属参数。非量化/布局/分离/MASK/MLA 场景"
-            "仅作上下文，不触发 presence 剪枝。"
-        )
-
-    machine = json.dumps(
-        {
-            "device_types": list(scenes_by_device.keys()),
-            "scenes_by_device": scenes_by_device,
-            "quant_combos": quant_combos,
-        },
-        ensure_ascii=False,
-    )
-
-    return f"""## 场景指令（run 级，本次提取范围）
-
-由 `scripts/render_scene_directive.py` 渲染；源 `inputs/scene_scan.json` + 用户选择。
-提取器必须读本文件并据此屏蔽非选定场景的参数与约束。
-
-### 选定场景（逐设备）
-
-{listing}
-
-### 量化剪枝
-
-{quant_block}
-
-提取要求：
-{req1}
-2. `constraints_in_parameters` 仅保留与选定场景一致的约束行；与未选场景绑定的
-   专属约束（如伪量化 weight=INT4 仅 perchannel、A16W4 非对称仅 perchannel）不产出。
-3. 与所有场景通用的约束（`shape_equality`、维度、`dtype`、`format`、`groupType`
-   等）原样保留，不得因场景删除。
-4. `allowed_range_value` 中与本场景无关的枚举候选（如未选位宽、未选场景专属值）
-   剔除；保留通用候选。
-5. 不得臆造文档未声明的限制；场景仅做"屏蔽"，不做"扩展"。提取结果必须仍满足
-   `OperatorRule` 与 `scripts/validate_artifacts.py constraints` 校验。
-6. 落盘后照常跑 `normalize_constraints.py` + `validate_artifacts.py constraints`。
-
-<!-- scene: {machine} -->
-"""
-
-
-def _scene_payload_v2(
-    scope: str,
-    scan_path: Path,
-    scan: dict,
-    scenes_by_device: dict[str, list[str]] | None = None,
-    selected_scene_ids: list[str] | None = None,
-    quant_combos: list[dict] | None = None,
-    directive_path: Path | None = None,
-) -> dict:
-    quant_combos = quant_combos or []
-    qm: str | None = None
-    qw: str | None = None
-    if len(quant_combos) == 1:
-        qm = quant_combos[0]["mode"]
-        qw = quant_combos[0].get("width")
-    return {
-        "enabled": scope != "off",
-        "scope": scope,
-        "schema_version": 2,
-        "device_types": list((scenes_by_device or {}).keys()),
-        "scenes_by_device": scenes_by_device or {},
-        "selected_scene_ids": selected_scene_ids or [],
-        "quant_combos": quant_combos,
-        "quant_mode": qm,
-        "quant_width": qw,
-        "valid_combos": quant_combos,  # alias for v1 downstream compatibility
+        "device_types": device_types or [],
+        "selection": selection or {},
+        "param_modes": param_modes or {},
         "directive": str(directive_path) if directive_path else "",
         "scan": str(scan_path),
     }
@@ -478,10 +357,6 @@ def _write_run_state_scene(run_dir: Path, scene_payload: dict) -> None:
     )
 
 
-def _is_v2(scan: dict) -> bool:
-    return scan.get("schema_version") == 2
-
-
 def main() -> int:
     p = argparse.ArgumentParser(
         description=(
@@ -494,8 +369,8 @@ def main() -> int:
     p.add_argument(
         "--selection",
         help=(
-            "v2: path to selection JSON {device_types, scenes_by_device}; "
-            "v1: {quant_mode, quant_width}. Required for --scope subset, ignored otherwise."
+            "{device_types, selection:{device:{template:[features]|None}}}. "
+            "Required for --scope subset, ignored otherwise."
         ),
     )
     p.add_argument("--run-dir", required=True, help="run directory (contains run_state.json + inputs/)")
@@ -522,12 +397,7 @@ def main() -> int:
 
     # ----- off ------------------------------------------------------------- #
     if args.scope == "off":
-        if _is_v2(scan):
-            _write_run_state_scene(
-                run_dir, _scene_payload_v2("off", scan_path, scan)
-            )
-        else:
-            _write_run_state_scene(run_dir, _scene_payload("off", scan_path, scan))
+        _write_run_state_scene(run_dir, _scene_payload("off", scan_path, scan))
         print(json.dumps(
             {"ok": True, "scope": "off", "directive": "", "scene_scan": str(scan_path)},
             ensure_ascii=False,
@@ -536,41 +406,31 @@ def main() -> int:
 
     # ----- all ------------------------------------------------------------ #
     if args.scope == "all":
-        if _is_v2(scan):
-            scan_devices = _concrete_devices(scan)
-            sbd = {d: _ids_for_device(scan, d) for d in scan_devices}
-            sel_ids: list[str] = []
-            for ids in sbd.values():
-                for sid in ids:
-                    if sid not in sel_ids:
-                        sel_ids.append(sid)
-            quant_combos = _quant_combos_from_scenes(sel_ids, scan)
-            _write_run_state_scene(
-                run_dir,
-                _scene_payload_v2(
-                    "all", scan_path, scan, sbd, sel_ids, quant_combos
-                ),
-            )
-            print(json.dumps(
-                {"ok": True, "scope": "all", "directive": "",
-                 "n_scenes": len(sel_ids), "n_devices": len(scan_devices),
-                 "n_quant_combos": len(quant_combos), "scene_scan": str(scan_path)},
-                ensure_ascii=False,
-            ))
-        else:
-            valid_combos = list(scan.get("valid_combos") or [])
-            _write_run_state_scene(
-                run_dir,
-                _scene_payload(
-                    "all", scan_path, scan,
-                    sel_mode=None, sel_width=None, valid_combos=valid_combos,
-                ),
-            )
-            print(json.dumps(
-                {"ok": True, "scope": "all", "directive": "", "n_combos": len(valid_combos),
-                 "scene_scan": str(scan_path)},
-                ensure_ascii=False,
-            ))
+        scan_devices = [d for d in (scan.get("device_types") or []) if isinstance(d, str)]
+        # all devices, all templates, Q3 skipped → expand all features (None)
+        dev_map = _devices_by_name(scan)
+        full_sel: dict[str, dict] = {}
+        for d in scan_devices:
+            dev = dev_map.get(d)
+            if not dev:
+                continue
+            full_sel[d] = {
+                t.get("template"): None
+                for t in (dev.get("templates") or [])
+                if isinstance(t, dict) and t.get("template")
+            }
+        param_modes = _param_modes(scan, scan_devices, full_sel)
+        _write_run_state_scene(
+            run_dir,
+            _scene_payload(
+                "all", scan_path, scan, scan_devices, full_sel, param_modes
+            ),
+        )
+        print(json.dumps(
+            {"ok": True, "scope": "all", "directive": "",
+             "n_devices": len(scan_devices), "scene_scan": str(scan_path)},
+            ensure_ascii=False,
+        ))
         return 0
 
     # ----- subset ---------------------------------------------------------- #
@@ -593,75 +453,38 @@ def main() -> int:
         ))
         return 2
 
-    if not _is_v2(scan):
-        # v1 path (unchanged)
-        errors, warnings, sel_mode, sel_width = _validate_selection(scan, selection)
-        if errors:
-            print(json.dumps(
-                {"ok": False, "code": "INVALID_SELECTION",
-                 "errors": errors, "warnings": warnings},
-                ensure_ascii=False,
-            ))
-            return 2
-        selected, dropped = _match_selection(
-            scan.get("valid_combos") or [], sel_mode, sel_width
-        )
-        if not selected:
-            print(json.dumps(
-                {"ok": False, "code": "EMPTY_SCENE",
-                 "message": "selection yields no valid (mode, width) combo",
-                 "warnings": warnings},
-                ensure_ascii=False,
-            ))
-            return 2
-        for d in dropped:
-            warnings.append(
-                f"dropped combo not in selection: ({d.get('mode')}, {d.get('width')})"
-            )
-        directive_text = _render_directive(sel_mode, sel_width, selected)
-        inputs_dir.mkdir(parents=True, exist_ok=True)
-        directive_path.write_text(directive_text, encoding="utf-8")
-        _write_run_state_scene(
-            run_dir,
-            _scene_payload(
-                "subset", scan_path, scan,
-                sel_mode=sel_mode, sel_width=sel_width,
-                valid_combos=selected, directive_path=directive_path,
-            ),
-        )
-        print(json.dumps(
-            {"ok": True, "scope": "subset", "directive": str(directive_path),
-             "n_combos": len(selected), "n_dropped": len(dropped),
-             "warnings": warnings, "scene_scan": str(scan_path)},
-            ensure_ascii=False,
-        ))
-        return 0
-
-    # v2 path
-    errors, warnings, sbd, sel_ids = _resolve_selection_v2(scan, selection)
+    errors, warnings, sel_devices, selection_resolved = _resolve_selection(
+        scan, selection
+    )
     if errors:
-        code = "EMPTY_SCENE" if any("EMPTY_SCENE" in e for e in errors) else "INVALID_SELECTION"
+        code = (
+            "EMPTY_SCENE"
+            if any("EMPTY_SCENE" in e for e in errors)
+            else "INVALID_SELECTION"
+        )
         print(json.dumps(
             {"ok": False, "code": code,
              "errors": errors, "warnings": warnings},
             ensure_ascii=False,
         ))
         return 2
-
-    quant_combos = _quant_combos_from_scenes(sel_ids, scan)
-    directive_text = _render_directive_v2(scan, sbd, sel_ids, quant_combos)
+    param_modes = _param_modes(scan, sel_devices, selection_resolved)
+    directive_text = _render_directive(
+        scan, sel_devices, selection_resolved, param_modes
+    )
     inputs_dir.mkdir(parents=True, exist_ok=True)
     directive_path.write_text(directive_text, encoding="utf-8")
     _write_run_state_scene(
         run_dir,
-        _scene_payload_v2(
-            "subset", scan_path, scan, sbd, sel_ids, quant_combos, directive_path
+        _scene_payload(
+            "subset", scan_path, scan, sel_devices, selection_resolved,
+            param_modes, directive_path
         ),
     )
+    n_templates = sum(len(v) for v in selection_resolved.values())
     print(json.dumps(
         {"ok": True, "scope": "subset", "directive": str(directive_path),
-         "n_scenes": len(sel_ids), "n_devices": len(sbd),
-         "n_quant_combos": len(quant_combos),
+         "n_devices": len(sel_devices), "n_templates": n_templates,
          "warnings": warnings, "scene_scan": str(scan_path)},
         ensure_ascii=False,
     ))

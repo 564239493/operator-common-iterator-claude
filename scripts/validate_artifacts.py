@@ -860,13 +860,13 @@ def validate_source_raw(value) -> list[str]:
     return errors
 
 
-def _validate_scene_scan_v2(value: dict) -> tuple[list[str], list[str]]:
-    """v2 rules (schema_version=2): device types + open-category scenes.
+def _validate_scene_scan(value: dict) -> tuple[list[str], list[str]]:
+    """three-level device → 量化模板 → 特性参数.
 
-    Each scene carries its own ``evidence.src_text``; there is no top-level
-    ``evidence`` array. Derived fields (``has_quant_scenarios`` /
-    ``quant_modes`` / ``quant_widths_by_mode`` / ``valid_combos``) are recomputed
-    from ``scenes`` and compared to the declared values.
+    No "通用" group (unmarked content merged into each concrete device). The template
+    name encodes the quant path and ``feature_params`` carry enum/分档 selectable params
+    grouped by 特性名. Derived consistency: ``device_types`` == set of
+    ``devices[].device``.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -877,79 +877,153 @@ def _validate_scene_scan_v2(value: dict) -> tuple[list[str], list[str]]:
         return ["has_scenarios must be bool"], warnings
 
     if not has_scn:
-        for fld in ("device_types", "scenes", "quant_modes", "valid_combos"):
+        for fld in ("device_types", "devices"):
             if value.get(fld):
                 warnings.append(f"has_scenarios=false but {fld} non-empty")
-        if value.get("quant_widths_by_mode"):
-            warnings.append("has_scenarios=false but quant_widths_by_mode non-empty")
-        if value.get("has_quant_scenarios") is True:
-            warnings.append("has_scenarios=false but has_quant_scenarios=true")
-        # scan_notes allowed even when no scenes (e.g. quant_signal_no_scene)
+        # scan_notes allowed even when no scenarios (e.g. quant_signal_no_template)
         return errors, warnings
+
+    operator = value.get("operator")
+    if not isinstance(operator, str) or not operator.strip():
+        errors.append("operator must be a non-empty string")
 
     device_types = value.get("device_types")
     if not isinstance(device_types, list) or not device_types:
         errors.append("device_types must be a non-empty list[str] when has_scenarios=true")
         device_types = []
-    elif not all(isinstance(d, str) and d.strip() for d in device_types):
-        errors.append("device_types entries must be non-empty strings")
+    else:
+        for d in device_types:
+            if not isinstance(d, str) or not d.strip():
+                errors.append("device_types entries must be non-empty strings")
+            elif d == "通用":
+                errors.append("v3 must not contain '通用' device group (merge into concrete devices)")
+
+    devices = value.get("devices")
+    if not isinstance(devices, list) or not devices:
+        errors.append("devices must be a non-empty list[dict] when has_scenarios=true")
+        devices = []
+
     device_set = set(device_types)
-
-    scenes = value.get("scenes")
-    if not isinstance(scenes, list) or not scenes:
-        errors.append("scenes must be a non-empty list[dict] when has_scenarios=true")
-        scenes = []
-
-    seen_ids: set[str] = set()
-    quant_scenes: list[dict] = []
-    for i, s in enumerate(scenes):
-        if not isinstance(s, dict):
-            errors.append(f"scenes[{i}] must be an object")
+    declared_devices: set[str] = set()
+    any_template = False
+    for i, dev in enumerate(devices):
+        if not isinstance(dev, dict):
+            errors.append(f"devices[{i}] must be an object")
             continue
-        sid = s.get("id")
-        if not isinstance(sid, str) or not sid.strip():
-            errors.append(f"scenes[{i}].id must be a non-empty string")
-            sid = f"__no_id_{i}"
-        if sid in seen_ids:
-            errors.append(f"duplicate scene id: {sid!r}")
-        seen_ids.add(sid)
-        for f in ("name", "category", "description"):
-            v = s.get(f)
-            if not isinstance(v, str) or not v.strip():
-                errors.append(f"scenes[{i}].{f} must be a non-empty string")
-        sdev = s.get("device_types")
-        if not isinstance(sdev, list) or not sdev:
-            errors.append(f"scenes[{i}].device_types must be a non-empty list")
+        dname = dev.get("device")
+        if not isinstance(dname, str) or not dname.strip():
+            errors.append(f"devices[{i}].device must be a non-empty string")
+            dname = f"__no_dev_{i}"
         else:
-            for d in sdev:
-                if d not in device_set:
-                    errors.append(
-                        f"scenes[{i}].device_types has {d!r} not in top-level device_types"
-                    )
-        qm = s.get("quant_mode")
-        qw = s.get("quant_width")
-        if qm is not None:
-            if not isinstance(qm, str) or not qm.strip():
-                errors.append(f"scenes[{i}].quant_mode must be a string when set")
-            if qw is not None and (not isinstance(qw, str) or not qw.strip()):
-                errors.append(f"scenes[{i}].quant_width must be a string or null")
-            quant_scenes.append(s)
-        else:
-            if qw is not None:
-                warnings.append(
-                    f"scenes[{i}] quant_mode=null but quant_width={qw!r} (should be null)"
-                )
-        ev = s.get("evidence")
-        if not isinstance(ev, dict):
-            errors.append(f"scenes[{i}].evidence must be an object")
-        elif not str(ev.get("src_text", "")).strip():
-            errors.append(f"scenes[{i}].evidence.src_text must be non-empty")
+            declared_devices.add(dname)
+        if device_types and dname not in device_set:
+            errors.append(f"devices[{i}].device {dname!r} not in top-level device_types")
 
-    if "evidence" in value:
-        warnings.append(
-            "v2 scene_scan should not carry top-level evidence "
-            "(use per-scene evidence.src_text instead)"
-        )
+        templates = dev.get("templates")
+        if not isinstance(templates, list) or not templates:
+            errors.append(f"devices[{i}].templates must be a non-empty list[dict]")
+            templates = []
+        seen_tpl: set[str] = set()
+        for j, t in enumerate(templates):
+            if not isinstance(t, dict):
+                errors.append(f"devices[{i}].templates[{j}] must be an object")
+                continue
+            tname = t.get("template")
+            if not isinstance(tname, str) or not tname.strip():
+                errors.append(f"devices[{i}].templates[{j}].template must be a non-empty string")
+                tname = f"__no_tpl_{i}_{j}"
+            if tname in seen_tpl:
+                errors.append(f"duplicate template in device {dname!r}: {tname!r}")
+            seen_tpl.add(tname)
+            any_template = True
+            definition = t.get("definition")
+            if not isinstance(definition, str) or not definition.strip():
+                errors.append(f"devices[{i}].templates[{j}].definition must be a non-empty string")
+            uf = t.get("unsupported_features", [])
+            if uf is None:
+                uf = []
+            if not isinstance(uf, list):
+                errors.append(f"devices[{i}].templates[{j}].unsupported_features must be a list")
+            elif not all(isinstance(x, str) and x.strip() for x in uf):
+                errors.append(
+                    f"devices[{i}].templates[{j}].unsupported_features entries must be non-empty strings"
+                )
+            fps = t.get("feature_params")
+            if fps is None:
+                fps = []
+            if not isinstance(fps, list):
+                errors.append(f"devices[{i}].templates[{j}].feature_params must be a list")
+                fps = []
+            for k, fp in enumerate(fps):
+                if not isinstance(fp, dict):
+                    errors.append(f"devices[{i}].templates[{j}].feature_params[{k}] must be an object")
+                    continue
+                feat = fp.get("feature")
+                if not isinstance(feat, str) or not feat.strip():
+                    errors.append(
+                        f"devices[{i}].templates[{j}].feature_params[{k}].feature must be non-empty"
+                    )
+                params = fp.get("params")
+                if not isinstance(params, list) or not params:
+                    errors.append(
+                        f"devices[{i}].templates[{j}].feature_params[{k}].params must be non-empty list"
+                    )
+                    params = []
+                seen_param: set[str] = set()
+                for m, p in enumerate(params):
+                    if not isinstance(p, dict):
+                        errors.append(
+                            f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}] must be object"
+                        )
+                        continue
+                    pname = p.get("name")
+                    if not isinstance(pname, str) or not pname.strip():
+                        errors.append(
+                            f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}].name non-empty"
+                        )
+                        pname = f"__no_param_{i}_{j}_{k}_{m}"
+                    if pname in seen_param:
+                        warnings.append(
+                            f"device {dname!r} template {tname!r} feature {feat!r}: "
+                            f"duplicate param {pname!r}"
+                        )
+                    seen_param.add(pname)
+                    pvals = p.get("values")
+                    if not isinstance(pvals, list) or not pvals:
+                        errors.append(
+                            f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}].values "
+                            f"must be non-empty list"
+                        )
+                    elif not all(isinstance(x, (str, int, float, bool)) for x in pvals):
+                        errors.append(
+                            f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}].values "
+                            f"entries must be str/int/float/bool"
+                        )
+                    pdesc = p.get("description")
+                    if not isinstance(pdesc, str) or not pdesc.strip():
+                        errors.append(
+                            f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}].description "
+                            f"must be non-empty"
+                        )
+                    for opt in ("constraint", "related"):
+                        ov = p.get(opt)
+                        if ov is not None and not isinstance(ov, str):
+                            errors.append(
+                                f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}].{opt} "
+                                f"must be string or null"
+                            )
+
+    # derived consistency: device_types == set of devices[].device
+    if device_types and declared_devices != device_set:
+        missing = device_set - declared_devices
+        extra = declared_devices - device_set
+        if missing:
+            errors.append(f"device_types has entries with no device object: {sorted(missing)}")
+        if extra:
+            errors.append(f"devices has device objects not in device_types: {sorted(extra)}")
+
+    if not any_template:
+        errors.append("has_scenarios=true but no device has any template")
 
     notes = value.get("scan_notes")
     if notes is not None:
@@ -962,164 +1036,15 @@ def _validate_scene_scan_v2(value: dict) -> tuple[list[str], list[str]]:
                 elif not str(n.get("kind", "")).strip() or not str(n.get("message", "")).strip():
                     errors.append(f"scan_notes[{j}] must have non-empty kind and message")
 
-    # derived-field consistency (recompute from scenes)
-    r_has_quant = len(quant_scenes) > 0
-    r_modes: list[str] = []
-    r_widths: dict[str, list[str]] = {}
-    r_combos: list[dict] = []
-    seen_m: set[str] = set()
-    seen_c: set[tuple] = set()
-    for s in quant_scenes:
-        m = s.get("quant_mode")
-        w = s.get("quant_width")
-        if m not in seen_m:
-            seen_m.add(m)
-            r_modes.append(m)
-            r_widths[m] = []
-        if w is not None and w not in r_widths[m]:
-            r_widths[m].append(w)
-        ck = (m, w)
-        if ck not in seen_c:
-            seen_c.add(ck)
-            r_combos.append({"mode": m, "width": w})
-
-    decl_has_quant = value.get("has_quant_scenarios")
-    if decl_has_quant is None:
-        warnings.append("has_quant_scenarios missing (should be recomputed=%s)" % r_has_quant)
-    elif not isinstance(decl_has_quant, bool):
-        errors.append("has_quant_scenarios must be bool")
-    elif decl_has_quant != r_has_quant:
-        errors.append(f"has_quant_scenarios={decl_has_quant} but recomputed={r_has_quant}")
-
-    decl_modes = value.get("quant_modes")
-    if decl_modes is None:
-        warnings.append("quant_modes missing (should be recomputed)")
-    elif decl_modes != r_modes:
-        if set(decl_modes) != set(r_modes):
-            errors.append(f"quant_modes {decl_modes} != recomputed {r_modes}")
-        else:
-            warnings.append(f"quant_modes order mismatch: {decl_modes} vs {r_modes}")
-
-    decl_wbm = value.get("quant_widths_by_mode")
-    if decl_wbm is None:
-        warnings.append("quant_widths_by_mode missing (should be recomputed)")
-    elif decl_wbm != r_widths:
-        errors.append(f"quant_widths_by_mode {decl_wbm} != recomputed {r_widths}")
-
-    decl_combos = value.get("valid_combos")
-    if decl_combos is None:
-        warnings.append("valid_combos missing (should be recomputed)")
-    else:
-        decl_set = {
-            (c.get("mode"), c.get("width")) for c in decl_combos if isinstance(c, dict)
-        }
-        if decl_set != seen_c:
-            errors.append(f"valid_combos {decl_combos} != recomputed {r_combos}")
-
     return errors, warnings
 
 
 def validate_scene_scan(value) -> tuple[list[str], list[str]]:
-    """Validate inputs/scene_scan.json produced by the scene-scanner Agent.
-
-    Dispatches on ``schema_version``: ``2`` → v2 device/scene rules (per-scene
-    ``evidence.src_text``, derived-field consistency); missing → v1 single
-    quant-mode/width rules (``has_quant_scenarios`` + top-level ``evidence``).
-    v1 path is unchanged so old runs can resume.
-    """
+    """Validate inputs/scene_scan.json produced by the scene-scanner Agent
+    (three-level device → 量化模板 → 特性参数 model)."""
     if not isinstance(value, dict):
         return ["scene_scan must be an object"], []
-    if value.get("schema_version") == 2:
-        return _validate_scene_scan_v2(value)
-
-    # ---- v1 path (has_quant_scenarios + top-level evidence) ----
-    errors: list[str] = []
-    warnings: list[str] = []
-    if "has_quant_scenarios" not in value:
-        errors.append("missing field: has_quant_scenarios")
-        return errors, warnings
-    has_quant = value.get("has_quant_scenarios")
-    if not isinstance(has_quant, bool):
-        return ["has_quant_scenarios must be bool"], warnings
-
-    if not has_quant:
-        if value.get("quant_modes"):
-            warnings.append("has_quant_scenarios=false but quant_modes non-empty")
-        return [], warnings
-
-    quant_modes = value.get("quant_modes")
-    if not isinstance(quant_modes, list) or not quant_modes:
-        errors.append("quant_modes must be a non-empty list when has_quant_scenarios=true")
-        return errors, warnings
-    if not all(isinstance(m, str) for m in quant_modes):
-        errors.append("quant_modes entries must be strings")
-
-    widths_by_mode = value.get("quant_widths_by_mode")
-    if not isinstance(widths_by_mode, dict):
-        errors.append("quant_widths_by_mode must be an object")
-
-    valid_combos = value.get("valid_combos")
-    if not isinstance(valid_combos, list) or not valid_combos:
-        errors.append("valid_combos must be a non-empty list when has_quant_scenarios=true")
-        valid_combos = []
-    seen_keys: set[tuple[str, str | None]] = set()
-    for i, c in enumerate(valid_combos):
-        if not isinstance(c, dict):
-            errors.append(f"valid_combos[{i}] must be an object")
-            continue
-        mode = c.get("mode")
-        width = c.get("width")
-        if not isinstance(mode, str):
-            errors.append(f"valid_combos[{i}].mode must be a string")
-            continue
-        if mode not in quant_modes:
-            errors.append(f"valid_combos[{i}].mode {mode!r} not in quant_modes")
-        if width is not None and not isinstance(width, str):
-            errors.append(f"valid_combos[{i}].width must be a string or null")
-        key = (mode, width)
-        if key in seen_keys:
-            warnings.append(f"duplicate valid_combo: ({mode}, {width})")
-        seen_keys.add(key)
-        if isinstance(widths_by_mode, dict):
-            listed = widths_by_mode.get(mode)
-            if not isinstance(listed, list):
-                warnings.append(f"quant_widths_by_mode[{mode!r}] missing or not a list")
-            elif width is not None and width not in listed:
-                errors.append(
-                    f"valid_combos[{i}] width {width!r} not in quant_widths_by_mode[{mode!r}]"
-                )
-
-    evidence = value.get("evidence")
-    if not isinstance(evidence, list):
-        errors.append("evidence must be a list")
-        evidence = []
-    ev_keys: set[tuple[str, str | None]] = set()
-    for e in evidence:
-        if not isinstance(e, dict):
-            continue
-        em, ew = e.get("mode"), e.get("width")
-        if isinstance(em, str):
-            ev_keys.add((em, ew))
-    for c in valid_combos:
-        if not isinstance(c, dict):
-            continue
-        key = (c.get("mode"), c.get("width"))
-        if key not in ev_keys:
-            errors.append(
-                f"valid_combo ({c.get('mode')}, {c.get('width')}) has no evidence entry"
-            )
-        else:
-            ev_item = next(
-                (e for e in evidence
-                 if isinstance(e, dict) and e.get("mode") == c.get("mode")
-                 and e.get("width") == c.get("width")),
-                None,
-            )
-            if isinstance(ev_item, dict) and not str(ev_item.get("src_text", "")).strip():
-                errors.append(
-                    f"evidence for ({c.get('mode')}, {c.get('width')}) has empty src_text"
-                )
-    return errors, warnings
+    return _validate_scene_scan(value)
 
 
 VALIDATORS = {

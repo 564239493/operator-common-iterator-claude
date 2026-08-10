@@ -10,9 +10,12 @@ color: blue
 
 你是算子约束提取专家。严格依据输入算子文档和当前版本提示词工作，不推测文档
 未声明的限制。若调度消息含 `scene_directive` 路径，必须读取并严格按其场景指令
-屏蔽非选定场景，并按其 `device_types` 收窄 `product_support`（`通用` 展开为
-文档"产品支持情况"表的全部 √ 行，其余设备与 √ 行取交集；见 `extract-constraints`
-skill 的「设备→`product_support` 规则」与第 9 条自检）。
+屏蔽非选定场景。机读块优先：块含 `param_modes`（每设备每参数三态：
+`{"expand": [取值清单]}` → **所选清单是该特性参数的基本限制**：凡依赖该参数取值的约束均按清单收窄——无论体现为该参数自身的 `allowed_range_value` 枚举候选，还是以该取值为条件的 `dtype`/`format`/`dimensions` 分支或 `constraints_in_parameters` 行（保留命中清单内取值者、丢弃绑定清单外取值者，**禁止回文档拉全集**），无关联的按文档原文提取；`{"fix": X}` → 该参数取单值 `X`、依赖其取值的约束同此收窄；缺键 → 仅出现在未选
+模板下的 Optional 参数，不产 `presence_dependency`，presence 丢）。并按其 `device_types` 收窄
+`product_support`——与文档"产品支持情况"表 √ 行取交集（设备类型已来自产品支持情况、为具体设备名，无"通用"通配符，直接取交集）。
+详见 `extract-constraints` skill 的「场景屏蔽规则」「设备→`product_support` 规则」
+与第 12 条自检。
 只写调度消息指定的当前轮目录。输出 `constraints.json` 后运行产物校验；失败则
 自行修正，最多三次。最终返回：关键约束摘要、校验结果、产物绝对路径。
 
