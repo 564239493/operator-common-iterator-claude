@@ -83,6 +83,20 @@ class {{ class_name }}(AclnnBaseApi):
                     AclTensorListPtr = ctypes.POINTER(AclTensorList)
                     null_tensorlist_ptr = AclTensorListPtr()  # 默认为 None
                     input_args.append(null_tensorlist_ptr)
+                elif type == "aclIntArray":
+                    AclIntArrayPtr = ctypes.POINTER(AclIntArray)
+                    null_intarray_ptr = AclIntArrayPtr()
+                    input_args.append(null_intarray_ptr)
+                elif type == "aclFloatArray":
+                    AclFloatArrayPtr = ctypes.POINTER(AclIntArray)
+                    null_floatarray_ptr = AclFloatArrayPtr()
+                    input_args.append(null_floatarray_ptr)
+                elif type == "aclBoolArray":
+                    AclBoolArrayPtr = ctypes.POINTER(AclIntArray)
+                    null_boolarray_ptr = AclBoolArrayPtr()
+                    input_args.append(null_boolarray_ptr)
+                elif type in ("char", "const char") or arg_name == "activation"
+                    input_args.append(None)
                 else:
                     input_args.append(ctypes.c_void_p(None))
 
@@ -197,6 +211,14 @@ class {{ class_name }}(AclnnBaseApi):
                 )
             if found_mat2_transposed.range_values:
                 input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
+            return
+        if "aclnnGroupedMatmulV5" in operator_name:
+            x_tensor = input_data.kwargs.get("x")[0]
+            input_data.kwargs["x"][0] = x_tensor.transpose(1, 0)
+
+            input_data.kwargs.pop('activationFeatureOutOptional')
+            input_data.kwargs.pop('dynQuantScaleOutOptional')
+            return
 
 
 
