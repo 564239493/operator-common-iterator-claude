@@ -19,17 +19,23 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
 > EXTRACT 前可选触发场景扫描（`--scene auto` 默认；`all`/`off` 可选）：
-> `scene-scanner` 读文档提取全部"场景"表述（开放类目）并按设备类型分组、量化场景标
-> `quant_mode`/`quant_width`，产 `inputs/scene_scan.json`（`schema_version=2`）；
-> 主协调器据此 AskUserQuestion 两级多选征询（设备类型 + 逐设备场景，均支持全选），
-> `scripts/render_scene_directive.py` 渲染
-> `inputs/scene_directive.md`（含机读块 `device_types`/`scenes_by_device`/`quant_combos`，
-> "通用" 作通配符原样保留）并回写 `run_state.scene`，constraint-extractor 据此屏蔽非选定
-> 场景（`quant_combos`≥2 按并集保留）并按 `device_types` 收窄 `product_support`——
-> "通用" 展开为文档"产品支持情况"表的全部 √ 行，其余设备与 √ 行取交集；`product_support`
-> 随后驱动用例生成（`generate_cases.py` 按 `product_support` 逐平台生成，不读场景）。
-> 为独立子步骤而非新状态，文档无
-> 场景即跳过（零回归）；仅有量化参数信号而未提取到场景时只写 `scan_notes` 警告，不补造。
+> `scene-scanner` 读文档按**设备类型 → 量化模板 → 特性参数**三级提取（**不设"通用"组**，
+> 无设备标注内容合并到每个具体设备组下；特性参数只提取枚举/分档可选项），产
+> `inputs/scene_scan.json`（`schema_version=3`）；主协调器据此 AskUserQuestion
+> **Q1→Q2→Q3 三轮顺序征询**（每轮一次调用，必须分三轮：Q2 问题集依赖 Q1 选中设备、
+> Q3 问题集依赖 Q2 选中模板，同调用内并行作答拿不到前轮答案；`device_types` 仅 1 个
+> 时直接默认选中、跳过 Q1 进 Q2）——设备类型 → 逐设备量化模板 → 逐（设备,模板）特性
+> 参数，特性参数可不选/多选/全选，征询时显式提示"可以不选择"，`scripts/render_scene_directive.py`
+> 解析选择为每设备每参数的 `param_modes` 三态（`"expand"` 保留全枚举候选 /
+> `{"fix": X}` 单值候选 / 缺键 presence 丢）并渲染
+> `inputs/scene_directive.md`（含机读块 `device_types`/`param_modes`）并回写
+> `run_state.scene`，constraint-extractor 据此按 `param_modes` 三态屏蔽并按
+> `device_types` 收窄 `product_support`——v3 设备类型为"产品支持情况"具体设备名，
+> 直接与 √ 行取交集（无"通用"展开）；`product_support` 随后驱动用例生成
+> （`generate_cases.py` 按 `product_support` 逐平台生成，不读场景）。为独立子步骤而非
+> 新状态，文档无场景即跳过（零回归）；仅有量化参数信号而未提取到模板时只写
+> `scan_notes`（`quant_signal_no_template`）警告，不补造。旧 run 的 v2/v1 路径作 legacy
+> 保留以支持 `--continue` 恢复。
 
 ## 常用命令
 
@@ -169,7 +175,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
-- `render_scene_directive.py` — 校验场景选择、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
+- `render_scene_directive.py` — 校验三级场景选择、解析 `param_modes` 三态、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`（v3；v2/v1 路径 legacy 保留）
 - `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 `base + 命中知识` → 冻结 `prompt_v1.md`+`prompt_preanalysis.json`+`prompt_assembly.json`
 - `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
 - `route_aclnn_knowledge.py` / `route_torch_npu_knowledge.py` — manifest 驱动知识路由（正向 trigger + `reject_on` 负向否决 + `depends_on` 依赖闭包）

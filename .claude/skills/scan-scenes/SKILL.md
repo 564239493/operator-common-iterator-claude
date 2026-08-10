@@ -1,5 +1,5 @@
 ---
-description: 扫描算子文档提取全部场景(开放类目)+设备分组，量化场景标 quant_mode/width，产 inputs/scene_scan.json v2 供 scene-scanner 使用。
+description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 inputs/scene_scan.json v3 供 scene-scanner 使用。
 ---
 
 # 场景扫描规范
@@ -8,30 +8,40 @@ description: 扫描算子文档提取全部场景(开放类目)+设备分组，�
 （`prompts/scan_scenes.md`，含 op-scene 规则段）、当前 run 的 `inputs/` 目录（只写
 `inputs/scene_scan.json`，不碰其他文件）。
 
-> 与 constraint-extractor 职责严格区分：你只提取"文档明确以'场景'表述的全部场景"并按设备分组，
-> **不**提取参数 dtype/format/shape、不写 `constraints_in_parameters`、
-> 不下 presence 依赖。constraint-extractor 后续会按你给的场景清单做屏蔽式提取。
+> 与 constraint-extractor 职责严格区分：你只提取文档中**有测试需求的场景**并按
+> 设备→模板→特性三级分层，**不**提取参数 dtype/format/shape、不写
+> `constraints_in_parameters`、不下 presence 依赖。constraint-extractor 后续会按你给
+> 的场景清单与 directive 做屏蔽式提取。
 
-1. Read `prompts/scan_scenes.md`，按其 **op-scene 规则段**（设备类型划分表、场景类目目录、
-   提取要求）逐节提取文档全部场景；一场景一条；过滤 ACLNN_ERR_*/校验场景；类目开放。
-2. 对 `category="量化场景"` 的 scene，按 §2 量化参数信号表与位宽表填充
-   `quant_mode`/`quant_width`（标注已提取 scene，**非补造**）。
-3. 文档无任何"场景"表述 → `has_scenarios=false`，其余留空；**不**凭算子名或参数名臆造场景。
-4. 若未提取到量化场景但文档含量化参数信号 → `scan_notes` 写 warning，不补造、不置 `has_scenarios`。
-5. 输出 `inputs/scene_scan.json`（schema_version=2，schema 与字段语义见 `prompts/scan_scenes.md` §4）；
-   只写 JSON，不在文件外夹带解释。
-6. 执行：`python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json`
-7. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因（不静默放过）。
+1. Read `prompts/scan_scenes.md`，按其 **op-scene 规则段**（设备类型划分表、特性参数
+   筛选规则、输出格式、提取要求）逐节提取文档全部场景；按**设备类型 → 量化模板 →
+   特性参数**三级组织；一模板一条；过滤 ACLNN_ERR_*/校验场景。
+   - 量化模板 = 编码量化方式的具体模板（可细分到位宽/dtype，如 `全量化-A8W8`/
+     `K-C量化（A4W4）`/`全量化-GQA`）；**分类词不作为模板**（"量化模式"等上级分类名
+     不提取为与模板平级的条目，其说明拆入其下各真实模板）。
+   - 特性参数**只提取枚举/分档类可选项**（如 `sparseMode` 0/1/2/3/4、分多档范围需
+     用户择一的参数）；**单个取值范围不算选择**（如 `blockSize` 16~1024 不提取）、
+     只能取唯一值的固定条件（"仅支持 X"/"必传"）归入 `definition`，不作为特性参数。
+   - 按"特性名"分组（布局（inputLayout）/Mask/PagedAttention/DequantChecker（反量化）/
+     转置…），关联参数取值牵动其他选择型参数时作为该条目的 `related`。
+2. **不设"通用"组**：设备类型来自文档"产品支持情况"表；无设备标注的内容合并到每个
+   具体设备组下（不单独成"通用"组）。场景/模板同属多设备 → 在每个相关设备组下都列出。
+   **"与 X 相同"的设备直接内联复制 X 的 `templates`**（不写 `same_as` 引用字段，各设备
+   `templates` 自洽，下游无需引用解析）。
+3. **含多参数的 bullet 拆成独立 `params[]` 条目**：文档原文
+   `x: 取值：…；weight: 取值：…` → 两条 params，各带 `name`/`values`/`description`；
+   复杂取值的逐值注记（如 `0 KEEP_DOTO（…）`）只保留值 token 在 `values`，注记并入
+   `description`/`constraint`。
+4. 文档无任何场景/模板 → `has_scenarios=false`，`device_types`/`devices` 留空；**不**凭
+   算子名或参数名臆造场景。
+5. 若未提取到量化模板但文档含量化参数信号 → `scan_notes` 写一条
+   `{"kind":"quant_signal_no_template","message":…}` warning，不补造、不置
+   `has_scenarios`。宁可放过少数算子剪枝，也不臆造场景。
+6. 输出 `inputs/scene_scan.json`（`schema_version=3`，schema 与字段语义见
+   `prompts/scan_scenes.md` §4）；只写 JSON，不在文件外夹带解释。
+7. 执行：`python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json`
+8. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因（不静默放过）。
 
-边界与统一命名（写入 JSON 必须用左列标准名，仅约束量化场景的 `quant_mode`/`quant_width`）：
-
-| 维度 | 标准取值 |
-|---|---|
-| 量化方式 quant_mode | `非量化` / `量化` / `伪量化`（文档原文"全量化"统一归到 `量化`；静态/动态**不**作为 mode 子类，仅在 `evidence.src_text` 注记） |
-| 量化位宽 quant_width | `A8W8` / `A4W4` / `A16W8` / `A16W4` / `A8W4` / `FP8_E5M2` / `FP8_E4M3FN` / `HIFLOAT8` / `FP8_E8M0` 等，按文档实际列出 |
-| 非量化 | `quant_width=null` |
-| 设备组名 | 按 `prompts/scan_scenes.md` op-scene 规则段「设备类型划分」表 |
-
-不臆造：文档未以"场景"字样明列的不进 `scenes[]`；纯算子名推断（如见
-`AscendAntiQuant` 算子名就臆断有伪量化）**不**算 `evidence.src_text` 依据，
-必须找到正文/表格原文。
+不臆造：文档未明列的量化场景不进 `devices[].templates`；纯算子名推断（如见
+`AscendAntiQuant` 算子名就臆断有伪量化）**不**算 `description`/`definition` 依据，
+必须找到正文/表格原文。模板命名与 `values` 取值 token 须保留文档原文用词，不改写语义。

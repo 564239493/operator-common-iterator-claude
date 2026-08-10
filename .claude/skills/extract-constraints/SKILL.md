@@ -34,21 +34,32 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 保留为空或按提示词标注不确定性，不得从历史产物补齐。
 
 **场景屏蔽规则**（仅当 `inputs/scene_directive.md` 存在时执行；不存在则按全场景
-提取，行为不变）：优先读取 directive 末尾机读块 `<!-- scene: {device_types,
-scenes_by_device, quant_combos} -->` 作为权威锚点（prose 段仅供人读）。
+提取，行为不变）：优先读取 directive 末尾机读块作为权威锚点（prose 段仅供人读）。
+按字段判版本：v3 块为 `<!-- scene: {device_types, param_modes} -->`；v2 块为
+`<!-- scene: {device_types, scenes_by_device, quant_combos} -->`。
 
 **设备→`product_support` 规则**（同一 directive 存在条件下，覆盖提示词 §4.3 的
 "仅取 √ 行"为"按选定设备收窄"）：先读文档"产品支持情况"表得到 √ 行全集 `D`；再按
-机读块 `device_types` 决定本次 `product_support`——`通用` 通配符展开为 `D` 全部 √ 行；
-其余设备名原样保留；最后将展开结果与 `D` 取交集（剔除文档标 × 的设备，绝不生成算子
-不支持的平台），并按文档表格自上而下排序。`device_types` 缺失或展开/交集后为空时
-回退为 `D`（行为与无 directive 一致）。机读块 `scenes_by_device` 中的 `通用` 键表示
-设备无关场景，其约束对 `product_support` 中每个设备均适用。本规则与 §4.6.2 的"逐平台
+机读块 `device_types` 决定本次 `product_support`——将 `device_types` 与 `D` 取交集
+（剔除文档标 × 的设备，绝不生成算子不支持的平台），并按文档表格自上而下排序。
+v3 设备类型已来自"产品支持情况"、为具体设备名，**无"通用"通配符**，直接取交集；
+v2 的 `通用` 通配符展开为 `D` 全部 √ 行，其余设备名原样保留后再取交集。`device_types`
+缺失或展开/交集后为空时回退为 `D`（行为与无 directive 一致）。本规则与 §4.6.2 的"逐平台
 复制 `ParamAttributes`"一致：`product_support` 收窄后，`inputs`/`outputs`/
 `deterministic_computing`/`constraints_in_parameters` 的二级平台 key 仅按收窄后的
 `product_support` 逐平台产出（仍不得用单一平台代笔）。
 
-按 `quant_combos`（选定量化场景的 distinct (方式, 位宽) 并集）分三种语义：
+**v3 屏蔽（`param_modes` 三态）**——按机读块 `param_modes[device][param]` 决定每设备
+每参数的 `allowed_range_value` 候选：
+- `"expand"` → 保留该参数在文档中的**全部**枚举/分档取值候选（不剪枝，参与组合生成）；
+- `{"fix": X}` → **仅产单值候选** `X`（取该值、不展开取值分支）；
+- **缺键** → 该参数仅出现在未选模板（Q2 未选）下，若是 Optional 参数则**不产
+  `presence_dependency`**（presence 丢、不测试该量化路径）；非 Optional 参数不受此态影响。
+  若该参数同时出现在已选模板下，则按已选模板的 `expand`/`fix` 决策处理（并集语义，
+  `expand` 优先）。
+
+**v2 屏蔽（`quant_combos` 三分支，旧 run resume 用）**——按选定量化场景的 distinct
+(方式, 位宽) 并集分三种语义：
 - `quant_combos` 长度 = 1：单组合——仅保留符合该 (方式, 位宽) 组合的参数存在性路径
   与约束，屏蔽非选定场景的专属 Optional 参数（其 `presence_dependency` 不产出）；
 - `quant_combos` 长度 ≥ 2：**并集保留**——任一选定量化场景在场的 Optional 参数（如
@@ -58,7 +69,7 @@ scenes_by_device, quant_combos} -->` 作为权威锚点（prose 段仅供人读�
   专属的 `constraints_in_parameters` 约束行；
 - `quant_combos` 长度 = 0：未选量化场景，不剪枝；非量化/布局/分离/MASK/MLA 场景仅
   作上下文，Optional 参数存在性路径原样保留。
-无论哪种语义，**保留**与所有场景通用的约束（`shape_equality`、维度、`dtype`、
+无论 v3 还是 v2，**保留**与所有场景通用的约束（`shape_equality`、维度、`dtype`、
 `format`、`groupType` 等）。场景只做"屏蔽"，不臆造文档未声明的限制；结果仍须满足
 `OperatorRule` 与 `validate_artifacts.py constraints` 校验。
 
@@ -107,13 +118,17 @@ scenes_by_device, quant_combos} -->` 作为权威锚点（prose 段仅供人读�
    `[[A,B]]`。特别是 `src_text="传入0或1"` 必须为
    `{"value":[0,1],"type":"enum"}`。
 11. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因。
-12. **场景屏蔽完整性自检**（仅当 `inputs/scene_directive.md` 存在时）：确认被屏蔽
-    场景的专属 Optional 参数其 `presence_dependency` 未产出、通用约束
-    （shape/dtype/format 等）未被误删、`allowed_range_value` 候选已按场景收窄。
-    并确认 `product_support` 已按机读块 `device_types` 收窄（`通用` 展开为文档 √ 行
-    全集，其余设备与 √ 行取交集），`inputs`/`outputs` 等二级平台 key 仅含收窄后
-    的平台、无遗漏无代笔。自检不通过则回到步骤 1 重提，不放过半屏蔽的
-    constraints.json。
+12. **场景屏蔽完整性自检**（仅当 `inputs/scene_directive.md` 存在时）：先判版本——
+    v3（机读块含 `param_modes`）：确认 `param_modes` 三态已应用——`"expand"` 参数保留
+    全枚举候选、`{"fix": X}` 参数仅产单值候选 `X`、缺键的 Optional 参数其
+    `presence_dependency` 未产出；通用约束（shape/dtype/format 等）未被误删。
+    v2（机读块含 `quant_combos`）：确认被屏蔽场景的专属 Optional 参数其
+    `presence_dependency` 未产出、通用约束（shape/dtype/format 等）未被误删、
+    `allowed_range_value` 候选已按场景收窄。
+    两版均确认：`product_support` 已按机读块 `device_types` 收窄并与文档 √ 行取交集
+    （v3 直接交集；v2 `通用` 展开为 √ 行全集、其余设备与 √ 行取交集），`inputs`/
+    `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。自检不通过则回到步骤 1
+    重提，不放过半屏蔽的 constraints.json。
 
 开始写文件前必须确认调度已将 run state 更新为 `EXTRACT`。成功后回报非空
 `constraints.json` 的绝对路径；不得只返回聊天中的摘要。
