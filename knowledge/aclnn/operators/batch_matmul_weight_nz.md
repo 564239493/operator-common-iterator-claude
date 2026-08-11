@@ -147,9 +147,101 @@ relation_params: ["self", "mat2", "mat2_transposed"]
 - `src_text` 必须**同时摘录两个布局的 NZ 维度元组原文**（"当B矩阵不转置时..."
   与 "当B矩阵转置时..."），不可只摘默认布局。
 
+#### 模式 6.2：Reduce 维度相等门控模板（v4 增补）
+
+**适用场景**：文档出现"mat2 的 Reduce 维度需要与 self 的 Reduce 维度大小相等"等
+Reduce 轴相等原文时，**必须**在 ceil 关系（模式 6.1）之外，补出 Reduce 维度整块
+相等 `self.shape[k_idx] == mat2.shape[k1_idx] * mat2.shape[k0_idx]`，按
+`self_transposed × mat2_transposed` 四象限门控。仅落 ceil 会允许 k 为非 16 倍数
+（如 k=769 → k1=ceil(769/16)=49 → k1*16=784≠769），运行时 `GetWorkspaceSize`
+返回 161002 "self's last dim and mat2's penultimate dim should be same"。
+
+**NZ 轴位**：
+- 非转置 NZ mat2 `(b, n1, k1, k0, n0)`：`k1=shape[2]`、`k0=shape[3]`，reduce = `shape[2]*shape[3]`。
+- 转置 NZ mat2 `(b, k1, n1, n0, k0)`：`k1=shape[1]`、`k0=shape[4]`，reduce = `shape[1]*shape[4]`。
+- self 非转置 `(b, m, k)`：`k=shape[2]`；self 转置 `(b, k, m)`：`k=shape[1]`。
+
+**unless 多分支写法（4 条独立 implication，对应四象限）**：
+
+```text
+# self 非转置 × mat2 非转置
+expr_type: shape_value_dependency
+expr: not(self_transposed.range_value == False and mat2_transposed.range_value == False) or (self.shape[2] == mat2.shape[2] * mat2.shape[3])
+relation_params: ["self", "mat2", "self_transposed", "mat2_transposed"]
+src_text: "mat2的Reduce维度需要与self的Reduce维度大小相等。非转置 NZ (b, n1, k1, k0, n0)，k1=shape[2]、k0=shape[3]，self 非转置 k=shape[2]。"
+
+# self 转置 × mat2 非转置
+expr_type: shape_value_dependency
+expr: not(self_transposed.range_value == True and mat2_transposed.range_value == False) or (self.shape[1] == mat2.shape[2] * mat2.shape[3])
+relation_params: ["self", "mat2", "self_transposed", "mat2_transposed"]
+src_text: "mat2的Reduce维度需要与self的Reduce维度大小相等。非转置 NZ (b, n1, k1, k0, n0)，self 转置 k=shape[1]。"
+
+# self 非转置 × mat2 转置
+expr_type: shape_value_dependency
+expr: not(self_transposed.range_value == False and mat2_transposed.range_value == True) or (self.shape[2] == mat2.shape[1] * mat2.shape[4])
+relation_params: ["self", "mat2", "self_transposed", "mat2_transposed"]
+src_text: "mat2的Reduce维度需要与self的Reduce维度大小相等。转置 NZ (b, k1, n1, n0, k0)，k1=shape[1]、k0=shape[4]，self 非转置 k=shape[2]。"
+
+# self 转置 × mat2 转置
+expr_type: shape_value_dependency
+expr: not(self_transposed.range_value == True and mat2_transposed.range_value == True) or (self.shape[1] == mat2.shape[1] * mat2.shape[4])
+relation_params: ["self", "mat2", "self_transposed", "mat2_transposed"]
+src_text: "mat2的Reduce维度需要与self的Reduce维度大小相等。转置 NZ (b, k1, n1, n0, k0)，self 转置 k=shape[1]。"
+```
+
+> provenance：源自 run `aclnnBatchMatMulWeightNz-20260810-101830-574372` iter_001
+> 失败反推（96/100 失败 161002 → 补后 iter_002 进入），`origin=diagnose_inferred`，
+> 经 iter_003 SUCCESS 验证（promotion_gate=on_success）。
+
+**反例（禁止）**：
+
+```text
+# 只写 ceil，无 reduce 相等 → 允许 k 非 16 倍数，运行时 161002
+((self.shape[2] + 15) // 16 == mat2.shape[2])   # 仅有此条，缺 self.shape[2]==mat2.shape[2]*mat2.shape[3]
+```
+
+#### 模式 6.3：out n 维度整块相等门控模板（v4 增补）
+
+**适用场景**：文档 out 使用说明写"n 与 mat2 的 n1 以及 n0 满足 ceil(n / n0) = n1 的关系"
+时，**必须**在 ceil 关系之外，补出 out n 维度整块相等
+`out.shape[2] == mat2.shape[n1_idx] * 16`（即 out_n == n1*n0），按 `mat2_transposed` 门控。
+仅落 ceil 会允许 out_n 为非 16 倍数（如 out_n=4 → ceil(4/16)=1=n1 满足，但 4≠1*16=16），
+运行时 `GetWorkspaceSize` 返回 161002 "out_n[X] must be same with other_n[Y]"。
+
+> 关键：文档只写 ceil，运行时**强制整块相等**——运行时硬约束、非文档原文直引，
+> provenance 见本节末。与模式 6.2 同构（文档写 ceil、运行时要求 dim==count*block）。
+
+**NZ 轴位**：
+- 非转置 NZ mat2 `(b, n1, k1, k0, n0)`：`n1=shape[1]`、`n0=shape[4]=16`，逻辑 N = `shape[1]*16`。
+- 转置 NZ mat2 `(b, k1, n1, n0, k0)`：`n1=shape[2]`、`n0=shape[3]=16`，逻辑 N = `shape[2]*16`。
+- out 为 `(b, m, n)` ND 三维，n 固定 `out.shape[2]`。
+
+**unless 多分支写法（2 条独立 implication，对应 mat2 转置/非转置）**：
+
+```text
+# mat2 非转置
+expr_type: shape_value_dependency
+expr: not(mat2_transposed.range_value == False) or (out.shape[2] == mat2.shape[1] * 16)
+relation_params: ["out", "mat2", "mat2_transposed"]
+src_text: "out各个维度表示：（b, m，n），n与mat2的n1以及n0满足ceil(n / n0) = n1的关系，其中n0为16。NZ整块语义要求 out 的 n 等于 mat2 的逻辑 N=n1*n0；非转置 NZ (b, n1, k1, k0, n0) 中 n1=shape[1]、n0=shape[4]=16。"
+
+# mat2 转置
+expr_type: shape_value_dependency
+expr: not(mat2_transposed.range_value == True) or (out.shape[2] == mat2.shape[2] * 16)
+relation_params: ["out", "mat2", "mat2_transposed"]
+src_text: "out各个维度表示：（b, m，n），n与mat2的n1以及n0满足ceil(n / n0) = n1的关系，其中n0为16。NZ整块语义要求 out 的 n 等于 mat2 的逻辑 N=n1*n0；转置 NZ (b, k1, n1, n0, k0) 中 n1=shape[2]、n0=shape[3]=16。"
+```
+
+> provenance：源自 run `aclnnBatchMatMulWeightNz-20260810-101830-574372` iter_002
+> 失败反推（68/100 失败 161002 → 补后 iter_003 SUCCESS），`origin=diagnose_inferred`，
+> promotion_gate=on_success。文档只写 ceil、未写整块相等，整块语义由运行时失败实证得出。
+
+**与 ceil 关系的关系**：补 out_n==n1*16 后，out_n 必为 16 倍数且 n1=out_n/16=ceil(out_n/16)，
+模式 6.1 的 ceil implication 变冗余但无害（保留不冲突，与模式 6.2 风格一致）。
+
 ## 规则要点
 
 - 候选顺序按既有闭环约定为 `[true,false]`；不得扩散到其他 NZ/MatMul 算子。
-- Reduce 轴相等同样按两个转置变量分支；`relation_params` 包含 tensor 与对应 bool。
+- Reduce 轴相等按两个转置变量四象限分支（模板见模式 6.2）；out n 整块相等按 mat2 转置分支（模板见模式 6.3）；`relation_params` 包含 tensor 与对应 bool。
 - 无条件 shape 关系、漏 bool 的轴引用、或把 stride 转置与 shape 元组重排混为一谈，
   均视为不完整提取。
