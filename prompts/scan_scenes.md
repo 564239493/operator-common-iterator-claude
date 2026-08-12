@@ -1,9 +1,9 @@
 # 场景扫描提示词（scene-scanner 工作提示词）
 
-> 本文件是 scene-scanner Agent 的工作提示词。输入算子文档快照（`inputs/<doc>.md`，
+> 本文件是 scene-scanner Agent 的工作提示词。输入算子文档快照（`<run-dir>/inputs/<doc>.md`，
 > 只读），按 **设备类型 → 量化模板 → 特性参数** 三级分层提取，**不设"通用"组**（无
 > 设备标注内容合并到每个具体设备组下），特性参数**只提取枚举/分档类可选项**，产出
-> `inputs/scene_scan.json`，供主协调器向用户分轮征询"设备类型 →
+> `<run-dir>/inputs/scene_scan.json`，供主协调器向用户分轮征询"设备类型 →
 > 量化模板 → 特性参数"（Q1→Q2→Q3 三轮；`device_types` 仅 1 个时跳过 Q1）、再由 `scripts/render_scene_directive.py` 渲染
 > `inputs/scene_directive.md` 指导 constraint-extractor 做屏蔽式提取。
 >
@@ -18,7 +18,9 @@
   不下 presence 依赖——那是 constraint-extractor 的职责。
 - **不臆造**：只提炼文档原文中出现的内容，不增补、不推断、不改写语义；数值、类型、
   范围等关键信息必须保留。
-- **只读文档快照**，只写 `inputs/scene_scan.json`，不碰其他文件。
+- **只读文档快照**，只写调度消息明确给出的
+  `<run-dir>/inputs/scene_scan.json`，不碰其他文件。不得把相对路径按仓库 cwd 解析；未收到
+  `<run-dir>` 时返回阻断原因。
 
 ## 2. 量化模板命名参考（非补造）
 
@@ -147,7 +149,10 @@ op-scene 提取出的"量化模板"是**具体量化场景**，模板名直接�
   取值 0/1/2/3/4），或分多档范围需用户选择其一的（如取值支持 16~1024 与 2048~4096 两档）；
   **单个取值范围不算选择**（如 blockSize 16~1024，用户不可能只取范围内某个值），不作为
   特性参数提取；只能取唯一值的条件（"仅支持 X"/"必须为 X"/"必传"）同样不提取，归入
-  `definition`。
+  `definition`。**埋藏型特性按 ≥2 取值提成 feature_params**：数据格式（ND/NZ）、转置
+  （bool true/false）、TensorList 单/多，模板支持 ≥2 取值时按枚举可选项提取（bool 用
+  `[true,false]`、TensorList 用 `["单","多"]`、format 用文档原文 token 如 `["ND","NZ"]`）；
+  仅单值时仍归 `definition`。
 - **关联参数同样只提取有选择型的**：特性参数取值牵动其他参数时，作为该条目的 `related`
   信息提取，但关联参数本身也须有可选项（枚举/分档）；固定后果不作为关联参数提取。
 - **错误/校验场景不提取**：ACLNN_ERR_* 返回码、参数校验失败的报错描述一律跳过。
@@ -157,7 +162,7 @@ op-scene 提取出的"量化模板"是**具体量化场景**，模板名直接�
 产出后必须跑：
 
 ```bash
-python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json
+python scripts/validate_artifacts.py scene_scan <run-dir>/inputs/scene_scan.json
 ```
 
 校验项（见 `validate_artifacts.py: validate_scene_scan`）：
@@ -250,6 +255,13 @@ python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json
 - **模板定义**：该量化模板的固定条件（数据类型、quantMode 固定值、固定 shape/layout 等，含公共约束中的固定条件与无设备标注内容），直接引用文档原文；模板行末"本模板不支持：…"列出该模板下排除的特性
 - **参数条目格式**：`<参数名>: 取值：<可选项>；描述：<文档参数描述>；约束：…；关联：…`——**取值在前**，描述引用文档原文中对该参数的说明
 - **特性参数只提取枚举/分档类可选项**：有选择性的参数指类似枚举的选项（如 sparseMode 取值 0/1/2/3/4），或分多档范围需用户选择其一的（如取值支持 16~1024 与 2048~4096 两档，用户选其中一档）；**单个取值范围不算选择**（用户不可能只取范围内某个值，如 blockSize 16~1024），不作为特性参数提取；只能取唯一值的条件（"仅支持 X"/"必须为 X"/"必传"）同样不提取，归入模板定义
+- **埋藏型特性按 ≥2 取值提成 feature_params**：数据格式（weight/input format，ND/NZ 等）、
+  转置（bool，true/false）、TensorList 单/多这三类特征，**当模板支持 ≥2 取值时**按枚举可选项
+  提取为 `feature_params`——bool 用 `[true,false]`、TensorList 单/多用 `["单","多"]`、format 用
+  文档原文 token 如 `["ND","NZ"]`；模板仅支持单值（"仅支持 ND"/"不转置"/"仅单 TensorList"）时
+  仍归 `definition`（固定值规则不变，不提取为特性参数）。提取出的 param `name` 须与
+  constraint-extractor 产出的 param 卡片名一致（如 weight 张量 format 用文档参数名），否则
+  `param_modes` 键落空（inert，不报错但不收窄）——命名以文档参数说明表原文为准。
 - **通用特性合并到每个量化模板下**：多个模板共用的特性（布局、PA、mask 等）在每个模板下重复列出，不设与模板平级的"通用特性"层
 - **关联参数同样只提取有选择型的**：特性参数的取值会牵动其他参数时，作为该条目的"关联"信息提取，但关联参数本身也须有可选项（枚举/分档），并注明与主参数的联动；固定后果（必传、固定 shape/dtype、固定行为）不作为关联参数提取
 - **公共约束不单独成级**：设备组级别的"公共约束/公共说明"不输出为与量化模板平级的条目；其中与特性参数取值相关的约束合并到对应特性参数条目（作为该条目的"约束"信息，仍按枚举/分档类可选项规则筛选），固定条件与设备组通用说明并入该设备组各量化模板的模板定义行

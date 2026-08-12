@@ -1,12 +1,13 @@
 ---
-description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 inputs/scene_scan.json 供 scene-scanner 使用。
+description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 <run-dir>/inputs/scene_scan.json 供 scene-scanner 使用。
 ---
 
 # 场景扫描规范
 
-输入必须包含：算子文档快照（`inputs/<doc>.md`，只读）、工作提示词
-（`prompts/scan_scenes.md`，含 op-scene 规则段）、当前 run 的 `inputs/` 目录（只写
-`inputs/scene_scan.json`，不碰其他文件）。
+输入必须包含：算子文档快照（`<run-dir>/inputs/<doc>.md`，只读）、工作提示词
+（`prompts/scan_scenes.md`，含 op-scene 规则段）、当前 run 的绝对路径 `<run-dir>`（只写
+`<run-dir>/inputs/scene_scan.json`，不碰其他文件）。不得将相对路径 `inputs/scene_scan.json`
+按仓库 cwd 解析；调度消息未提供 `<run-dir>` 时必须阻断并报告。
 
 > 与 constraint-extractor 职责严格区分：你只提取文档中**有测试需求的场景**并按
 > 设备→模板→特性三级分层，**不**提取参数 dtype/format/shape、不写
@@ -22,6 +23,9 @@ description: 扫描算子文档按设备类型→量化模板→特性参数三�
    - 特性参数**只提取枚举/分档类可选项**（如 `sparseMode` 0/1/2/3/4、分多档范围需
      用户择一的参数）；**单个取值范围不算选择**（如 `blockSize` 16~1024 不提取）、
      只能取唯一值的固定条件（"仅支持 X"/"必传"）归入 `definition`，不作为特性参数。
+     **埋藏型特性按 ≥2 取值提取**：数据格式（ND/NZ）、转置（bool true/false）、TensorList
+     单/多在模板支持 ≥2 取值时按枚举可选项提取为 `feature_params`（bool 用 `[true,false]`、
+     TensorList 用 `["单","多"]`、format 用文档原文 token 如 `["ND","NZ"]`），仅单值时仍归 `definition`。
    - 按"特性名"分组（布局（inputLayout）/Mask/PagedAttention/DequantChecker（反量化）/
      转置…），关联参数取值牵动其他选择型参数时作为该条目的 `related`。
 2. **不设"通用"组**：设备类型来自文档"产品支持情况"表，**逐字照抄 `<term>…</term>` 原文、不得简写/合并**（如 `Atlas A2 训练系列产品/Atlas A2 推理系列产品` 不得改成 `Atlas A2 训练/推理系列`，否则后续 √ 行交集落空）；无设备标注的内容合并到每个
@@ -37,9 +41,9 @@ description: 扫描算子文档按设备类型→量化模板→特性参数三�
 5. 若未提取到量化模板但文档含量化参数信号 → `scan_notes` 写一条
    `{"kind":"quant_signal_no_template","message":…}` warning，不补造、不置
    `has_scenarios`。宁可放过少数算子剪枝，也不臆造场景。
-6. 输出 `inputs/scene_scan.json`（schema 与字段语义见
+6. 输出 `<run-dir>/inputs/scene_scan.json`（schema 与字段语义见
    `prompts/scan_scenes.md` §4）；只写 JSON，不在文件外夹带解释。
-7. 执行：`python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json`
+7. 执行：`python scripts/validate_artifacts.py scene_scan <run-dir>/inputs/scene_scan.json`
 8. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因（不静默放过）。
 
 不臆造：文档未明列的量化场景不进 `devices[].templates`；纯算子名推断（如见

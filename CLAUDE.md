@@ -21,13 +21,20 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 > EXTRACT 前可选触发场景扫描（`--scene auto` 默认；`all`/`off` 可选）：
 > `scene-scanner` 读文档按**设备类型 → 量化模板 → 特性参数**三级提取（**不设"通用"组**，
 > 无设备标注内容合并到每个具体设备组下；特性参数只提取枚举/分档可选项），产
-> `inputs/scene_scan.json`；主协调器据此 AskUserQuestion
+> `<run-dir>/inputs/scene_scan.json`（委派时必须把 `<run-dir>` 绝对路径和该唯一写入目标
+> 显式传给 scene-scanner，禁止按仓库 cwd 解析相对 `inputs/`）；主协调器据此 AskUserQuestion
 > **Q1→Q2→Q3 三轮顺序征询**（每轮一次调用，必须分三轮：Q2 问题集依赖 Q1 选中设备、
-> Q3 问题集依赖 Q2 选中模板，同调用内并行作答拿不到前轮答案；`device_types` 仅 1 个
-> 时直接默认选中、跳过 Q1 进 Q2）——设备类型 → 逐设备量化模板 → 逐（设备,模板）特性
-> 参数，特性参数可不选/多选/全选，征询时显式提示"可以不选择"，`scripts/render_scene_directive.py`
-> 解析选择为每设备每参数的 `param_modes` 三态（`{"expand": [取值清单]}` 清单=所选模板 values 并集、
-> 禁止回文档拉全集 / `{"fix": X}` 单值候选 / 缺键 presence 丢）并渲染
+> Q3 问题集依赖 Q2 选中模板，同调用内并行作答拿不到前轮答案）——Q1 设备类型
+> （multiSelect 真实设备、不设"全部设备"聚合项；`device_types` 仅 1 个时直接默认选中、
+> 跳过 Q1 进 Q2）→ Q2 逐设备量化模板（multiSelect 真实模板、不设"全部模板"聚合项；
+> 某设备仅 1 模板自动选中、跳过该设备 Q2）→ Q3 逐（设备,模板）特性参数（**single-select**，
+> 每问 2 预设 + Other：选项1「保持自动/继承文档约束（未填写）」→`null`、选项2「全部固定
+> 默认值」→`"fix_all_default"`、Other→值级 JSON 如 `{"groupType":[-1,0],"splitItem":[3]}`，
+> 单值→fix、多值→expand 子集、未列参数→全展开；question 文本含完整 feature_params 编号表
+> + 提示语「明确填写（Other 输 JSON）→ 按用户值限制；选保持自动（未填写）→ 保持自动/继承
+> 文档约束」），`scripts/render_scene_directive.py`
+> 解析选择为每设备每参数的 `param_modes` 三态（`{"expand": [取值清单]}` 清单=用户子集或所选模板 values 并集、
+> 禁止回文档拉全集 / `{"fix": X}` 单值（用户单值输入或 values[0]） / 缺键 presence 丢）并渲染
 > `inputs/scene_directive.md`（含机读块 `device_types`/`param_modes`）并回写
 > `run_state.scene`，constraint-extractor 据此按 `param_modes` 三态屏蔽并按
 > `device_types` 收窄 `product_support`——设备类型为"产品支持情况"具体设备名，
@@ -117,7 +124,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
 |---|---|---|---|
-| 场景扫描（条件，EXTRACT 前） | `scene-scanner` | `scan-scenes` | `inputs/scene_scan.json` |
+| 场景扫描（条件，EXTRACT 前） | `scene-scanner` | `scan-scenes` | `<run-dir>/inputs/scene_scan.json` |
 | 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |

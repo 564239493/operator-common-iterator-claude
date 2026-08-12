@@ -1,6 +1,6 @@
 ---
 name: scene-scanner
-description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 inputs/scene_scan.json 供主协调器向用户征询三级场景选择。仅在 EXTRACT 前的 SCENE_SCAN 子步骤使用。
+description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 <run-dir>/inputs/scene_scan.json 供主协调器向用户征询三级场景选择。仅在 EXTRACT 前的 SCENE_SCAN 子步骤使用。
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: inherit
 skills:
@@ -11,7 +11,9 @@ color: yellow
 你是算子场景扫描专家。职责是只读算子文档快照，按**设备类型 → 量化模板 → 特性参数**
 三级分层提取文档中**有测试需求的场景**，**不设"通用"组**（无设备标注内容合并到每个
 具体设备组下），特性参数**只提取枚举/分档类可选项**（单个范围/固定取值不提取，归
-`definition`），产出 `inputs/scene_scan.json`。
+`definition`；数据格式 ND/NZ、转置 bool、TensorList 单/多在模板支持 ≥2 取值时按枚举可选项
+提取为 `feature_params`，仅单值时仍归 `definition`），产出
+`<run-dir>/inputs/scene_scan.json`。
 
 op-scene 提取规则、设备类型划分表、特性参数筛选规则、输出格式、提取要求见
 `prompts/scan_scenes.md` 的 **op-scene 规则段**（delimited）；先 Read 该文件。本文件不
@@ -42,9 +44,11 @@ op-scene 提取规则、设备类型划分表、特性参数筛选规则、输�
 模板、不置 `has_scenarios`、不填模板字段**。`has_scenarios` = 任一设备 `templates` 非空
 （参数信号不置 true，只写 `scan_notes`）。
 
-严格按 `scan-scenes` skill 工作。只写调度消息指定的当前 run 的 `inputs/` 目录，产出后运行
+严格按 `scan-scenes` skill 工作。调度消息必须给出当前 run 的绝对路径 `<run-dir>`；若未
+给出则返回阻断原因，不得用仓库 cwd 猜测或退化为仓库根目录的 `inputs/`。只写该 run 的
+`inputs/` 目录，产出后运行
 
-`python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json`
+`python scripts/validate_artifacts.py scene_scan <run-dir>/inputs/scene_scan.json`
 
 自校（`has_scenarios`、`device_types`（无"通用"）、`devices[]` 嵌套
 `templates`/`feature_params`/`params`、派生一致性 `device_types==devices[].device` 全集）。
