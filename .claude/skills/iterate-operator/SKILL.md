@@ -48,15 +48,17 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    空跑一轮。re-EXTRACT（OPTIMIZE→EXTRACT）轮同理：委派提取器前先把 state 推进为 `EXTRACT`。
 
 **SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
-`scene-scanner`（读 `inputs/<doc>.md` + `prompts/scan_scenes.md`，按**设备类型 →
-量化模板 → 特性参数**三级提取，产 `inputs/scene_scan.json`，
-自跑 `python scripts/validate_artifacts.py scene_scan inputs/scene_scan.json`）。
+`scene-scanner`。委派消息必须显式传入当前 run 的绝对路径 `<run-dir>`、只读输入
+`<run-dir>/inputs/<doc>.md` 和唯一写入目标 `<run-dir>/inputs/scene_scan.json`；禁止只传
+`inputs/scene_scan.json` 让子 Agent 按仓库 cwd 解析。scene-scanner 读取
+`prompts/scan_scenes.md`，按**设备类型 → 量化模板 → 特性参数**三级提取，并自跑
+`python scripts/validate_artifacts.py scene_scan <run-dir>/inputs/scene_scan.json`）。
 完成后主协调器读 `scene_scan.json`：
 - `has_scenarios=false` → 跳过（无 directive，按全场景提取，行为不变）。`scan_notes`
   含 `quant_signal_no_template` warning 时仅记录性提示用户"文档含量化参数信号但未提取到
   模板，可能遗漏剪枝"，**不**置 `has_scenarios`、**不**阻断、**不**补造场景。
 - `has_scenarios=true` 且 `--scene all` → 跑
-  `python scripts/render_scene_directive.py --scan <scene_scan.json> --run-dir <run-dir> --scope all`
+  `python scripts/render_scene_directive.py --scan <run-dir>/inputs/scene_scan.json --run-dir <run-dir> --scope all`
   （scope=all：全部设备全部模板全部特性参数取值分支全展开，不剪枝、不弹窗）。
 - `has_scenarios=true` 且 `--scene auto`（默认）→ 主会话按 **Q1 → Q2 → Q3 三轮顺序
   征询**，每轮一次 AskUserQuestion 调用、其内问题并行作答（每问选项≤4，超出部分在
@@ -65,31 +67,42 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
   问题并行作答，后问拿不到前问答案；Q2 的问题集（逐设备）依赖 Q1 选中的设备、Q3 的
   问题集（逐 (设备,模板) 对）依赖 Q2 选中的模板，且预枚举全部 (设备,模板) 组合会组合
   爆炸并超每调用≤4 问上限，故只能逐级等上轮答案回来再发起下轮。
-  - **Q1 设备类型**（1 个 multiSelect 问题）：选项 = `scene_scan.device_types` 前 3 个
-    + "全部设备"；question body 按编号列出全部 `device_types`（用户可按编号 Other 输入
-    选中列表外的设备，或直接选"全部设备"）。`device_types` 为文档"产品支持情况"具体
-    设备名，**无"通用"通配符**。**若 `device_types` 仅 1 个设备 → 直接默认选中该设备、
-    跳过 Q1 征询，直接进 Q2**（无选择意义时不打扰用户）。
+  - **Q1 设备类型**（1 个 multiSelect 问题）：选项 = `scene_scan.device_types`
+    全部（≤4 个直接列全；>4 个列前 3 + Other 自定义，question body 按编号列出全部
+    `device_types`，用户可按编号 Other 输入选中列表外的设备）。**不设"全部设备"聚合项**
+    ——要全选就逐个勾选（multiSelect）。`device_types` 为文档"产品支持情况"具体设备名，
+    **无"通用"通配符**。**若 `device_types` 仅 1 个设备 → 直接默认选中该设备、跳过 Q1
+    征询，直接进 Q2**（无选择意义时不打扰用户）。
   - **Q2 逐设备量化模板**（对 Q1 选中的每个设备各 1 个 multiSelect 问题，**批量 ≤4 问/
-    次**，超出分多次调用）：选项 = 该设备 `devices[].templates` 前 3 个模板名 +
-    "全部模板"；body 按编号列出该设备全部模板。各设备模板可不同（v3 无"通用"组，无标注
-    内容已合并到各具体设备组下）。模板名编码量化方式（如 `非量化`/`全量化-A8W8`/
-    `全量化-GQA`）。等 Q1 答案回来确定选中设备后再发起本轮。
+    次**，超出分多次调用）：选项 = 该设备 `devices[].templates` 全部（≤4 直接列全；>4
+    前 3 + Other，body 编号列全）。**不设"全部模板"聚合项**——要全选就逐个勾选。各设备
+    模板可不同（v3 无"通用"组，无标注内容已合并到各具体设备组下）。模板名编码量化方式
+    （如 `非量化`/`全量化-A8W8`/`全量化-GQA`）。**某设备仅 1 个模板 → 自动选中该模板、
+    跳过该设备 Q2**（与 Q1 单设备跳过同原则）。等 Q1 答案回来确定选中设备后再发起本轮。
   - **Q3 逐（设备,模板）特性参数**（对 Q2 选中的每个 (device,template) 各 1 个
-    multiSelect 问题，**批量 ≤4 问/次**，超出分多次调用）：选项 = 该模板
-    `feature_params[].feature` 前 3 个特性名 + "保留全部（不剪枝）"；body 按编号列出该
-    模板全部特性名。**question 文本必须显式提示："可以不选择——不选或选'保留全部'均
-    表示保留该模板全部特性参数取值分支（不剪枝）；多选具体特性则展开选中项取值分支、
-    未选中项取默认值固定（缩小覆盖）"**。选"保留全部"或空 → 该模板 `null`；多选子集 →
-    该模板写选中特性名列表。等 Q2 答案回来确定选中 (device,template) 对后再发起本轮。
-  - 汇总答案写入 `selection.json` 为
-    `{"device_types": [<...>], "selection": {<device>: {<template>: [<feature...>] | null}}}`
-    （"全部"展开为实际清单，`null` 原样写表示该模板全展开；缺模板键 = 该模板未选）→
-    跑 `python scripts/render_scene_directive.py --scan <scene_scan.json> --selection <selection.json> --run-dir <run-dir> --scope subset`
-    （校验设备/模板/特性名 ∈ scan、按 `param_modes` 三态解析每设备每参数的
+    **single-select** 问题，**批量 ≤4 问/次**，超出分多次调用）。每问固定 2 个预设选项 +
+    Other 自定义输入（AskUserQuestion 工具契约 ≥2 选项且自动提供 Other，无法零选项）：
+    - 选项 1「保持自动 / 继承文档约束（未填写）」→ 该模板 `null`（全展开不剪枝）
+    - 选项 2「全部固定默认值（最小覆盖）」→ 该模板 `"fix_all_default"`（每参数取 `values[0]`）
+    - **Other** → 用户贴值级 JSON，如 `{"groupType":[-1,0],"splitItem":[0,1,2,3],"weight format":["ND"]}`
+    question 文本必须包含：(a) 用户指定提示语「明确填写（Other 输 JSON）→ 按用户值限制；
+    选保持自动（未填写）→ 保持自动/继承文档约束」；(b) 该 (device,template) **完整
+    feature_params 编号表**（从 `scene_scan.json` 读出，每参数列出 `name / 取值 values /
+    description / constraint`，由主协调器现场渲染，不新造脚本）；(c) JSON 示例 + 说明
+    「未列参数=继承文档约束（全展开）；单值如 `[-1]`=固定该值；多值如 `[-1,0]`=展开该子集」。
+    答案→selection：选项1→`null`；选项2→`"fix_all_default"`；Other→解析为 dict（解析失败或
+    值非法由 `render_scene_directive.py` exit 2 阻断、提示重输，不静默回退）。等 Q2 答案
+    回来确定选中 (device,template) 对后再发起本轮。
+  - 汇总答案写入 `selection.json`（**值级**形态）
+    `{"device_types": [<...>], "selection": {<device>: {<template>: <tpl_value>}}}`
+    其中 `<tpl_value>` ∈ `null`（选项1/未填写，全展开）| `"fix_all_default"`（选项2）|
+    `{<param>: [<values>]}`（Other JSON：单值→fix、多值→expand 子集、未列参数→全展开）；
+    缺模板键 = 该模板未选（Q2 未选）→ 跑
+    `python scripts/render_scene_directive.py --scan <run-dir>/inputs/scene_scan.json --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
+    （校验设备/模板/param 名/值 ∈ scan、按 `param_modes` 三态解析每设备每参数的
     展开/固定/缺键、写 `inputs/scene_directive.md`（含机读块
     `<!-- scene: {device_types, param_modes} -->`，`param_modes[device][param]` ∈
-    `{"expand": [取值清单]}` 清单=所选模板 values 并集（禁止回文档拉全集） | `{"fix": <默认值>}` 单值候选 | 缺键 presence 丢）、
+    `{"expand": [取值清单]}` 清单=用户子集或所选模板 values 并集（禁止回文档拉全集） | `{"fix": X}` 单值（用户单值输入或 values[0]） | 缺键 presence 丢）、
     回写 `run_state.scene`；非法选择 exit 2 阻断，提示用户重选，不静默回退）。
     EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`
     （设备类型为具体设备名，直接与文档 √ 行取交集，无"通用"展开）；按 `param_modes`

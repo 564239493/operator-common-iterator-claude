@@ -6,17 +6,19 @@ Scene model (three-level): 设备类型 → 量化模板 → 特性参数. The s
 ``scene_scan.json`` with nested ``devices[].templates[].feature_params[].params[]``;
 no ``通用`` wildcard group (``device_types`` come verbatim from the doc "产品支持
 情况" table). The orchestrator asks the user Q1 (devices) → Q2 (templates) → Q3
-(feature params; "可以不选择" = expand all), producing ``selection.json``:
-``{device_types:[...]|"全部", selection:{device:{template:[features]|None}}}``.
+(value-level config; "保持自动/未填写" = expand all of the template's params),
+producing ``selection.json``:
+``{device_types:[...], selection:{device:{template: None|"fix_all_default"|{param:[values]}}}}``.
 
 ``_param_modes`` resolves that selection into per-device per-param three states:
-``{"expand": [values]}`` (candidate set = order-preserving de-duplicated union of
-the param's ``values`` across the selected templates that expand it — NOT the doc
-full enum; the extractor must not fall back to the doc) | ``{"fix": X}`` (single
-value, ``values[0]``) | missing key (Optional param under a deselected template →
-no ``presence_dependency``, presence dropped). The directive carries these in a
-machine block ``<!-- scene: {device_types, param_modes} -->`` (the extractor reads
-only the directive, never the scan).
+``{"expand": [values]}`` (candidate set = the user's value subset when given, else
+the order-preserving de-duplicated union of the param's ``values`` across the
+selected templates that expand it — NOT the doc full enum; the extractor must not
+fall back to the doc) | ``{"fix": X}`` (single value — either the user's single-value
+input or ``values[0]`` under ``"fix_all_default"``) | missing key (Optional param
+under a deselected template → no ``presence_dependency``, presence dropped). The
+directive carries these in a machine block ``<!-- scene: {device_types, param_modes} -->``
+(the extractor reads only the directive, never the scan).
 
 Scope (decided by the orchestrator from ``--scene`` + ``has_scenarios``):
 
@@ -68,28 +70,55 @@ def _templates_by_name(device: dict) -> dict[str, dict]:
     }
 
 
-def _feature_names(template: dict) -> list[str]:
-    return [
-        fp.get("feature")
-        for fp in (template.get("feature_params") or [])
-        if isinstance(fp, dict) and fp.get("feature")
-    ]
+def _scalar_eq(a: Any, b: Any) -> bool:
+    """Type-aware scalar equality (bool is a subclass of int in Python, so
+    ``True == 1`` / ``False == 0``; keep bool matching only bool to avoid a
+    user-supplied ``1``/``0`` silently matching a bool ``true``/``false``
+    param value, and vice-versa)."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    return a == b
+
+
+def _tpl_param_values(template: dict) -> dict[str, list]:
+    """Map every param name in a template to its scan ``values`` list
+    (across all feature_params). Used for value-subset validation."""
+    out: dict[str, list] = {}
+    for fp in (template.get("feature_params") or []):
+        if not isinstance(fp, dict):
+            continue
+        for p in (fp.get("params") or []):
+            if isinstance(p, dict) and isinstance(p.get("name"), str):
+                out.setdefault(p["name"], p.get("values") or [])
+    return out
 
 
 def _resolve_selection(
     scan: dict, selection: dict
 ) -> tuple[list[str], list[str], list[str], dict]:
-    """Validate + resolve a three-level selection.
+    """Validate + resolve a three-level **value-level** selection.
 
     selection = {"device_types": [...] | "全部",
-                 "selection": {device: {template: [features] | None | "全部"}}}
+                 "selection": {device: {template: <tpl_value>}}}
 
-    Returns (errors, warnings, sel_devices, selection_resolved) where
-    selection_resolved = {device: {template: [features] | None}} with "全部"
-    normalized to None (expand all features). A template absent from
-    selection[device] = deselected (Q2 not chosen) → its params' presence is
-    dropped (unless the param also appears in a selected template — union
-    semantics resolved in ``_param_modes``).
+    where ``<tpl_value>`` per selected (device, template) is one of:
+
+    - ``None`` / ``"全部"``      → preset 1: expand **all** of the template's
+      params at their full ``values`` (inherit doc, no pruning).
+    - ``"fix_all_default"``     → preset 2: fix **every** param to ``values[0]``
+      (minimal coverage / smoke).
+    - ``{param: [values]}``      → value-level (Other JSON): for each listed
+      param, a single value → ``fix`` that value, multiple values → ``expand``
+      that subset; params **not listed** → expand all ``values`` (inherit doc).
+      Listed values are validated to be ⊆ the param's scan ``values`` (type-aware
+      so ``1`` does not match bool ``true``); invalid values are dropped with a
+      warning; an empty list is treated as "not listed" (expand all).
+
+    Returns ``(errors, warnings, sel_devices, selection_resolved)`` where
+    ``selection_resolved = {device: {template: None | "fix_all_default" |
+    {param: [values]}}}`` with ``"全部"`` normalized to ``None``. A template
+    absent from ``selection[device]`` = deselected (Q2 not chosen) → its params'
+    presence is dropped (union semantics resolved in ``_param_modes``).
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -112,7 +141,10 @@ def _resolve_selection(
     if raw_sel in ("全部", "all"):
         raw_sel = {d: "全部" for d in sel_devices}
     if not isinstance(raw_sel, dict):
-        errors.append("selection.selection must be a dict {device: {template: features|None}}")
+        errors.append(
+            "selection.selection must be a dict {device: {template: "
+            "null|'fix_all_default'|{param:[values]}}}"
+        )
         raw_sel = {}
 
     resolved: dict[str, dict] = {}
@@ -131,25 +163,55 @@ def _resolve_selection(
                 f"selection.selection[{d!r}] must be a dict or '全部'; treated as no templates"
             )
             raw_dev = {}
-        dev_resolved: dict[str, list[str] | None] = {}
+        dev_resolved: dict[str, Any] = {}
         for t, feats in raw_dev.items():
             if t not in tpls:
                 warnings.append(f"template {t!r} not in device {d!r} templates; ignored")
                 continue
             if feats in ("全部", "all") or feats is None:
-                dev_resolved[t] = None  # expand all features (Q3 skipped / 全选)
-            elif isinstance(feats, list):
-                feat_set = _feature_names(tpls[t])
-                for f in feats:
-                    if isinstance(f, str) and f not in feat_set:
+                dev_resolved[t] = None  # preset 1: expand all (inherit doc)
+            elif isinstance(feats, str) and feats == "fix_all_default":
+                dev_resolved[t] = "fix_all_default"  # preset 2: fix all to values[0]
+            elif isinstance(feats, dict):
+                tpl_param_values = _tpl_param_values(tpls[t])
+                subset: dict[str, list] = {}
+                for pname, vlist in feats.items():
+                    if not isinstance(pname, str):
                         warnings.append(
-                            f"feature {f!r} not in template {t!r} (device {d!r}); dropped"
+                            f"selection[{d!r}][{t!r}] param key must be string; "
+                            f"skipped {pname!r}"
                         )
-                dev_resolved[t] = [f for f in feats if isinstance(f, str)]
+                        continue
+                    if pname not in tpl_param_values:
+                        warnings.append(
+                            f"param {pname!r} not in template {t!r} (device {d!r}); dropped"
+                        )
+                        continue
+                    if not isinstance(vlist, list):
+                        warnings.append(
+                            f"selection[{d!r}][{t!r}][{pname!r}] must be a list; dropped"
+                        )
+                        continue
+                    allowed = tpl_param_values[pname]
+                    kept = [
+                        v for v in vlist
+                        if any(_scalar_eq(v, a) for a in allowed)
+                    ]
+                    dropped = [v for v in vlist if not any(_scalar_eq(v, a) for a in allowed)]
+                    for v in dropped:
+                        warnings.append(
+                            f"value {v!r} not in param {pname!r} values {allowed} "
+                            f"(template {t!r}, device {d!r}); dropped"
+                        )
+                    if not kept:
+                        # empty / all-invalid list → treat as unmentioned → expand all
+                        continue
+                    subset[pname] = kept
+                dev_resolved[t] = subset if subset else None
             else:
                 warnings.append(
-                    f"selection.selection[{d!r}][{t!r}] must be list/None/'全部'; "
-                    f"treated as expand-all"
+                    f"selection.selection[{d!r}][{t!r}] must be "
+                    f"null/'fix_all_default'/dict; treated as expand-all"
                 )
                 dev_resolved[t] = None
         if not dev_resolved:
@@ -166,20 +228,23 @@ def _resolve_selection(
 def _param_modes(
     scan: dict, sel_devices: list[str], selection_resolved: dict
 ) -> dict[str, dict]:
-    """Resolve per-device per-param expand/fix decision (union semantics).
+    """Resolve per-device per-param expand/fix decision (value-level, union semantics).
 
-    For each device, iterate its templates in scan order. A param appearing in
-    ANY selected template under an expanded feature (Q3 selected the feature, or
-    the template's Q3 was skipped/全选 = expand all) → ``{"expand": [values]}``
-    where ``[values]`` is the union of the param's ``values`` across expanding
-    selected templates. A param
-    appearing only under unexpanded features of selected templates →
-    ``{"fix": <values[0]>}`` (first-seen default kept). A param appearing ONLY in
-    deselected templates is absent from ``param_modes[device]`` → presence drop.
+    For each device, iterate its templates in scan order. The selection value for
+    each selected template decides how **each** of its params contributes:
 
-    ``expand`` wins over ``fix``: if a param is expanded in any selected
-    template it is expanded, and only the expanding selected templates
-    contribute values (a fix-only template does not add its value).
+    - ``None``              → expand: contribute **all** of the param's ``values``.
+    - ``"fix_all_default"`` → fix: contribute ``values[0]``.
+    - ``{param: [values]}`` → listed param: single value contributes ``fix`` that
+      value, multiple values contribute ``expand`` of that subset; an **unlisted**
+      param contributes expand of all ``values`` (inherit doc).
+
+    Reconcile across selected templates with **expand wins over fix, expand = union**:
+    if a param is expanded in any selected template it ends up expanded (union of all
+    expand subsets across templates; fix-only templates add no value); only if a param
+    is fix-only in every selected template does it end up fix (first-seen value). A
+    param appearing ONLY in deselected templates is absent from
+    ``param_modes[device]`` → presence drop.
     """
     devices_by_name = _devices_by_name(scan)
     out: dict[str, dict] = {}
@@ -194,30 +259,57 @@ def _param_modes(
                 continue
             tname = t.get("template")
             if tname not in sel_templates:
-                continue  # deselected template
-            feats = sel_templates.get(tname)
+                continue
+            sel = sel_templates.get(tname)
             for fp in (t.get("feature_params") or []):
                 if not isinstance(fp, dict):
                     continue
-                expand_this = (feats is None) or (fp.get("feature") in (feats or []))
                 for p in (fp.get("params") or []):
                     if not isinstance(p, dict):
                         continue
                     pname = p.get("name")
                     if not isinstance(pname, str) or not pname:
                         continue
-                    vals = p.get("values") or []
-                    if expand_this:
-                        cur = param_state.get(pname)
-                        if isinstance(cur, dict) and "expand" in cur:
-                            for v in vals:
-                                if v not in cur["expand"]:
+                    vals = list(p.get("values") or [])
+                    if not vals:
+                        continue
+                    # determine this template's contribution for pname
+                    if sel is None:
+                        contrib_mode, contrib_vals = "expand", list(vals)
+                    elif isinstance(sel, str) and sel == "fix_all_default":
+                        contrib_mode, contrib_vals = "fix", vals[0]
+                    elif isinstance(sel, dict):
+                        if pname in sel:
+                            subset = sel[pname]
+                            if len(subset) == 1:
+                                contrib_mode, contrib_vals = "fix", subset[0]
+                            else:
+                                contrib_mode, contrib_vals = "expand", list(subset)
+                        else:
+                            contrib_mode, contrib_vals = "expand", list(vals)
+                    else:
+                        contrib_mode, contrib_vals = "expand", list(vals)
+                    # reconcile into param_state (expand wins over fix; expand = union)
+                    cur = param_state.get(pname)
+                    if cur is None:
+                        param_state[pname] = (
+                            {"expand": list(contrib_vals)}
+                            if contrib_mode == "expand"
+                            else {"fix": contrib_vals}
+                        )
+                    elif contrib_mode == "expand":
+                        if "expand" in cur:
+                            for v in contrib_vals:
+                                if not any(_scalar_eq(v, x) for x in cur["expand"]):
                                     cur["expand"].append(v)
                         else:
-                            param_state[pname] = {"expand": list(vals)}
-                    elif pname not in param_state:
-                        default = vals[0] if vals else None
-                        param_state[pname] = {"fix": default}
+                            # was fix → promote to expand with this subset
+                            param_state[pname] = {"expand": list(contrib_vals)}
+                    else:  # fix contribution
+                        # fix only sticks if no expand yet; first-seen fix kept
+                        if "expand" not in cur and "fix" not in cur:
+                            param_state[pname] = {"fix": contrib_vals}
+                        # else: already expand or already fix → no change
         if param_state:
             out[d] = param_state
     return out
@@ -245,25 +337,30 @@ def _render_directive(
             tname = t.get("template")
             if tname not in sel_templates:
                 continue
-            feats = sel_templates.get(tname)
             lines.append(f"- **{tname}**: {t.get('definition', '')}")
             uf = t.get("unsupported_features") or []
             if uf:
                 lines.append(f"  - 本模板不支持：{', '.join(str(x) for x in uf)}")
+            pm_dev = param_modes.get(d, {})
             for fp in (t.get("feature_params") or []):
                 if not isinstance(fp, dict):
                     continue
                 feat = fp.get("feature", "")
-                expand_this = (feats is None) or (feat in (feats or []))
-                tag = "展开取值分支" if expand_this else "固定取默认值"
-                lines.append(f"  - **{feat}** （{tag}）:")
+                lines.append(f"  - **{feat}**:")
                 for p in (fp.get("params") or []):
                     if not isinstance(p, dict):
                         continue
                     pname = p.get("name", "")
                     vals = p.get("values", [])
+                    pm = pm_dev.get(pname)
+                    if isinstance(pm, dict) and "expand" in pm:
+                        tag = f"展开取值分支（取值清单 {pm['expand']}）"
+                    elif isinstance(pm, dict) and "fix" in pm:
+                        tag = f"固定取单值 {pm['fix']!r}"
+                    else:
+                        tag = "presence 丢（未选模板专属）"
                     lines.append(
-                        f"    - {pname}: 取值：{vals}；描述：{p.get('description', '')}"
+                        f"    - {pname}: 取值：{vals}；{tag}；描述：{p.get('description', '')}"
                     )
         dev_sections.append("\n".join(lines))
     listing = "\n\n".join(dev_sections) if dev_sections else "(无)"
@@ -292,14 +389,15 @@ def _render_directive(
 
 {listing}
 
-### 特性参数剪枝（三级语义）
+### 特性参数剪枝（值级语义）
 
-- **展开**（保留取值分支）：选中模板下、Q3 选中特性（或 Q3 跳过/全选=全展开）的特性参数，
-  保留其枚举/分档取值分支参与组合生成。
-- **固定**（取默认值不展开）：选中模板下、Q3 未选中的特性参数，取该参数 `values[0]` 为默认值，
-  仅产单值候选，不展开取值分支。
-- **丢弃 presence**（不测试）：未选模板（Q2 未选）的专属参数，其 `presence_dependency` 不产出
-  （若该参数同时出现在已选模板下，按已选模板的展开/固定决策处理——并集语义）。
+- **展开**（保留取值分支）：用户在 Q3 明确填写了取值清单的参数（多值 → 该子集），
+  或未填写/选"保持自动"的参数（继承文档全集），保留对应取值清单参与组合生成。
+- **固定**（取单值不展开）：用户在 Q3 明确填写了单值（如 `[-1]`）的参数 → 该值；
+  或选"全部固定默认值"的模板下各参数 → `values[0]`；仅产单值候选，不展开取值分支。
+- **丢弃 presence**（不测试）：未选模板（Q2 未选）的专属参数，其 `presence_dependency`
+  不产出（若该参数同时出现在已选模板下，按已选模板的展开/固定决策处理——并集语义，
+  expand 胜 fix、expand 取并集）。
 - 展开参数：{expand_params or '(无)'}
 - 固定参数：{fix_params or '(无)'}
 
@@ -307,8 +405,7 @@ def _render_directive(
 1. **选择内容是基本限制，未提及的按文档原文提取**——按机读块 `param_modes` 三态收窄：
    `{{"expand": [取值清单]}}` → 所选清单是该特性参数的基本限制：凡依赖该参数取值的约束均按清单收窄——
    无论体现为该参数自身的 `allowed_range_value` 枚举候选，还是以该取值为条件的 `dtype`/`format`/`dimensions`
-   分支或 `constraints_in_parameters` 行（保留命中清单内取值的候选/分支、丢弃绑定清单外取值者，清单为所选模板
-   values 并集，**禁止回文档拉全集**）；`{{"fix": X}}` → 该参数取单值 `X`，依赖其取值的约束同此收窄；
+   分支或 `constraints_in_parameters` 行（保留命中清单内取值的候选/分支、丢弃绑定清单外取值者，清单为用户在 Q3 填写的取值子集或所选模板 values 并集，**禁止回文档拉全集**）；`{{"fix": X}}` → 该参数取单值 `X`，依赖其取值的约束同此收窄；
    缺键（仅出现在未选模板下的 Optional 参数）→ 不产 `presence_dependency`（presence 丢）。
 2. `constraints_in_parameters` 仅保留与选定模板一致的约束行，未选模板绑定的专属约束不产出；其内以取值为条件的分支按条 1 随选择收窄。
 3. 与参数取值**无关**的通用约束（`shape_equality`、维度、`groupType` 等）原样保留，不得因场景删除；
@@ -369,7 +466,7 @@ def main() -> int:
     p.add_argument(
         "--selection",
         help=(
-            "{device_types, selection:{device:{template:[features]|None}}}. "
+            "{device_types, selection:{device:{template: None|\"fix_all_default\"|{param:[values]}}}}. "
             "Required for --scope subset, ignored otherwise."
         ),
     )

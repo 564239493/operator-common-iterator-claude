@@ -100,16 +100,22 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 ### SCENE_SCAN（条件触发，非独立状态）
 
 输入：`inputs/<doc>.md`（只读）。
-执行者：scene-scanner（产 `inputs/scene_scan.json`，按**设备类型
+执行者：scene-scanner（调度消息显式传入 `<run-dir>` 绝对路径，产
+`<run-dir>/inputs/scene_scan.json`；禁止按仓库 cwd 解析相对 `inputs/`。按**设备类型
 → 量化模板 → 特性参数**三级提取，不设"通用"组、特性参数只提取枚举/分档可选项）+ 主
 协调器（AskUserQuestion **Q1→Q2→Q3 三轮顺序征询**，每轮一次调用、其内问题并行作答；
 必须分三轮而非一次：Q2 问题集依赖 Q1 选中设备、Q3 问题集依赖 Q2 选中模板，同调用内
-拿不到前轮答案且预枚举 (设备,模板) 全组合会爆炸。Q1 设备类型（`device_types` 仅 1 个
-时直接默认选中、跳过 Q1 进 Q2）→ Q2 逐设备量化模板（批量 ≤4 问/次）→ Q3 逐（设备,
-模板）特性参数（批量 ≤4 问/次，question 文本显式提示"可以不选择"，不选/全选=该模板
-全展开、多选=展开选中项取值分支、未选项取默认值固定），写
-`selection.json={device_types, selection:{device:{template:[feature]|null}}}`）+
-`scripts/render_scene_directive.py`（解析 `param_modes` 三态、渲染 `inputs/scene_directive.md`
+拿不到前轮答案且预枚举 (设备,模板) 全组合会爆炸。Q1 设备类型（multiSelect 真实设备、
+**不设"全部设备"**聚合项；`device_types` 仅 1 个时直接默认选中、跳过 Q1 进 Q2）→ Q2 逐设备
+量化模板（multiSelect 真实模板、**不设"全部模板"**聚合项、批量 ≤4 问/次；某设备仅 1 模板
+自动选中、跳过该设备 Q2）→ Q3 逐（设备,模板）特性参数（**single-select**，批量 ≤4 问/次，
+每问固定 2 预设 + Other：选项1「保持自动/继承文档约束（未填写）」→`null`、选项2「全部固定
+默认值」→`"fix_all_default"`、Other→值级 JSON 如 `{"groupType":[-1,0],"splitItem":[3]}`
+（单值→fix、多值→expand 子集、未列参数→全展开）；question 文本含完整 feature_params 编号表
++ 提示语「明确填写（Other 输 JSON）→ 按用户值限制；选保持自动（未填写）→ 保持自动/继承文档
+约束」），写 `selection.json={"device_types":[...],"selection":{device:{template:<tpl_value>}}}`
+（`<tpl_value>` ∈ `null|"fix_all_default"|{param:[values]}`）+
+`scripts/render_scene_directive.py`（校验设备/模板/param 名/值 ∈ scan、解析 `param_modes` 三态、渲染 `inputs/scene_directive.md`
 （含机读块 `{device_types, param_modes}`）、回写 `run_state.scene`）。
 `--scene off` 跳过；`--scene auto`（默认）文档有场景则征询、无则跳过；`--scene all` 取
 全设备全模板全特性参数不剪枝（批处理默认）。文档无场景（`has_scenarios=false`）跳过，
@@ -126,7 +132,7 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 执行者：constraint-extractor。若 directive 存在，按其 `device_types` 收窄
 `product_support`（设备类型为"产品支持情况"具体设备名，直接与文档 √ 行取交集，
 无"通用"展开）并按机读块 `param_modes` 三态屏蔽
-（`{"expand": [取值清单]}` 清单=所选模板 values 并集、禁止回文档拉全集 / `{"fix": X}` 单值候选 / 缺键 Optional 参数 presence 丢）；
+（`{"expand": [取值清单]}` 清单=用户子集或所选模板 values 并集、禁止回文档拉全集 / `{"fix": X}` 单值（用户单值输入或 values[0]） / 缺键 Optional 参数 presence 丢）；
 该 `product_support` 随后驱动 `generate_cases.py` 逐平台生成。
 完成条件：constraints.json 通过 Pydantic/结构校验。
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。
