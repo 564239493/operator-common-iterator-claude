@@ -83,6 +83,13 @@ class {{ class_name }}(AclnnBaseApi):
                     AclTensorListPtr = ctypes.POINTER(AclTensorList)
                     null_tensorlist_ptr = AclTensorListPtr()  # 默认为 None
                     input_args.append(null_tensorlist_ptr)
+                elif type == "aclIntArray":
+                    # 可选 aclIntArray 缺席时仍须保持 C 签名要求的指针类型；
+                    # 裸 c_void_p(None) 会被 ATK 的签名类型检查拒绝。
+                    AclIntArrayPtr = ctypes.POINTER(AclIntArray)
+                    null_void_ptr = ctypes.c_void_p(None)
+                    null_array_ptr = ctypes.cast(null_void_ptr, AclIntArrayPtr)
+                    input_args.append(null_array_ptr)
                 else:
                     input_args.append(ctypes.c_void_p(None))
 

@@ -356,6 +356,178 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 语义 B 误套 A 的隐式 bool 会引入文档未声明的参数；语义 A 误套 B 的 `shape[-1]` 会
 取错轴。
 
+##### J. 转置/非连续条件下的维度关系绑定（禁止无前提 OR，v2 增补，通用规则）
+
+> 来自 aclnnGroupedMatmulV5 闭环：文档对 weight 给出 shape 元组两种顺序
+> `(n_i,k_i)` 或 `(k_i,n_i)`，并写「weight 转置时对应 Tensor 必须非连续」；API
+> 签名**无** transposeWeight 形参。extractor 据此把收缩轴等式写成无前提析取
+> `(x.shape[1]==weight.shape[0]...) or (x.shape[1]==weight.shape[1]...)`，丢失
+> 转置前提；析取第二支（(n,k) 布局）在连续 weight（cases_executor 默认构造）路径
+> 下被 kernel 拒绝（ACL 161002：`X[0] dim 1 value K should equal to weight[0] dim 0
+> value N`），4 例失败。本节补这条禁令与正例。
+
+**适用判定**（全部满足时执行）：
+
+1. 文档对同一张量参数 `<param>` 给出 shape 元组的**两种顺序**（如 weight
+   `(n,k)` 或 `(k,n)`），或明示「可转置/必须转置/不支持转置」且转置态与默认态
+   shape 元组顺序不同；
+2. 函数签名**无**真实 transpose bool 参数（如 `transposeX1`/`transposeX2`/
+   `transposeWeight`）；若有，转置由真实参数表达，走 §4.6.3 G 条件 shape，不属本节；
+3. 文档同时写明「转置时对应 Tensor 必须**非连续**」（即转置由 stride/非连续性 +
+   shape 元组重排共同编码，非纯 shape 重排）。
+
+**强制规则**：
+
+- **禁止**把两套布局的轴等式写成无前提 `or` 析取。以下为反例（必须避免）：
+
+  ```text
+  # ❌ 反例：无前提 OR，丢失转置前提，析取第二支在连续 weight 下被 kernel 拒绝
+  expr_type: shape_value_dependency
+  expr: (x.shape[1] == weight.shape[0] and weight.shape[1] == out.shape[1])
+        or (x.shape[1] == weight.shape[1] and weight.shape[0] == out.shape[1])
+  ```
+
+- 必须二选一：
+  - **(a) 隐式 bool 门控**（推荐，当 cases 层需覆盖转置/非转置两分支）：按
+    `knowledge/aclnn/features/transpose_shape.md` 引入 `<param>_transposed` 隐式
+    bool，产出 `shape_value_dependency` if/else 门控转置关键轴（K/N）在 shape 中的
+    位置；**并**产出 `value_dependency` 把「转置 ⇒ 必须非连续」绑定到
+    `<param>_transposed == True`（若当前执行路径无法构造非连续 Tensor，应在
+    `allowed_range_value` 中把 `<param>_transposed` 收窄到 `[false]`，仅保留连续
+    分支，避免生成不可执行的转置 cases）。
+  - **(b) 固定单一布局确定性等式**（当执行路径固定单一布局时）：若当前执行路径
+    固定 `<param>` 为连续 Tensor，且文档默认（非转置）布局即连续布局，则写成
+    确定性等式，不析取：
+
+  ```text
+  # 正例（b）：groupType=-1 非量化、连续 weight 按 (k,n) 布局
+  expr_type: shape_value_dependency
+  expr: x.shape[1] == weight.shape[0] and weight.shape[1] == out.shape[1]
+  relation_params: ["x", "weight", "out"]
+  src_text: "weight shape 为 (n_i,k_i) 或 (k_i,n_i)；weight 转置时对应 Tensor 必须
+             非连续。当前执行路径下 weight 连续即 (k,n) 布局：K=weight.shape[0]、
+             N=weight.shape[1]，x.shape[1]==K，out.shape[1]==N。"
+  ```
+
+- **判别信号**：文档出现「shape 为 (A,B) 或 (B,A)」「可转置」「转置时必须非连续」
+  且 API 无 transpose 形参 → 触发本节。纯 shape 重排无「非连续」约束者走
+  `knowledge/aclnn/features/transpose_shape.md`（语义 B 默认形态），不适用本节
+  的「固定单一布局」分支 (b)。
+
+##### L. 可选参数 presence 强制与缺席表达规则（v3/v4 增补，通用规则）
+
+> 来自 aclnnGroupedMatmulV5 闭环 R2-R5：可选 TensorList/Tensor/Array 参数的
+> `is_present` 是自由 Z3 Bool（源码 `agent/generators/param_constraint_solve/param_var_definition.py:259`
+> `self.is_present = z3.Bool(...)`，`BaseVar`/`TensorListVar` 无
+> `solver.add(is_present==True)` 强制）。对 `param is None or (...)` 守卫约束，
+> Z3 必取 `is_present=False` 短路守卫，使守卫后的 shape/dtype/format 约束全部
+> 失活；下游 case 装配却不认 `is_present=False`，仍按 present 生成，产出自由
+> shape/dtype。约束层缺失「presence 强制」是该类失败根因。缺席（nullptr）则相反——
+> 必须由 `allowed_range_value=[null]` enum + `force_false_params` 通道使下游真正
+> 按 None 生成；`presence_dependency` 不进该集合、不用于缺席。
+
+**适用判定 — presence 强制 present（三者全满足时必须执行）**：
+
+1. 参数 `is_optional.value=true`（TensorList / Tensor / Array 等可选参数）；
+2. 在当前 `scene_directive` / 量化模板 / 取值选定场景下，该参数**恒存在**（由选定
+   模板 / 取值决定，例如非量化 `groupType=-1` 的 `biasOptional` 在该场景始终 present，
+   `cases_executor` 亦按 present 构造）——若场景选定该参数缺席，则本节 presence 强制
+   不适用，改走下述「缺席表达」；
+3. 该参数上存在形如 `param is None or (...)` 的守卫约束（`type_dependency` /
+   `shape_equality` / `shape_value_dependency` 等含 `param is None` 前置析取支）。
+
+**强制规则（presence 强制 present）**：
+
+- 三者全满足时，**必须**额外产出一条 `presence_dependency`（或 `value_dependency`）
+  强制 `param.is_present == True`，expr 形如：
+
+  ```text
+  # 无条件 present（场景恒存在）
+  expr_type: presence_dependency
+  expr: biasOptional.is_present == True
+  relation_params: ["biasOptional"]
+  src_text: "非量化场景 biasOptional 恒 present（cases_executor 按 present 构造）；强制 is_present=True 以激活 bias shape/dtype 约束"
+  ```
+
+  或按语义带场景门控（当 presence 依赖某 enum/bool 参数取值时）：
+
+  ```text
+  # 场景门控 present
+  expr_type: presence_dependency
+  expr: not(groupType.range_value == -1) or (biasOptional.is_present == True)
+  relation_params: ["groupType", "biasOptional"]
+  src_text: "groupType=-1 非量化: biasOptional 恒 present；强制 is_present=True"
+  ```
+
+  **形式要求**：presence 强制 present 的 expr **必须**用 `is not None` / `is_present == True`
+  形式（`is None`/`is not None` 才被 `_transform_presence_to_is_present` 识别翻译；裸
+  `.is_present==True` 不被识别、会被静默丢弃）。
+
+- **否则**（无 presence 强制）Z3 对自由 `is_present` 必取 `False`，使该参数上所有
+  `param is None or (...)` 守卫后的 shape/dtype/format 约束被短路失活，下游却仍按
+  present 生成，产出违反约束的自由取值。
+
+**缺席表达规则（v4 纠正，强制）**：
+
+- `is_optional.value=true` 且场景选定该参数**缺席**（nullptr）者，**必须**用
+  `allowed_range_value={"value":[null],"type":"enum","src_text":"<缺席原因>"}` 表达
+  缺席。该写法触发 `param_constraint_utils.analysis_param_is_present` 的
+  `force_false_params` 集合填充（rv=`[None]`、rv_type=enum、`all(v is None for v in rv)`
+  为 True），使下游 case 构造对该参数真正按 None/缺席生成（同
+  `scaleOptional`/`offsetOptional`/`antiquantScaleOptional` 等已验证生效的可选参数）。
+  `analysis_param_is_present` 按参数名遍历 `case_input_map`、不区分
+  aclTensorList/aclIntArray，故 `[null]` enum 对 aclIntArray 同样适用。
+
+- **禁止**用 `presence_dependency`（`is_present==False` / `param is None`）表达缺席——
+  后者仅设 Z3 `is_present` 约束（通道 1），**不**进 `force_false_params` 集合（通道 2），
+  下游 attrs/tensor 构造仍按 present 生成自由取值（aclIntArray 尤甚：值因
+  `is_present=False` 被守卫短路而呈自由取值，`cases_expanded` 仍出现非空数组）。
+
+**presence 强制的单向语义**：
+
+- `presence_dependency`（`is_present==True` / `param is not None`）**仅用于强制
+  present**，以激活 `param is None or (...)` 守卫后的 shape/dtype/format 约束。
+- `presence_dependency` **不用于缺席**。缺席统一由 `allowed_range_value=[null]` enum +
+  `force_false_params` 承载。
+
+**反例与正例**：
+
+```text
+# ❌ 反例 1（presence 缺失）：仅有守卫约束，无 presence 强制 → Z3 取 is_present=False 逃避
+expr_type: shape_equality
+expr: biasOptional is None or biasOptional.shape[0] == weight.shape[1]
+relation_params: ["biasOptional", "weight"]
+# 后果：is_present=False 短路守卫，bias.shape[0] 自由（产出 15，应=768）
+
+# ❌ 反例 2（缺席误用 presence）：用 presence_dependency 强制缺席 → 下游仍按 present 生成
+expr_type: presence_dependency
+expr: not(groupType.range_value == -1) or (tuningConfigOptional is None)
+relation_params: ["groupType", "tuningConfigOptional"]
+# 后果：仅设 Z3 is_present==False，不进 force_false_params，下游 attrs 仍按 present 生成
+
+# ✅ 正例 1（present）：presence 强制 + 既有守卫 → Z3 无法逃避 → shape 等式绑定
+expr_type: presence_dependency
+expr: not(groupType.range_value == -1) or (biasOptional.is_present == True)
+relation_params: ["groupType", "biasOptional"]
+# + 既有 shape_equality: biasOptional is None or biasOptional.shape[0] == weight.shape[1]
+
+# ✅ 正例 2（缺席）：用 allowed_range_value=[null] enum 表达（同 scaleOptional）
+# 在 inputs.<param>.<platform>.allowed_range_value 写：
+#   {"value":[null],"type":"enum","src_text":"<缺席原因>"}
+# 触发 force_false_params → 下游按 None 生成 → cases_expanded 缺席
+```
+
+**与 §4.6.3「支持/仅支持输入 nullptr」规则的边界**：
+
+- 本节针对 `is_optional.value=true` 的参数（真可选）：场景选定 present 时须强制
+  `is_present==True`；场景选定缺席时须用 `allowed_range_value=[null]` enum。
+- §4.6.3「支持/仅支持输入 nullptr」针对 `is_optional.value=false` 的必选参数且必填值为
+  `nullptr`（取值语义，同样由 `allowed_range_value=[null]` enum 承载，生成器对必选参数
+  强制 `is_present=True`，**不**产出 `param is None` 条目）。
+- 二者**缺席表达机制统一**（均走 `allowed_range_value=[null]` enum + `force_false_params`）；
+  区别仅在 `is_optional` 取值与触发场景判定。presence 强制 present 与缺席互斥，同一
+  参数在同一场景下不会同时触发。
+
 ### 4.7 `constraints_in_parameters`（跨参数 / 单参数约束）
 
 #### 4.7.1 顶层 key
@@ -477,6 +649,35 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     布局变换类，文档 dtype 表每行 src.dtype == dst.dtype）时，必须在
     `constraints_in_parameters[每个支持平台]` 中追加 `srcTensor.dtype == dstTensor.dtype`
     的 `type_equality` 约束；dstTensor 值域沿用 src，不得按不同 dtype 负值域生成。
+
+15. **条件性取值/存在性关系必须形式化为 cross_param_constraint**：当文档写「参数 A
+    取值 v 时参数 B 必须/不得取 w」「B 仅在 A=w 场景下支持」「A=v 时 B 失效/不影响
+    计算/必须传空/不取某值」等**条件性取值或存在性限制**时，**必须**在
+    `constraints_in_parameters` 中产出 `cross_param_constraint`（或
+    `value_dependency` / `presence_dependency`，按语义）expr，形如：
+
+    ```text
+    # A 取 v ⇒ B 不得取 w
+    not(A.range_value == v) or (B.range_value != w)
+    # A 取 v ⇒ B 必须传空（缺席语义）
+    not(A.range_value == v) or (B is None)
+    # A 取 v ⇒ B 仅可取 w
+    not(A.range_value == v) or (B.range_value == w)
+    ```
+
+    `relation_params` 必须同时含 A 与 B；`src_text` 摘录原文中「A 取 v 时 B …」短语。
+    **禁止**只在 `B.description` / `B.allowed_range_value.src_text` 里自然语言备注
+    「不影响计算」「须传空」「仅某场景支持」而不产出可判定的 `expr`——下游生成器
+    不会消费 `description` 里的自然语言限制，会自由产出违反该限制的取值组合。
+
+    **正例**（aclnnGroupedMatmulV5：groupListType=2 仅全量化且 groupType=0 场景下支持）：
+
+    ```text
+    expr_type: cross_param_constraint
+    expr: not(groupListType.range_value == 2) or (groupType.range_value == 0)
+    relation_params: ["groupListType", "groupType"]
+    src_text: "groupListType=2：仅全量化且groupType=0场景下支持"
+    ```
 
 ### 4.8 `return_info`（错误返回码）
 
@@ -830,6 +1031,42 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     d. 同样检查 `allowed_range_value.value` 的字符串枚举候选、`format.value` 的格式串，
        以及 `dtype_support_description` / `format_support_description` 中的
        combo 表 dtype/format 值；发现不一致即重做该条目。
+
+34. **转置/非连续 OR 禁令自检**：遍历每个平台 `constraints_in_parameters` 中所有
+    `shape_value_dependency` / `shape_equality` / `shape_choice` 条目；凡同一 expr
+    引用同一 weight/x 参数的两种 shape 顺序并以无前提 `or` 连接（如
+    `(x.shape[1]==weight.shape[0]...) or (x.shape[1]==weight.shape[1]...)`），且文档
+    同时写明「转置时必须非连续」、API 无 transpose 形参时，**必须**改写为：
+    - 隐式 bool `<param>_transposed` + `shape_value_dependency` if/else 门控（按
+      `knowledge/aclnn/features/transpose_shape.md`），**或**
+    - 固定单一布局确定性等式（按 §4.6.3 J 分支 (b)）。
+    - 不得保留无前提 `or` 析取。`src_text` 必须摘录「shape 两种顺序」与「转置时
+      必须非连续」两句原文。
+
+35. **条件性取值/存在性关系自检**：重新扫描全部参数 `description`、`src_text` 与
+    文档「约束说明」原文，凡含「A 取 v 时 B …」「B 仅在 A=w 场景支持」「A=v 时 B
+    失效/不影响计算/必须传空/不取某值」者，**必须**存在引用 A 与 B 的
+    `cross_param_constraint`（或 `value_dependency` / `presence_dependency`）expr；
+    只在 `description` / `allowed_range_value.src_text` 自然语言备注而未形式化者，
+    视为漏抽，必须补产 `expr` 条目（见 §4.7.3 item 15）。
+
+36. **可选参数守卫约束的 presence / 缺席回扫**：遍历所有 `is_optional.value=true` 参数上
+    形如 `param is None or (...)` 的约束（`type_dependency` / `shape_equality` /
+    `shape_value_dependency` / `cross_param_constraint` 等含 `param is None` 前置析取支）；
+    凡该参数在当前 `scene_directive` / 量化模板 / 取值选定场景下**恒 present**
+    （scene_directive / 模板 / cases_executor 决定）者，**必须**存在引用该参数的
+    `presence_dependency`（或 `value_dependency`）强制 `param.is_present == True`
+    （按 §4.6.3 L）；缺失则视为漏抽，必须补产 `presence_dependency` 条目。
+
+    反向：凡 `is_optional=true` 参数在选定场景下**恒缺席**者，**必须**用
+    `allowed_range_value={"value":[null],"type":"enum","src_text":"<缺席原因>"}` 表达
+    缺席（触发 `force_false_params`，按 §4.6.3 L 缺席表达规则）；**禁止**用
+    `presence_dependency` 强制 `is_present==False` / `param is None` 表达缺席（该写法
+    不进 `force_false_params` 集合，下游仍按 present 生成）。缺失亦视为漏抽。
+
+    判定依据：`scene_directive` 的 `param_modes`（`fix` / `expand` 取值清单）、量化模板
+    选定值、`cases_executor` 构造行为。无法从场景判定时（如 scene 未启用），不强制
+    （保留可选自由度）。
 
 ## 7. 调用模板
 
