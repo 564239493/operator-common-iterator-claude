@@ -320,11 +320,11 @@ def _format_tensor_list_shapes(shapes: list[list[int] | None]) -> str:
     filtered = [s for s in shapes if s is not None]
     if not filtered:
         return "None"
-    if len(filtered) == 1:
-        inner = repr(tuple(filtered[0]))
-    else:
-        inner = repr(tuple(tuple(s) for s in filtered))
-    return f"({inner},)"
+    subs = [repr(tuple(s)) for s in filtered]
+    if len(subs) == 1:
+        # 1-tuple needs the trailing comma
+        return f"({subs[0]},)"
+    return "(" + ", ".join(subs) + ")"
 
 
 def _format_single_tensor_shape(shape: list[int] | None) -> str:
@@ -346,6 +346,17 @@ def _format_tensor_format(format_str: str | None) -> str:
     if format_str is None or not str(format_str).strip():
         return "ND"
     return str(format_str).strip().upper()
+
+
+def _tensor_list_element_count(item: dict[str, Any]) -> int:
+    """Return the number of TensorList elements represented by one ATK item."""
+    length = item.get("length")
+    if isinstance(length, int) and not isinstance(length, bool) and length > 0:
+        return length
+    shape = item.get("shape")
+    if isinstance(shape, list) and shape and isinstance(shape[0], list):
+        return len(shape)
+    return 1
 
 
 def _format_attrs(case: dict[str, Any], attr_names: set[str]) -> dict[str, Any]:
@@ -426,16 +437,24 @@ def convert_case(
         format_ttk = _format_tensor_format(item.get("format"))
 
         if is_tensor_list:
+            count = _tensor_list_element_count(item)
             # For TensorList, wrap in nested tuple
             if shape and isinstance(shape, list) and shape and isinstance(shape[0], list):
-                # multiple sub-tensors
+                # multiple sub-tensors (heterogeneous shapes given verbatim)
                 shapes_parts.append(_format_tensor_list_shapes(shape))
             elif shape:
-                shapes_parts.append(f"({repr(tuple(shape))},)")
+                # ``length`` is the number of sub-tensors in the TensorList
+                # (per the ATK expansion semantics in
+                # executer/resources/generator.py: a ``tensors`` input with
+                # ``length=N`` unfolds into N sub-tensors that each carry the
+                # same per-sub-tensor ``shape``). Replicate the single shape
+                # ``length`` times so the CSV carries N sub-tensors instead of
+                # just one.
+                shapes_parts.append(_format_tensor_list_shapes([shape] * count))
             else:
                 shapes_parts.append("None")
-            dtypes_parts.append(f"('{dtype_ttk}',)")
-            formats_parts.append(f"('{format_ttk}',)")
+            dtypes_parts.append(repr(tuple(dtype_ttk for _ in range(count))))
+            formats_parts.append(repr(tuple(format_ttk for _ in range(count))))
             data_ranges.append((None, None))
         else:
             shapes_parts.append(_format_single_tensor_shape(shape))
@@ -525,7 +544,10 @@ def audit_case(
                     expected_formats.append(None)
                     continue
                 token = _format_tensor_format(item.get("format"))
-                expected_formats.append((token,) if entry["tensor_list"] else token)
+                expected_formats.append(
+                    tuple(token for _ in range(_tensor_list_element_count(item)))
+                    if entry["tensor_list"] else token
+                )
             if tuple(expected_formats) != tuple(converted_formats):
                 issues.append(
                     "tensor format loss during conversion: "
