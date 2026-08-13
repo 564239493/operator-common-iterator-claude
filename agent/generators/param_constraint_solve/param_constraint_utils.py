@@ -793,10 +793,13 @@ class ParamConstraintUtils(CommonDispatcher):
             return False
         logger.info(f"End solving solution of constraints by Z3, operator name : {self.operator_name}")
 
-        absent_params = [param_name for param_name in self.case_input_map.keys()
-                         if solver_result.get(param_name, {}).get('is_present') is False]
+        absent_params = []
+
+        for param_name in self.case_input_map:
+            if param_name not in solver_result or solver_result.get(param_name).get("is_present") is False:
+                absent_params.append(param_name)
+        self.case.inputs = [inp for inp in self.case.inputs if inp.name not in absent_params]
         for param_name in absent_params:
-            self.case.inputs = [inp for inp in self.case.inputs if inp.name not in absent_params]
             self.case_input_map.pop(param_name)
 
         for param_name in self.case_input_map.keys():
