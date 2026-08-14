@@ -1,9 +1,9 @@
-from coverage import Pair, PairUniverse
-from coverage.coverage import CoverageTracker
-from coverage.parameter import Factor
-from coverage.value import FactorValue
+﻿from agent.generators.operator_param_combine.combination_result_generator.coverage import Pair, PairUniverse
+from agent.generators.operator_param_combine.combination_result_generator.coverage.coverage import CoverageTracker
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
 
-from generator.pair_seed_generator import (
+from agent.generators.operator_param_combine.combination_result_generator.generator.pair_seed_generator import (
     PairSeedGenerator,
 )
 

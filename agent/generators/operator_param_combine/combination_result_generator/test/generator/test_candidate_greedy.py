@@ -1,19 +1,19 @@
-import pytest
+﻿import pytest
 
-from coverage.coverage import CoverageTracker
-from coverage.pair import Pair
-from coverage.pair_builder import PairBuilder
-from coverage.parameter import Factor
-from coverage.universe import PairUniverse
-from coverage.value import FactorValue
+from agent.generators.operator_param_combine.combination_result_generator.coverage.coverage import CoverageTracker
+from agent.generators.operator_param_combine.combination_result_generator.coverage.pair import Pair
+from agent.generators.operator_param_combine.combination_result_generator.coverage.pair_builder import PairBuilder
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.universe import PairUniverse
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
 
-from generator.candidate_generator import CandidateGenerator
-from generator.exceptions import CandidateGenerationError
-from generator.model import TestCase
-from generator.model import TestValue
+from agent.generators.operator_param_combine.combination_result_generator.generator.candidate_generator import CandidateGenerator
+from agent.generators.operator_param_combine.combination_result_generator.generator.exceptions import CandidateGenerationError
+from agent.generators.operator_param_combine.combination_result_generator.generator.model import TestCase
+from agent.generators.operator_param_combine.combination_result_generator.generator.model import TestValue
 
-from model.generator_config import GeneratorConfig
-from model.parameter_model import ParameterModel
+from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
+from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
 
 
 def build_small_universe():

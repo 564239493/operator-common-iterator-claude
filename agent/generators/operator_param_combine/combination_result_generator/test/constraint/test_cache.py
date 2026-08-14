@@ -1,6 +1,6 @@
-import ast
+﻿import ast
 
-from constraint.cache import ConstraintCache
+from agent.generators.operator_param_combine.combination_result_generator.constraint.cache import ConstraintCache
 
 
 class TestConstraintCache:

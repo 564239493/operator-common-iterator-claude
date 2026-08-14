@@ -456,37 +456,41 @@ class CombinationConstraintGenerate:
 
         return _QUOTED_STR_RE.sub(_replacer, expr)
 
-    def solve_dtype_support_description(self) -> str | None:
+    def solve_dtype_support_description(self) -> tuple[str | None, List[str] | None]:
         # 这里对于dtype_support_description中的数据，不能随机选择一组作为全组合的数据，需要将此节点中的数据转换成表达式，
         #  加入constraint中
         dtype_support_description = self.operator_rule_data.dtype_support_description
         if dtype_support_description is None:
-            return None
+            return None, None
         dtype_support_constraints = []
+        relation_param = []
         for dtype_support in dtype_support_description:
             dtype_constraint = []
             for param_name, dtype_value in dtype_support.items():
-                constraint = f"{param_name}.dtype == {dtype_value}"
+                constraint = f"{param_name}.dtype == '{dtype_value}'"
                 dtype_constraint.append(constraint)
+                relation_param.append(param_name)
             dtype_constraint_str = " and ".join(dtype_constraint)
             dtype_support_constraints.append(dtype_constraint_str)
         dtype_support_constraints_str = " or ".join(f"({item})" for item in dtype_support_constraints)
-        return dtype_support_constraints_str
+        return dtype_support_constraints_str, relation_param
 
 
-    def solve_format_support_map(self) -> str | None:
+    def solve_format_support_map(self) -> tuple[str | None, List[str] | None]:
         # 这里对于format_support_description中的数据，不能随机选择一组作为全组合的数据，需要将此节点中的数据转换成表达式，
         #  加入constraint中
         format_support_description = self.operator_rule_data.format_support_description
         if format_support_description is None:
-            return None
+            return None, None
         format_support_constraints = []
+        relation_param = []
         for format_support in format_support_description:
             format_constraint = []
             for param_name, format_value in format_support.items():
-                constraint = f"{param_name}.format == {format_value}"
+                constraint = f"{param_name}.format == '{format_value}'"
                 format_constraint.append(constraint)
+                relation_param.append(param_name)
             format_constraint_str = " and ".join(format_constraint)
             format_support_constraints.append(format_constraint_str)
         format_support_constraints_str = " or ".join(f"({item})" for item in format_support_constraints)
-        return format_support_constraints_str
+        return format_support_constraints_str, relation_param

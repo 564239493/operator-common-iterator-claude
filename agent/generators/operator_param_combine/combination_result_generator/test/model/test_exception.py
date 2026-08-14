@@ -1,4 +1,4 @@
-from model.exceptions import EmptyParameterNameError, InvalidVariableError, ValueIdNotFoundError, \
+﻿from agent.generators.operator_param_combine.combination_result_generator.model.exceptions import EmptyParameterNameError, InvalidVariableError, ValueIdNotFoundError, \
     ContextVariableMissingError, ModelError
 
 

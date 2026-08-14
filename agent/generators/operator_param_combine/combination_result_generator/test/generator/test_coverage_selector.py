@@ -1,12 +1,12 @@
-import pytest
+﻿import pytest
 
-from coverage.coverage import CoverageTracker
-from coverage.parameter import Factor
-from coverage.universe import PairUniverse
-from coverage.value import FactorValue
-from coverage.pair import Pair
+from agent.generators.operator_param_combine.combination_result_generator.coverage.coverage import CoverageTracker
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.universe import PairUniverse
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
+from agent.generators.operator_param_combine.combination_result_generator.coverage.pair import Pair
 
-from generator.coverage_selector import (
+from agent.generators.operator_param_combine.combination_result_generator.generator.coverage_selector import (
     CoverageSelector,
     FirstUncoveredPairSelector,
     RandomUncoveredPairSelector,
@@ -24,7 +24,7 @@ def make_universe_and_tracker(num_pairs: int = 5):
             FactorValue(Factor(f"p{i}", "dimension"), i)
         )
 
-    from coverage.pair_builder import PairBuilder
+    from agent.generators.operator_param_combine.combination_result_generator.coverage.pair_builder import PairBuilder
     builder = PairBuilder()
     pairs = builder.build(factor_values)
     universe = PairUniverse(pairs)

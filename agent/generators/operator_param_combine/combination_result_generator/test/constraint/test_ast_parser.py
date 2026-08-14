@@ -1,16 +1,16 @@
-
+﻿
 import ast
 
 
 import pytest
 
 
-from constraint.ast_parser import (
+from agent.generators.operator_param_combine.combination_result_generator.constraint.ast_parser import (
     ConstraintParser,
 )
 
 
-from constraint.exceptions import (
+from agent.generators.operator_param_combine.combination_result_generator.constraint.exceptions import (
     ConstraintSyntaxError,
 )
 

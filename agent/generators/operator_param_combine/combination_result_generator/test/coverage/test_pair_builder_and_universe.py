@@ -1,7 +1,7 @@
-from coverage.pair_builder import PairBuilder
-from coverage.parameter import Factor
-from coverage.universe import PairUniverse
-from coverage.value import FactorValue
+﻿from agent.generators.operator_param_combine.combination_result_generator.coverage.pair_builder import PairBuilder
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.universe import PairUniverse
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
 
 
 class TestPairBuilder:
