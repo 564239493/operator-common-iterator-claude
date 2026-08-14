@@ -31,7 +31,17 @@ TERMINAL_STATES = {
 }
 FILE_READ_TOOLS = {"Read", "Glob", "Grep"}
 FILE_WRITE_TOOLS = {"Edit", "Write", "NotebookEdit"}
-SHELL_TOOLS = {"Bash", "PowerShell"}
+SHELL_TOOLS = {"Bash", "PowerShell", "Monitor"}
+
+GENERATION_PROGRESS_REFERENCE = re.compile(r"(?i)generation_progress\.py")
+COMPLEX_GENERATION_MONITOR = re.compile(
+    r"(?ix)"
+    r"\$\(|"
+    r"(?:^|\s)(?:while|case|sleep|grep|head|tail|ps)(?:\s|$)|"
+    r"(?:^|\s)(?:cd|set)\s+|"
+    r"(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=|"
+    r"[|]"
+)
 
 WRITE_OR_DELETE = re.compile(
     r"""(?ix)
@@ -406,6 +416,17 @@ def guard_file_tool(payload: dict[str, Any], root: Path) -> str | None:
 def guard_shell(payload: dict[str, Any], root: Path) -> str | None:
     command = str((payload.get("tool_input") or {}).get("command") or "")
     current = read_scope(payload, root)
+
+    if (
+        GENERATION_PROGRESS_REFERENCE.search(command)
+        and COMPLEX_GENERATION_MONITOR.search(command)
+    ):
+        return (
+            "禁止用 shell 变量/管道/while/grep/sleep 包装 generation_progress.py；"
+            "请让 Monitor 直接运行单条绝对路径命令: "
+            "<venv-python> <repo>/scripts/generation_progress.py watch "
+            "--output-dir <iter> --interval 60"
+        )
 
     if INLINE_PYTHON.search(command):
         return (

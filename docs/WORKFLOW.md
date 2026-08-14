@@ -175,6 +175,12 @@ ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生
 完成条件：`cases.json` 非空；TTK 还要求 CSV 与 audit 结构合法。
 失败策略：不让 LLM 手工“补齐”用例，保留 generator_bug 证据。
 
+长时间生成由脱离会话的 `generation_progress.py launch` 启动。主协调器用 Monitor
+执行单条 `generation_progress.py watch --output-dir <iter-absolute> --interval 60`
+持续读取结构化进度；Monitor 命令不得包含变量、管道或 shell
+`while`/`grep`/`sleep` 循环，避免触发与业务无关的安全审批。Monitor 中断不影响已经
+脱离会话的生成进程，之后可重新运行 `watch` 或单次运行 `status` 继续观察。
+
 ### EXECUTE
 
 输入：已校验 cases.json。  
