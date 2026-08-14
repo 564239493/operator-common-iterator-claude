@@ -24,10 +24,17 @@ depends_on: [expression_language]
 
 ##### A. 适用判定
 
-满足下列**全部**条件时，**必须**执行本节规则：
-1. 参数 `format.value`（按平台）为 `"NZ"` / `"FRACTAL_NZ"` / `"FRACTAL_NZ_C0_16"` 之一；
-2. 参数 `dimensions.value`（按平台）等于 `[5, 5]`（5 维张量）；或文档明确给出形如
-   `(b, n1, k1, k0, n0)` / `(b, k1, n1, n0, k0)` / `(..., k0, n0)` 的 5 维 NZ 维度元组。
+参数 `format.value`（按平台）包含 `"NZ"` / `"FRACTAL_NZ"` /
+`"FRACTAL_NZ_C0_16"` 时，先区分 cases 使用哪一种 shape 表示：
+
+1. **物理 NZ shape**：`dimensions.value` 为 `[5, 5]`，或文档明确给出
+   `(b,n1,k1,k0,n0)` / `(b,k1,n1,n0,k0)` 等物理维度元组，执行 §B～§C.1；
+2. **逻辑矩阵 shape**：cases 中仍用 2D `(K,N)` / `(N,K)` shape，仅通过
+   `format="NZ"` 触发内部转换；且算子文档、所链接的 NZ 格式规范或经过成功/失败样本
+   真值方向验证的运行证据明确要求逻辑 K/N 按块对齐时，执行 §C.2。
+
+禁止把物理 5D NZ 的 `shape[3]==16/shape[4]==16` 直接套到 2D 逻辑 shape；也禁止只因
+出现 `format="NZ"` 就臆造块尺寸。2D 对齐的块值、适用 dtype 和轴必须有明确依据。
 
 ##### B. NZ 维度元组识别（关键：必须区分转置 / 非转置两种布局）
 
@@ -49,6 +56,8 @@ depends_on: [expression_language]
 被 `shape_value_dependency` 的 ceil 关系合并匹配掩盖。
 
 ##### C. 必须产出的 `constraints_in_parameters` 条目
+
+###### C.1 物理 5D NZ shape
 
 对每个支持 NZ 的平台，必须在 `constraints_in_parameters[平台]` 中追加**至少**以下
 两条 `shape_equality`（也可用 `shape_value_dependency`，但推荐 `shape_equality`
@@ -96,6 +105,30 @@ src_text: "NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 
    关系参数列表只写 `["mat2"]`；`k0` / `n0` 已在隐式参数知识中标为 constant，无需
    在约束条目中再列。
 
+###### C.2 2D 逻辑 shape + NZ format
+
+当用例结构保留二维逻辑矩阵 shape，而文档/格式规范/已确认内核诊断明确要求 K、N
+分别按 `BK`、`BN` 对齐时，必须生成带 format（必要时再带 dtype）门控的整除约束：
+
+```text
+expr_type: shape_value_dependency
+expr: not(weight.format == "NZ") or not(weight.dtype == "FLOAT16" or weight.dtype == "BFLOAT16") or (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
+relation_params: ["weight"]
+src_text: "<摘录算子文档/链接格式规范中的 NZ 对齐要求；若来自已确认内核诊断，明确标注验证范围>"
+```
+
+- 二维矩阵的两轴都要求 16 对齐时，转置只交换 K/N 名称，不改变“两维均 `%16==0`”的
+  表达式，无需复制转置分支。
+- 若不同 dtype 的块大小不同，必须拆成 dtype 门控分支，不得一律写 16。
+- 若只有 K 或 N 单轴要求对齐，必须结合真实 transpose/布局状态定位对应 shape 轴；不得
+  为求简便同时约束两轴。
+- 此规则约束的是 shape，不得写入 `allowed_range_value`。
+- 内核错误消息中即使写成 `(K,N) divisible by [BK,BN]`，也不能跳过真值方向校验。
+  错误文本本身不构成双轴对齐依据，不得单独据此沉淀 K/N 双轴约束。
+  应同时检查失败样本和成功反例：若存在 K 非对齐但成功的样本，禁止继续沉淀双轴约束；
+  需按转置状态分别计算逻辑 K/N，找出真正决定成功/失败的轴。经验样本仍不能区分两个
+  候选规则时，必须在 operator 知识中记录不确定性和补测判别样本，不得伪装成文档定论。
+
 ##### D. `allowed_range_value` 不承载块尺寸硬约束（语义修正）
 
 > **关键澄清**：`allowed_range_value` 是**参数取值范围**，对 tensor 参数指**元素数据值**
@@ -103,7 +136,7 @@ src_text: "NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 
 > 一律落 `constraints_in_parameters`（见 §C 的 `shape_equality`），禁止塞进
 > `allowed_range_value`。**
 
-按平台，对 `mat2`（或任何 5D NZ 张量）的 `allowed_range_value` 字段：
+按平台，对 `mat2`（或任何 NZ 张量）的 `allowed_range_value` 字段：
 
 1. 仅约束 shape 块尺寸（`k0=16`、`n0=16`）、未约束 mat2 元素取值的算子，
    `allowed_range_value.value=[]`（空）、`src_text=""`；块尺寸 16 的硬约束由 §C 的
@@ -151,6 +184,20 @@ mat2.shape[4] == 16
 （如非转置摘 `(b, n1, k1, k0, n0)，其中k0 = 16， n0为16`；转置摘
 `(b, k1, n1, n0, k0)，其中n0 = 16， k0为16`），且作为 `constraints_in_parameters`
 中**不同条目**落库。
+
+#### 模式 6：2D 逻辑矩阵的 NZ 对齐（v3 新增）
+
+**适用场景**：cases 仍使用二维逻辑 shape，且有明确依据说明当前 dtype 下 K/N 均需
+按 16 对齐。
+
+```text
+not(weight.format == "NZ")
+or not(weight.dtype == "FLOAT16" or weight.dtype == "BFLOAT16")
+or (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
+```
+
+该模式与模式 5 互斥：模式 5 约束物理 5D shape 的内块轴等于 16；模式 6 约束二维逻辑
+shape 的矩阵轴可被 16 整除。
 
 ## 边界
 

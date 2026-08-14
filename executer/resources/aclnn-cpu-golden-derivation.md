@@ -1441,49 +1441,104 @@ return result
 
 ---
 
-## GroupedMatmulV5 Transposed Shape Handling (Semantic B: shape tuple reorder)
+## GroupedMatmulV5 weight 方向与 ND 转置布局处理
 
-**Applicable operator:** `aclnnGroupedMatmulV5` (and other ND-format grouped-matmul ops that introduce a `<param>_transposed` implicit bool via the `transpose_shape` prompt module).
+**适用范围：** `aclnnGroupedMatmulV5` 的二维 ND weight。以下规则由运行
+`aclnnGroupedMatmulV5-20260813-075223-209105` 的 executor 修复及硬件重跑验证；NZ
+物理排布、三维 weight 和 `x_transposed=True` 需要分别验证，不能直接套用本节实现。
 
-**Background:** GroupedMatmulV5 uses **semantic B** for transpose — the transpose state is encoded in the **shape tuple order**, not stride. The extractor introduces implicit bools `x_transposed` / `weight_transposed` (see `prompts/modules/transpose_shape.md`); the generator binds each bool to the K-axis position in `<param>.shape` via a `shape_value_dependency` if/else, so in the generated `cases.json`:
-- `x_transposed == False` (groupType ∈ {-1, 0}) → `x.shape == (M, K)` (K at `shape[1]`, normal layout)
-- `x_transposed == True` (groupType == 2) → `x.shape == (K, M)` (K at `shape[0]`, transposed layout)
+### cases 层与 ACLNN 调用层不是同一表示
 
-The bool and shape are **self-consistent at the cases layer**; the executor builds a dense tensor straight from `x.shape` (no stride handling needed). The CPU golden must read the bool (or infer from groupType) and transpose back to the normal `(M, K)` layout before the grouped matmul.
+生成的 `cases.json` 使用 shape 顺序表达 weight 的逻辑转置状态：
 
-**CPU golden code pattern:**
+- `weight_transposed=False`：weight shape 为 `(N,K)`；
+- `weight_transposed=True`：weight shape 为 `(K,N)`。
+
+ACLNN 调用侧在已验证场景中始终按 `(K,N)` 校验矩阵乘方向，同时通过 Tensor 的连续性/
+stride 区分 ND weight 是否为转置布局。因此 executor 必须执行如下归一化：
 
 ```python
-# Extract inputs and the implicit transposed flags
-x = _get_tensor("x")              # (M,K) if x_transposed=False, (K,M) if True
-weight = _get_tensor("weight")
-x_transposed = bool(_get_param("x_transposed", False))
-weight_transposed = bool(_get_param("weight_transposed", False))
-
-# Semantic B: JSON shape encodes the transposed axis order.
-# Transpose back to the normal (M,K) / (...,K,N) layout for the matmul.
-if x_transposed and x is not None:
-    x = x.transpose(0, 1)              # (K,M) -> (M,K)
-if weight_transposed and weight is not None:
-    weight = weight.transpose(-1, -2)  # restore normal (...,K,N) layout
-
-# Now x is (M,K), weight is (...,K,N); proceed with the grouped matmul
-# (split by groupListOptional per groupType/groupListType — that logic is
-#  outside the transpose concern; see the MoE/FFN grouped-matmul pattern).
-result = grouped_matmul(x, weight, bias, group_list, group_type, split_item)
-return result
+if weight_transposed:
+    # cases 已是 (K,N)：保持 shape 和数值，构造转置产生的非连续 view
+    weight_for_npu = weight.transpose(-1, -2).contiguous().transpose(-1, -2)
+else:
+    # cases 是 (N,K)：转换为 ACLNN 需要的连续 (K,N)
+    weight_for_npu = weight.transpose(-1, -2).contiguous()
 ```
 
-**Key points:**
-1. Read the bool via `_get_param("<param>_transposed", False)` — same pattern as WeightNZ's `self_transposed` (§WeightNZ, line ~1372).
-2. `x_transposed` / `weight_transposed` are implicit control variables, **not** in the ACLNN function signature; they appear only in `cases.json` inputs and are read by name.
-3. Semantic B = transpose-by-shape-reorder, so the golden transposes the **axes** (`transpose(0,1)` / `transpose(-1,-2)`), not strides — no `as_strided`, no stride fields in `cases.json`.
-4. The flag is **redundant with `groupType`** for GroupedMatmulV5 (groupType==2 ⇒ `x_transposed==True`), but the golden should read the bool directly (single source of truth at the cases layer) rather than re-deriving from groupType.
-5. If a case lacks the bool (older `cases.json` without `_transposed`), fall back to inferring from `groupType == 2`.
+不能在 `weight_transposed=False` 时把 `(N,K)` 原样传入；硬件会报 `X dim 1` 与
+`weight dim 0` 不相等。也不能把两个分支都转成连续 `(K,N)`，否则虽然数学结果可能正确，
+却丢失了 `weight_transposed=True` 要求的非连续转置布局。
 
-**Checklist for GroupedMatmulV5 transposed handling:**
-- [ ] **CPU code reads `x_transposed` / `weight_transposed`** from `_get_param` by name
-- [ ] **CPU code transposes x back to (M,K)** when `x_transposed == True` before matmul
-- [ ] **CPU code does NOT touch stride** — semantic B only reorders axes; no `as_strided`, no stride fields in cases.json
-- [ ] **executor unchanged** — `cases_executor.py` builds the tensor from `x.shape` directly (does not read `_transposed`); only the CPU golden reads the bool
-- [ ] **case shape and bool are consistent** — verify `x_transposed == True` ⇔ `x.shape` has K at `shape[0]` (the generator's `shape_value_dependency` if/else guarantees this)
+### CPU golden 只处理数学方向
+
+CPU golden 不应复用 NPU 的 stride 物化逻辑。它只需要把两种 cases 表示变为矩阵乘所需的
+`(K,N)` 数学视图：
+
+```python
+weight_transposed = bool(_get_param("weight_transposed", False))
+
+if weight_transposed:
+    # cases 已经是 (K,N)
+    weight_for_matmul = weight
+else:
+    # cases 是 (N,K)
+    weight_for_matmul = weight.transpose(-1, -2)
+
+result = torch.matmul(x, weight_for_matmul)
+```
+
+若当前场景还生成了 `x_transposed=True`，CPU golden 可将 cases 中的 `(K,M)` 转回
+`(M,K)` 后计算；但 NPU executor 是否也需要为 x 构造非连续 view，必须用相应 groupType=2
+用例单独验证，不能由本次 weight 结果推断。
+
+### 检查清单
+
+- [ ] executor 不再无条件转置 `x[0]`
+- [ ] executor 读取 `weight_transposed`，而不是由 shape 猜测
+- [ ] false：cases `(N,K)` → NPU 连续 `(K,N)`
+- [ ] true：cases `(K,N)` → NPU shape 不变、非连续转置 view
+- [ ] kwargs 与 positional args 路径互斥，避免重复转换
+- [ ] CPU golden：false 使用 `weight.T`，true 直接使用 weight
+- [ ] `activationFeatureOutOptional` / `dynQuantScaleOutOptional` 使用 `pop(..., None)`
+
+### A2/A8W8 groupType=0 的 groupList 内容物化
+
+**精确适用范围：** `aclnnGroupedMatmulV5`，A2/A8W8，`groupType=0`、
+`groupListType=0`，并且 x、weight、out 都是单 TensorList；其中 x tensor 为 `[M,K]`，
+weight tensor 为 `[E,K,N]`（`weight_transposed=True`）或 cases 表示的 `[E,N,K]`
+（`weight_transposed=False`）。不要把本节实现用于 groupListType 1/2、groupType 2、
+多 TensorList、非量化或伪量化场景。
+
+此场景的 groupList 是长度 E 的累计 M 轴边界。cases 中普通 `range_values` 只描述生成器
+采样值，不能表达“非负、单调非递减、末项不大于 M”的序列语义。公共 executor 因而用
+`_build_grouped_matmul_v5_group_list_cumsum(M, E, device)` 生成均匀分组边界，并选择末项
+等于 M。`==M` 是合法的确定性测试构造，不是 API 的必要条件；文档允许末项小于等于 M。
+
+CPU golden 必须复用相同边界进行分组，不能忽略 groupList，也不能用 TensorList 的长度
+作为 E（本场景 TensorList 长度为 1，而 E 在 3-D weight 的第 0 轴）：
+
+```python
+x_tensor = x[0]                  # [M,K]
+weight_tensor = weight[0]        # [E,K,N] or [E,N,K] in cases
+if not weight_transposed:
+    weight_tensor = weight_tensor.transpose(-1, -2)
+
+group_list = _build_grouped_matmul_v5_group_list_cumsum(
+    x_tensor.shape[0], weight_tensor.shape[0], x_tensor.device
+)
+start = 0
+group_outputs = []
+for group_index, end_tensor in enumerate(group_list):
+    end = int(end_tensor.item())
+    x_group = x_tensor[start:end]
+    y_group = torch.matmul(x_group.float(), weight_tensor[group_index].float())
+    # 按算子文档应用该 group 的 scale/bias，并对 perTokenScale 使用 [start:end] 切片。
+    group_outputs.append(y_group)
+    start = end
+result = torch.cat(group_outputs, dim=0)
+```
+
+附加 shape 要求也必须在约束层满足，executor 不负责修 shape：groupList 为 `[E]`；
+bias 存在时为 `[E,N]`；perTokenScale 存在时为 `[M]`。若 groupList 的元素数不等于 E，
+executor 应明确报错，不能通过截断、补齐或改 shape 掩盖约束提取问题。
