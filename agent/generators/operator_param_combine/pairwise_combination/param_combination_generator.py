@@ -40,7 +40,9 @@ class PairwiseParamCombinationGenerator:
         attr_domain = AttributeDomain(self.operator_rule_data)
         constraint_processor = ConstraintProcessor(self.operator_rule_data)
         pairwise_gen = PairwiseCombinationGenerator(attr_domain, constraint_processor)
-        raw_combinations = pairwise_gen.generate()
+        # Cap pairwise generation at case_num to allow early-stop; without this
+        # generate() covers the full 2-pair space (can be millions) and hangs.
+        raw_combinations = pairwise_gen.generate(max_cases=self.case_num)
 
         if not raw_combinations:
             logger.error("Pairwise generation returned no combinations")
@@ -130,6 +132,19 @@ class PairwiseParamCombinationGenerator:
         )
         if dtype_set:
             return random.choice(dtype_set)
+        param_type = self._get_attr_value(param_name, param_attr.type, "type")
+        scalar_fallback = {
+            "int": "int",
+            "float": "float",
+            "bool": "bool",
+            "str": "string",
+            "string": "string",
+            "aclIntArray": "int",
+            "aclFloatArray": "float",
+            "aclBoolArray": "bool",
+        }.get(str(param_type))
+        if scalar_fallback:
+            return scalar_fallback
         return ParamModelConfig.DEFAULT_PARAM_DTYPE_DTYPE_IN_ORIGINAL_DOC
 
     def _get_length_value(self, raw_case: Dict[str, Dict[str, Any]],
@@ -190,7 +205,10 @@ class PairwiseParamCombinationGenerator:
                 dim_count = ParamModelConfig.DEFAULT_TENSOR_SHAPE_DIM
             else:
                 dim_count = random.choice(dim_value) if isinstance(dim_value, list) else dim_value
-        dim_count = int(dim_count) if dim_count else ParamModelConfig.DEFAULT_TENSOR_SHAPE_DIM
+        try:
+            dim_count = int(dim_count) if dim_count else ParamModelConfig.DEFAULT_TENSOR_SHAPE_DIM
+        except (ValueError, TypeError):
+            dim_count = ParamModelConfig.DEFAULT_TENSOR_SHAPE_DIM
 
         dim_profile = raw_case.get(param_name, {}).get("dim_value_profile")
         if dim_profile is None:

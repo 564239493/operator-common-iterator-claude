@@ -12,6 +12,28 @@ PROMPT_DIRECTORY = ROOT / "prompts"
 OPERATOR_PROMPT_PATTERN = re.compile(
     r"^operator_constraints_extract_v(?P<version>\d+)\.md$"
 )
+TORCH_NPU_PROMPT_PATTERN = re.compile(
+    r"^torch_npu_constraints_extract_v(?P<version>\d+)\.md$"
+)
+TTK_SUPPORTED_TORCH_NPU_OPERATORS = frozenset({
+    "torch_npu.npu_fused_infer_attention_score",
+    "torch_npu.npu_mla_prolog_v3",
+    "torch_npu.npu_lightning_indexer",
+    "torch_npu.npu_quant_lightning_indexer",
+    "torch_npu.npu_sparse_flash_attention",
+    "torch_npu.npu_kv_quant_sparse_flash_attention",
+})
+
+
+def default_test_framework(operator_family: str, operator_name: str = "") -> str:
+    """Select a safe auto framework without routing unsupported APIs to TTK."""
+    if operator_family != "hs":
+        return "atk"
+    return (
+        "ttk"
+        if operator_name in TTK_SUPPORTED_TORCH_NPU_OPERATORS
+        else "constraints"
+    )
 
 
 def resolve_input_path(value: str | Path) -> Path:
@@ -37,6 +59,38 @@ def find_latest_operator_prompt(directory: Path | None = None) -> Path | None:
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
+def find_active_aclnn_prompt(directory: Path | None = None) -> Path | None:
+    """Return the split ACLNN base, falling back to the historical latest vN."""
+    prompt_dir = (directory or PROMPT_DIRECTORY).resolve()
+    split_base = prompt_dir / "operator_constraints" / "base.md"
+    return split_base.resolve() if split_base.is_file() else find_latest_operator_prompt(prompt_dir)
+
+
+def find_latest_hs_prompt(directory: Path | None = None) -> Path | None:
+    """Return the split torch_npu base, falling back to the historical latest vN."""
+    prompt_dir = (directory or PROMPT_DIRECTORY).resolve()
+    split_base = prompt_dir / "torch_npu_constraints" / "base.md"
+    if split_base.is_file():
+        return split_base.resolve()
+    candidates: list[tuple[int, Path]] = []
+    if not prompt_dir.is_dir():
+        return None
+    for path in prompt_dir.iterdir():
+        match = (
+            TORCH_NPU_PROMPT_PATTERN.fullmatch(path.name)
+            if path.is_file()
+            else None
+        )
+        if match:
+            candidates.append((int(match.group("version")), path.resolve()))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def find_latest_torch_npu_prompt(directory: Path | None = None) -> Path | None:
+    """Named alias for new callers; keeps the old public helper compatible."""
+    return find_latest_hs_prompt(directory)
+
+
 def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
     """Validate server config without exposing credential values."""
     path = resolve_input_path(value)
@@ -52,6 +106,9 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
     if not isinstance(servers, list) or not servers:
         return path, ["服务器配置必须包含非空 servers 数组"]
 
+    # 与 executer/ssh.py upload_file 支持的传输方式保持一致：base64 用于
+    # 不支持 SFTP/SCP 的服务器（SSH stdin base64 编码传输），是合法值。
+    valid_transfer_modes = {"auto", "scp", "sftp", "base64", ""}
     errors: list[str] = []
     required = ("ip", "username", "password")
     for index, server in enumerate(servers):
@@ -64,7 +121,75 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
         platforms = server.get("platforms")
         if not isinstance(platforms, list) or not platforms:
             errors.append(f"servers[{index}].platforms 必须是非空数组")
+        # Optional: validate transfer_mode
+        tm = server.get("transfer_mode")
+        if tm is not None and str(tm).strip().lower() not in valid_transfer_modes:
+            errors.append(
+                f"servers[{index}].transfer_mode 必须是 auto / scp / sftp / base64 之一"
+            )
+        # Optional: validate remote_paths structure
+        rp = server.get("remote_paths")
+        if rp is not None and not isinstance(rp, dict):
+            errors.append(f"servers[{index}].remote_paths 必须是 object")
+        ttk = server.get("ttk")
+        if ttk is not None:
+            if not isinstance(ttk, dict):
+                errors.append(f"servers[{index}].ttk 必须是 object")
+            else:
+                for key in ("remote_root", "repo_path", "python"):
+                    if not str(ttk.get(key) or "").strip():
+                        errors.append(f"servers[{index}].ttk.{key} 不能为空")
+        # Optional: validate fusion config (supports_fusion + fusion_devices)
+        supports_fusion = server.get("supports_fusion")
+        if supports_fusion is not None and not isinstance(supports_fusion, bool):
+            errors.append(f"servers[{index}].supports_fusion 必须是 bool")
+        if supports_fusion:
+            fusion_devices = server.get("fusion_devices")
+            if not isinstance(fusion_devices, list) or len(fusion_devices) != 2 or not all(
+                isinstance(d, int) and d >= 0 for d in fusion_devices
+            ):
+                errors.append(
+                    f"servers[{index}].fusion_devices 必须是长度 2 的非负整数数组 (card_1, card_2)；supports_fusion=true 时必填"
+                )
     return path, errors
+
+
+def resolve_fusion_world_size(server_config_path: str | Path) -> int | None:
+    """Return ``len(fusion_devices)`` from the fusion server in ``servers.json``.
+
+    Reads only the non-secret ``fusion_devices`` field (device indices) — never
+    ip/password — so case generation can pin ``rankSize`` to the actual
+    communication-domain card count and produce cases runnable on the
+    provisioned hardware.
+
+    Returns ``None`` when the config is missing, not JSON, has no
+    ``supports_fusion=true`` server, or that server lacks a valid non-empty
+    non-negative-int ``fusion_devices`` list. Callers then fall back to the
+    doc-derived ``rankSize`` enum (no pinning) — backward compatible.
+    """
+    path = resolve_input_path(server_config_path)
+    if not path.is_file():
+        return None
+    try:
+        payload: Any = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    servers = payload.get("servers")
+    if not isinstance(servers, list):
+        return None
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        if not server.get("supports_fusion"):
+            continue
+        fusion_devices = server.get("fusion_devices")
+        if isinstance(fusion_devices, list) and fusion_devices and all(
+            isinstance(d, int) and d >= 0 for d in fusion_devices
+        ):
+            return len(fusion_devices)
+    return None
 
 
 def config_error_payload(path: Path, errors: list[str]) -> dict[str, Any]:

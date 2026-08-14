@@ -8,29 +8,18 @@ class GlobalConfig:
     """全局配置"""
     # 默认配置文件路径
     CONFIG_FILES_BASE_PATH = ""
-    # pict执行文件路径
-    PICT_EXE_PATH = r"operator_param_combine/pict.exe"
     # 默认用例json数据保存路径
     CASE_RESULT_SAVE_PATH = r"../data/output"
     # 默认rule.json数据保存路径
     RULE_DATA_SAVE_PATH = r"../data/input/rule"
     # 参数语义角色识别保存路径
     PARAM_ROLE_RESULT_SAVE_PATH = r"../data/input/param_semantic_role"
-    # 处理函数关键字标记
-    PROCESS_FUNCTION_MARKER = "GetWorkspaceSize"
-    # 默认生成用例数量
-    DEFAULT_CASE_COUNT = 10
-    # 单个用例最大生成尝试次数
-    MAX_GENERATION_ATTEMPTS = 100
     # 解析参数语义角色定义文件中的模型类型标签，即global_role_definition.json
     ROLE_RULE_TYPE_KEY = "type"
     # 对于可选参数，以OPTIONAL_PARAM_PROBABILITY的概率选择是否为其赋值
     OPTIONAL_PARAM_PROBABILITY = 0.5
     # 每个用例使用Z3求解次数的上限，如果每个算子使用Z3求解次数的次数超出该上限，则终止求解过程，输出已有用例，并通知工作人员查看是否约束冲突导致无解
     Z3_SOLVE_TIME_LIMIT = 10
-    # Z3表达式处理幂运算时，对于x ** 2类的场景，即底数为变量，指数为常量的情况，只能展开为for循环来处理，需要限制指数的最大值，避免消耗大量时间
-    # 构建表达式，导致求解器卡死
-    Z3_EXPONENT_MAX_VALUE = 3
     # 不区分平台时，代码通用平台的关键字
     COMMON_PLATFORM = "common"
 
@@ -60,19 +49,6 @@ class ParamModelConfig:
     RANDOM_GENERATE_SHAPE_TIME_LIMIT = 5
     # 当shape_definitions.json中没有对Has_Large_Size的策略定义时，此策略下shape可以取的最大值，仅在Has_Large_Size策略中使用
     DEFAULT_LARGE_FIX_DIM = 4096
-    # 数据语义角色全集
-    PARAM_ROLE_ONTOLOGY = [
-        "role_data_generic",  # 1. 通用数据 (x1, x2, ...) -> 边界
-        "role_data_positive_only",  # 2. 仅正数数据 (sqrt, log 的输入) -> > 0
-        "role_scale_param",  # 3. 尺度参数 (gamma) -> 测 0, 1, Inf,随机扰动
-        "role_bias_param",  # 4. 偏置参数 (beta) -> 测 0, Inf,-Inf,随机扰动
-        "role_index_tensor",  # 5. 索引张量 (MoE routing, gather) -> 整数, [0, N)
-        "role_quant_scale",  # 6. 量化尺度 (quant_scale) -> 正浮点数
-        "role_quant_offset",  # 7. 量化偏移 (quant_offset/zp) -> 整数
-        "role_epsilon_float",  # 8. 极小值 (epsilon) -> 1e-5, 0
-        "role_shape_attribute",  # 9. 形状属性 (shape, stride, dim) -> 整数, 测 1, 奇数
-        "role_unclassified",  # 非典型角色
-    ]
     # 默认的数据语义角色，仅在参数数据语义角色缺失时使用
     DEFAULT_PARAM_ROLE = "role_data_generic"
     # 默认的tensor填充值模型，仅在输入的填充值模型缺失时使用
@@ -121,17 +97,12 @@ class ParamModelConfig:
     TENSOR_ATK_TYPE = ["tensor", "tensors"]
     # 数组类参数的数据类型
     LIST_ATK_TYPE = ["tensors", "scalars", "attrs"]
-    # 用于识别参数组合后转换为参数名+属性名称的标题使用的pattern
-    OPERATOR_NAME_RE_PATTERN = re.compile(
-        r'^([a-zA-Z0-9]+)_(dim_count|dim_property|dtype|data_profile|memory|value|mode|param_type)$')
     # 严格应用人工规则修正的参数间约束类型
     COMBINATION_USE_CONSTRAINT_TYPE = ["shape_equality", "type_equality", "format_equality"]
     # STRICT_CONSTRAINT_TYPE = ["shape_equality", "type_equality"]
     STRICT_CONSTRAINT_TYPE = []
     # 参数format可取值
     FORMAT_VALUE_LIST = ["nchw", "nhwc", "nc", "cn", "fractal_nz", "nchw16", "nchw8", "chwn8", "nhwc8", "nhwc16"]
-    # 所有的tensor参数的shape中每一维的值都必须大于等于0，为shape属性的隐藏条件
-    SHAPE_VALUE_MIN_EXPR = "all(d > 0 for d in {}.shape)"
     # 参数模型定义中不涉及的参数value值
     NOT_RELEVANT_PARAM_VALUE = "N/A"
     # 暂不支持的数据类型
@@ -161,17 +132,17 @@ class DataMatchMap:
 
     # 在case_config中只生成数据生成方法字段，不生成实际数据时使用，用于适配ATK框架
     ACL_DTYPE_TRANSFER_TENSOR_MAP = {"INT4": "int4", "int4": "int4", "INT8": "int8", "int8": "int8", "int8_t": "int8",
-                                     "INT16": "int16", "INT32": "int32",
-                                     "UINT8": "uint8", "INT": "int64", "uint64": "uint64", "uint64_t": "uint64",
+                                     "INT16": "int16", "INT32": "int32", "int32": "int32",
+                                     "UINT8": "uint8", "uint8": "uint8", "INT": "int64", "uint64": "uint64", "uint64_t": "uint64",
                                      "UINT16": "uint16", "UINT32": "uint32", "UINT64": "uint64", "INT64": "int64",
-                                     "BFLOAT16": "bf16", "FLOAT16": "fp16", "FLOAT32": "fp32", "FLOAT64": "fp64",
+                                     "BFLOAT16": "bf16", "bfloat16":"bf16", "BF16": "bf16","bf16":"bf16", "FLOAT16": "fp16", "FLOAT32": "fp32", "FLOAT64": "fp64",
                                      "float32": "fp32", "float16": "fp16", "float64": "fp64", "COMPLEX64": "complex64",
                                      "COMPLEX128": "complex128", "FLOAT": "fp32", "DOUBLE": "double", "char": "string",
                                      "ACL_FLOAT16": "fp16", "float": "fp32",
                                      "ACL_FLOAT32": "fp32", "ACL_FLOAT64": "fp64", "ACL_FLOAT": "fp32",
-                                     "ACL_BF16": "bf16", "BOOL": "bool", "STRING": "string", "CHAR": "string",
+                                     "ACL_BF16": "bf16", "BOOL": "bool", "STRING": "string", "CHAR": "string", "str": "string",
                                      "string": "string", "bool": "bool", "double": "double", "int64_t": "int64",
-                                     "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8",
+                                     "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8","HFLOAT8":'hifloat8',
                                      "ACL_HIFLOAT8": "hifloat8", "FLOAT8_E5M2": "float8_e5m2",
                                      "ACL_FLOAT8_E5M2": "float8_e5m2", "FLOAT8_E4M3FN": "float8_e4m3fn",
                                      "ACL_FLOAT8_E4M3FN": "float8_e4m3fn", "FLOAT8_E8M0": "float8_e8m0",

@@ -12,7 +12,9 @@ library.  Engine-level failures (TCP / auth / SFTP / transport) raise
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import os
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,6 +104,11 @@ async def connect(
                 username=endpoint.username,
                 password=endpoint.password,
                 known_hosts=None,
+                # 跳过读 ~/.ssh/config：Windows 默认 locale(gbk) 下 asyncssh
+                # config.py 用 gbk 解码该文件，非 ASCII 字节触发 UnicodeDecodeError
+                # (见 exec-asyncssh-ssh-config-gbk-bug)。连接参数全由 servers.json
+                # 显式提供，不依赖 ~/.ssh/config；os.devnull=Windows nul/POSIX /dev/null。
+                config=os.devnull,
             ),
             timeout=timeout,
         )
@@ -161,7 +168,7 @@ async def sftp_upload(
                     await sftp.makedirs(parent)
                 except OSError:
                     pass
-            await sftp.put(str(local), remote_path)
+            await asyncio.wait_for(sftp.put(str(local), remote_path), timeout=300.0)
     except Exception as exc:
         raise SSHEngineError(
             f"SFTP 上传失败: {local_path} -> {remote_path}: {exc}"
@@ -199,7 +206,9 @@ async def scp_upload(
         )
 
     try:
-        await asyncssh.scp(str(local), (conn, remote_path))
+        await asyncio.wait_for(
+            asyncssh.scp(str(local), (conn, remote_path)), timeout=300.0
+        )
     except Exception as exc:
         raise SSHEngineError(
             f"SCP upload failed: {local_path} -> {remote_path}: {exc}"
@@ -217,8 +226,34 @@ async def upload_file(
     conn: asyncssh.SSHClientConnection,
     local_path: str | Path,
     remote_path: str,
+    *,
+    transfer_mode: str = "auto",
 ) -> None:
-    """Upload a file with SFTP first, then SCP if SFTP is unavailable."""
+    """Upload a file via SFTP, SCP, base64, or auto (try in order).
+
+    ``transfer_mode`` selects the transfer strategy:
+
+    * ``"auto"`` (default) — SFTP first, SCP second, base64 fallback.
+    * ``"scp"`` — SCP only.
+    * ``"sftp"`` — SFTP only.
+    * ``"base64"`` — SSH base64-encode/decode only (for servers without
+      SFTP/SCP support).
+    """
+    mode = (transfer_mode or "auto").strip().lower()
+
+    if mode == "base64":
+        await _base64_upload(conn, local_path, remote_path)
+        return
+
+    if mode == "scp":
+        await scp_upload(conn, local_path, remote_path)
+        return
+
+    if mode == "sftp":
+        await sftp_upload(conn, local_path, remote_path)
+        return
+
+    # auto: SFTP first, then SCP, then base64 fallback
     try:
         await sftp_upload(conn, local_path, remote_path)
     except SSHEngineError as sftp_exc:
@@ -231,10 +266,53 @@ async def upload_file(
         try:
             await scp_upload(conn, local_path, remote_path)
         except SSHEngineError as scp_exc:
-            raise SSHEngineError(
-                "SFTP/SCP upload failed: "
-                f"SFTP=({sftp_exc}); SCP=({scp_exc})"
-            ) from scp_exc
+            logger.warning(
+                "ssh.upload_file: SCP failed for %s -> %s; trying base64: %s",
+                local_path, remote_path, scp_exc,
+            )
+            await _base64_upload(conn, local_path, remote_path)
+
+
+async def _base64_upload(
+    conn: asyncssh.SSHClientConnection,
+    local_path: str | Path,
+    remote_path: str,
+) -> None:
+    """Upload a file by base64-encoding and piping through SSH stdin.
+
+    Used as a fallback when the server does not support SFTP or SCP.
+    The base64 data is sent as stdin to a remote Python one-liner that
+    decodes and writes the target file.  Python is used instead of
+    ``base64 -d`` for portability (some minimal server images lack the
+    base64 CLI tool but always have Python).
+    """
+    local = Path(local_path)
+    if not local.exists():
+        raise SSHEngineError(f"Local file does not exist: {local_path}")
+    encoded = base64.b64encode(local.read_bytes()).decode("ascii")
+    parent = remote_path.rsplit("/", 1)[0] or "."
+    # Python one-liner: read base64 from stdin, decode, write to file
+    command = (
+        f"mkdir -p '{parent}' && "
+        f"python3 -c \"import sys,base64;"
+        f"open('{remote_path}','wb').write(base64.b64decode(sys.stdin.read()))\""
+    )
+    logger.info(
+        "ssh._base64_upload: uploading %s -> %s (%d bytes)",
+        local_path, remote_path, local.stat().st_size,
+    )
+    try:
+        result = await asyncio.wait_for(
+            conn.run(command, input=encoded, check=True), timeout=120.0
+        )
+    except Exception as exc:
+        raise SSHEngineError(
+            f"base64 upload failed: {local_path} -> {remote_path}: {exc}"
+        ) from exc
+    logger.info(
+        "ssh._base64_upload: uploaded %s -> %s (%d bytes)",
+        local_path, remote_path, local.stat().st_size,
+    )
 
 
 async def run(
@@ -304,12 +382,51 @@ async def find_latest_output_dir(
     return candidate
 
 
+async def move_remote(
+    conn: asyncssh.SSHClientConnection,
+    src: str,
+    dst: str,
+    *,
+    timeout: float = 60.0,
+) -> CommandResult:
+    """Rename a remote path via ``mv``.
+
+    Used by fusion step3 (``dist_cpu`` → ``cpu_benchmark``) so the CPU
+    benchmark output is not shadowed by the subsequent NPU cascade run.
+    """
+    cmd = f"mv '{src}' '{dst}'"
+    return await run(conn, cmd, timeout=timeout)
+
+
+async def check_remote_dir_has_files(
+    conn: asyncssh.SSHClientConnection,
+    dir_path: str,
+    *,
+    timeout: float = 30.0,
+) -> bool:
+    """Return True if ``dir_path`` exists and contains at least one file.
+
+    Used by the fusion path gate: caller invokes twice — once per rank dir
+    (``rank_0`` / ``rank_1``) — both must be non-empty or the step is
+    treated as a hard failure (engine_error, not a plain case fail).
+    """
+    cmd = (
+        f"if [ -d '{dir_path}' ]; then "
+        f"n=$(find '{dir_path}' -type f 2>/dev/null | head -1 | wc -l); "
+        f"echo $n; else echo __MISSING__; fi"
+    )
+    result = await run(conn, cmd, timeout=timeout)
+    out = (result.stdout or "").strip()
+    return out.isdigit() and int(out) > 0
+
+
 async def sftp_download_file(
     conn: asyncssh.SSHClientConnection,
     remote_path: str,
     local_path: Path,
 ) -> None:
     """Pull a single remote file via SFTP.  Missing file is swallowed."""
+    local_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with conn.start_sftp_client() as sftp:
             await sftp.get(remote_path, str(local_path))
@@ -317,8 +434,36 @@ async def sftp_download_file(
         logger.warning("ssh.sftp_download_file: %s not found", remote_path)
     except Exception as exc:
         logger.warning(
-            "ssh.sftp_download_file: %s failed: %s", remote_path, exc
+            "ssh.sftp_download_file: %s failed, trying SCP: %s", remote_path, exc
         )
+        try:
+            await asyncssh.scp((conn, remote_path), str(local_path))
+        except Exception as scp_exc:
+            logger.warning("ssh.scp_download_file: %s failed: %s", remote_path, scp_exc)
+
+
+async def sftp_download_tree(
+    conn: asyncssh.SSHClientConnection,
+    remote_path: str,
+    local_path: Path,
+) -> None:
+    """Recursively download a remote directory tree."""
+    local_path.mkdir(parents=True, exist_ok=True)
+    try:
+        async with conn.start_sftp_client() as sftp:
+            await sftp.get(remote_path, str(local_path.parent), recurse=True)
+    except FileNotFoundError:
+        logger.warning("ssh.sftp_download_tree: %s not found", remote_path)
+    except Exception as exc:
+        logger.warning("ssh.sftp_download_tree: trying SCP after: %s", exc)
+        try:
+            await asyncssh.scp(
+                (conn, remote_path), str(local_path.parent), recurse=True
+            )
+        except Exception as scp_exc:
+            raise SSHEngineError(
+                f"SFTP/SCP 递归下载失败: {remote_path} -> {local_path}: {scp_exc}"
+            ) from scp_exc
 
 
 async def sftp_list_dir(
@@ -335,17 +480,152 @@ async def sftp_list_dir(
         return []
 
 
+async def shell_list_dir(
+    conn: asyncssh.SSHClientConnection,
+    remote_dir: str,
+) -> list[str]:
+    """List directory entries via shell ``ls -1``.  Returns ``[]`` on failure.
+
+    Fallback for hosts whose SFTP subsystem is unavailable; mirrors the
+    shell approach already used by :func:`find_latest_output_dir`.  Only
+    entry names are returned, in directory order.
+    """
+    cmd = (
+        f"if [ -d '{remote_dir}' ]; then "
+        f"ls -1 '{remote_dir}' 2>/dev/null; "
+        f"else echo __MISSING__; fi"
+    )
+    result = await run(conn, cmd, timeout=30.0)
+    out = (result.stdout or "").strip()
+    if not out or out == "__MISSING__":
+        return []
+    return [ln for ln in out.splitlines() if ln.strip()]
+
+
+async def shell_download_file(
+    conn: asyncssh.SSHClientConnection,
+    remote_path: str,
+    local_path: Path,
+) -> None:
+    """Pull a remote file via shell ``base64``.  Missing file is swallowed.
+
+    Fallback for hosts whose SFTP subsystem is unavailable (e.g. the
+    ``sftp-server`` binary is absent while ``sshd_config`` still declares
+    the subsystem).  Works for both binary (xlsx) and text (log) files;
+    base64 round-trips byte-exact.
+    """
+    cmd = (
+        f"if [ -f '{remote_path}' ]; then "
+        f"base64 '{remote_path}'; "
+        f"else echo __MISSING__; fi"
+    )
+    result = await run(conn, cmd, timeout=300.0)
+    compact = "".join((result.stdout or "").split())
+    if not compact or compact == "__MISSING__":
+        logger.warning("ssh.shell_download_file: %s not found", remote_path)
+        return
+    try:
+        data = base64.b64decode(compact)
+    except Exception as exc:
+        logger.warning(
+            "ssh.shell_download_file: %s base64 decode failed: %s",
+            remote_path,
+            exc,
+        )
+        return
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(data)
+
+
+async def list_dir(
+    conn: asyncssh.SSHClientConnection,
+    remote_dir: str,
+    *,
+    transfer_mode: str = "auto",
+) -> list[str]:
+    """List a remote directory via SFTP, shell, or auto.
+
+    ``transfer_mode`` mirrors :func:`upload_file`:
+
+    * ``"auto"`` (default) — SFTP first, shell fallback if SFTP returns
+      nothing.  The fallback makes result recovery robust on hosts whose
+      SFTP subsystem is unavailable.
+    * ``"sftp"`` — SFTP only.
+    * ``"shell"`` — shell ``ls -1`` only.
+    """
+    mode = (transfer_mode or "auto").strip().lower()
+    if mode in ("shell", "scp"):
+        # scp: the server has no SFTP subsystem; use shell ls for listing
+        # the same way upload_file uses scp_upload to skip SFTP.
+        return await shell_list_dir(conn, remote_dir)
+    if mode == "sftp":
+        return await sftp_list_dir(conn, remote_dir)
+    # auto: SFTP first, then shell fallback if SFTP yielded nothing.
+    entries = await sftp_list_dir(conn, remote_dir)
+    if entries:
+        return entries
+    logger.warning(
+        "ssh.list_dir: SFTP empty/failed for %s; trying shell ls",
+        remote_dir,
+    )
+    return await shell_list_dir(conn, remote_dir)
+
+
+async def download_file(
+    conn: asyncssh.SSHClientConnection,
+    remote_path: str,
+    local_path: Path,
+    *,
+    transfer_mode: str = "auto",
+) -> None:
+    """Download a file via SFTP, shell, or auto (SFTP-first + shell fallback).
+
+    ``transfer_mode`` mirrors :func:`upload_file`.  ``auto`` is the safe
+    default for hosts whose SFTP subsystem may be unavailable; the shell
+    ``base64`` fallback fetches the file byte-exact when SFTP cannot.
+    """
+    mode = (transfer_mode or "auto").strip().lower()
+    if mode in ("shell", "scp"):
+        # scp: the server has no SFTP subsystem; use shell base64 for
+        # downloading the same way upload_file uses scp_upload to skip SFTP.
+        await shell_download_file(conn, remote_path, local_path)
+        return
+    if mode == "sftp":
+        await sftp_download_file(conn, remote_path, local_path)
+        return
+    # auto: SFTP first; if it didn't land the file, fall back to shell.
+    # Drop any stale local copy so the exists() probe is meaningful.
+    try:
+        if local_path.exists():
+            local_path.unlink()
+    except Exception:
+        pass
+    await sftp_download_file(conn, remote_path, local_path)
+    if local_path.exists():
+        return
+    logger.warning(
+        "ssh.download_file: SFTP failed for %s; trying shell base64",
+        remote_path,
+    )
+    await shell_download_file(conn, remote_path, local_path)
+
+
 __all__ = [
     "CommandResult",
     "ServerEndpoint",
     "SSHEngineError",
     "connect",
+    "download_file",
     "find_latest_output_dir",
+    "list_dir",
     "run",
     "scp_upload",
     "sftp_download_file",
+    "sftp_download_tree",
     "sftp_list_dir",
     "sftp_upload",
+    "shell_download_file",
+    "shell_list_dir",
     "tcp_probe",
     "upload_file",
 ]

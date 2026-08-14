@@ -1,0 +1,1 @@
+{"operator":"torch_npu.npu_fused_infer_attention_score","status":"verified","plugin":"fia_golden.py","dtype_inputs":["query"],"verified_modes":{"input_layout":["BNSD"],"dtype":["float16"],"quantized":[false]},"unsupported":["quantized optional inputs","layouts other than BNSD"]}

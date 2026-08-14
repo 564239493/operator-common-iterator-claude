@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from common_utils.logger_util import LazyLogger
+from agent.generators.common_utils.logger_util import LazyLogger
 
 logger = LazyLogger()
 

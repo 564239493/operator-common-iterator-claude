@@ -36,31 +36,102 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .models import ExecutionResult
-from .report_parser import parse_xlsx_report
+from .models import ComparisonResult, ExecutionResult, FusionPhase
+from .report_parser import parse_fusion_comparison, parse_xlsx_report
 from .ssh import (
     CommandResult,
     SSHEngineError,
     ServerEndpoint,
+    check_remote_dir_has_files,
     connect,
+    download_file,
     find_latest_output_dir,
+    list_dir,
+    move_remote,
     run,
-    sftp_download_file,
-    sftp_list_dir,
     upload_file,
 )
 
 logger = logging.getLogger(__name__)
 
-# ── Remote layout (project-local constants) ───────────────────────────────
-
-_REMOTE_HOME = "/home/operator_atk"
-_REMOTE_CASES_DIR = f"{_REMOTE_HOME}/cases"
-_REMOTE_EXECUTOR_DIR = f"{_REMOTE_HOME}/atk_executor"
-_REMOTE_OUTPUT_ROOT = f"{_REMOTE_HOME}/atk_output"
-
 _DEFAULT_ENV_INIT = "cd /home/operator_atk && source /home/marine/miniconda3/etc/profile.d/conda.sh && conda activate atk_env"
 _DEFAULT_ATK_TIMEOUT = 1800.0
+
+# Valid transfer-mode values for servers.json → ``transfer_mode`` field.
+_VALID_TRANSFER_MODES = {"auto", "scp", "sftp"}
+
+
+@dataclass(frozen=True)
+class RemotePaths:
+    """Per-server remote directory layout for cases, executor, and output.
+
+    Resolved from ``servers.json`` → ``remote_paths`` sub-object.  All
+    three fields (``cases_dir``, ``executor_dir``, ``output_root``) are
+    **required** in ``servers.json``; no hardcoded fallback is provided.
+    """
+
+    cases_dir: str
+    executor_dir: str
+    output_root: str
+
+    @classmethod
+    def from_server_info(cls, server_info: dict[str, Any]) -> "RemotePaths":
+        """Build from a ``servers.json`` server row.
+
+        Requires the ``remote_paths`` sub-object with all three fields
+        (``cases_dir``, ``executor_dir``, ``output_root``).  Raises
+        ``ValueError`` if ``remote_paths`` is missing or incomplete.
+        """
+        rp = server_info.get("remote_paths")
+        if not isinstance(rp, dict):
+            raise ValueError(
+                "servers.json 缺少 remote_paths 配置（需包含 cases_dir, "
+                "executor_dir, output_root 三个字段）"
+            )
+        cases_dir = str(rp.get("cases_dir") or "").strip()
+        executor_dir = str(rp.get("executor_dir") or "").strip()
+        output_root = str(rp.get("output_root") or "").strip()
+        missing = [
+            name for name, val in (
+                ("cases_dir", cases_dir),
+                ("executor_dir", executor_dir),
+                ("output_root", output_root),
+            ) if not val
+        ]
+        if missing:
+            raise ValueError(
+                f"servers.json remote_paths 缺少必填字段: {', '.join(missing)}"
+            )
+        return cls(
+            cases_dir=cases_dir,
+            executor_dir=executor_dir,
+            output_root=output_root,
+        )
+
+    def cases_path(self, operator_name: str) -> str:
+        """Remote SFTP/SCP destination for the expanded cases JSON."""
+        return f"{self.cases_dir}/{operator_name}_cases_expanded.json"
+
+    def executor_path(self, operator_name: str) -> str:
+        """Remote SFTP/SCP destination for the ATK executor script."""
+        return f"{self.executor_dir}/{operator_name}_executor.py"
+
+
+def _resolve_transfer_mode(server_info: dict[str, Any]) -> str:
+    """Extract and normalise the ``transfer_mode`` from a server row.
+
+    Returns one of ``_VALID_TRANSFER_MODES``.  Unknown values are
+    logged and fall back to ``"auto"`` so a typo doesn't silently
+    skip uploads.
+    """
+    raw = str(server_info.get("transfer_mode") or "auto").strip().lower()
+    if raw not in _VALID_TRANSFER_MODES:
+        logger.warning(
+            "transfer_mode=%r 不合法 (合法值: %s), 回退为 auto",
+            raw, ", ".join(sorted(_VALID_TRANSFER_MODES)),
+        )
+        return "auto"
+    return raw
 
 # ── Local generator assets (mirrored from operator-common-iterator) ───────
 
@@ -88,11 +159,31 @@ class RunRequest:
     env_init: str | None = None
     atk_timeout: float = _DEFAULT_ATK_TIMEOUT
     iter_dir: Path | None = None  # runs/<run-id>/iter_NNN — used to find constraints.json + generation_summary.json for platform filtering
+    execution_strategy: str = "default"  # default | fusion；fusion 走通算融合 4 步流程
+    case_count: int | None = None  # fusion 透传 atk -e {num}（本次实际执行用例数）
 
 
-def _resolve_env_init(value: str | None) -> str:
-    if value and value.strip():
-        return value.strip()
+def _resolve_env_init(
+    req_env_init: str | None,
+    server_info: dict[str, Any],
+) -> str:
+    """Resolve the env-init command with full priority chain.
+
+    Priority:
+      1. CLI ``--env-init`` (passed as ``RunRequest.env_init``)
+      2. ``server_info["env_init"]`` — full shell command (new field)
+      3. ``server_info["env_init_script"]`` — legacy field (script path
+         or full command, as used in existing servers.json files)
+      4. ``_DEFAULT_ENV_INIT`` — hardcoded fallback
+    """
+    if req_env_init and req_env_init.strip():
+        return req_env_init.strip()
+    server_env = server_info.get("env_init")
+    if isinstance(server_env, str) and server_env.strip():
+        return server_env.strip()
+    script = server_info.get("env_init_script")
+    if isinstance(script, str) and script.strip():
+        return script.strip()
     return _DEFAULT_ENV_INIT
 
 
@@ -143,39 +234,9 @@ def validate_server_info(
     return None
 
 
-def pick_server(
-    servers: list[dict[str, Any]], platform: str
-) -> dict[str, Any] | None:
-    """Pick the first server whose ``platforms`` list contains ``platform``.
-
-    Falls back to the first server if none match exactly — the original
-    project assumes one Atlas A3 development host.
-    """
-    if not servers:
-        return None
-    for server in servers:
-        if platform in server.get("platforms", []):
-            return server
-    return servers[0] if servers else None
 
 
 # ── Path helpers ───────────────────────────────────────────────────────────
-
-
-def _remote_cases_path(operator_name: str) -> str:
-    """Remote path for the *expanded* cases.json consumed by ATK.
-
-    Generator writes ``cases_expanded.json`` at iter root; we upload
-    that to the host (NOT the raw ``cases.json``), so the remote file
-    ends in ``_cases_expanded.json``.
-    """
-    return (
-        f"{_REMOTE_CASES_DIR}/{operator_name}_cases_expanded.json"
-    )
-
-
-def _remote_executor_path(operator_name: str) -> str:
-    return f"{_REMOTE_EXECUTOR_DIR}/{operator_name}_executor.py"
 
 
 def _server_supports_npu(server_info: dict[str, Any]) -> bool:
@@ -198,12 +259,13 @@ def _build_atk_command(
     operator_name: str,
     task_type: str,
     env_init: str,
+    remote_paths: RemotePaths,
     *,
     supports_npu: bool = False,
 ) -> str:
     """Compose the ATK command for the remote host."""
-    cases_remote = _remote_cases_path(operator_name)
-    executor_remote = _remote_executor_path(operator_name)
+    cases_remote = remote_paths.cases_path(operator_name)
+    executor_remote = remote_paths.executor_path(operator_name)
     node_prefix = (
         "atk node --backend pyaclnn --devices 0 node --backend cpu task "
         if supports_npu
@@ -214,9 +276,85 @@ def _build_atk_command(
         f"{node_prefix}"
         f"-c {cases_remote} "
         f"-p {executor_remote} "
-        f"--task {task_type} "
-        f"--bind_cpu_type BIND_IN_PHYSICAL"
+        f"--task {task_type}"
     )
+
+
+def _build_fusion_atk_command(
+    phase: str,
+    operator_name: str,
+    remote_paths: "RemotePaths",
+    devices: list[int],
+    num: int,
+    env_init: str,
+    *,
+    out_path_t1: str | None = None,
+    out_path_t2: str | None = None,
+) -> str:
+    """Compose the ATK dist command for a fusion phase.
+
+    phase ∈ {"cpu_benchmark", "npu_cascaded", "accuracy_load"}.
+    ``devices`` is the ``(card_1, card_2)`` pair from servers.json
+    ``fusion_devices``.  ``num`` is the case count passed through to
+    atk ``-e``.  See scheme.html 3.1 for the command template.
+    """
+    cases_remote = remote_paths.cases_path(operator_name)
+    executor_remote = remote_paths.executor_path(operator_name)
+    if len(devices) < 2:
+        raise ValueError("fusion 需要 2 张卡 (fusion_devices)")
+    c1, c2 = devices[0], devices[1]
+    common = (
+        f"-c {cases_remote} -p {executor_remote} "
+        f"--save_data output -mt 1 -e {num}"
+    )
+    prefix = f"{env_init} && "
+    if phase == "cpu_benchmark":
+        return (
+            f"{prefix}atk node --backend dist --name cpu "
+            f"--devices {c1},{c2} --dist_backend gloo "
+            f"task {common} --task accuracy"
+        )
+    if phase == "npu_cascaded":
+        return (
+            f"{prefix}atk node --backend dist --name npu_bm "
+            f"--devices {c1},{c2} --dist_backend hccl --is_bm true "
+            f"task {common} --task accuracy"
+        )
+    if phase == "accuracy_load":
+        out_ref = out_path_t2 or ""
+        out_ref_t1 = out_path_t1 or ""
+        return (
+            f"{prefix}atk node --backend pyaclnn --is_dist true --task accuracy "
+            f"--devices {c1},{c2} "
+            f"node --backend dist --output_path {out_ref} "
+            f"--name npu_bm --devices {c1},{c2} --task accuracy_load "
+            f"task {common} -bmo {out_ref_t1}"
+        )
+    raise ValueError(f"未知 fusion phase: {phase!r}")
+
+
+def _load_fusion_thresholds(operator_name: str) -> dict[str, Any] | None:
+    """Read ``cv_fused_double_benchmark`` thresholds from acc_config.txt.
+
+    Record-only — feeds ``comparison_result.thresholds`` so the report
+    carries the reference thresholds alongside the actual ratios.  Any
+    failure returns ``None`` (comparison still records ``actual``).
+    """
+    try:
+        from .resources.generator import load_acc_config
+
+        acc = load_acc_config(operator_name)
+    except Exception as exc:  # pragma: no cover — best effort
+        logger.warning(
+            "fusion thresholds: load_acc_config failed for %s: %s",
+            operator_name,
+            exc,
+        )
+        return None
+    if isinstance(acc, dict):
+        bm = acc.get("cv_fused_double_benchmark")
+        return bm if isinstance(bm, dict) else None
+    return None
 
 
 def _safe_operator(value: str) -> str:
@@ -254,47 +392,6 @@ def _resolve_cache_dir(
 # ── ATK executor generation ────────────────────────────────────────────────
 
 
-def filter_cases_by_platform(
-    cases: list[dict[str, Any]],
-    product_support: list[str],
-    platforms_count: dict[str, int],
-    server_platforms: list[str],
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Keep only the cases whose slice matches a server-supported platform.
-
-    ``cases.json`` from ``scripts/generate_cases.py`` interleaves all
-    supported platforms in :data:`product_support` order — first
-    ``platforms_count[p]`` cases belong to the first product, and so on.
-    The generator emits the xlsx faithfully, so a 3-product operator
-    produces 30 cases even though a given execution server only supports
-    one of them.  This helper slices that matrix down to the platforms
-    the chosen server actually supports.
-
-    Returns ``(filtered_cases, None)`` on success or ``(None, message)``
-    when the server's platforms don't intersect with the operator's
-    product_support list (callers should surface the message as
-    ``engine_error`` — never as a fake case failure).
-    """
-    if not isinstance(server_platforms, list) or not server_platforms:
-        return None, "server_info.platforms 为空, 无法按平台过滤"
-
-    matching = [p for p in product_support if p in server_platforms]
-    if not matching:
-        return None, (
-            "服务器平台与算子 product_support 没有交集: "
-            f"server={server_platforms}, operator={list(product_support)}"
-        )
-
-    out: list[dict[str, Any]] = []
-    cursor = 0
-    for platform in product_support:
-        count = int(platforms_count.get(platform, 0))
-        chunk = cases[cursor:cursor + count]
-        if platform in matching:
-            out.extend(chunk)
-        cursor += count
-
-    return out, None
 
 
 def _read_optional_json(path: Path) -> dict[str, Any] | None:
@@ -446,6 +543,8 @@ async def _generate_atk_executor(
         str(output_target),
         "--signatures",
         str(_SIGNATURES_FILE),
+        "--acc-config",
+        str(_RESOURCES_DIR / "acc_config.txt"),
     ]
 
     try:
@@ -532,6 +631,30 @@ def _cleanup_log_handler(handler: logging.FileHandler | None) -> None:
         except Exception:
             pass  # best-effort cleanup
 
+async def _downlaod_fusion_logs(
+    conn: asyncssh.SSHClientConnection,
+    phase_output_dir: str | None,
+    local_log_dir: Path,
+    phase_name:str,
+    transfer_mode: str,
+):
+    """Download fusion phase logs from the remote host to local log dir.
+   
+   Creates ``local_log_dir/{phase_name}/`` and downloads the log there.
+   Silently skips if ``phase_output_dir`` is None or log is missing.   
+    """
+    if not phase_output_dir:
+        return
+    remote_log_path = f"{phase_output_dir}/log/atk.log"
+    local_phase_dir = local_log_dir / phase_name
+    local_log_path = local_phase_dir / "atk.log"
+    
+    try:
+        local_phase_dir.mkdir(parents=True, exist_ok=True)
+        await download_file(conn, remote_log_path, local_log_path, transfer_mode=transfer_mode,)
+        logger.info("[fusion log] downloaded %s -> %s", remote_log_path, local_log_path)
+    except Exception as e:
+        logger.warning("[fusion log] failed to download %s for phase %s: %s", remote_log_path, phase_name, e)
 
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
@@ -555,9 +678,10 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
     log_dir = req.iter_dir or _resolve_cache_dir(req, operator_name)
     log_handler = _setup_execution_log(log_dir)
     logger.info(
-        "===== generate start: operator=%s run_id=%s =====",
+        "===== generate start: operator=%s run_id=%s transfer_mode=%s =====",
         operator_name,
         req.run_id,
+        _resolve_transfer_mode(req.server_info),
     )
 
     try:
@@ -571,6 +695,8 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
             return result
 
         cache_dir = _resolve_cache_dir(req, operator_name)
+        remote = RemotePaths.from_server_info(req.server_info)
+        transfer_mode = _resolve_transfer_mode(req.server_info)
 
         # Platform selection: same as _execute_real section 1.
         scoped_cases_path, select_error = await _resolve_iter_cases_for_server(req)
@@ -616,12 +742,13 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
         atk_command = _build_atk_command(
             operator_name,
             req.task_type,
-            _resolve_env_init(req.env_init),
+            _resolve_env_init(req.env_init, req.server_info),
+            remote,
             supports_npu=_server_supports_npu(req.server_info),
         )
-        remote_paths = {
-            "cases_expanded.json": _remote_cases_path(operator_name),
-            "cases_executor.py": _remote_executor_path(operator_name),
+        remote_paths_map = {
+            "cases_expanded.json": remote.cases_path(operator_name),
+            "cases_executor.py": remote.executor_path(operator_name),
         }
 
         # Only list files the user needs to SFTP-upload.  ``cases.json`` is
@@ -633,7 +760,7 @@ async def _execute_generate(req: RunRequest) -> ExecutionResult:
                 "cases_executor.py": executor_files[0],
             },
             atk_command=atk_command,
-            remote_paths=remote_paths,
+            remote_paths=remote_paths_map,
         )
         logger.info(
             "generate: source cases.json = %s", scoped_cases_path
@@ -691,13 +818,16 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
 
     endpoint = ServerEndpoint.from_server_row(req.server_info)
     cache_dir = _resolve_cache_dir(req, operator_name)
-    env_init = _resolve_env_init(req.env_init)
+    remote = RemotePaths.from_server_info(req.server_info)
+    transfer_mode = _resolve_transfer_mode(req.server_info)
+    env_init = _resolve_env_init(req.env_init, req.server_info)
 
     logger.info(
-        "execute_cases: operator=%s server=%s task=%s",
+        "execute_cases: operator=%s server=%s task=%s transfer_mode=%s",
         operator_name,
         endpoint.host,
         req.task_type,
+        transfer_mode,
     )
 
     # ── 1. Pick the per-platform cases file matching the server ─────────
@@ -731,6 +861,8 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         env_init=req.env_init,
         atk_timeout=req.atk_timeout,
         iter_dir=req.iter_dir,
+        execution_strategy=req.execution_strategy,
+        case_count=req.case_count,
     )
 
     # ── 2. Locate generate-generated executor + expanded cases ───────
@@ -794,14 +926,16 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
             await upload_file(
                 conn,
                 str(generated["expanded_cases"]),
-                _remote_cases_path(operator_name),
+                remote.cases_path(operator_name),
+                transfer_mode=transfer_mode,
             )
             # Generator may emit multiple files (multi-op); ATK only
             # consumes the operator_name-prefixed one — use the first.
             await upload_file(
                 conn,
                 str(generated["executor_files"][0]),
-                _remote_executor_path(operator_name),
+                remote.executor_path(operator_name),
+                transfer_mode=transfer_mode,
             )
         except SSHEngineError as exc:
             logger.exception(
@@ -818,6 +952,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
             operator_name,
             req.task_type,
             env_init,
+            remote,
             supports_npu=_server_supports_npu(req.server_info),
         )
         logger.info("execute_cases: running %s", cmd)
@@ -864,7 +999,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         # ── 6. Discover + download + parse outputs ─────────────────────
         try:
             output_dir = await find_latest_output_dir(
-                conn, _REMOTE_OUTPUT_ROOT, operator_name
+                conn, remote.output_root, operator_name
             )
         except SSHEngineError as exc:
             logger.warning("execute_cases: listdir failed: %s", exc)
@@ -877,12 +1012,20 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
             remote_log_path = f"{output_dir}/log/atk.log"
 
             local_log_path = cache_dir / "atk.log"
-            remote_entries = await sftp_list_dir(conn, remote_report_dir)
+            remote_entries = await list_dir(
+                conn, remote_report_dir, transfer_mode=transfer_mode
+            )
             for entry in remote_entries:
-                await sftp_download_file(
-                    conn, f"{remote_report_dir}/{entry}", cache_dir / entry
+                await download_file(
+                    conn,
+                    f"{remote_report_dir}/{entry}",
+                    cache_dir / entry,
+                    transfer_mode=transfer_mode,
                 )
-            await sftp_download_file(conn, remote_log_path, local_log_path)
+            await download_file(
+                conn, remote_log_path, local_log_path,
+                transfer_mode=transfer_mode,
+            )
 
             report_data = parse_xlsx_report(cache_dir)
             result.task_report_data = report_data
@@ -920,12 +1063,12 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         else:
             logger.warning(
                 "execute_cases: no output dir under %s for %s",
-                _REMOTE_OUTPUT_ROOT,
+                remote.output_root,
                 operator_name,
             )
             result.error_message = (
                 f"未找到 {operator_name}_ 前缀的输出目录 "
-                f"({_REMOTE_OUTPUT_ROOT})"
+                f"({remote.output_root})"
             )
 
         # ── 7. Final classification ────────────────────────────────────
@@ -964,6 +1107,427 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
 
     logger.info(
         "===== execute done: operator=%s status=%s passed=%d failed=%d duration=%.2fs =====",
+        operator_name,
+        result.status,
+        result.task_report_data.passed,
+        result.task_report_data.failed,
+        result.duration,
+    )
+    _cleanup_log_handler(log_handler)
+    return result
+
+
+async def _execute_fusion(req: RunRequest) -> ExecutionResult:
+    """Run the 4-step fusion flow for 通算融合 operators. Returns — never raises.
+
+    Steps: ① CPU 标杆 (dist cpu/gloo) ② NPU 级联标杆 (dist npu_bm/hccl/is_bm)
+    ③ dist_cpu→cpu_benchmark 改名 ④ 精度对比 (accuracy_load).  成败只看执行
+    (atk exit + 路径门禁), 精度对比结果记入 ``comparison_result`` 不入成败.
+    See scheme.html 3.4.2 / 3.4.3.
+    """
+    operator_name = _safe_operator(req.operator_name)
+    result = ExecutionResult()
+    result.execution_strategy = "fusion"
+    overall_start = time.monotonic()
+
+    log_dir = req.iter_dir or _resolve_cache_dir(req, operator_name)
+    log_handler = _setup_execution_log(log_dir)
+    logger.info(
+        "===== execute start: operator=%s run_id=%s mode=real strategy=fusion =====",
+        operator_name,
+        req.run_id,
+    )
+
+    def _bail(msg: str) -> ExecutionResult:
+        result.status = "error"
+        result.error_message = msg
+        result.duration = time.monotonic() - overall_start
+        _cleanup_log_handler(log_handler)
+        return result
+
+    # ── 0. Pre-flight: server fusion config + num ───────────────────
+    server_error = validate_server_info(req.server_info)
+    if server_error:
+        return _bail(server_error)
+    if not req.server_info.get("supports_fusion"):
+        return _bail(
+            "fusion 策略需要 servers.json 声明 supports_fusion=true；"
+            "缺失时停止并提示用户补充配置，禁止静默回退"
+        )
+    fusion_devices = req.server_info.get("fusion_devices")
+    if not (
+        isinstance(fusion_devices, list)
+        and len(fusion_devices) == 2
+        and all(isinstance(d, int) and d >= 0 for d in fusion_devices)
+    ):
+        return _bail(
+            "fusion 策略需要 servers.json 配置 fusion_devices "
+            "(长度 2 非负整数数组 card_1, card_2)"
+        )
+    num = req.case_count
+    if not num or num <= 0:
+        return _bail("fusion 策略需要 --num (本次实际执行用例数) 透传 atk -e")
+
+    endpoint = ServerEndpoint.from_server_row(req.server_info)
+    cache_dir = _resolve_cache_dir(req, operator_name)
+    remote = RemotePaths.from_server_info(req.server_info)
+    transfer_mode = _resolve_transfer_mode(req.server_info)
+    env_init = _resolve_env_init(req.env_init, req.server_info)
+
+    logger.info(
+        "execute_cases: operator=%s server=%s strategy=fusion devices=%s num=%s",
+        operator_name,
+        endpoint.host,
+        fusion_devices,
+        num,
+    )
+
+    # ── 1. Locate generate artifacts (real 不重生成) ─────────────────
+    scoped_cases_path, select_error = await _resolve_iter_cases_for_server(req)
+    if scoped_cases_path is None:
+        logger.error(
+            "execute_cases fusion: per-platform cases selection failed: %s",
+            select_error,
+        )
+        return _bail(select_error or "无法选择产品用例文件")
+    generator_work_dir = req.iter_dir or cache_dir
+    stem = scoped_cases_path.stem
+    expanded = generator_work_dir / f"{stem}_expanded.json"
+    remote_stem = Path(remote.cases_path(operator_name)).stem
+    executor_files = _resolve_generated_executors(generator_work_dir, stem)
+    if not executor_files or not expanded.is_file():
+        missing: list[str] = []
+        if not executor_files:
+            missing.append(f"{stem}_executor.py")
+        if not expanded.is_file():
+            missing.append(f"{stem}_expanded.json")
+        return _bail(
+            f"fusion real 模式缺少 generate 产物 {', '.join(missing)} "
+            f"(iter_dir={generator_work_dir})"
+        )
+    cases_executor_local = executor_files[0]
+
+    # ── 2. Connect + upload ──────────────────────────────────────────
+    try:
+        conn = await connect(endpoint, timeout=30.0)
+    except SSHEngineError as exc:
+        logger.exception(
+            "execute_cases fusion: SSH connect failed for %s", operator_name
+        )
+        return _bail(f"SSH 连接失败: {exc}")
+
+    phases: list[FusionPhase] = []
+    out_t1: str | None = None
+    out_t2: str | None = None
+    comparison: ComparisonResult | None = None
+    failed_phase: str | None = None
+    failed_reason: str = ""
+    last_exit: int | None = None
+
+    try:
+        try:
+            await upload_file(
+                conn,
+                str(expanded),
+                remote.cases_path(operator_name),
+                transfer_mode=transfer_mode,
+            )
+            await upload_file(
+                conn,
+                str(cases_executor_local),
+                remote.executor_path(operator_name),
+                transfer_mode=transfer_mode,
+            )
+        except SSHEngineError as exc:
+            logger.exception(
+                "execute_cases fusion: upload failed for %s", operator_name
+            )
+            failed_phase = "upload"
+            failed_reason = f"上传失败: {exc}"
+
+        # ── Step 1: CPU 标杆 (dist + gloo) ───────────────────────────
+        if failed_phase is None:
+            cmd1 = _build_fusion_atk_command(
+                "cpu_benchmark", operator_name, remote, fusion_devices, num, env_init
+            )
+            logger.info("[fusion step1 cpu_benchmark] command: %s", cmd1)
+            t = time.monotonic()
+            try:
+                r1 = await run(conn, cmd1, timeout=req.atk_timeout)
+            except SSHEngineError as exc:
+                logger.exception(
+                    "[fusion step1] atk run failed for %s", operator_name
+                )
+                phases.append(
+                    FusionPhase(
+                        phase="cpu_benchmark", command=cmd1, exit_code=None,
+                        duration=time.monotonic() - t, output_dir=None,
+                        dir_check_passed=False,
+                    )
+                )
+                failed_phase = "cpu_benchmark"
+                failed_reason = str(exc)
+            else:
+                last_exit = r1.exit_code
+                logger.info(
+                    "[fusion step1] exit=%d duration=%.2fs stderr_head=%s",
+                    r1.exit_code, r1.duration, (r1.stderr or "")[:500],
+                )
+                out_t1 = await find_latest_output_dir(
+                    conn, remote.output_root, operator_name
+                )
+                ok0 = (
+                    await check_remote_dir_has_files(
+                        conn, f"{out_t1}/output/dist_cpu/{remote_stem}/0/rank_0"
+                    )
+                    if out_t1
+                    else False
+                )
+                ok1 = (
+                    await check_remote_dir_has_files(
+                        conn, f"{out_t1}/output/dist_cpu/{remote_stem}/0/rank_1"
+                    )
+                    if out_t1
+                    else False
+                )
+                logger.info(
+                    "[fusion step1] out_t1=%s dir_check rank_0=%s rank_1=%s",
+                    out_t1, ok0, ok1,
+                )
+                phases.append(
+                    FusionPhase(
+                        phase="cpu_benchmark", command=cmd1, exit_code=r1.exit_code,
+                        duration=time.monotonic() - t, output_dir=out_t1,
+                        dir_check_passed=(ok0 and ok1),
+                    )
+                )
+                if r1.exit_code != 0 or not out_t1 or not (ok0 and ok1):
+                    failed_phase = "cpu_benchmark"
+                    failed_reason = (
+                        f"exit={r1.exit_code} out_t1={out_t1} "
+                        f"rank_0={ok0} rank_1={ok1}"
+                    )
+                await _downlaod_fusion_logs(conn, out_t1, cache_dir, "cpu_benchmark", transfer_mode)
+
+        # ── Step 2: NPU 级联标杆 (dist + hccl + is_bm) ──────────────
+        if failed_phase is None:
+            cmd2 = _build_fusion_atk_command(
+                "npu_cascaded", operator_name, remote, fusion_devices, num, env_init
+            )
+            logger.info("[fusion step2 npu_cascaded] command: %s", cmd2)
+            t = time.monotonic()
+            try:
+                r2 = await run(conn, cmd2, timeout=req.atk_timeout)
+            except SSHEngineError as exc:
+                logger.exception(
+                    "[fusion step2] atk run failed for %s", operator_name
+                )
+                phases.append(
+                    FusionPhase(
+                        phase="npu_cascaded", command=cmd2, exit_code=None,
+                        duration=time.monotonic() - t, output_dir=None,
+                        dir_check_passed=False,
+                    )
+                )
+                failed_phase = "npu_cascaded"
+                failed_reason = str(exc)
+            else:
+                last_exit = r2.exit_code
+                logger.info(
+                    "[fusion step2] exit=%d duration=%.2fs stderr_head=%s",
+                    r2.exit_code, r2.duration, (r2.stderr or "")[:500],
+                )
+                out_t2 = await find_latest_output_dir(
+                    conn, remote.output_root, operator_name
+                )
+                ok0b = (
+                    await check_remote_dir_has_files(
+                        conn, f"{out_t2}/output/dist_npu_bm/{remote_stem}/0/rank_0"
+                    )
+                    if out_t2
+                    else False
+                )
+                ok1b = (
+                    await check_remote_dir_has_files(
+                        conn, f"{out_t2}/output/dist_npu_bm/{remote_stem}/0/rank_1"
+                    )
+                    if out_t2
+                    else False
+                )
+                logger.info(
+                    "[fusion step2] out_t2=%s dir_check rank_0=%s rank_1=%s",
+                    out_t2, ok0b, ok1b,
+                )
+                phases.append(
+                    FusionPhase(
+                        phase="npu_cascaded", command=cmd2, exit_code=r2.exit_code,
+                        duration=time.monotonic() - t, output_dir=out_t2,
+                        dir_check_passed=(ok0b and ok1b),
+                    )
+                )
+                if r2.exit_code != 0 or not out_t2 or not (ok0b and ok1b):
+                    failed_phase = "npu_cascaded"
+                    failed_reason = (
+                        f"exit={r2.exit_code} out_t2={out_t2} "
+                        f"rank_0={ok0b} rank_1={ok1b}"
+                    )
+                await _downlaod_fusion_logs(conn, out_t2, cache_dir, "npu_cascaded", transfer_mode)
+
+        # ── Step 3: rename dist_cpu → cpu_benchmark ─────────────────
+        if failed_phase is None and out_t1:
+            src = f"{out_t1}/output/dist_cpu"
+            dst = f"{out_t1}/output/cpu_benchmark"
+            logger.info("[fusion step3 rename] command: mv %s %s", src, dst)
+            t = time.monotonic()
+            try:
+                r3 = await move_remote(conn, src, dst, timeout=60.0)
+            except SSHEngineError as exc:
+                logger.exception("[fusion step3] rename failed: %s", exc)
+                phases.append(
+                    FusionPhase(
+                        phase="rename", command=f"mv {src} {dst}", exit_code=None,
+                        duration=time.monotonic() - t, output_dir=None,
+                        dir_check_passed=None,
+                    )
+                )
+                failed_phase = "rename"
+                failed_reason = str(exc)
+            else:
+                logger.info("[fusion step3] exit=%d", r3.exit_code)
+                phases.append(
+                    FusionPhase(
+                        phase="rename", command=f"mv {src} {dst}", exit_code=r3.exit_code,
+                        duration=time.monotonic() - t, output_dir=None,
+                        dir_check_passed=None,
+                    )
+                )
+                if r3.exit_code != 0:
+                    failed_phase = "rename"
+                    failed_reason = f"mv exit={r3.exit_code}"
+
+        # ── Step 4: 精度对比 (accuracy_load) — 记录性, 不入成败 ──────
+        # atk 客户端在任务完成后因 celery 结果后端 sqlite 损坏
+        # (UNIQUE constraint failed: celery_taskmeta.task_id) 不退出,
+        # 阻塞 `await run` 至 SSH 超时 (1800s)。atk 任务本身在 ~40s 内
+        # 成功完成并写出 out_t2/report/*.xlsx。故改为: 后台启动 atk
+        # 命令 (子 shell 继承 conda 函数, disown 续活), 轮询 xlsx 出现
+        # 即解析, 不阻塞在挂死的客户端上。step4 记录性: 超时/无 xlsx
+        # 只置 comparison=None, 不设 failed_phase, 不阻断 step1~3 成功。
+        if failed_phase is None and out_t2:
+            cmd4 = _build_fusion_atk_command(
+                "accuracy_load", operator_name, remote, fusion_devices, num,
+                env_init,
+                out_path_t2=f"{out_t1}/output" if out_t1 else None,
+                out_path_t1=f"{out_t2}/output",
+            )
+            logger.info("[fusion step4 accuracy_load] command: %s", cmd4)
+            t = time.monotonic()
+            bg_log = f"/data/atk-space/runs/step4_{operator_name}.fg.log"
+            # `( cmd4 )` 子 shell 继承父 shell 的 conda 函数; `& disown`
+            # 让后台任务脱离作业表, 父 shell 退出时不发 SIGHUP。
+            bg_cmd = (
+                f"( {cmd4} ) > {bg_log} 2>&1 & disown; echo STEP4_LAUNCHED"
+            )
+            try:
+                bg_res = await run(conn, bg_cmd, timeout=30.0)
+                logger.info(
+                    "[fusion step4] background launched: %s",
+                    (bg_res.stdout or "")[:200],
+                )
+            except SSHEngineError as exc:
+                logger.warning(
+                    "[fusion step4] background launch failed: %s", exc
+                )
+            # 轮询 out_t2/report 的 xlsx (atk 任务完成标志)
+            remote_report_dir = f"{out_t2}/report"
+            xlsx_name: str | None = None
+            deadline = time.monotonic() + req.atk_timeout
+            while time.monotonic() < deadline:
+                await asyncio.sleep(15)
+                try:
+                    entries = await list_dir(
+                        conn, remote_report_dir, transfer_mode=transfer_mode
+                    )
+                except Exception:
+                    entries = []
+                for entry in entries:
+                    name = entry.rsplit("/", 1)[-1] if "/" in entry else entry
+                    if name.lower().endswith(".xlsx"):
+                        xlsx_name = name
+                        break
+                if xlsx_name:
+                    break
+            phases.append(
+                FusionPhase(
+                    phase="accuracy_load", command=cmd4, exit_code=None,
+                    duration=time.monotonic() - t, output_dir=out_t2,
+                    dir_check_passed=None,
+                )
+            )
+            logger.info(
+                "[fusion step4] poll done in %.1fs xlsx=%s",
+                time.monotonic() - t, xlsx_name,
+            )
+            # 解析精度对比 (记录性, 不入成败)
+            try:
+                local_report_dir = cache_dir / "fusion_accuracy_load_report"
+                local_report_dir.mkdir(parents=True, exist_ok=True)
+                if xlsx_name:
+                    await download_file(
+                        conn,
+                        f"{remote_report_dir}/{xlsx_name}",
+                        local_report_dir / xlsx_name,
+                        transfer_mode=transfer_mode,
+                    )
+                comparison = parse_fusion_comparison(
+                    local_report_dir,
+                    thresholds=_load_fusion_thresholds(operator_name),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[fusion step4] comparison parse failed (non-fatal): %s",
+                    exc,
+                )
+                comparison = None
+    finally:
+        try:
+            conn.close()
+        except Exception:  # pragma: no cover — cleanup best effort
+            pass
+
+    # ── Assemble result (成败只看执行) ──────────────────────────────
+    result.fusion_phases = phases
+    result.comparison_result = comparison
+    result.exit_code = last_exit
+    result.remote_output_dir = out_t2 or out_t1
+    result.duration = time.monotonic() - overall_start
+    if failed_phase:
+        result.status = "failed"
+        result.error_message = (
+            f"fusion step failed: {failed_phase} ({failed_reason})"
+        )
+        result.task_report_data.passed = 0
+        result.task_report_data.failed = num
+        result.task_report_data.record_count = num
+    else:
+        result.status = "success"
+        result.task_report_data.passed = num
+        result.task_report_data.failed = 0
+        result.task_report_data.record_count = num
+
+    try:
+        (cache_dir / "result.json").write_text(
+            result.model_dump_json(indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # pragma: no cover — best effort
+        logger.warning(
+            "execute_cases fusion: failed to write result.json: %s", exc
+        )
+
+    logger.info(
+        "===== execute done: operator=%s strategy=fusion status=%s "
+        "passed=%d failed=%d duration=%.2fs =====",
         operator_name,
         result.status,
         result.task_report_data.passed,
@@ -1096,7 +1660,10 @@ def run_cases(
         return payload
 
     try:
-        result = asyncio.run(_execute_real(request))
+        if request.execution_strategy == "fusion":
+            result = asyncio.run(_execute_fusion(request))
+        else:
+            result = asyncio.run(_execute_real(request))
     except Exception as exc:
         logger.exception("execute_cases: unexpected exception")
         return {
@@ -1128,9 +1695,9 @@ def load_cases_payload(cases_path: Path) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "RemotePaths",
     "RunRequest",
     "load_cases_payload",
-    "pick_server",
     "run_cases",
     "validate_server_info",
 ]

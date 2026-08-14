@@ -87,11 +87,18 @@ class ASTtoZ3Converter(ast.NodeVisitor):
     # --- 辅助方法 ---
     @staticmethod
     def _promote_numeric_types(left, right):
-        if isinstance(left, int):
+        # bool is a subclass of int in Python.  Promote it first, otherwise
+        # ``flag == False`` becomes ``Bool == IntVal(0)`` and Z3 raises a
+        # sort-mismatch exception.
+        if isinstance(left, bool):
+            left = z3.BoolVal(left)
+        elif isinstance(left, int):
             left = z3.IntVal(left)
         elif isinstance(left, float):
             left = z3.RealVal(left)
-        if isinstance(right, int):
+        if isinstance(right, bool):
+            right = z3.BoolVal(right)
+        elif isinstance(right, int):
             right = z3.IntVal(right)
         elif isinstance(right, float):
             right = z3.RealVal(right)
@@ -160,16 +167,25 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             elif node.attr == 'range_value':
                 t_var._range_constraint_used = True
                 return t_var.range_value
+            elif node.attr == 'is_present':
+                # 通用规则：optional 参数的 presence 检查（约束写为
+                # `(not param.is_present) or (param.range_value >= 0)` 形式
+                # 可在 absent 时 trivially satisfied；Z3 Bool 直接暴露。
+                return t_var.is_present
         elif isinstance(t_var, ListVar):
             if node.attr == 'dtype':
                 return t_var.dtype
             elif node.attr == 'range_value':
                 return t_var.z3_var
+            elif node.attr == 'is_present':
+                return t_var.is_present
         elif isinstance(t_var, ScalarVar):
             if node.attr == 'dtype':
                 return t_var.dtype
             elif node.attr == 'range_value':
                 return t_var.z3_var
+            elif node.attr == 'is_present':
+                return t_var.is_present
         raise AttributeError(f"Attribute '{node.attr}' not supported for var '{var_name}'")
 
     def visit_IfExp(self, node):
@@ -224,6 +240,8 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             # 处理类型转换（仅针对非 None 值）
             def convert_operand(l, r):
                 if r is None: return r  # 不转换 None
+                if z3.is_bool(l) and isinstance(r, bool):
+                    return z3.BoolVal(r)
                 if z3.is_expr(l) and l.sort().name() == 'DType' and isinstance(r, str):
                     if r in DTYPE_MAP: return DTYPE_MAP[r]
                     raise ValueError(f"Unknown dtype string: {r}")
@@ -252,8 +270,17 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                     else:
                         result = (cur_left is None) if isinstance(op, ast.Is) else (cur_left is not None)
                     res.append(result)
+                elif isinstance(right, bool):
+                    # 通用规则：Python 中 `is True`/`is False` 是合法用法（PEP 8 推荐），
+                    # 与 ==/!= 等价；旧实现按 None-only 报错致 `(return_value is False)`
+                    # 类约束被 silently dropped。归一化为 Z3 BoolVal 等式/不等式。
+                    right_val = z3.BoolVal(right)
+                    if isinstance(op, ast.Is):
+                        res.append(cur_left == right_val)
+                    else:
+                        res.append(cur_left != right_val)
                 else:
-                    raise NotImplementedError(f"'is' operator only supports None comparison, got {right}")
+                    raise NotImplementedError(f"'is' operator only supports None/True/False comparison, got {right}")
                 cur_left = right
                 continue
 

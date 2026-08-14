@@ -17,9 +17,9 @@ from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.logger_util import LazyLogger, init_logger, DocumentLogContext
 from agent.generators.data_definition.constants import GlobalConfig
 from agent.generators.data_definition.param_models_def import RunPlatform
-from agent.generators.operator_param_combine.combination_generator_main import PairwiseParamCombinationGenerator
 # [PAIRWISE] 替换旧随机生成器为 Pairwise 策略生成器
 from agent.generators.operator_param_combine.param_combination_generate import ParamCombinationGenerator
+from agent.generators.operator_param_combine.combination_generator_main import PairwiseParamCombinationGenerator
 from agent.generators.operator_param_models.batch_case_generate import OperatorCaseGenerator
 
 logger = LazyLogger()
@@ -109,14 +109,14 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     operator_constraint_data = _build_constraint_data(operator_constraint)
     if operator_constraint_data is None:
         logger.error("Failed to build operator constraint data, abort generation")
-        return [], ""
+        return []
     operator_name = _resolve_operator_name(operator_constraint, operator_constraint_data)
     logger.info(f"Start handle operator, operator name : {operator_name}")
     effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_constraint_data,
                                                                                     target_platform=platform)
     if effective_operator_constraint_data is None:
         logger.error(f"Effective operator rule data is None, operator name : {operator_name}")
-        return [], operator_name
+        return []
     # param_combination_generator = ParamCombinationGenerator(operator_rule_data=effective_operator_constraint_data,
     #                                                                 case_num=case_num)
     param_combination_generator = PairwiseParamCombinationGenerator(
@@ -172,7 +172,7 @@ def batch_operator_handel(operator_constraint_directory, operators: List = None,
             single_operator_handle(operator_constraint_path, platform=platform,
                                    case_num=case_num, jsonl_save_path=case_save_path, json_file_name=operator_name)
             data_handle_utils.convert_jsonl_to_json(api_name=operator_name, jsonl_save_path=case_save_path,
-                                                    json_save_path=case_save_path)
+                                                     json_save_path=case_save_path)
 
         logger.info(
             f"End handle operator, file index : {index + 1}/{operator_constraint_num}, "
@@ -181,17 +181,12 @@ def batch_operator_handel(operator_constraint_directory, operators: List = None,
 
 
 def main():
-    platform1 = "Atlas A2 训练系列产品/Atlas A2 推理系列产品"
-    platform2 = "Atlas 推理系列产品"
-    platform3 = "Ascend 950PR/Ascend 950DT"
-    platform4 = "Atlas A3 训练系列产品/Atlas A3 推理系列产品"
-    platform5 = "Atlas 350 加速卡"
     parser = argparse.ArgumentParser()
     parser.add_argument("--operator_constraint_directory", type=str, required=False, default=None,
                         help="Operator constraint json file directory")
     parser.add_argument("--operator_constraint_path", type=str, required=False, default=None,
                         help="Operator constraint json path")
-    parser.add_argument("--platform", type=str, default=platform1,
+    parser.add_argument("--platform", type=str, default=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
                         required=False,
                         help="Test case executor environment platform")
     parser.add_argument("--case_save_path", type=str, default="output", required=False,
@@ -204,24 +199,18 @@ def main():
     if args.operator_constraint_directory is None and args.operator_constraint_path is None:
         raise ValueError("operator_constraint_directory and operator_constraint_path cannot be empty at the same time")
     elif args.operator_constraint_directory is not None:
-        # operators = args.operators.split(",") if args.operators is not None else None
-        # operators = ["torch_npu.npu_quant_lightning_indexer"]
-        # operators = ["aclnnAlltoAllMatmul", "aclnnBatchMatMulWeightNz", "aclnnCalculateMatmulWeightSize", "aclnnAllGatherMatmul",
-        #              "aclnnCalculateMatmulWeightSizeV2", "aclnnFFNV3", "aclnnGroupedMatmulV5", "aclnnNpuFormatCast",
-        #              "aclnnReflectionPad1dBackward", "aclnnSwinAttentionScoreQuant", "aclnnSwinTransformerLnQkvQuant", "aclnnMixedQuantSparseFlashMla","aclnnApplyRotaryPosEmb", "aclnnScatterPaKvCache", "torch_npu.npu_fused_infer_attention_score","torch_npu.npu_quant_lightning_indexer","aclnnGroupedMatmulV5_ascend950_static_quant"]
-        operators = ["aclnnGroupedMatmulV5"]
-
+        operators = args.operators.split(",") if args.operators is not None else None
         batch_operator_handel(operator_constraint_directory=args.operator_constraint_directory, operators=operators,
                               platform=args.platform, case_save_path=args.case_save_path, case_num=args.case_num)
     else:
         operator_name, _ = os.path.splitext(os.path.basename(args.operator_constraint_path))
         time_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
         init_logger(log_name=operator_name + "_" + time_str)
-        _, operator_name = single_operator_handle(operator_constraint=args.operator_constraint_path,
-                                                  platform=args.platform, case_num=args.case_num,
-                                                  jsonl_save_path=args.case_save_path)
+        single_operator_handle(operator_constraint=args.operator_constraint_path,
+                               platform=args.platform, case_num=args.case_num,
+                               jsonl_save_path=args.case_save_path)
         DataHandleUtil.convert_jsonl_to_json(api_name=operator_name, jsonl_save_path=args.case_save_path,
-                                             json_save_path=args.case_save_path)
+                                              json_save_path=args.case_save_path)
 
 
 if __name__ == '__main__':
