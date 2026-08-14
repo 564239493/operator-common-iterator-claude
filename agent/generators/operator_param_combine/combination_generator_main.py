@@ -101,7 +101,8 @@ class PairwiseParamCombinationGenerator:
                     config=generator_options,
                     candidate_generator=candidate_gen,
                     pair_builder=builder,
-                    operator_name=self.operator_rule_data.operator_name
+                    operator_name=self.operator_rule_data.operator_name,
+                    domain_data=combination_input_data
                 )
                 combination_data_result = gen.generate()
 
