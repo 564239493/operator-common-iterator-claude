@@ -1,43 +1,52 @@
 {
   "permissions": {
-    "defaultMode": "dontAsk",
+    "defaultMode": "default",
     "disableBypassPermissionsMode": "disable",
     "allow": [
       "Read",
       "Glob",
       "Grep",
-      "Bash",
-      "Edit(/**)",
-      "Write(/**)",
-      "NotebookEdit(/**)",
+      "Edit(/runs/**)",
       "Agent",
       "Skill",
-      "WebFetch",
-      "WebSearch"
+      "Monitor"
     ],
     "deny": [
-      "Read(./.env)",
-      "Read(./.env.*)",
-      "Read(./servers.json)",
-      "Edit(../**)",
-      "Write(../**)",
-      "NotebookEdit(../**)"
+      "Read(//**/.env)",
+      "Read(//**/.env.*)",
+      "Edit(/servers.json)",
+      "Edit(/executer/**)",
+      "Edit(/agent/generators/**)",
+      "Edit(/.git/**)",
+      "EnterWorktree"
     ]
   },
   "sandbox": {
     "enabled": true,
     "failIfUnavailable": false,
-    "autoAllowBashIfSandboxed": true,
-    "allowUnsandboxedCommands": false
+    "autoAllowBashIfSandboxed": false,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyWrite": [
+        "./executer",
+        "./agent/generators",
+        "./servers.json",
+        "./.git"
+      ],
+      "denyRead": [
+        "./.env",
+        "./.env.*"
+      ]
+    }
   },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Read|Glob|Grep|Edit|Write|NotebookEdit|Bash|PowerShell|Agent|EnterWorktree",
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_project_writes.py\""
+            "command": "python -X utf8 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_project_writes.py\""
           }
         ]
       }
@@ -47,7 +56,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+            "command": "python -X utf8 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
           }
         ]
       }
@@ -57,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+            "command": "python -X utf8 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
           }
         ]
       }
@@ -67,7 +76,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
+            "command": "python -X utf8 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/trace_hook.py\""
           }
         ]
       }

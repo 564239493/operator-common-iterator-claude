@@ -4,8 +4,8 @@ import re
 import tokenize
 from typing import List
 
-from common_utils.logger_util import LazyLogger
-from data_definition.constants import DataMatchMap
+from agent.generators.common_utils.logger_util import LazyLogger
+from agent.generators.data_definition.constants import DataMatchMap
 
 logger = LazyLogger()
 

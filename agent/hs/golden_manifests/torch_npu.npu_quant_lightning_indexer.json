@@ -1,0 +1,45 @@
+{
+  "operator": "torch_npu.npu_quant_lightning_indexer",
+  "status": "verified",
+  "plugin": "npu_quant_lightning_indexer_golden.py",
+  "verified_modes": {
+    "torch_npu.npu_quant_lightning_indexer": {
+      "scenarios": [
+        {"id": 0, "layout_query": "TND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 127, "dtype_qk": "int8"},
+        {"id": 1, "layout_query": "TND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 129, "dtype_qk": "int8"},
+        {"id": 2, "layout_query": "BSND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 127, "dtype_qk": "int8"},
+        {"id": 3, "layout_query": "BSND", "layout_key": "PA_BSND", "sparse_mode": 0, "sparse_count": 129, "dtype_qk": "int8"},
+        {"id": 4, "layout_query": "BSND", "layout_key": "BSND", "sparse_mode": 0, "sparse_count": 128, "dtype_qk": "int8"},
+        {"id": 5, "layout_query": "BSND", "layout_key": "BSND", "sparse_mode": 3, "sparse_count": 128, "dtype_qk": "int8"}
+      ],
+      "verified_layouts": ["BSND", "TND", "PA_BSND"],
+      "verified_sparse_modes": [0, 3],
+      "verified_dtypes_qk": ["int8"],
+      "verified_sparse_count_values": [127, 128, 129],
+      "pass_count": 6,
+      "pass_pct_100": 6,
+      "partial_match_scenarios": [
+        {"id": 6, "match_pct": 50, "reason": "BSND/BSND sparse_mode=3 sparse_count=127, top-2 from 3 valid positions, padding mismatch"},
+        {"id": 7, "match_pct": 50, "reason": "BSND/PA_BSND sparse_mode=3 sparse_count=1, top-1 from PA-paged positions"},
+        {"id": 8, "match_pct": 16, "reason": "BSND/PA_BSND sparse_mode=0 sparse_count=128, top-16 from 16 positions; order/tie-break differs"}
+      ]
+    }
+  },
+  "unsupported": [
+    "query_quant_mode != 0 (only per-token-head supported)",
+    "key_quant_mode != 0 (only per-token-head supported)",
+    "layout_query not in {BSND, TND}",
+    "layout_key not in {BSND, TND, PA_BSND}",
+    "sparse_mode not in {0, 3}",
+    "fp8_e4m3fn / hifloat8 (950 platform) — not in current cases"
+  ],
+  "limitations": [
+    "ReLU(scale*QK) per doc formula — does NOT match upstream test's ReLU(QK)/1024 hack",
+    "Per-token-head dequantization only (quant_mode=0); per-token (mode=1) raises NotImplementedError",
+    "Padding for unfilled top-k slots: -1 (matches kernel ExtractIndex + InitSortOutBuf pattern)",
+    "TTK sometimes passes actual_seq_lengths tensors with all-zero values (input_data_range=(0,0)); treated as 'use full shape length' to match kernel default",
+    "Sparse_mode=3 mask formula is `threshold = S_k - S_q + q_idx` (kernel's `cuRealAcSeq = actS2Size - (actS1Size - cuS1BeginIdxPerAiv)`), off-by-one from doc / upstream non-quant reference",
+    "PA_BSND sparse_mode=3 top-k from paged positions may have tie-break differences vs NPU kernel"
+  ],
+  "ttk_content_generation_mode": "range_only"
+}

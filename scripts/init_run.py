@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from datetime import datetime, timezone
@@ -12,10 +13,212 @@ from pathlib import Path
 from runtime_config import (
     ROOT,
     config_error_payload,
-    find_latest_operator_prompt,
+    default_test_framework,
+    find_active_aclnn_prompt,
+    find_latest_hs_prompt,
     resolve_input_path,
     validate_server_config,
 )
+from select_prompt import assemble as assemble_aclnn_prompt
+from select_torch_npu_prompt import (
+    assemble as assemble_torch_npu_prompt,
+    extract_operator_name as extract_torch_npu_operator_name,
+)
+try:
+    from validate_aclnn_knowledge import DEFAULT_KNOWLEDGE as ACLNN_KNOWLEDGE_ROOT
+    from validate_aclnn_knowledge import validate as validate_aclnn_knowledge
+except ModuleNotFoundError:  # pragma: no cover - alternate package path
+    from scripts.validate_aclnn_knowledge import DEFAULT_KNOWLEDGE as ACLNN_KNOWLEDGE_ROOT
+    from scripts.validate_aclnn_knowledge import validate as validate_aclnn_knowledge
+try:
+    from validate_torch_npu_knowledge import DEFAULT_KNOWLEDGE as TORCH_KNOWLEDGE_ROOT
+    from validate_torch_npu_knowledge import validate as validate_torch_npu_knowledge
+except ModuleNotFoundError:  # pragma: no cover - alternate package path
+    from scripts.validate_torch_npu_knowledge import DEFAULT_KNOWLEDGE as TORCH_KNOWLEDGE_ROOT
+    from scripts.validate_torch_npu_knowledge import validate as validate_torch_npu_knowledge
+# L1 算子名 stem 全树闭包：路径含以下任一段的命中视为噪声跳过。
+CLOSURE_NOISE_PARTS = frozenset({
+    "tests", "ut", "examples", "binary_config", "tbe",
+    "cann-ops-competitions", "cann-outreach", "data_preprocess",
+    "dvpp", "dump_statistics", ".git",
+})
+# 闭包匹配的源码后缀（与 source_exts 一致）。
+CLOSURE_EXTS = ("cc", "cpp", "h", "hpp", "c")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _closure_by_stem(
+    src_root: Path, dest: Path, stems: list[str], seen: set[Path]
+) -> int:
+    """L1 算子名 stem 全树闭包：在 src_root 下按算子名找同名实现文件。
+
+    SEED 的固定位置 glob 只抓算子目录的 op_host/op_api，漏掉 canndev 主力
+    实现（如 canndev/ops/built-in/op_tiling/runtime/trans_data.cc，与算子
+    目录同 stem）。此处对每个 stem（算子目录名）× 后缀 rglob 全树，命中且
+    不在噪声路径、未已复制的，按 rel-to-src_root 路径复制进快照。
+
+    严格 stem 匹配（不做前缀），避免 trans_data* 噪声；带后缀变体
+    (_def/_tiling_arch35) 是已知盲区。闭包范围 = src_root：传树根跨子树含
+    canndev，传算子目录仅该目录。基础算子（canndev 无同名文件）→ 空集跳过。
+    """
+    if not stems:
+        return 0
+    added = 0
+    for stem in stems:
+        if not stem:
+            continue
+        for ext in CLOSURE_EXTS:
+            for hit in src_root.rglob(f"{stem}.{ext}"):
+                if not hit.is_file():
+                    continue
+                if any(part in CLOSURE_NOISE_PARTS for part in hit.parts):
+                    continue
+                if hit in seen:
+                    continue
+                seen.add(hit)
+                rel = hit.relative_to(src_root)
+                dst = dest / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(hit, dst)
+                added += 1
+    return added
+
+
+def _snapshot_operator_source(
+    src_root: Path, dest: Path, aclnn_name: str = ""
+) -> dict:
+    """只读复制算子源码关键文件到快照目录，保持相对 src_root 的路径结构。
+
+    **树根 + 算子名**（常见场景）走升级版 :func:`collect_operator_source.collect`：
+    SEED + stem/后缀变体闭包 + canndev 多层 + **include 不动点闭包 + L0 反查**，
+    覆盖跨目录 L0 实现（如 ``npu_format_cast`` → ``transdata``/``contiguous``/
+    ``reshape``/``transpose``/``view_copy``），并落 ``manifest.json`` +
+    ``closure_report.md``。L0 反查按声明头 stem 反查实现 ``.cpp``；当某 ``l0op``
+    函数与声明头不同 stem（如 ``ViewCopy`` 声明在 ``contiguous.h``、实现在
+    ``view_copy.cpp``）时会漏，需 ``collect-operator-source`` skill 手动补
+    ``--extra-stem``（默认流程不传，接受该已知盲区）。
+
+    **单算子目录**（src_root 自身即算子目录，SEED 直命中源码）或 **collect
+    失败/异常**时，回退旧路径：SEED 固定位置 glob + L1 算子名 stem 全树闭包
+    （``_closure_by_stem``，仅按算子目录名 rglob 同名 ``.cc/.cpp/.h``，不解析
+    include）。带后缀变体 ``_def/_tiling_arch35`` 与跨目录依赖在此路径仍漏，
+    由 source-analyst 标 ``missing_evidence`` 进 ``uncertain-doc.md``。
+
+    --src 既可指单个算子目录（根下直接有 op_host/op_api/docs/config），也可指
+    整棵源码树根（如 operators-src）。对后者，非递归 SEED globs 只会命中顶层
+    docs/，漏掉埋在 <repo>/<class>/<op>/op_host/op_api 下的真实实现；故当直接
+    扫描命中 0 个源码文件时，用 aclnn_name 调 locate_operator_source 在 src_root
+    下定位算子目录，对定位结果套同样 SEED（仅扫算子目录，不带顶层 docs 噪声）。
+    定位仍失败则回退扫 src_root（保持旧行为，返回 source_files=0 由 caller 提示）。
+
+    返回 {"files": <总文件数>, "source_files": <源码文件数>,
+           "closure_files": <L1 stem 闭包新增数>}。
+    """
+    # 源码目录 × 源码后缀，单一定义供 globs 与 source_files 判定共用。
+    # CANN 真实算子主用 .cpp/.h；asc-devkit 自定义算子与 canndev 模板用 .cc；
+    # .hpp/.c 兜底。docs/*.md 与 config/**/*.json 单列（config 含 tiling 配置等）。
+    source_dirs = ("op_host", "op_host/op_api", "op_api")
+    source_exts = ("cpp", "h", "cc", "hpp", "c")
+    source_ext_dots = {f".{e}" for e in source_exts}
+    seed_globs = [f"{d}/*.{e}" for d in source_dirs for e in source_exts]
+    seed_globs += ["docs/*.md", "docs/**/*.md", "config/**/*.json"]
+
+    def _collect(root: Path) -> list[Path]:
+        hits: list[Path] = []
+        for pattern in seed_globs:
+            for src in root.glob(pattern):
+                if src.is_file():
+                    hits.append(src)
+        return hits
+
+    # 先探测 src_root 是否本身就是算子目录（直接套 globs 能命中源码文件）。
+    direct = _collect(src_root)
+    direct_has_source = any(p.suffix.lower() in source_ext_dots for p in direct)
+
+    # 树根 + 有算子名：走升级版 collect_operator_source（include 不动点闭包 +
+    # L0 反查），出全量快照 + manifest + closure_report，覆盖跨目录 L0 实现。
+    # collect 内部做 locate+SEED+stem闭包+include闭包+L0反查；locate 失败返回
+    # ok=False（未写任何文件），异常也被兜住——两种情况都回退下方旧 SEED 路径。
+    if not direct_has_source and aclnn_name:
+        try:
+            import collect_operator_source as _col
+
+            result = _col.collect(
+                aclnn_name, src_root, dest,
+                with_tbe_py=False, with_tests=False,
+                with_external_stub=False,
+            )
+            if result.get("ok"):
+                cstats = result.get("stats", {})
+                closure = (
+                    cstats.get("stem_closure", 0)
+                    + cstats.get("include_closure", 0)
+                    + cstats.get("l0_backref", 0)
+                    + cstats.get("external_stub", 0)
+                )
+                source_files = sum(
+                    1 for p in dest.rglob("*")
+                    if p.is_file() and p.suffix.lower() in source_ext_dots
+                )
+                return {
+                    "files": cstats.get("total_copied", source_files),
+                    "source_files": source_files,
+                    "closure_files": closure,
+                    "collector": "collect_operator_source",
+                    "layer_counts": result.get("layer_counts", {}),
+                }
+        except Exception:
+            # collect 异常（import 失败/解析异常等）：dest 可能已被部分写入，
+            # 回退旧 SEED 会 copy2 覆盖同名文件，剩余旧文件保留——保持鲁棒不中断。
+            pass
+
+    targets: list[Path]
+    if direct_has_source:
+        targets = [src_root]
+    else:
+        # src_root 是树根或无效目录：用算子名定位算子目录；定位失败回退 src_root。
+        targets = []
+        if aclnn_name:
+            import locate_operator_source as _loc
+
+            for d in _loc.locate(aclnn_name, src_root).get("operator_dirs", []):
+                p = Path(d)
+                if p.is_dir():
+                    targets.append(p)
+        if not targets:
+            targets = [src_root]
+
+    seen: set[Path] = set()
+    files = 0
+    source_files = 0
+    for target in targets:
+        for pattern in seed_globs:
+            for src in target.glob(pattern):
+                if not src.is_file() or src in seen:
+                    continue
+                seen.add(src)
+                rel = src.relative_to(src_root)
+                dst = dest / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                files += 1
+                if src.suffix.lower() in source_ext_dots:
+                    source_files += 1
+    # L1 算子名 stem 全树闭包：补 SEED 抓不到的 canndev 主力实现
+    #（如 trans_data.cc 的 OP_TILING_CHECK）。
+    stems = [t.name for t in targets]
+    closure_files = _closure_by_stem(src_root, dest, stems, seen)
+    files += closure_files
+    source_files += closure_files  # 闭包命中的全是源码后缀
+    return {"files": files, "source_files": source_files,
+            "closure_files": closure_files}
 
 
 def main() -> int:
@@ -45,14 +248,84 @@ def main() -> int:
         "--prompt",
         default=None,
         help=(
-            "约束提取提示词路径；省略时自动选择 "
-            "prompts/operator_constraints_extract_vN.md 中数值版本最大的文件"
+            "约束提取提示词路径；省略时 ACLNN 使用拆分后的 active base 并路由知识，"
+            "torch_npu 使用其数值版本最大的独立基线"
+        ),
+    )
+    parser.add_argument(
+        "--supplement-constraints",
+        dest="supplement_constraints",
+        default=None,
+        help=(
+            "补充约束 Markdown 路径（项目内或外部）；省略则跳过约束补充阶段。"
+            "EXTRACT 产出 constraints.json 后据此做关系补充（add/replace）。"
+        ),
+    )
+    parser.add_argument(
+        "--src",
+        dest="src",
+        default=None,
+        help=(
+            "算子源码目录绝对路径（可选，项目内或外部）。提供时把关键源码只读"
+            "复制到 run/inputs/src_snapshot/，供 source-analyst 做交叉校验与"
+            "失败反向推导。省略则跳过源码分析，退回纯文档驱动。算子源码典型"
+            "结构: op_host/<op>_def.cpp|_tiling*.cpp|op_api/aclnn_<op>.cpp|docs/*.md。"
         ),
     )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
+    parser.add_argument(
+        "--human-checkpoint-round",
+        type=int,
+        default=3,
+        help=(
+            "人工补充检查点触发轮次：迭代到该轮仍以 constraint_extraction 失败时，"
+            "在下一轮开始前暂停并向用户征询人工补充/自主迭代/立即停止。"
+            "默认 3；0 表示禁用（全程自主，不弹检查点）。"
+        ),
+    )
+    parser.add_argument(
+        "--operator-family",
+        choices=("auto", "aclnn", "hs", "torch_npu"),
+        default="auto",
+        help=(
+            "算子文档类型；auto 根据文档名/首行识别。torch_npu 是 hs 的显式别名，"
+            "二者均选择隔离的 torch_npu 提示词和 TTK 流程。"
+        ),
+    )
+    parser.add_argument(
+        "--test-framework",
+        choices=("auto", "atk", "ttk", "constraints"),
+        default="auto",
+        help=(
+            "测试框架；auto 对已适配的六个 torch_npu 算子选 ttk，其他 torch_npu "
+            "文档选 constraints（仅约束提取），ACLNN 选 atk；ACLNN 可显式选择 ttk "
+            "进入原生 TTK ACLNN 流程。"
+        ),
+    )
+    parser.add_argument(
+        "--hs-scenario-mode",
+        choices=("original", "planned"),
+        default="original",
+        help=(
+            "torch_npu + TTK 用例生成策略；original（默认）直接使用原生生成器，"
+            "planned 显式启用 TND/BSND/paged-attention 场景拆分和投影。"
+        ),
+    )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
+    parser.add_argument(
+        "--scene",
+        choices=("auto", "all", "off"),
+        default="auto",
+        help=(
+            "场景提取范围：auto=EXTRACT 前跑 scene-scan，文档有场景则主会话"
+            "AskUserQuestion 两级多选征询(设备类型+逐设备场景，支持全选)、无则跳过；"
+            "all=跑 scene-scan 但取全场景(不剪枝、不询问，批处理默认)；off=不跑 scene-scan。"
+            "scene-scan 由 iterate-operator 在 EXTRACT 前委派 scene-scanner Agent 完成，"
+            "本脚本只记录选择并在 run_state.scene 留空待回写。"
+        ),
+    )
     args = parser.parse_args()
 
     if args.doc is None:
@@ -63,11 +336,6 @@ def main() -> int:
         )
 
     doc = resolve_input_path(args.doc)
-    prompt = (
-        resolve_input_path(args.prompt)
-        if args.prompt
-        else find_latest_operator_prompt()
-    )
     if not doc.is_file():
         print(json.dumps(
             {
@@ -80,6 +348,33 @@ def main() -> int:
             ensure_ascii=False,
         ))
         return 2
+    doc_text = doc.read_text(encoding="utf-8", errors="ignore")
+    doc_head = doc_text[:4096]
+    is_hs = args.operator_family in {"hs", "torch_npu"} or (
+        args.operator_family == "auto"
+        and (
+            "torch_npu" in doc_head
+            or "torch\\_npu" in doc_head
+            or "torch.npu." in doc_head
+            or "torch_npu" in doc.name
+        )
+    )
+    operator_family = "hs" if is_hs else "aclnn"
+    documented_operator_name = (
+        extract_torch_npu_operator_name(doc_text) if is_hs else ""
+    )
+    if args.test_framework == "auto":
+        test_framework = default_test_framework(
+            operator_family, documented_operator_name
+        )
+    else:
+        test_framework = args.test_framework
+    prompt = (
+        resolve_input_path(args.prompt)
+        if args.prompt
+        else (find_latest_hs_prompt() if is_hs else find_active_aclnn_prompt())
+    )
+    explicit_prompt = bool(args.prompt)
     if prompt is None or not prompt.is_file():
         print(json.dumps(
             {
@@ -88,18 +383,58 @@ def main() -> int:
                 "code": "PROMPT_NOT_FOUND",
                 "message": (
                     "约束提取提示词不存在。请通过 --prompt 指定文件，或在 prompts "
-                    "目录提供 operator_constraints_extract_vN.md。"
+                    "目录恢复 ACLNN operator_constraints/base.md 或提供 "
+                    "torch_npu_constraints_extract_vN.md。"
                 ),
                 "prompt": str(prompt) if prompt else "",
+                "operator_family": operator_family,
+            },
+            ensure_ascii=False,
+        ))
+        return 2
+    supplement_path = (
+        resolve_input_path(args.supplement_constraints)
+        if args.supplement_constraints
+        else None
+    )
+    if supplement_path is not None and not supplement_path.is_file():
+        print(json.dumps(
+            {
+                "ok": False,
+                "requires_user_action": True,
+                "code": "SUPPLEMENT_NOT_FOUND",
+                "message": (
+                    "补充约束文件不存在。请提供绝对路径、项目相对路径或包含 .. 的"
+                    "相对路径，或省略 --supplement-constraints 以跳过约束补充阶段。"
+                ),
+                "supplement_constraints": str(supplement_path),
+            },
+            ensure_ascii=False,
+        ))
+        return 2
+    src_path = resolve_input_path(args.src) if args.src else None
+    if src_path is not None and not src_path.is_dir():
+        print(json.dumps(
+            {
+                "ok": False,
+                "requires_user_action": True,
+                "code": "OPERATOR_SRC_NOT_FOUND",
+                "message": (
+                    "算子源码目录不存在。请提供有效的 --src 绝对路径，"
+                    "或省略以跳过源码分析退回纯文档驱动。"
+                ),
+                "operator_src_source": str(args.src),
             },
             ensure_ascii=False,
         ))
         return 2
     if args.max_iterations < 1 or args.case_count < 1:
         raise SystemExit("max-iterations and case-count must be positive")
+    if args.human_checkpoint_round < 0:
+        raise SystemExit("human-checkpoint-round must be >= 0 (0 disables the checkpoint)")
 
     server_config: Path | None = None
-    if args.mode == "real":
+    if args.mode == "real" and test_framework != "constraints":
         server_config, config_errors = validate_server_config(args.server_config)
         if config_errors:
             print(json.dumps(
@@ -119,8 +454,75 @@ def main() -> int:
     # inside this project so they never edit the user's original document.
     doc_snapshot = input_dir / doc.name
     prompt_snapshot = input_dir / "prompt_v1.md"
+    prompt_preanalysis = input_dir / "prompt_preanalysis.json"
+    prompt_assembly_record = input_dir / "prompt_assembly.json"
+    prompt_update_decisions = input_dir / "prompt_update_decisions.json"
+    supplement_snapshot = input_dir / "supplement_constraints.md"
     shutil.copy2(doc, doc_snapshot)
-    shutil.copy2(prompt, prompt_snapshot)
+    if supplement_path is not None:
+        # --supplement-constraints：外部补充约束文件只读复制到 inputs/，
+        # EXTRACT 后据此对 constraints.json 做关系补充（add/replace）。
+        shutil.copy2(supplement_path, supplement_snapshot)
+    # --src：外部算子源码目录只读快照到 inputs/src_snapshot/，供
+    # source-analyst 做交叉校验与失败反向推导。空则跳过源码分析。
+    # 传树根时 _snapshot_operator_source 会用 doc.stem 自动定位算子目录。
+    operator_src_source = ""
+    operator_src_snapshot = ""
+    operator_src_stats = {"files": 0, "source_files": 0, "closure_files": 0}
+    if src_path is not None:
+        src_snapshot = input_dir / "src_snapshot"
+        src_snapshot.mkdir(parents=True, exist_ok=False)
+        operator_src_stats = _snapshot_operator_source(
+            src_path, src_snapshot, aclnn_name=doc.stem
+        )
+        operator_src_source = str(src_path)
+        operator_src_snapshot = str(src_snapshot)
+    if explicit_prompt:
+        # --prompt 是原样复制的逃生口，不隐式追加任何 family 知识。
+        shutil.copy2(prompt, prompt_snapshot)
+        loaded_modules = []
+    elif is_hs:
+        # 预校验 torch_npu 知识库 canonical 完整性（manifest/默认集/依赖/跨 family
+        # 隔离/reject_on），任一不通过即终止。
+        knowledge_errors = validate_torch_npu_knowledge(TORCH_KNOWLEDGE_ROOT)
+        if knowledge_errors:
+            print(json.dumps(
+                {"ok": False, "code": "TORCH_NPU_KNOWLEDGE_INVALID",
+                 "errors": knowledge_errors},
+                ensure_ascii=False, indent=2,
+            ))
+            return 2
+        # torch_npu 使用完全独立的 baseline + knowledge 装配器；该装配器不会
+        # 扫描 knowledge/aclnn，因此不会混入 ACLNN workspace/API 假设。
+        loaded_modules = assemble_torch_npu_prompt(
+            prompt, doc_snapshot, prompt_snapshot,
+            record_path=prompt_assembly_record,
+            preanalysis_path=prompt_preanalysis,
+        )
+    else:
+        # 预校验 ACLNN 知识库 canonical 完整性：manifest/默认集/依赖/跨 family
+        # 隔离/reject_on 合法性等任一不通过即终止，避免装配出不可用快照。
+        knowledge_errors = validate_aclnn_knowledge(ACLNN_KNOWLEDGE_ROOT)
+        if knowledge_errors:
+            print(json.dumps(
+                {"ok": False, "code": "ACLNN_KNOWLEDGE_INVALID",
+                 "errors": knowledge_errors},
+                ensure_ascii=False, indent=2,
+            ))
+            return 2
+        # ACLNN：文档预分析 -> 知识路由 -> 适用性判断 -> 冻结快照与组装记录。
+        loaded_modules = assemble_aclnn_prompt(
+            prompt,
+            doc_snapshot,
+            prompt_snapshot,
+            record_path=prompt_assembly_record,
+            preanalysis_path=prompt_preanalysis,
+        )
+
+    prompt_update_decisions.write_text(
+        json.dumps({"schema_version": "1.0", "decisions": []}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     now = datetime.now(timezone.utc).isoformat()
     state = {
@@ -129,10 +531,32 @@ def main() -> int:
         "operator_doc": str(doc_snapshot),
         "current_prompt_source": str(prompt),
         "current_prompt": str(prompt_snapshot),
+        "current_prompt_modules": loaded_modules,
+        "prompt_preanalysis": str(prompt_preanalysis) if not explicit_prompt else "",
+        "prompt_preanalysis_sha256": _file_sha256(prompt_preanalysis) if prompt_preanalysis.is_file() else "",
+        "prompt_assembly_record": str(prompt_assembly_record) if not explicit_prompt else "",
+        "prompt_assembly_record_sha256": _file_sha256(prompt_assembly_record) if prompt_assembly_record.is_file() else "",
+        "current_prompt_sha256": _file_sha256(prompt_snapshot),
+        "prompt_update_decisions": str(prompt_update_decisions),
+        "prompt_update_proposals": [],
+        "supplement_constraints_source": str(supplement_path) if supplement_path else "",
+        "supplement_constraints": str(supplement_snapshot) if supplement_path else "",
+        "operator_src_source": operator_src_source,
+        "operator_src_snapshot": operator_src_snapshot,
         "mode": args.mode,
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
         "case_count": args.case_count,
+        "human_checkpoint_round": args.human_checkpoint_round,  # 0=禁用；>=1 时第 N 轮 constraint_extraction 失败触发人工补充检查点
+        "human_checkpoint_resolved_iteration": 0,  # 已决断到的最大轮次；防上下文压缩后对同一轮重复询问
+        "operator_family": operator_family,
+        "test_framework": test_framework,
+        "hs_scenario_mode": args.hs_scenario_mode,
+        "run_scope": "constraints_only" if test_framework == "constraints" else "full",
+        "scene": None,  # EXTRACT 前 SCENE_SCAN 子步骤回写: {enabled, scope, device_types, selection, param_modes, directive, scan}
+        "execution_strategy": None,  # EXTRACT 后 orchestrator 跑 classify_operator.py 回写: fusion | default
+        "operator_category": None,  # fusion_comm_compute | default | None
+        "operator_category_evidence": [],  # 分类证据 (规则编号 + 原文摘录)
         "current_iteration": 1,
         "state": "PLAN",
         "history": [{"state": "PLAN", "at": now}],
@@ -150,7 +574,26 @@ def main() -> int:
             "operator_doc_source": str(doc),
             "operator_doc_snapshot": str(doc_snapshot),
             "prompt_snapshot": str(prompt_snapshot),
+            "prompt_modules": loaded_modules,
+            "prompt_preanalysis": str(prompt_preanalysis) if prompt_preanalysis.is_file() else "",
+            "prompt_assembly_record": str(prompt_assembly_record) if prompt_assembly_record.is_file() else "",
+            "supplement_constraints_source": str(supplement_path) if supplement_path else "",
+            "supplement_constraints_snapshot": str(supplement_snapshot) if supplement_path else "",
+            "operator_src_source": operator_src_source,
+            "operator_src_snapshot": operator_src_snapshot,
+            "operator_src_stats": operator_src_stats,
+            "operator_src_warning": (
+                "快照命中 0 个源码文件（--src 可能是树根且未定位到算子目录）；"
+                "source-analyst 将无源码可析，建议用 locate_operator_source.py "
+                "确认算子目录后重传 --src。"
+                if src_path is not None and operator_src_stats["source_files"] == 0
+                else ""
+            ),
             "mode": args.mode,
+            "operator_family": operator_family,
+            "test_framework": test_framework,
+            "hs_scenario_mode": args.hs_scenario_mode,
+            "run_scope": "constraints_only" if test_framework == "constraints" else "full",
             "server_config": str(server_config) if server_config else "",
         },
         ensure_ascii=False,

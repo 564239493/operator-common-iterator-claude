@@ -21,6 +21,7 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -33,6 +34,52 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 logger = logging.getLogger("generate_cases")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Replace a generated artifact only after its complete content is ready."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    _atomic_write_text(
+        path, json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _hs_generation_gate_errors(
+    platform_audits: dict[str, dict[str, Any]],
+    selected_platform: str,
+    scenario_mode: str,
+) -> list[str]:
+    """Return blockers that make a real HS+TTK execution predictably invalid."""
+    selected = platform_audits.get(selected_platform)
+    if not isinstance(selected, dict):
+        return [f"missing HS semantic audit for selected platform {selected_platform!r}"]
+
+    case_count = int(selected.get("case_count") or 0)
+    clean_count = int(selected.get("semantically_clean_count") or 0)
+    errors: list[str] = []
+    if case_count > 0 and clean_count == 0:
+        errors.append(
+            f"selected platform {selected_platform!r} has 0/{case_count} "
+            "semantically clean HS cases"
+        )
+
+    missing_scenarios = selected.get("missing_scenarios") or []
+    if scenario_mode == "planned" and missing_scenarios:
+        errors.append(
+            f"planned HS generation missed required scenarios for "
+            f"{selected_platform!r}: {missing_scenarios}"
+        )
+    return errors
 
 
 def _setup_iter_log(iter_dir: Path) -> Path | None:
@@ -48,6 +95,11 @@ def _setup_iter_log(iter_dir: Path) -> Path | None:
             logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         )
         logger.addHandler(handler)
+        # The retained generator logs through module/root loggers. Mirror them
+        # into the iteration artifact as well; the former logs/generate_case_*
+        # file is no longer the authoritative log for this CLI pipeline.
+        logging.getLogger().addHandler(handler)
+        logging.getLogger().setLevel(logging.INFO)
         logger.setLevel(logging.INFO)
         return log_path
     except OSError as exc:
@@ -56,6 +108,62 @@ def _setup_iter_log(iter_dir: Path) -> Path | None:
             file=sys.stderr,
         )
         return None
+
+
+def _select_ttk_platform(
+    per_platform_paths: dict[str, Path],
+    requested_platform: str | None,
+    server_config: str | None,
+) -> tuple[str, str]:
+    """Select the canonical TTK platform, preferring executable servers.
+
+    Priority: explicit ``--platform``; then servers/file order and each
+    server's ``platforms`` order; finally the historical first generated
+    platform only when no server configuration file is available.
+    """
+    available = list(per_platform_paths)
+    if not available:
+        raise RuntimeError("no per-platform cases were generated")
+    if requested_platform:
+        if requested_platform not in per_platform_paths:
+            raise RuntimeError(
+                f"requested platform {requested_platform!r} has no generated cases; "
+                f"available={available}"
+            )
+        return requested_platform, "explicit_cli"
+
+    config_path = Path(server_config or "servers.json").expanduser()
+    if not config_path.is_absolute():
+        config_path = ROOT / config_path
+    if not config_path.is_file():
+        logger.warning(
+            "server config %s not found; falling back to first generated platform %s",
+            config_path,
+            available[0],
+        )
+        return available[0], "first_generated_no_server_config"
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot read server config {config_path}: {exc}") from exc
+    servers = payload.get("servers") if isinstance(payload, dict) else None
+    if not isinstance(servers, list):
+        raise RuntimeError(f"server config {config_path} has no servers array")
+
+    available_set = set(available)
+    configured: list[str] = []
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        for platform in server.get("platforms") or []:
+            platform = str(platform)
+            configured.append(platform)
+            if platform in available_set:
+                return platform, "server_config_match"
+    raise RuntimeError(
+        "servers.json platforms do not cover any generated operator platform: "
+        f"configured={configured}, generated={available}"
+    )
 
 
 def generate_platform_outputs(
@@ -76,6 +184,7 @@ def generate_platform_outputs(
     for platform in platforms:
         sanitized = platform.replace("/", "_")
         checkpoint_dir = jsonl_save_path / sanitized
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)  # 新增
         checkpoint_file = checkpoint_dir / f"{generator.operator_name}.jsonl"
         converted_source = output_dir / f"{generator.operator_name}.json"
         target = output_dir / f"cases_{sanitized}.json"
@@ -105,16 +214,225 @@ def generate_platform_outputs(
             raise ValueError(f"Converted case payload is not a list: {target}")
         per_platform_paths[platform] = target
         per_platform_counts[platform] = len(payload)
+        if not payload:
+            raise RuntimeError(
+                f"ZERO_CASES_GENERATED: platform={platform}, "
+                f"operator={generator.operator_name}; inspect generation.log"
+            )
 
     return per_platform_paths, per_platform_counts, checkpoint_paths
 
 
-def main() -> int:
+def generate_hs_scenario_outputs(
+    constraints: dict[str, Any],
+    count: int,
+    seed: int,
+    jsonl_save_path: Path,
+    output_dir: Path,
+) -> tuple[dict[str, Path], dict[str, int], dict[str, Path], dict[str, Any]]:
+    """Generate HS cases scenario-by-scenario through the retained generator."""
+    from agent.generators.data_definition.param_models_def import RunPlatform
+    from agent.generators.facade import TestCaseGenerator
+    from agent.hs.scenario_planner import (
+        plan_hs_scenarios,
+        pin_scenario_constraints,
+        project_hs_case,
+    )
+
+    probe = TestCaseGenerator(constraints, seed=seed)
+    platforms = probe.supported_platforms or [RunPlatform.DEFAULT_PLATFORM.value]
+    operator_name = probe.operator_name
+    per_platform_paths: dict[str, Path] = {}
+    per_platform_counts: dict[str, int] = {}
+    checkpoint_paths: dict[str, Path] = {}
+    scenario_stats: dict[str, Any] = {}
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for platform in platforms:
+        sanitized = platform.replace("/", "_")
+        target = output_dir / f"cases_{sanitized}.json"
+        plans = plan_hs_scenarios(constraints, count, platform)
+        combined: list[dict[str, Any]] = []
+        platform_stats: list[dict[str, Any]] = []
+        for scenario_index, scenario in enumerate(plans):
+            if scenario.count < 1:
+                continue
+            scenario_constraints = pin_scenario_constraints(constraints, scenario)
+            scenario_generator = TestCaseGenerator(
+                scenario_constraints, seed=seed + scenario_index
+            )
+            scenario_root = jsonl_save_path / sanitized / scenario.name
+            generated = scenario_generator.generate_for_platform(
+                platform,
+                scenario.count,
+                jsonl_save_path=str(scenario_root),
+                json_save_path=str(scenario_root),
+            )
+            payload = [
+                project_hs_case(
+                    case.model_dump(), operator_name, scenario,
+                    len(combined) + ordinal, constraints, platform,
+                )
+                for ordinal, case in enumerate(generated)
+            ]
+            if len(payload) != scenario.count:
+                raise RuntimeError(
+                    "HS_SCENARIO_GENERATION_INCOMPLETE: "
+                    f"platform={platform}, scenario={scenario.name}, "
+                    f"requested={scenario.count}, generated={len(payload)}"
+                )
+            combined.extend(payload)
+            # The retained generator converts its transient JSONL to this JSON
+            # file. Overwrite it with the projected payload so checkpoints and
+            # final per-platform files describe the same runnable cases.
+            scenario_checkpoint = scenario_root / f"{operator_name}.json"
+            scenario_checkpoint.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            platform_stats.append({
+                "name": scenario.name,
+                "requested": scenario.count,
+                "generated": len(payload),
+                "fixed_attrs": scenario.fixed_attrs,
+            })
+        if not combined:
+            raise RuntimeError(
+                f"ZERO_CASES_GENERATED: platform={platform}, operator={operator_name}"
+            )
+        for case_id, case in enumerate(combined):
+            case["id"] = case_id
+        target.write_text(
+            json.dumps(combined, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        per_platform_paths[platform] = target
+        per_platform_counts[platform] = len(combined)
+        checkpoint_paths[platform] = jsonl_save_path / sanitized
+        scenario_stats[platform] = platform_stats
+
+    return per_platform_paths, per_platform_counts, checkpoint_paths, scenario_stats
+def _apply_runtime_ranksize_pin(constraints: dict, server_config_path: Path) -> int | None:
+    """Pin ``rankSize`` to ``len(fusion_devices)`` in-memory for fusion ops.
+
+    Fusion distributed operators require ``rankSize == world_size`` (the
+    actual communication-domain card count): the operator's alltoAll exchanges
+    over ``rankSize`` cards and the CPU golden builds
+    ``A=[BS/world_size, H*world_size]`` to matmul with ``x2=[H*rankSize, N]``.
+    The doc-derived constraints list the operator's *supported* rankSize values
+    per platform (e.g. A2: {2,4,8}), but the harness only provisions
+    ``len(fusion_devices)`` cards — so unpinned cases with rankSize != world_size
+    are unrunnable (CPU golden matmul shape mismatch; NPU alltoAll over a
+    too-large group).
+
+    This narrows the rankSize candidate source (``allowed_range_value.value``)
+    and the mirrored ``self_value_enum`` constraint to ``[world_size]``, in
+    memory only — the on-disk ``constraints.json`` stays doc-faithful. Returns
+    the pinned ``world_size``, or ``None`` when no pinning applies (no
+    ``rankSize`` param, or no fusion_devices in the config).
+    """
+    from scripts.runtime_config import resolve_fusion_world_size
+
+    world_size = resolve_fusion_world_size(server_config_path)
+    if world_size is None:
+        return None
+    # Parameter definitions live under the top-level "inputs" key (keyed by
+    # param name -> platform -> spec); fall back to "parameters" in case a
+    # future schema renames it.
+    parameters = constraints.get("inputs")
+    if not isinstance(parameters, dict):
+        parameters = constraints.get("parameters")
+    if not isinstance(parameters, dict) or not isinstance(parameters.get("rankSize"), dict):
+        return None
+    rank_param = parameters["rankSize"]
+    # Narrow the per-platform candidate enum (the source the generator draws
+    # rankSize from) so it has no choice but world_size.
+    for spec in rank_param.values():
+        if isinstance(spec, dict) and isinstance(spec.get("allowed_range_value"), dict):
+            spec["allowed_range_value"]["value"] = [world_size]
+    # Keep the mirrored self_value_enum constraint consistent, in case the
+    # solver also consults it as a candidate source.
+    cip = constraints.get("constraints_in_parameters")
+    if isinstance(cip, dict):
+        for bucket in cip.values():
+            if not isinstance(bucket, list):
+                continue
+            for entry in bucket:
+                if not isinstance(entry, dict):
+                    continue
+                if (
+                    entry.get("expr_type") == "self_value_enum"
+                    and entry.get("relation_params") == ["rankSize"]
+                    and "rankSize.range_value" in entry.get("expr", "")
+                ):
+                    entry["expr"] = f"rankSize.range_value in [{world_size}]"
+    return world_size
+
+
+def _log_ranksize_distribution(
+    per_platform_paths: dict[str, Path], pinned_ws: int | None
+) -> None:
+    """Best-effort: log the rankSize value distribution per generated file."""
+    if pinned_ws is None:
+        return
+    from collections import Counter
+
+    for platform, path in per_platform_paths.items():
+        try:
+            cases = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(cases, list):
+            continue
+        counts: Counter = Counter()
+        for case in cases:
+            if not isinstance(case, dict):
+                continue
+            flat: list = []
+            for it in case.get("inputs", []):
+                flat.extend(it if isinstance(it, list) else [it])
+            for it in flat:
+                if isinstance(it, dict) and it.get("name") == "rankSize":
+                    counts[it.get("range_values")] += 1
+        logger.info(
+            "rankSize distribution [%s]: %s (expected 100%% = %d)",
+            platform,
+            dict(counts),
+            pinned_ws,
+        )
+
+
+def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--constraints", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--test-framework", choices=("atk", "ttk"), default="atk",
+        help=(
+            "测试框架；ttk 会按算子名分流：aclnn* 输出 TTK ACLNN CSV，"
+            "torch_npu.* 输出 TTK E2E CSV。"
+        ),
+    )
+    parser.add_argument(
+        "--platform",
+        default=None,
+        help=(
+            "可选：显式指定 TTK canonical/CSV 平台。未指定时按 servers.json "
+            "中的服务器及 platforms 顺序选择第一个已有 per-platform cases 的平台。"
+        ),
+    )
+    parser.add_argument(
+        "--hs-scenario-mode",
+        choices=("original", "planned"),
+        default="original",
+        help=(
+            "torch_npu + TTK 用例生成模式；original（默认）直接使用 "
+            "agent.generators 原生逻辑，不做场景拆分、属性固定或 case 投影；"
+            "planned 显式按 "
+            "TND/BSND/paged_attention 分场景固定并投影用例，"
+            "对 ACLNN/ATK 无影响。"
+        ),
+    )
     parser.add_argument(
         "--jsonl-save-path",
         default=None,
@@ -126,6 +444,15 @@ def main() -> int:
         help="可选: 迭代目录 (如 runs/<run>/iter_001)。传入后, "
         "生成过程日志会写到 <iter-dir>/generation.log。",
     )
+    parser.add_argument(
+        "--server-config",
+        default=str(ROOT / "servers.json"),
+        help=(
+            "服务器配置路径：TTK 平台选择会读取 servers/platforms；fusion "
+            "分布式算子还会读取 fusion_devices，将 rankSize 钉为实际卡数。"
+            "默认项目根 servers.json；文件不存在或无 fusion server 时不钉值。"
+        ),
+    )
     args = parser.parse_args()
     if args.count < 1:
         raise SystemExit("count must be positive")
@@ -135,12 +462,14 @@ def main() -> int:
 
     started = time.monotonic()
     logger.info(
-        "start: constraints=%s output=%s count=%d seed=%d iter_dir=%s",
+        "start: constraints=%s output=%s count=%d seed=%d iter_dir=%s "
+        "hs_scenario_mode=%s",
         args.constraints,
         args.output,
         args.count,
         args.seed,
         iter_dir or "(none)",
+        args.hs_scenario_mode,
     )
 
     constraints_path = Path(args.constraints)
@@ -159,11 +488,35 @@ def main() -> int:
             "normalized %d type-dependent constraint attribute values",
             normalized_count,
         )
+    if str(constraints.get("operator_name", "")).startswith(("torch_npu.", "torch.npu.")):
+        from agent.hs.constraint_validation import validate_hs_constraints
+
+        hs_constraint_errors = validate_hs_constraints(constraints)
+        if hs_constraint_errors:
+            logger.warning(
+                "HS constraint semantic warnings (non-blocking): %s",
+                json.dumps(hs_constraint_errors[:20], ensure_ascii=False),
+            )
     logger.info(
         "constraints loaded: operator=%s, product_support=%d 项",
         constraints.get("operator_name", "<unknown>"),
         len(constraints.get("product_support", [])),
     )
+
+    # Pin rankSize to len(fusion_devices) for fusion distributed operators so
+    # generated cases are runnable on the provisioned hardware (rankSize must
+    # equal the actual card count). In-memory only; the on-disk
+    # constraints.json stays doc-faithful. No-op when the operator has no
+    # rankSize param or servers.json has no fusion_devices. See plan
+    # golden-crafting-chipmunk.md.
+    server_config_path = Path(args.server_config)
+    pinned_ws = _apply_runtime_ranksize_pin(constraints, server_config_path)
+    if pinned_ws is not None:
+        logger.info(
+            "rankSize pinned to %d (= len(fusion_devices) from %s) for fusion run",
+            pinned_ws,
+            server_config_path,
+        )
 
     # Reference entry point — facade.TestCaseGenerator delegates to
     # ``single_operator_handle`` for each platform.
@@ -171,12 +524,456 @@ def main() -> int:
 
     generator = TestCaseGenerator(constraints, seed=args.seed)
     output_dir = output_path.parent
-    per_platform_paths, per_platform_counts, checkpoint_paths = generate_platform_outputs(
-        generator,
-        args.count,
-        jsonl_save_path,
-        output_dir,
-    )
+    generation_status_path = output_dir / "generation_status.json"
+    if args.test_framework == "ttk":
+        _atomic_write_json(generation_status_path, {
+            "state": "in_progress",
+            "message": (
+                "TTK generation has not completed; EXECUTE must not reuse "
+                "canonical JSON or CSV artifacts from an earlier attempt."
+            ),
+        })
+    scenario_generation: dict[str, Any] = {}
+    if args.test_framework == "ttk":
+        from agent.hs import is_hs_operator
+
+        if (
+            is_hs_operator(generator.operator_name)
+            and args.hs_scenario_mode == "planned"
+        ):
+            (
+                per_platform_paths,
+                per_platform_counts,
+                checkpoint_paths,
+                scenario_generation,
+            ) = generate_hs_scenario_outputs(
+                constraints, args.count, args.seed, jsonl_save_path, output_dir
+            )
+        else:
+            per_platform_paths, per_platform_counts, checkpoint_paths = generate_platform_outputs(
+                generator, args.count, jsonl_save_path, output_dir
+            )
+    else:
+        per_platform_paths, per_platform_counts, checkpoint_paths = generate_platform_outputs(
+            generator, args.count, jsonl_save_path, output_dir
+        )
+
+    if args.test_framework == "ttk":
+        operator_name = generator.operator_name
+        # cases.json is the canonical, framework-neutral concrete-case model.
+        # Keep one selected platform canonical for execution while preserving
+        # every per-platform JSON generated above for audit/replay.
+        selected_platform, platform_selection_reason = _select_ttk_platform(
+            per_platform_paths,
+            args.platform,
+            args.server_config,
+        )
+        logger.info(
+            "TTK canonical platform selected: %s (%s)",
+            selected_platform,
+            platform_selection_reason,
+        )
+        selected_source = per_platform_paths[selected_platform]
+        canonical_cases = output_dir / "cases.json"
+        materialization_report = None
+        selected_materialized_source: Path | None = None
+        per_platform_execution_paths = dict(per_platform_paths)
+        if operator_name == "aclnnScatterPaKvCache":
+            from scripts.atk_to_ttk_aclnn import (
+                materialize_scatter_pa_kv_cache_cases,
+            )
+
+            per_platform_materialization: dict[str, Any] = {}
+            for platform, platform_path in per_platform_paths.items():
+                platform_cases = json.loads(
+                    platform_path.read_text(encoding="utf-8")
+                )
+                materialized_cases, report = (
+                    materialize_scatter_pa_kv_cache_cases(platform_cases)
+                )
+                materialized_path = platform_path.with_name(
+                    f"{platform_path.stem}_ttk_materialized.json"
+                )
+                materialized_path.write_text(
+                    json.dumps(
+                        materialized_cases, ensure_ascii=False, indent=2
+                    ),
+                    encoding="utf-8",
+                )
+                per_platform_materialization[platform] = {
+                    **report,
+                    "source_file": str(platform_path),
+                    "materialized_file": str(materialized_path),
+                }
+                if platform == selected_platform:
+                    selected_materialized_source = materialized_path
+                per_platform_execution_paths[platform] = materialized_path
+            materialization_report = {
+                "operator": operator_name,
+                "reason": (
+                    "generic generation does not yet solve the operator's "
+                    "correlated documented scenarios atomically"
+                ),
+                "per_platform": per_platform_materialization,
+            }
+            (output_dir / "ttk_materialization_report.json").write_text(
+                json.dumps(
+                    materialization_report, ensure_ascii=False, indent=2
+                ),
+                encoding="utf-8",
+            )
+        if operator_name == "torch_npu.npu_mla_prolog_v3":
+            from scripts.atc_to_ttk import materialize_mla_prolog_v3_ttk_cases
+
+            per_platform_materialization: dict[str, Any] = {}
+            for platform, platform_path in per_platform_paths.items():
+                platform_cases = json.loads(
+                    platform_path.read_text(encoding="utf-8")
+                )
+                materialized_cases, report = (
+                    materialize_mla_prolog_v3_ttk_cases(platform_cases)
+                )
+                materialized_path = platform_path.with_name(
+                    f"{platform_path.stem}_ttk_materialized.json"
+                )
+                materialized_path.write_text(
+                    json.dumps(
+                        materialized_cases, ensure_ascii=False, indent=2
+                    ),
+                    encoding="utf-8",
+                )
+                per_platform_materialization[platform] = {
+                    **report,
+                    "source_file": str(platform_path),
+                    "materialized_file": str(materialized_path),
+                }
+                if platform == selected_platform:
+                    selected_materialized_source = materialized_path
+                per_platform_execution_paths[platform] = materialized_path
+            materialization_report = {
+                "operator": operator_name,
+                "reason": (
+                    "original generation samples MLA's correlated mode, dtype, "
+                    "presence, rank and format axes independently; use a "
+                    "documented functional baseline for TTK execution"
+                ),
+                "per_platform": per_platform_materialization,
+            }
+            (output_dir / "ttk_materialization_report.json").write_text(
+                json.dumps(
+                    materialization_report, ensure_ascii=False, indent=2
+                ),
+                encoding="utf-8",
+            )
+        if operator_name == "torch_npu.npu_sparse_flash_attention":
+            from scripts.atc_to_ttk import materialize_sparse_attention_ttk_cases
+
+            per_platform_materialization: dict[str, Any] = {}
+            for platform, platform_path in per_platform_paths.items():
+                platform_cases = json.loads(
+                    platform_path.read_text(encoding="utf-8")
+                )
+                platform_cases, report = materialize_sparse_attention_ttk_cases(
+                    platform_cases
+                )
+                platform_path.write_text(
+                    json.dumps(platform_cases, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                per_platform_materialization[platform] = report
+            materialization_report = {
+                "operator": operator_name,
+                "per_platform": per_platform_materialization,
+            }
+            (output_dir / "ttk_materialization_report.json").write_text(
+                json.dumps(materialization_report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        if operator_name == "torch_npu.npu_quant_lightning_indexer":
+            from scripts.atc_to_ttk import (
+                materialize_quant_lightning_indexer_ttk_cases,
+            )
+
+            per_platform_materialization: dict[str, Any] = {}
+            for platform, platform_path in per_platform_paths.items():
+                platform_cases = json.loads(
+                    platform_path.read_text(encoding="utf-8")
+                )
+                materialized_cases, report = (
+                    materialize_quant_lightning_indexer_ttk_cases(
+                        platform_cases
+                    )
+                )
+                materialized_path = platform_path.with_name(
+                    f"{platform_path.stem}_ttk_materialized.json"
+                )
+                materialized_path.write_text(
+                    json.dumps(
+                        materialized_cases, ensure_ascii=False, indent=2
+                    ),
+                    encoding="utf-8",
+                )
+                per_platform_materialization[platform] = {
+                    **report,
+                    "source_file": str(platform_path),
+                    "materialized_file": str(materialized_path),
+                }
+                if platform == selected_platform:
+                    selected_materialized_source = materialized_path
+                per_platform_execution_paths[platform] = materialized_path
+            materialization_report = {
+                "operator": operator_name,
+                "reason": (
+                    "range-only TTK cannot represent multi-batch prefix sums "
+                    "or unconstrained PageAttention indices safely; retain raw "
+                    "generator output and execute a documented smoke projection"
+                ),
+                "per_platform": per_platform_materialization,
+            }
+            (output_dir / "ttk_materialization_report.json").write_text(
+                json.dumps(
+                    materialization_report, ensure_ascii=False, indent=2
+                ),
+                encoding="utf-8",
+            )
+        selected_source = (
+            selected_materialized_source
+            or per_platform_execution_paths[selected_platform]
+        )
+        _atomic_write_text(
+            canonical_cases, selected_source.read_text(encoding="utf-8"),
+        )
+
+        if operator_name.startswith("aclnn"):
+            from scripts.atk_to_ttk_aclnn import convert_file
+            from scripts.validate_ttk_aclnn_csv import validate_csv
+
+            ttk_output = (
+                output_path
+                if output_path.suffix.lower() == ".csv"
+                else output_path.with_suffix(".csv")
+            )
+            ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
+            conversion = convert_file(
+                canonical_cases, ttk_temporary, constraints=constraints
+            )
+            csv_validation = validate_csv(ttk_temporary)
+            conversion_failures = [
+                entry for entry in conversion["audit"] if entry["issues"]
+            ]
+            if conversion_failures or not csv_validation["valid"]:
+                logger.warning(
+                    "TTK ACLNN adapter validation warnings (non-blocking): %s",
+                    json.dumps(
+                        {
+                            "case_failures": conversion_failures[:5],
+                            "csv_issues": csv_validation["issues"][:20],
+                            "csv_warnings": csv_validation["warnings"][:20],
+                        }, ensure_ascii=False,
+                    ),
+                )
+            conversion = {**conversion, "csv_validation": csv_validation}
+            ttk_temporary.replace(ttk_output)
+            conversion["destination"] = str(ttk_output)
+            summary = {
+                "operator_name": operator_name,
+                "test_framework": "ttk",
+                "ttk_mode": "aclnn",
+                "intermediate_model": str(canonical_cases),
+                "selected_platform": selected_platform,
+                "platform_selection_reason": platform_selection_reason,
+                "platforms": per_platform_counts,
+                "per_platform_files": {
+                    key: str(value) for key, value in per_platform_paths.items()
+                },
+                "per_platform_execution_files": {
+                    key: str(value)
+                    for key, value in per_platform_execution_paths.items()
+                },
+                "selected_execution_file": str(selected_source),
+                "requested_per_platform": args.count,
+                "total": conversion["case_count"],
+                "semantically_clean_count": conversion["semantically_clean_count"],
+                "output": str(ttk_output),
+                "adapter": "scripts.atk_to_ttk_aclnn.convert_file",
+                "ttk_materialization": (
+                    str(output_dir / "ttk_materialization_report.json")
+                    if materialization_report is not None else None
+                ),
+                "golden_required": False,
+                "ttk_command": (
+                    f"python3 -m ttk aclnn -i {ttk_output.name} --plat=<plat>"
+                ),
+            }
+            summary["artifact_hashes"] = {
+                "selected_execution_file": _sha256(selected_source),
+                "cases_json": _sha256(canonical_cases),
+                "cases_csv": _sha256(ttk_output),
+            }
+            _atomic_write_json(output_dir / "generation_summary.json", summary)
+            _atomic_write_json(
+                output_dir / "ttk_conversion_audit.json", conversion,
+            )
+            _atomic_write_json(generation_status_path, {
+                "state": "complete",
+                "selected_platform": selected_platform,
+                "selected_execution_file": str(selected_source),
+                "cases_json": str(canonical_cases),
+                "cases_csv": str(ttk_output),
+                "artifact_hashes": summary["artifact_hashes"],
+            })
+            print(json.dumps(summary, ensure_ascii=False))
+            return 0
+
+        from agent.hs import is_hs_operator, validate_hs_cases
+        from scripts.atc_to_ttk import convert_file, _ordered_input_tensor_names
+
+        if not is_hs_operator(operator_name):
+            raise SystemExit(
+                "--test-framework ttk requires an aclnn* or documented "
+                f"torch_npu operator: {operator_name}"
+            )
+        platform_audits: dict[str, dict[str, Any]] = {}
+        platform_audit_paths: dict[str, str] = {}
+        for platform, platform_path in per_platform_paths.items():
+            platform_cases = json.loads(platform_path.read_text(encoding="utf-8"))
+            audit = validate_hs_cases(platform_cases, constraints, platform)
+            sanitized = platform.replace("/", "_")
+            audit_path = output_dir / f"hs_case_audit_{sanitized}.json"
+            audit_path.write_text(
+                json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            platform_audits[platform] = audit
+            platform_audit_paths[platform] = str(audit_path)
+        concrete_cases = json.loads(canonical_cases.read_text(encoding="utf-8"))
+        hs_case_audit = platform_audits[selected_platform]
+        (output_dir / "hs_case_audit.json").write_text(
+            json.dumps(hs_case_audit, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        failing_platforms = {
+            platform: [entry for entry in audit["audit"] if entry["issues"]]
+            for platform, audit in platform_audits.items()
+            if audit["semantically_clean_count"] != audit["case_count"]
+        }
+        if failing_platforms:
+            logger.warning(
+                "HS case semantic warnings (non-blocking): %s",
+                json.dumps(
+                    {
+                        platform: failures[:5]
+                        for platform, failures in failing_platforms.items()
+                    }, ensure_ascii=False,
+                ),
+            )
+        missing_by_platform = {
+            platform: audit["missing_scenarios"]
+            for platform, audit in platform_audits.items()
+            if audit["missing_scenarios"]
+        }
+        if missing_by_platform:
+            logger.warning(
+                "HS scenario coverage warnings (non-blocking): %s",
+                json.dumps(missing_by_platform, ensure_ascii=False),
+            )
+        generation_gate_errors = _hs_generation_gate_errors(
+            platform_audits,
+            selected_platform,
+            args.hs_scenario_mode,
+        )
+        if generation_gate_errors:
+            failure_payload = {
+                "state": "failed",
+                "code": "HS_SEMANTIC_GATE_FAILED",
+                "message": (
+                    "HS semantic generation gate rejected cases before TTK "
+                    "conversion/EXECUTE"
+                ),
+                "selected_platform": selected_platform,
+                "hs_scenario_mode": args.hs_scenario_mode,
+                "errors": generation_gate_errors,
+                "per_platform_hs_case_audits": platform_audit_paths,
+            }
+            _atomic_write_json(generation_status_path, failure_payload)
+            raise RuntimeError("; ".join(generation_gate_errors))
+        ttk_output = output_path if output_path.suffix.lower() == ".csv" else output_path.with_suffix(".csv")
+        tensor_order = _ordered_input_tensor_names(constraints)
+        ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
+        conversion = convert_file(
+            canonical_cases, ttk_temporary, selected_platform, tensor_order,
+        )
+        conversion_failures = [
+            entry for entry in conversion["audit"] if entry["issues"]
+        ]
+        if conversion_failures or conversion["self_check_warnings"]:
+            logger.warning(
+                "TTK adapter validation warnings (non-blocking): %s",
+                json.dumps(
+                    {
+                        "case_failures": conversion_failures[:5],
+                        "self_check_warnings": conversion["self_check_warnings"][:10],
+                    }, ensure_ascii=False,
+                ),
+            )
+        ttk_temporary.replace(ttk_output)
+        conversion["destination"] = str(ttk_output)
+        summary = {
+            "operator_name": operator_name,
+            "test_framework": "ttk",
+            "intermediate_model": str(canonical_cases),
+            "selected_platform": selected_platform,
+            "platform_selection_reason": platform_selection_reason,
+            "platforms": per_platform_counts,
+            "per_platform_files": {k: str(v) for k, v in per_platform_paths.items()},
+            "per_platform_execution_files": {
+                key: str(value)
+                for key, value in per_platform_execution_paths.items()
+            },
+            "selected_execution_file": str(selected_source),
+            "requested_per_platform": args.count,
+            "total": conversion["case_count"],
+            "semantically_clean_count": conversion["semantically_clean_count"],
+            "hs_semantically_clean_count": hs_case_audit["semantically_clean_count"],
+            "hs_scenario_counts": hs_case_audit["scenario_counts"],
+            "hs_domain_coverage": hs_case_audit["domain_coverage"],
+            "hs_domain_coverage_complete": hs_case_audit["domain_coverage_complete"],
+            "hs_scenario_mode": args.hs_scenario_mode,
+            "scenario_generation": scenario_generation,
+            "hs_case_audit": str(output_dir / "hs_case_audit.json"),
+            "per_platform_hs_case_audits": platform_audit_paths,
+            "output": str(ttk_output),
+            "golden_required": False,
+            "golden_status": "optional_non_blocking_at_execute",
+            "golden_covered_cases": None,
+            "golden_manifest": None,
+            "adapter": "scripts.atc_to_ttk.convert_file",
+            "ttk_content_generation_mode": conversion["content_generation_mode"],
+            "ttk_content_generation_limitations": conversion["content_generation_limitations"],
+            "ttk_materialization": (
+                str(output_dir / "ttk_materialization_report.json")
+                if materialization_report is not None else None
+            ),
+        }
+        summary["artifact_hashes"] = {
+            "selected_execution_file": _sha256(selected_source),
+            "cases_json": _sha256(canonical_cases),
+            "cases_csv": _sha256(ttk_output),
+        }
+        _atomic_write_json(ttk_output.parent / "generation_summary.json", summary)
+        _atomic_write_json(
+            ttk_output.parent / "ttk_conversion_audit.json", conversion,
+        )
+        _atomic_write_json(generation_status_path, {
+            "state": "complete",
+            "selected_platform": selected_platform,
+            "selected_execution_file": str(selected_source),
+            "cases_json": str(canonical_cases),
+            "cases_csv": str(ttk_output),
+            "artifact_hashes": summary["artifact_hashes"],
+        })
+        print(json.dumps(summary, ensure_ascii=False))
+        return 0
+
+    _log_ranksize_distribution(per_platform_paths, pinned_ws)
 
     summary = {
         "operator_name": generator.operator_name,
@@ -221,6 +1018,46 @@ def main() -> int:
 
     print(json.dumps(summary, ensure_ascii=False))
     return 0
+
+
+def _record_generation_failure(argv: list[str], exc: BaseException) -> None:
+    """Best-effort terminal status for a failed TTK generation attempt."""
+    status_parser = argparse.ArgumentParser(add_help=False)
+    status_parser.add_argument("--output")
+    status_parser.add_argument("--test-framework", default="atk")
+    try:
+        status_args, _ = status_parser.parse_known_args(argv)
+    except SystemExit:
+        return
+    if status_args.test_framework != "ttk" or not status_args.output:
+        return
+
+    status_path = Path(status_args.output).parent / "generation_status.json"
+    try:
+        if status_path.is_file():
+            current = json.loads(status_path.read_text(encoding="utf-8"))
+            if current.get("state") in {"complete", "failed"}:
+                return
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    message = str(exc).strip() or type(exc).__name__
+    try:
+        _atomic_write_json(status_path, {
+            "state": "failed",
+            "error_type": type(exc).__name__,
+            "message": message,
+        })
+    except OSError:
+        logger.exception("failed to persist generation failure status: %s", status_path)
+
+
+def main() -> int:
+    try:
+        return _main()
+    except BaseException as exc:
+        _record_generation_failure(sys.argv[1:], exc)
+        raise
 
 
 if __name__ == "__main__":

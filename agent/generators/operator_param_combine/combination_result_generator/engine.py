@@ -8,6 +8,7 @@ and coverage evaluation tool.
 
 import json
 
+from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.operator_param_combine.combination_result_generator.constraint.interfaces import \
     ConstraintProtocol
 from agent.generators.operator_param_combine.combination_result_generator.coverage import Pair, PairExistenceChecker, \
@@ -18,7 +19,6 @@ from agent.generators.operator_param_combine.combination_result_generator.covera
 from agent.generators.operator_param_combine.combination_result_generator.generator import GeneratorOptions
 from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
 from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
-from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
 from agent.generators.operator_param_combine.combination_result_generator.constraint.evaluator import ConstraintEvaluator
 

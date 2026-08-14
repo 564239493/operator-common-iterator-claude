@@ -8,13 +8,22 @@ description: 基于落盘证据将失败分类为 constraint_extraction、genera
 cases_expanded.json、execution_result.json。先检查 engine_error，再检查生成用例
 是否违反已提取约束，最后检查约束是否遗漏或误解文档。
 
+ACLNN 还必须读取 `prompt_preanalysis.json` 与 `prompt_assembly.json`：区分“模块未被
+路由”“模块已加载但适用性判断/规则不足”“提取器未执行已加载规则”三种原因。分析中
+记录相关 module_id 和命中证据，供沉淀时选择 common/feature/exact operator 目的地。
+
+先读取 `run_state.operator_family`，诊断规则与当前 family 快照保持隔离。不得用 ACLNN
+prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项知识。
+
 在归类 `generator_bug` 前，必须先完成约束语义与表达式检查：
 
-- 将参数功能描述和取值说明合并阅读，检查是否漏掉可可靠推导的语义约束。例如
-  `epsilon`/`eps` 被明确描述为“除0保护值”时，应满足严格正值；若另有建议上界，
-  应形成 `0 < epsilon.range_value <= upper`。
+- 将参数功能描述和取值说明合并阅读，检查是否漏掉当前文档和当前 family prompt 允许
+  形式化的语义约束。`epsilon`/`eps` 的严格正值推导仅在 `operator_family=aclnn`
+  且 ACLNN 快照明确允许时使用；torch_npu 不得从参数用途推导文档未写的合法域。
+  “建议上界”在任何 family 都不是硬上界。
 - `allowed_range_value.type=range` 不允许以 `null` 充当数值边界；
-  `type=enum` 允许 `null` 作为一个离散候选。
+  `type=enum` 仅在文档明确允许未传/null 时才允许 `null` 候选；默认值本身不等于
+  合法值域。
 - `expr` 中裸 `null` 合法，按 Python `None` 解释，但只能用于空值/存在性判断，
   不能参与数值大小比较。
 - 数值范围必须写为不等式，`.range_value in [[min, max]]` 属于提取表达错误。
@@ -45,5 +54,18 @@ cases_expanded.json、execution_result.json。先检查 engine_error，再检查
   "executor_issue": ""
 }
 ```
+
+**源码证据与两级补救**（当 `run_state.operator_src_snapshot` 非空）：
+- 读 `<iter-dir>/source_evidence.json`（source-analyst diagnose 域产）。它已把
+  error_string 命中的 uncertain 关系追加到 `inputs/supplementary-doc.md`，并给出
+  `suggested_root_cause`（仅供参考，最终根因仍由本 agent 下）。
+- root_cause=constraint_extraction 时两级补救：
+  1. `source_evidence.log_match` 非空（补充已扩充）→ analysis 标注
+     "补充已扩充，re-EXTRACT + re-SUPPLEMENT"，**不走 prompt-optimizer**。
+  2. `log_match` 为空 → 自己根据错误日志 + 原算子文档尽力推约束关系，写入
+     `<iter-dir>/supplement_additions.md`（标 `origin=diagnose_inferred`）；推不出
+     → analysis 标注回退 prompt-optimizer。
+- 读 `inputs/conflict-doc.md` + `inputs/conflict_resolution.json`：失败命中未裁决
+  conflict → `specific_issues` 提示用户先裁决（冲突永远走人工通道）。
 
 证据不足时不得猜测；列出缺失证据并保守归入 executor_bug。

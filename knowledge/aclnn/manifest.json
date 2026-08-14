@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "family": "aclnn",
+  "policy": "v4_split_operator_name_eq_gated",
+  "modules": [
+    {"id":"official_basics","scope":"foundation","path":"foundation/official_basics.md","default_load":true,"priority":100},
+    {"id":"dimensions","scope":"common","path":"common/dimensions.md","default_load":true,"priority":95},
+    {"id":"allowed_range","scope":"common","path":"common/allowed_range.md","default_load":true,"priority":94},
+    {"id":"implicit_parameters","scope":"common","path":"common/implicit_parameters.md","default_load":true,"priority":93},
+    {"id":"platform_dtype","scope":"common","path":"common/platform_dtype.md","default_load":true,"priority":92},
+    {"id":"expression_language","scope":"common","path":"common/expression_language.md","default_load":true,"priority":91},
+    {"id":"broadcast_relation","scope":"foundation","path":"foundation/broadcast_relation.md","default_load":false,"priority":90},
+    {"id":"sparse_mode_foundation","scope":"foundation","path":"foundation/sparse_mode.md","default_load":false,"priority":89},
+    {"id":"type_derivation","scope":"foundation","path":"foundation/type_derivation.md","default_load":false,"priority":88},
+    {"id":"type_conversion_foundation","scope":"foundation","path":"foundation/type_conversion.md","default_load":false,"priority":87},
+    {"id":"quantization_intro","scope":"foundation","path":"foundation/quantization_intro.md","default_load":false,"priority":86},
+    {"id":"nz_matmul","scope":"feature","path":"features/nz_matmul.md","priority":70},
+    {"id":"backward_partial","scope":"feature","path":"features/backward_partial.md","priority":69},
+    {"id":"format_cast","scope":"feature","path":"features/format_cast.md","priority":68},
+    {"id":"implicit_pos","scope":"feature","path":"features/implicit_pos.md","priority":67},
+    {"id":"broadcast","scope":"feature","path":"features/broadcast.md","priority":66},
+    {"id":"type_conversion","scope":"feature","path":"features/type_conversion.md","priority":66},
+    {"id":"quantization","scope":"feature","path":"features/quantization.md","priority":66},
+    {"id":"sparse_mode","scope":"feature","path":"features/sparse_mode.md","priority":66},
+    {"id":"transpose_shape","scope":"feature","path":"features/transpose_shape.md","priority":65},
+    {"id":"acl_format_enum","scope":"reference","path":"reference/acl_format_enum.md","priority":50},
+    {"id":"grouped_matmul_v5","scope":"operator","path":"operators/grouped_matmul_v5.md","priority":85},
+    {"id":"batch_matmul_weight_nz","scope":"operator","path":"operators/batch_matmul_weight_nz.md","priority":85},
+    {"id":"ffn_v3","scope":"operator","path":"operators/ffn_v3.md","priority":85},
+    {"id":"swin_transformer_ln_qkv_quant","scope":"operator","path":"operators/swin_transformer_ln_qkv_quant.md","priority":85},
+    {"id":"scatter_pa_kv_cache","scope":"operator","path":"operators/scatter_pa_kv_cache.md","priority":85}
+  ]
+}

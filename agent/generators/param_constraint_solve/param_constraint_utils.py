@@ -15,9 +15,10 @@ import z3
 from pydantic import BaseModel
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
-from agent.generators.common_model_definition import InterParamConstraint, OperatorRule
+from agent.generators.common_model_definition import InterParamConstraint, InterConstraintsRuleType, OperatorRule
 from agent.generators.common_utils.common_dispatcher import CommonDispatcher
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
+from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import ParamModelConfig, DataMatchMap
 from agent.generators.data_definition.param_models_def import ParameterPropertyData, ParamRangeValueType
@@ -371,6 +372,7 @@ class ParamConstraintUtils(CommonDispatcher):
         builder.solver.push()
         # static_expr -> 软约束 tag（仅对可成功构建的表达式建 tag）
         tag_of: Dict[str, z3.BoolRef] = {}
+
         for idx, static_expr in enumerate(param_static_expr_list):
             try:
                 z3_constraint = _build_constraint(static_expr)
@@ -434,7 +436,14 @@ class ParamConstraintUtils(CommonDispatcher):
         static_value_exprs = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
-            static_value_exprs.append(f"{param}.dtype == '{self.case_input_map.get(param).dtype}'")
+            param_dtype = self.case_input_map.get(param).dtype
+            # 仅对可识别的张量 dtype 生成静态约束。None/NoneType 等占位(例如仅支持 None
+            # 的预留 tensor 参数)不是可求解 dtype，若原样注入 `param.dtype == 'NoneType'`
+            # 会让 convert_operand 抛 "Unknown dtype string"。DTYPE_SPECS 的键与 Z3 层
+            # DTYPE_MAP 一致，据此过滤即可精确跳过不可识别项。
+            if param_dtype is None or str(param_dtype) not in DataMatchMap.DTYPE_SPECS:
+                continue
+            static_value_exprs.append(f"{param}.dtype == '{param_dtype}'")
         if check:
             self.choice_no_conflicts_expr(builder=builder, param_union_expr=constraint_exprs,
                                           param_static_expr_list=static_value_exprs)
@@ -486,9 +495,17 @@ class ParamConstraintUtils(CommonDispatcher):
                     else:
                         param_range_value_expr_list.append(f"{param_name}.{range_value_attr_name} == {value_rule}")
                 else:
-                    if len(value_rule) >= 2:
+                    if isinstance(value_rule, (list, tuple)) and len(value_rule) >= 2:
                         param_range_value_expr_list.append(
                             f"({param_name}.{range_value_attr_name} > {value_rule[0]} and {param_name}.{range_value_attr_name} < {value_rule[1]})")
+                    elif isinstance(value_rule, (int, float, bool)):
+                        # Some extracted torch_npu defaults are represented as
+                        # an exact scalar even when the outer rule is tagged
+                        # as range. Treat that as a singleton domain instead
+                        # of calling len() on the scalar.
+                        param_range_value_expr_list.append(
+                            f"{param_name}.{range_value_attr_name} == {value_rule}"
+                        )
                     else:
                         logger.error(
                             f"Param name : {param_name}, allowed range value is invalid, type : 'range', value : '{value_rule}'")
@@ -726,6 +743,19 @@ class ParamConstraintUtils(CommonDispatcher):
                 param_attr_ori_status = param_name in self.case_input_map and getattr(
                     self.case_input_map.get(param_name), field_name, None) is not None
                 attr_value = property_dict.get(field_name, None)
-                if param_attr_ori_status and attr_value is not None:
+                if field_name == "length":
+                    # tensor_list 的 length 由 Z3 求解为自由变量（采样器未钉值时 length=None、
+                    # ori_status=False），但 Z3 已解出 len（受 cross_param 如 len(x)<=128、
+                    # len(A)==len(B) 约束，并主动规避触发 sum()/shape 重约束的 len=1）。
+                    # 必须回写该解，否则 cases.json length=None 致执行器默认 len=1 违反约束
+                    # （tensorList-len Z3 逃逸）。仅写 >0 的解，丢弃 resolve_model 的 0 默认（未解）。
+                    # 非 tensor_list 参数其 Var 不返回 length，attr_value=None 自然跳过。
+                    if attr_value is not None and attr_value > 0:
+                        self.case_input_map[param_name].__setattr__(field_name, attr_value)
+                elif param_attr_ori_status and attr_value is not None:
                     self.case_input_map[param_name].__setattr__(field_name, attr_value)
+        # 生成优先：Z3 已给出解后直接保留用例。旧的 Python PostCheck 会再次 eval
+        # constraints_in_parameters，并把“伪 SAT”用例 fail-closed 丢弃；复杂算子中
+        # Param 包装、可选参数和 SeqSort 语义不完整，曾导致 0/10 用例全部被误杀。
+        # 真实合法性改由后续 TTK/ATK 执行结果观察，不在生成阶段二次阻断。
         return True
