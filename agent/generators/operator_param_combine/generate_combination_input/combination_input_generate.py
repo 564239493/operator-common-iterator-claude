@@ -436,8 +436,10 @@ class CombinationInputGenerate:
             self.constraint_generate.check_constraint_expr(parameters=parameters, param_type_dict=param_type_dict))
         dtype_support_constraint = self.constraint_generate.solve_dtype_support_description()
         format_support_constraint = self.constraint_generate.solve_format_support_map()
-        valid_expr_list.extend(dtype_support_constraint)
-        valid_expr_list.extend(format_support_constraint)
+        if dtype_support_constraint is not None:
+            valid_expr_list.append(dtype_support_constraint)
+        if format_support_constraint is not None:
+            valid_expr_list.append(format_support_constraint)
         combination_input_data["constraints"] = valid_expr_list
         return combination_input_data
 
