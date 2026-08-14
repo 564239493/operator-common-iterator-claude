@@ -1,9 +1,9 @@
-import time
+﻿import time
 
-from model.variable_model import (
+from agent.generators.operator_param_combine.combination_result_generator.model.variable_model import (
     VariableModel
 )
-from model.variable_registry import (
+from agent.generators.operator_param_combine.combination_result_generator.model.variable_registry import (
     VariableRegistry
 )
 

@@ -1,7 +1,7 @@
-import pytest
+﻿import pytest
 
-from generator.cache import TestCaseCache
-from generator.model import TestCase, TestValue
+from agent.generators.operator_param_combine.combination_result_generator.generator.cache import TestCaseCache
+from agent.generators.operator_param_combine.combination_result_generator.generator.model import TestCase, TestValue
 
 
 def make_testcase(param_dtype_value: str) -> TestCase:

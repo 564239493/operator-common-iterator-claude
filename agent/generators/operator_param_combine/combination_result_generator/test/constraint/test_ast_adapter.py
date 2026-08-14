@@ -1,19 +1,19 @@
-import ast
+﻿import ast
 
 import pytest
 
 
-from constraint.ast_parser import (
+from agent.generators.operator_param_combine.combination_result_generator.constraint.ast_parser import (
     ConstraintParser,
 )
 
 
-from constraint.ast_adapter import (
+from agent.generators.operator_param_combine.combination_result_generator.constraint.ast_adapter import (
     ASTAdapter,
 )
 
 
-from constraint.exceptions import (
+from agent.generators.operator_param_combine.combination_result_generator.constraint.exceptions import (
     UnsupportedASTNodeError,
 )
 

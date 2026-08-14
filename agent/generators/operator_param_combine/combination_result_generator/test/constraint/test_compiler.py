@@ -1,8 +1,8 @@
-import pytest
+﻿import pytest
 
-from constraint.cache import ConstraintCache
-from constraint.compiler import ConstraintCompiler
-from constraint.exceptions import ConstraintSyntaxError, UnsupportedASTNodeError
+from agent.generators.operator_param_combine.combination_result_generator.constraint.cache import ConstraintCache
+from agent.generators.operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
+from agent.generators.operator_param_combine.combination_result_generator.constraint.exceptions import ConstraintSyntaxError, UnsupportedASTNodeError
 
 
 class TestCompiledConstraint:
@@ -69,3 +69,40 @@ class TestCompiledConstraint:
             compiler.compile(
                 "lambda x:x"
             )
+
+    def test_param_names_attribute_deps(self):
+        compiler = ConstraintCompiler()
+
+        result = compiler.compile(
+            "x.dtype == weight.dtype"
+        )
+
+        assert result.param_names == frozenset({"x", "weight"})
+
+    def test_param_names_with_bare_name(self):
+        compiler = ConstraintCompiler()
+
+        result = compiler.compile(
+            "batch_size > 0"
+        )
+
+        assert result.param_names == frozenset({"batch_size"})
+
+    def test_param_names_mixed_bare_and_attribute(self):
+        compiler = ConstraintCompiler()
+
+        result = compiler.compile(
+            "x.dtype == 'fp16' and batch_size > 0"
+        )
+
+        assert result.param_names == frozenset({"x", "batch_size"})
+
+    def test_param_names_with_function_call(self):
+        compiler = ConstraintCompiler()
+
+        result = compiler.compile(
+            "len(x.shape) == 2"
+        )
+
+        assert result.param_names == frozenset({"x"})
+        assert "len" not in result.param_names

@@ -65,7 +65,7 @@ def _resolve_operator_name(operator_constraint: Union[str, os.PathLike, Mapping]
 
 
 def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
-                           case_num=1, jsonl_save_path=None) -> tuple[List, str]:
+                           case_num=1, jsonl_save_path=None, json_file_name = None) -> tuple[List, str]:
     """
     算子用例生成的主入口。
 
@@ -126,7 +126,7 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     case_list = operator_case_generate.handle_single_operator(
         operator_constraint_data=effective_operator_constraint_data, param_domain_data=param_domain_data,
         param_combination_list=param_combination_list, target_platform=platform,
-        case_num=case_num, jsonl_save_path=jsonl_save_path)
+        case_num=case_num, jsonl_save_path=jsonl_save_path, json_file_name = json_file_name)
     return case_list, operator_name
 
 
@@ -170,7 +170,7 @@ def batch_operator_handel(operator_constraint_directory, operators: List = None,
         time_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
         with DocumentLogContext(f"{operator_name}_{time_str}"):
             single_operator_handle(operator_constraint_path, platform=platform,
-                                   case_num=case_num, jsonl_save_path=case_save_path)
+                                   case_num=case_num, jsonl_save_path=case_save_path, json_file_name=operator_name)
             data_handle_utils.convert_jsonl_to_json(api_name=operator_name, jsonl_save_path=case_save_path,
                                                     json_save_path=case_save_path)
 
@@ -185,6 +185,7 @@ def main():
     platform2 = "Atlas 推理系列产品"
     platform3 = "Ascend 950PR/Ascend 950DT"
     platform4 = "Atlas A3 训练系列产品/Atlas A3 推理系列产品"
+    platform5 = "Atlas 350 加速卡"
     parser = argparse.ArgumentParser()
     parser.add_argument("--operator_constraint_directory", type=str, required=False, default=None,
                         help="Operator constraint json file directory")
@@ -205,10 +206,11 @@ def main():
     elif args.operator_constraint_directory is not None:
         # operators = args.operators.split(",") if args.operators is not None else None
         # operators = ["torch_npu.npu_quant_lightning_indexer"]
-        # operators = ["aclnnAlltoAllMatmul", "aclnnBatchMatMulWeightNz", "aclnnCalculateMatmulWeightSize",
+        # operators = ["aclnnAlltoAllMatmul", "aclnnBatchMatMulWeightNz", "aclnnCalculateMatmulWeightSize", "aclnnAllGatherMatmul",
         #              "aclnnCalculateMatmulWeightSizeV2", "aclnnFFNV3", "aclnnGroupedMatmulV5", "aclnnNpuFormatCast",
-        #              "aclnnReflectionPad1dBackward", "aclnnSwinAttentionScoreQuant", "aclnnSwinTransformerLnQkvQuant"]
+        #              "aclnnReflectionPad1dBackward", "aclnnSwinAttentionScoreQuant", "aclnnSwinTransformerLnQkvQuant", "aclnnMixedQuantSparseFlashMla","aclnnApplyRotaryPosEmb", "aclnnScatterPaKvCache", "torch_npu.npu_fused_infer_attention_score","torch_npu.npu_quant_lightning_indexer","aclnnGroupedMatmulV5_ascend950_static_quant"]
         operators = ["aclnnGroupedMatmulV5"]
+
         batch_operator_handel(operator_constraint_directory=args.operator_constraint_directory, operators=operators,
                               platform=args.platform, case_save_path=args.case_save_path, case_num=args.case_num)
     else:

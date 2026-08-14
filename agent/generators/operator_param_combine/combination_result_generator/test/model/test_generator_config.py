@@ -1,8 +1,8 @@
-from model.generator_config import (
+﻿from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import (
     GeneratorConfig
 )
 
-from model.parameter_model import (
+from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import (
     ParameterModel
 )
 

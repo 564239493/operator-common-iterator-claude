@@ -1,11 +1,11 @@
-import pytest
+﻿import pytest
 
-from constraint.interfaces import ConstraintProtocol
+from agent.generators.operator_param_combine.combination_result_generator.constraint.interfaces import ConstraintProtocol
 
-from generator.backtracking import BacktrackingGenerator
+from agent.generators.operator_param_combine.combination_result_generator.generator.backtracking import BacktrackingGenerator
 
-from model.generator_config import GeneratorConfig
-from model.parameter_model import ParameterModel
+from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
+from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
 
 
 def create_config():

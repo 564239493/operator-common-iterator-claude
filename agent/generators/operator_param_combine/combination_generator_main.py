@@ -7,9 +7,12 @@ from itertools import islice, cycle
 from typing import List, Dict, Any
 
 from typing import TYPE_CHECKING
+
+from agent.generators.operator_param_combine.combination_result_generator.generator import PICTGenerator
+
 if TYPE_CHECKING:
     from agent.generators import OperatorRule
-    
+
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import DataMatchMap, ParamModelConfig
@@ -51,7 +54,8 @@ class PairwiseParamCombinationGenerator:
         constraints = tuple(combination_input_data.get("constraints", []))
         return GeneratorConfig(parameters=parameters, constraints=constraints)
 
-    def get_param_combination_input(self) -> tuple[Dict[str, Any], List[OperatorParameterCombination]] | tuple[None, None]:
+    def get_param_combination_input(self) -> tuple[Dict[str, Any], List[OperatorParameterCombination]] | tuple[
+        None, None]:
         if self.operator_rule_data is None:
             logger.error(f"Get param combination failed, input operator constraint data is None")
             return None, None
@@ -67,7 +71,7 @@ class PairwiseParamCombinationGenerator:
                 combination_input_generator = CombinationInputGenerate(operator_rule_data=self.operator_rule_data)
                 combination_input_data = combination_input_generator.generate_combination_input_data()
                 param_domain_data_save_path = os.path.join(self.combination_data_save_path,
-                                                          f"{self.operator_rule_data.operator_name}_domain_data.json")
+                                                           f"{self.operator_rule_data.operator_name}_domain_data.json")
                 with open(param_domain_data_save_path, "w", encoding="utf-8") as f:
                     json.dump(combination_input_data, f, indent=2, ensure_ascii=False, default=str)
 
@@ -90,13 +94,14 @@ class PairwiseParamCombinationGenerator:
                     universe=universe,
                     coverage_tracker=tracker,
                 )
-                gen = CoverageDrivenGenerator(
+                gen = PICTGenerator(
                     universe=universe,
                     coverage_tracker=tracker,
                     constraint=constraint_utils,
                     config=generator_options,
                     candidate_generator=candidate_gen,
                     pair_builder=builder,
+                    operator_name=self.operator_rule_data.operator_name
                 )
                 combination_data_result = gen.generate()
 

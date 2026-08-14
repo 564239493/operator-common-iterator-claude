@@ -1,4 +1,4 @@
-from model.exceptions import (
+﻿from agent.generators.operator_param_combine.combination_result_generator.model.exceptions import (
     ModelError,
     EmptyParameterNameError,
     VariableNotFoundError,

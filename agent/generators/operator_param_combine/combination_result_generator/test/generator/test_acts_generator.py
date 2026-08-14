@@ -1,18 +1,18 @@
-import pytest
+﻿import pytest
 
-from coverage.coverage import CoverageTracker
-from coverage.pair_builder import PairBuilder
-from coverage.parameter import Factor
-from coverage.universe import PairUniverse
-from coverage.value import FactorValue
+from agent.generators.operator_param_combine.combination_result_generator.coverage.coverage import CoverageTracker
+from agent.generators.operator_param_combine.combination_result_generator.coverage.pair_builder import PairBuilder
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.universe import PairUniverse
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
 
-from generator.acts_generator import ACTSGenerator
-from generator.candidate_generator import CandidateGenerator
-from generator.generator_options import GeneratorOptions
-from generator.model import GenerationResult
+from agent.generators.operator_param_combine.combination_result_generator.generator.acts_generator import ACTSGenerator
+from agent.generators.operator_param_combine.combination_result_generator.generator.candidate_generator import CandidateGenerator
+from agent.generators.operator_param_combine.combination_result_generator.generator.generator_options import GeneratorOptions
+from agent.generators.operator_param_combine.combination_result_generator.generator.model import GenerationResult
 
-from model.generator_config import GeneratorConfig
-from model.parameter_model import ParameterModel
+from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
+from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
 
 
 def create_config():

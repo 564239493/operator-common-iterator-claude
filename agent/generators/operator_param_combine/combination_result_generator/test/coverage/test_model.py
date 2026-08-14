@@ -1,7 +1,7 @@
-import pytest
+﻿import pytest
 
-from coverage.parameter import Parameter, Factor
-from coverage.value import FactorValue
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Parameter, Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
 
 
 class TestParameterAndFactor:

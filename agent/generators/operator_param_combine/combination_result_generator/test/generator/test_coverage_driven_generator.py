@@ -1,27 +1,27 @@
-import pytest
+﻿import pytest
 
-from coverage.coverage import CoverageTracker
-from coverage.pair_builder import PairBuilder
-from coverage.parameter import Factor
-from coverage.universe import PairUniverse
-from coverage.value import FactorValue
-from coverage.pair import Pair
+from agent.generators.operator_param_combine.combination_result_generator.coverage.coverage import CoverageTracker
+from agent.generators.operator_param_combine.combination_result_generator.coverage.pair_builder import PairBuilder
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.universe import PairUniverse
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
+from agent.generators.operator_param_combine.combination_result_generator.coverage.pair import Pair
 
-from generator.coverage_driven_generator import CoverageDrivenGenerator
-from generator.candidate_generator import CandidateGenerator
-from generator.generator_options import GeneratorOptions
-from generator.model import (
+from agent.generators.operator_param_combine.combination_result_generator.generator.coverage_driven_generator import CoverageDrivenGenerator
+from agent.generators.operator_param_combine.combination_result_generator.generator.candidate_generator import CandidateGenerator
+from agent.generators.operator_param_combine.combination_result_generator.generator.generator_options import GeneratorOptions
+from agent.generators.operator_param_combine.combination_result_generator.generator.model import (
     GenerationResult,
     TestCase,
     TestSuite,
 )
-from generator.pair_seed_generator import PairSeedGenerator
-from generator.cache import TestCaseCache
-from generator.scoring import UncoveredPairScoring
-from generator.coverage_selector import RandomUncoveredPairSelector, FirstUncoveredPairSelector
+from agent.generators.operator_param_combine.combination_result_generator.generator.pair_seed_generator import PairSeedGenerator
+from agent.generators.operator_param_combine.combination_result_generator.generator.cache import TestCaseCache
+from agent.generators.operator_param_combine.combination_result_generator.generator.scoring import UncoveredPairScoring
+from agent.generators.operator_param_combine.combination_result_generator.generator.coverage_selector import RandomUncoveredPairSelector, FirstUncoveredPairSelector
 
-from model.generator_config import GeneratorConfig
-from model.parameter_model import ParameterModel
+from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
+from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
 
 
 def create_simple_config():
@@ -39,15 +39,15 @@ def build_universe_and_tracker(config: GeneratorConfig):
                     factor_values.append(
                         FactorValue(Factor(param.name, attr_name), val)
                     )
-    from coverage.pair_existence_checker import PairExistenceChecker
+    from agent.generators.operator_param_combine.combination_result_generator.coverage.pair_existence_checker import PairExistenceChecker
     builder = PairBuilder()
     all_pairs = builder.build(factor_values)
     constraint = None
     if config.constraints:
-        from constraint.compiler import ConstraintCompiler
+        from agent.generators.operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
         compiler = ConstraintCompiler()
         compiled_constraints = [compiler.compile(expr) for expr in config.constraints]
-        from constraint.evaluator import ConstraintEvaluator
+        from agent.generators.operator_param_combine.combination_result_generator.constraint.evaluator import ConstraintEvaluator
 
         def evaluate(context):
             for cc in compiled_constraints:

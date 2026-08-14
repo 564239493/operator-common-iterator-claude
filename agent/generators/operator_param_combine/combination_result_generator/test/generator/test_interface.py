@@ -1,4 +1,4 @@
-from generator.interfaces import (
+﻿from agent.generators.operator_param_combine.combination_result_generator.generator.interfaces import (
     GeneratorProtocol,
 )
 
