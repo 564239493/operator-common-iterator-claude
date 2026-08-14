@@ -695,8 +695,21 @@ class ParamConstraintUtils(CommonDispatcher):
         builder = Z3ConstraintBuilder()
         self.declare_param_in_z3(builder=builder, is_print_log=True)
         constraint_after_solve_no = self.solve_no_present_param_in_constraint(z3_constraints)
-        expr_list = [constraint_expr.expr for constraint_expr in constraint_after_solve_no if
-                     constraint_expr.expr is not None and constraint_expr.expr]
+        expr_list = []
+        for constraint_expr in constraint_after_solve_no:
+            expr = constraint_expr.expr
+            if expr is None or not expr:
+                continue
+            stripped = expr.strip()
+            if stripped == "True":
+                # 所有子式都涉及缺失参数，约束空泛满足，无约束力，跳过
+                logger.debug(f"Skip vacuous constraint (True): '{expr}'")
+                continue
+            if stripped == "False":
+                # 约束恒假（如缺失参数的 is not None），标记冲突后跳过
+                logger.error(f"Constraint evaluates to False (conflict): '{expr}'")
+                continue
+            expr_list.append(expr)
 
         # 先添加 JSON 约束到求解器
         json_expr_dict = {f"json:{expr}": expr for expr in expr_list}
