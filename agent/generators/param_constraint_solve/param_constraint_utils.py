@@ -80,6 +80,7 @@ class ParamConstraintUtils(CommonDispatcher):
         for param_name in self.case_input_map.keys():
             dtype_domain = self.param_domain_data.get("parameters", {}).get(param_name, {}).get("dtype")
             format_domain = self.param_domain_data.get("parameters", {}).get(param_name, {}).get("format")
+            dtype_domain = [DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype) for dtype in dtype_domain]
             if dtype_domain:
                 dtype_domain_data[param_name] = dtype_domain
             if format_domain:
