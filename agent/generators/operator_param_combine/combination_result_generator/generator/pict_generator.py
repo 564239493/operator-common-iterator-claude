@@ -606,15 +606,27 @@ def check_pict_environment(pict_exe: Optional[str] = None, wsl_distro: Optional[
         diags = ["No pict / pict.exe found on PATH, PICT_EXE, or common locations."]
         sugg = []
         if cur == "win32":
-            sugg.append("Install Microsoft Visual C++ 2015-2022 Redistributable (x86), then place pict.exe on PATH or set PICT_EXE.")
-            sugg.append("Or debug on WSL: `wsl -d Ubuntu -- pict` is available if the WSL distro has pict installed.")
+            distro = wsl_distro or _detect_wsl_distro()
+            if distro is None:
+                diags.append("WSL not detected: `wsl.exe -l -q` returned no usable distro "
+                             "(WSL not installed or not running).")
+                sugg.append("Install & start WSL: `wsl --install` (needs admin + reboot), "
+                            "then install pict inside the distro.")
+            else:
+                if _wsl_has_pict(distro):
+                    diags.append("WSL distro '{}' detected and pict is available in it "
+                                 "(unexpectedly not selected).".format(distro))
+                else:
+                    diags.append("WSL distro '{}' detected, but pict is NOT installed in it.".format(distro))
+                    sugg.append("Install pict in WSL: `wsl -d {} -- bash -lc \"<install pict>\"`.".format(distro))
+            sugg.append("Or use native pict.exe: place it on PATH or set PICT_EXE "
+                        "(needs 32-bit VC++ runtime).")
         else:
-            sugg.append("Install PICT via `brew install pict` or build from source: `cmake -S . -B build && cmake --build build`.")
-        return PictEnvironmentReport(
-            available=False, command=None, platform=cur,
-            failure_category=PictFailureCategory.PICT_NOT_FOUND,
-            diagnostics=diags, suggestions=sugg,
-        )
+            sugg.append("Install PICT via `brew install pict` or build from source: "
+                        "`cmake -S . -B build && cmake --build build`.")
+        return PictEnvironmentReport(available=False, command=None, platform=cur,
+                                     failure_category=PictFailureCategory.PICT_NOT_FOUND,
+                                     diagnostics=diags, suggestions=sugg)
 
     probe_path = ""
     try:
