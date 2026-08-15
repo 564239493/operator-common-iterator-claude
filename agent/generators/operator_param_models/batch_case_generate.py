@@ -57,7 +57,7 @@ class OperatorCaseGenerator:
                                param_combination_list: List[OperatorParameterCombination],
                                param_domain_data: Dict[str, Any],
                                target_platform=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
-                               case_num: int = 1, jsonl_save_path: str = None):
+                               case_num: int = 1, jsonl_save_path: str = None, json_file_name=None):
         """
         读取参数组合文件，xxx.tsv，解析数据，并生成对用的用例
         :param operator_constraint_data: 算子约束结构化数据
@@ -83,7 +83,10 @@ class OperatorCaseGenerator:
         jsonl_fp = None
         if jsonl_save_path is not None:
             os.makedirs(jsonl_save_path, exist_ok=True)
-            jsonl_file = os.path.join(jsonl_save_path, f"{operator_name}.jsonl")
+            if json_file_name is not None:
+                jsonl_file = os.path.join(jsonl_save_path, f"{json_file_name}.jsonl")
+            else:
+                jsonl_file = os.path.join(jsonl_save_path, f"{operator_name}.jsonl")
             jsonl_fp = open(jsonl_file, "w", encoding="utf-8")
         final_case_list = []
         case_index = 0
