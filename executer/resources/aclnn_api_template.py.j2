@@ -17,6 +17,63 @@ from atk.tasks.backends.lib_interface.acl_wrapper import Int64, Uint64, AclTenso
 logging = Logger().get_logger()
 
 
+def _build_grouped_matmul_v5_group_list_cumsum(m, group_count, device=None):
+    """Build deterministic type-0 group boundaries ending at M."""
+    m = int(m)
+    group_count = int(group_count)
+    if m < 0:
+        raise ValueError("GroupedMatmulV5 M must be non-negative")
+    if group_count <= 0:
+        raise ValueError("GroupedMatmulV5 group count must be positive")
+
+    base, remainder = divmod(m, group_count)
+    group_sizes = torch.full(
+        (group_count,), base, dtype=torch.int64, device=device
+    )
+    if remainder:
+        group_sizes[:remainder] += 1
+    return torch.cumsum(group_sizes, dim=0)
+
+
+def _prepare_grouped_matmul_v5_type0_group_list(
+        x_value, weight_value, group_list, group_type, group_list_type):
+    """Materialise type-0 content only for the verified A8W8 scope."""
+    def single_tensor(value):
+        if isinstance(value, torch.Tensor):
+            return value
+        if (isinstance(value, (list, tuple)) and len(value) == 1
+                and isinstance(value[0], torch.Tensor)):
+            return value[0]
+        return None
+
+    x_tensor = single_tensor(x_value)
+    weight_tensor = single_tensor(weight_value)
+    in_supported_scope = (
+        group_type == 0
+        and group_list_type == 0
+        and isinstance(x_tensor, torch.Tensor)
+        and x_tensor.dim() == 2
+        and x_tensor.dtype == torch.int8
+        and isinstance(weight_tensor, torch.Tensor)
+        and weight_tensor.dim() == 3
+        and weight_tensor.dtype == torch.int8
+        and isinstance(group_list, torch.Tensor)
+        and group_list.dtype == torch.int64
+    )
+    if not in_supported_scope:
+        return group_list
+
+    group_count = int(weight_tensor.shape[0])
+    if group_list.numel() != group_count:
+        raise ValueError(
+            "GroupedMatmulV5 groupListOptional length must equal "
+            f"weight group count E ({group_count}), got {group_list.numel()}"
+        )
+    return _build_grouped_matmul_v5_group_list_cumsum(
+        x_tensor.shape[0], group_count, group_list.device
+    ).reshape(group_list.shape)
+
+
 @register("{{ aclnn_api_type }}")
 class {{ class_name }}(AclnnBaseApi):
     def init_by_input_data(self, input_data: InputDataset):
@@ -95,7 +152,7 @@ class {{ class_name }}(AclnnBaseApi):
                     AclBoolArrayPtr = ctypes.POINTER(AclIntArray)
                     null_boolarray_ptr = AclBoolArrayPtr()
                     input_args.append(null_boolarray_ptr)
-                elif type in ("char", "const char") or arg_name == "activation"
+                elif type in ("char", "const char") or arg_name == "activation":
                     input_args.append(None)
                 else:
                     input_args.append(ctypes.c_void_p(None))
@@ -213,11 +270,134 @@ class {{ class_name }}(AclnnBaseApi):
                 input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
             return
         if "aclnnGroupedMatmulV5" in operator_name:
-            x_tensor = input_data.kwargs.get("x")[0]
-            input_data.kwargs["x"][0] = x_tensor.transpose(1, 0)
+            # The ND weight direction/stride conversion was hardware-validated
+            # for groupType=-1 with 2-D FP32 weight.  Other weight branches must
+            # not infer a different direction solely from their shape.
+            found_weight_transposed = self.get_config_by_name(
+                self.task_result.case_config.inputs, "weight_transposed"
+            )
+            weight_transposed = False
+            if found_weight_transposed is not None:
+                value = getattr(found_weight_transposed, "range_values", None)
+                if isinstance(value, list):
+                    value = value[0] if value else False
+                if value is not None:
+                    weight_transposed = bool(value)
 
-            input_data.kwargs.pop('activationFeatureOutOptional')
-            input_data.kwargs.pop('dynQuantScaleOutOptional')
+            def prepare_weight_tensor(tensor):
+                if not isinstance(tensor, torch.Tensor) or tensor.dim() < 2:
+                    return tensor
+                if weight_transposed:
+                    # cases.json already stores (..., K, N).  Preserve its
+                    # logical shape/value, but materialise the transposed ND
+                    # state as a non-contiguous view.
+                    return tensor.transpose(-1, -2).contiguous().transpose(-1, -2)
+                # cases.json stores (..., N, K), while ACLNN validates the
+                # invocation tensor as (..., K, N).
+                return tensor.transpose(-1, -2).contiguous()
+
+            def prepare_weight_value(value):
+                if isinstance(value, torch.Tensor):
+                    return prepare_weight_tensor(value)
+                if isinstance(value, list):
+                    return [prepare_weight_tensor(item) for item in value]
+                if isinstance(value, tuple):
+                    return tuple(prepare_weight_tensor(item) for item in value)
+                return value
+
+            # ATK normally supplies named inputs through kwargs.  Only use
+            # the positional fallback when kwargs has no weight, preventing
+            # the same tensor from being transformed twice.
+            handled_in_kwargs = bool(
+                input_data.kwargs and "weight" in input_data.kwargs
+            )
+            if handled_in_kwargs:
+                input_data.kwargs["weight"] = prepare_weight_value(
+                    input_data.kwargs["weight"]
+                )
+            elif input_data.args:
+                flat_configs = []
+                for item in self.task_result.case_config.inputs:
+                    if isinstance(item, (list, tuple)):
+                        flat_configs.extend(item)
+                    else:
+                        flat_configs.append(item)
+                weight_indexes = [
+                    index for index, config in enumerate(flat_configs)
+                    if (config is not None and hasattr(config, "name")
+                        and config.name == "weight")
+                ]
+                for index in weight_indexes:
+                    if index < len(input_data.args):
+                        input_data.args[index] = prepare_weight_tensor(
+                            input_data.args[index]
+                        )
+
+            # groupListType=0 carries cumulative M-axis boundaries, not an
+            # arbitrary scalar sampled from a tensor value range.  Materialise
+            # that content only in the verified A2/A8W8, groupType=0,
+            # single-x/single-weight, 3-D weight scope.  Shape mismatches remain
+            # constraint errors and are deliberately not hidden here.
+            flat_configs = []
+            for item in self.task_result.case_config.inputs:
+                if isinstance(item, (list, tuple)):
+                    flat_configs.extend(item)
+                else:
+                    flat_configs.append(item)
+
+            def config_indexes(name):
+                return [
+                    index for index, config in enumerate(flat_configs)
+                    if (config is not None and hasattr(config, "name")
+                        and config.name == name)
+                ]
+
+            def runtime_value(name):
+                if input_data.kwargs and name in input_data.kwargs:
+                    return input_data.kwargs[name]
+                indexes = config_indexes(name)
+                values = [
+                    input_data.args[index] for index in indexes
+                    if index < len(input_data.args)
+                ]
+                if len(values) == 1:
+                    return values[0]
+                return values or None
+
+            def replace_runtime_value(name, value):
+                if input_data.kwargs and name in input_data.kwargs:
+                    input_data.kwargs[name] = value
+                    return True
+                indexes = config_indexes(name)
+                if len(indexes) == 1 and indexes[0] < len(input_data.args):
+                    input_data.args[indexes[0]] = value
+                    return True
+                return False
+
+            def case_scalar(name, default=None):
+                config = self.get_config_by_name(
+                    self.task_result.case_config.inputs, name
+                )
+                value = getattr(config, "range_values", None)
+                while isinstance(value, list) and len(value) == 1:
+                    value = value[0]
+                return default if value is None or isinstance(value, list) else value
+
+            group_type = case_scalar("groupType")
+            group_list_type = case_scalar("groupListType")
+            group_list_tensor = runtime_value("groupListOptional")
+            group_list = _prepare_grouped_matmul_v5_type0_group_list(
+                runtime_value("x"), runtime_value("weight"), group_list_tensor,
+                group_type, group_list_type
+            )
+            if group_list is not group_list_tensor:
+                replace_runtime_value("groupListOptional", group_list)
+
+            # Reserved outputs are represented by nullptr and may not exist
+            # in kwargs, so deletion must be idempotent.
+            if input_data.kwargs:
+                input_data.kwargs.pop("activationFeatureOutOptional", None)
+                input_data.kwargs.pop("dynQuantScaleOutOptional", None)
             return
 
 

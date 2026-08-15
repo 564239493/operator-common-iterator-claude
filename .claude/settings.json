@@ -42,7 +42,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Glob|Grep|Edit|Write|NotebookEdit|Bash|PowerShell|Agent|EnterWorktree",
+        "matcher": "Read|Glob|Grep|Edit|Write|NotebookEdit|Bash|PowerShell|Monitor|Agent|EnterWorktree",
         "hooks": [
           {
             "type": "command",

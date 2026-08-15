@@ -72,31 +72,40 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
     `device_types`，用户可按编号 Other 输入选中列表外的设备）。**不设"全部设备"聚合项**
     ——要全选就逐个勾选（multiSelect）。`device_types` 为文档"产品支持情况"具体设备名，
     **无"通用"通配符**。**若 `device_types` 仅 1 个设备 → 直接默认选中该设备、跳过 Q1
-    征询，直接进 Q2**（无选择意义时不打扰用户）。
+    征询，直接进 Q2**（无选择意义时不打扰用户）。question 正文首行须含 Other 提示语：
+    『Other（自定义）= 按下方编号表输入列表外的设备类型名』（无"通用"通配符，须给真实设备名）。
   - **Q2 逐设备量化模板**（对 Q1 选中的每个设备各 1 个 multiSelect 问题，**批量 ≤4 问/
     次**，超出分多次调用）：选项 = 该设备 `devices[].templates` 全部（≤4 直接列全；>4
     前 3 + Other，body 编号列全）。**不设"全部模板"聚合项**——要全选就逐个勾选。各设备
     模板可不同（v3 无"通用"组，无标注内容已合并到各具体设备组下）。模板名编码量化方式
     （如 `非量化`/`全量化-A8W8`/`全量化-GQA`）。**某设备仅 1 个模板 → 自动选中该模板、
     跳过该设备 Q2**（与 Q1 单设备跳过同原则）。等 Q1 答案回来确定选中设备后再发起本轮。
+    question 正文首行须含 Other 提示语：『Other（自定义）= 按下方编号表输入列表外的
+    量化模板名』。
   - **Q3 逐（设备,模板）特性参数**（对 Q2 选中的每个 (device,template) 各 1 个
     **single-select** 问题，**批量 ≤4 问/次**，超出分多次调用）。每问固定 2 个预设选项 +
     Other 自定义输入（AskUserQuestion 工具契约 ≥2 选项且自动提供 Other，无法零选项）：
     - 选项 1「保持自动 / 继承文档约束（未填写）」→ 该模板 `null`（全展开不剪枝）
     - 选项 2「全部固定默认值（最小覆盖）」→ 该模板 `"fix_all_default"`（每参数取 `values[0]`）
-    - **Other** → 用户贴值级 JSON，如 `{"groupType":[-1,0],"splitItem":[0,1,2,3],"weight format":["ND"]}`
-    question 文本必须包含：(a) 用户指定提示语「明确填写（Other 输 JSON）→ 按用户值限制；
-    选保持自动（未填写）→ 保持自动/继承文档约束」；(b) 该 (device,template) **完整
-    feature_params 编号表**（从 `scene_scan.json` 读出，每参数列出 `name / 取值 values /
-    description / constraint`，由主协调器现场渲染，不新造脚本）；(c) JSON 示例 + 说明
-    「未列参数=继承文档约束（全展开）；单值如 `[-1]`=固定该值；多值如 `[-1,0]`=展开该子集」。
-    答案→selection：选项1→`null`；选项2→`"fix_all_default"`；Other→解析为 dict（解析失败或
-    值非法由 `render_scene_directive.py` exit 2 阻断、提示重输，不静默回退）。等 Q2 答案
+    - **Other（可自定义输入参数特性配置）** → 接受**任意格式**输入，不限于 JSON 对象。合法示例：
+      值级 JSON `{"groupType":[-1,0],"splitItem":[0,1,2,3]}`；`param=value` 串
+      `groupType=-1,0; splitItem=0~3`；自然语言「groupType 取 -1 和 0，splitItem 取 0/1/2/3」。
+    question 文本必须包含：(a) Other 提示语「Other（可自定义输入参数特性配置）= 贴入任意
+      格式的参数取值配置，主协调器会识别并组装成取值清单；选保持自动（未填写）→ 保持自动/
+      继承文档约束」；(b) 该 (device,template) **完整 feature_params 编号表**（从
+      `scene_scan.json` 读出，每参数列出 `name / 取值 values / description / constraint`，
+      由主协调器现场渲染，不新造脚本）；(c) 多格式示例 + 说明「未列参数=继承文档约束（全展开）；
+      单值如 `[-1]`=固定该值；多值如 `[-1,0]`=展开该子集」。
+    答案→selection：选项1→`null`；选项2→`"fix_all_default"`；Other→主协调器**按 scene_scan
+      feature_params 表把任意格式输入识别+组装为标准 `{param:[values]}` dict**（参数名与取值
+      须落在 scan 的 `values` 内、类型感知；识别不了的参数或取值当场提示用户澄清，不静默丢弃）。
+      组装后的 dict 写入 `selection.json`，由 `render_scene_directive.py` 做最终严格校验（非法
+      exit 2 阻断、提示重输）。等 Q2 答案
     回来确定选中 (device,template) 对后再发起本轮。
   - 汇总答案写入 `selection.json`（**值级**形态）
     `{"device_types": [<...>], "selection": {<device>: {<template>: <tpl_value>}}}`
     其中 `<tpl_value>` ∈ `null`（选项1/未填写，全展开）| `"fix_all_default"`（选项2）|
-    `{<param>: [<values>]}`（Other JSON：单值→fix、多值→expand 子集、未列参数→全展开）；
+    `{<param>: [<values>]}`（Other 任意格式，主协调器组装为该 dict：单值→fix、多值→expand 子集、未列参数→全展开）；
     缺模板键 = 该模板未选（Q2 未选）→ 跑
     `python scripts/render_scene_directive.py --scan <run-dir>/inputs/scene_scan.json --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
     （校验设备/模板/param 名/值 ∈ scan、按 `param_modes` 三态解析每设备每参数的
@@ -157,12 +166,14 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
      可被会话生命周期（中断/重启/上下文压缩，无 60 分钟上限）杀死；唯一长寿命进程是脱离的
      `generate_cases.py`，`scripts/probe_breakaway.py` 已证其在 launcher 退出后存活到完成。
      当 case-generator 报告"生成在脱离会话的进程里跑（pid=…）"时，主协调器**接管等待**：
-       1. 每 ~60 秒**前台**跑一次 `python scripts/generation_progress.py status --output-dir <iter>`，
-          读 stdout 那行 JSON 的 `state`：`running` 则再等一轮（到点返回属正常轮询节奏、不是失败），
-          `complete` 则进第 4 步，`failed` 则进第 4 步。`status` 自身 ~1 秒 exit、stdout 只一行，反复调
-          不撑爆上下文。**禁止**据此改用 shell `while`/`sleep`/`grep`/`ps` 轮询 `cases.json`
-          或 `generation_progress.json`（弹非业务询问且无进展）。
-       2. **每次 `status` 返回后必须向用户报告** `per_platform` 各平台 `done`/`total`/`elapsed`/
+       1. 优先启动一个 `Monitor`，其 command 必须是无 shell 包装的单条绝对路径命令：
+          `<venv-python-absolute> <repo-absolute>/scripts/generation_progress.py watch --output-dir <iter-absolute> --interval 60`。
+          `watch` 立即采样、每约 60 秒输出一行 JSON，并在 `complete`/`failed` 时自动退出；Monitor
+          中断不影响已经脱离会话的生成子进程。不能使用 Monitor 时，才每 ~60 秒**前台**运行一次同样
+          使用绝对路径的 `generation_progress.py status --output-dir <iter-absolute>`。
+          **Monitor command 禁止包含**变量赋值/展开、`cd`、管道、命令替换、shell
+          `while`/`case`/`sleep`/`grep`/`head`/`ps`；这些结构会触发非业务安全审批询问。
+       2. **每次 `watch`/`status` 采样返回后必须向用户报告** `per_platform` 各平台 `done`/`total`/`elapsed`/
           `pid_alive`（`done` 递增、`pid_alive=true` 即活跃）——输出这四项是**强制**，**不得**用"平台名
           看起来不对"之类的旁支判断替换进度数字。这样用户每 ~60 秒看到一次进度，而不是长时间空白。
        2a. **轮询回合排他（强制，防进度丢失）**：`state=running` 期间，主协调器每回合的**唯一**动作

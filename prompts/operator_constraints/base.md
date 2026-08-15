@@ -356,6 +356,62 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 语义 B 误套 A 的隐式 bool 会引入文档未声明的参数；语义 A 误套 B 的 `shape[-1]` 会
 取错轴。
 
+##### J. 条件布局的轴关系不得丢失门控（通用规则）
+
+文档给出同一张量的多种布局或转置形态时，每套轴等式都必须保留其成立条件。不得把
+互斥布局的等式合并成无前提 `or`，否则求解器可能选择与实际 Tensor 布局不一致的分支。
+
+**适用判定**（全部满足时执行）：
+
+1. 文档对同一张量参数 `<param>` 给出 shape 元组的**两种顺序**（如 weight
+   `(n,k)` 或 `(k,n)`），或明示「可转置/必须转置/不支持转置」且转置态与默认态
+   shape 元组顺序不同；
+2. 函数签名**无**真实 transpose bool 参数（如 `transposeX1`/`transposeX2`/
+   `transposeWeight`）；若有，转置由真实参数表达，走 §4.6.3 G 条件 shape，不属本节；
+3. 文档给出了区分这些布局的条件，例如真实 transpose 参数、场景枚举、format、
+   连续/非连续要求或其他可执行状态。
+
+**强制规则**：
+
+- **禁止**把两套布局的轴等式写成无前提 `or` 析取。以下为反例（必须避免）：
+
+  ```text
+  # ❌ 反例：无前提 OR，丢失转置前提，析取第二支在连续 weight 下被 kernel 拒绝
+  expr_type: shape_value_dependency
+  expr: (x.shape[1] == weight.shape[0] and weight.shape[1] == out.shape[1])
+        or (x.shape[1] == weight.shape[1] and weight.shape[0] == out.shape[1])
+  ```
+
+- 选择门控方式时，优先使用函数签名中的真实参数或文档场景参数。只有当前用例模型和
+  executor 都能物化某个隐式状态时，才可按
+  `knowledge/aclnn/features/transpose_shape.md` 引入隐式 bool；隐式 bool 不能代替
+  executor 无法构造的 stride/非连续状态。
+- 当前执行能力只能覆盖一种布局时，可在**执行副本/专项能力护栏**中收窄到该布局，
+  但不得把文档原始合法域改写成“仅支持该布局”。确定性等式必须带当前场景/布局门控，
+  或仅在场景已经被显式固定时生成。
+
+  正例应使用目标算子的真实场景变量为轴关系加门控；如果场景在进入求解前已经固定，
+  才可在该执行副本中直接写确定性轴等式。具体表达式和文档原文必须写入对应的
+  feature/operator 知识，base 不预设任何算子的参数名、轴位置或默认布局。
+
+- **判别信号**：文档出现「shape 为 (A,B) 或 (B,A)」「可转置」「转置时必须非连续」
+  或按 format/场景切换轴位置时触发。具体轴位置与执行能力限制放入对应 feature/operator
+  知识，不在 base 中固定某个算子的默认布局。
+
+##### L. 可选参数存在性必须忠实于文档与所选场景（通用规则）
+
+- `is_optional.value=true` 表示 API 合法域包含缺席分支。不得仅因某次运行或 executor
+  恰好构造了该参数，就把它提升为必选或额外强制 `param is not None`。
+- 参数存在时，其 shape/dtype/format/value 约束必须生效；参数缺席时，使用
+  `param is None or (...)` 等守卫保留合法缺席分支。存在性由文档与显式
+  `scene_directive` 决定；生成结果仅用于一致性审计，不得反向作为参数必传或缺席的
+  语义证据，也不得让求解器自行改变存在性以逃避约束。
+- 只有文档明确写“必须传”“不得为空”时才产出强制 present；只有文档明确写“必须传空/
+  仅支持 nullptr”时才把 `[null]` 写入 canonical 合法域。
+- 因当前生成器或 executor 能力不足而临时投影为缺席时，必须放在精确 operator/feature
+  知识中并标记为 `TEMP_CAPABILITY_GUARD`，写明原因、影响范围、解除条件和回归验证；
+  不得把临时投影描述成 API 永久约束，也不得放入 base 作为跨算子规则。
+
 ### 4.7 `constraints_in_parameters`（跨参数 / 单参数约束）
 
 #### 4.7.1 顶层 key
@@ -478,6 +534,40 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     `constraints_in_parameters[每个支持平台]` 中追加 `srcTensor.dtype == dstTensor.dtype`
     的 `type_equality` 约束；dstTensor 值域沿用 src，不得按不同 dtype 负值域生成。
 
+15. **条件性取值/存在性关系必须形式化为 cross_param_constraint**：当文档写「参数 A
+    取值 v 时参数 B 必须/不得取 w」「B 仅在 A=w 场景下支持」「A=v 时 B 必须传空/
+    不取某值」等**条件性取值或存在性限制**时，**必须**在
+    `constraints_in_parameters` 中产出 `cross_param_constraint`（或
+    `value_dependency` / `presence_dependency`，按语义）expr，形如：
+
+    ```text
+    # A 取 v ⇒ B 不得取 w
+    not(A.range_value == v) or (B.range_value != w)
+    # A 取 v ⇒ B 必须传空（缺席语义）
+    not(A.range_value == v) or (B is None)
+    # A 取 v ⇒ B 仅可取 w
+    not(A.range_value == v) or (B.range_value == w)
+    ```
+
+    `relation_params` 必须同时含 A 与 B；`src_text` 摘录原文中「A 取 v 时 B …」短语。
+    **禁止**只在 `B.description` / `B.allowed_range_value.src_text` 里自然语言备注
+    「须传空」「仅某场景支持」而不产出可判定的 `expr`——下游生成器不会消费
+    `description` 里的自然语言限制，会自由产出违反该限制的取值组合。
+
+    **语义边界**：“失效 / 不参与计算 / 取值被忽略”不等于“必须传空”。若原文只表示
+    B 的值在 A=v 时不影响结果，且未要求 B 缺席或限定取值，则不收窄 B 的合法域；只在
+    `description/src_text` 记录忽略语义，供 golden/executor 决定是否使用。只有原文明示
+    “必须传空 / 不得传入 / 仅支持 nullptr”时才生成 presence/缺席约束。
+
+    **正例**（aclnnGroupedMatmulV5：groupListType=2 仅全量化且 groupType=0 场景下支持）：
+
+    ```text
+    expr_type: cross_param_constraint
+    expr: not(groupListType.range_value == 2) or (groupType.range_value == 0)
+    relation_params: ["groupListType", "groupType"]
+    src_text: "groupListType=2：仅全量化且groupType=0场景下支持"
+    ```
+
 ### 4.8 `return_info`（错误返回码）
 
 - 来自 `## 返回码` / `## 错误码` 章节。
@@ -587,7 +677,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 
 ## 6. 自检清单（提取完成后必跑）
 
-> 模型在生成 JSON 之后、提交给用户之前，**内部自检** 33 项。任何一项不通过均需重做。
+> 模型在生成 JSON 之后、提交给用户之前，必须执行本章**全部自检项**。任何一项不通过均需重做。
 
 1. **JSON 校验**：用 `OperatorRule.model_validate_json(json_str)` 解析，**不抛异常**。
 2. **字段完整**：`OperatorRule` 的**全部 11 个**必填字段均存在且非 `None`；数组/对象至少是空容器。
@@ -674,6 +764,12 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     c. 单个闭区间使用 `[min,max]`，多个“或”关系闭区间使用
        `[[min1,max1],[min2,max2],...]`；
     d. 对照 `src_text` 逐个核验区间数量和端点，禁止把多个可选区间合并为其包络区间。
+23. **支持场景表与 Tensor rank 联动完整性**：若文档按 `groupType`、`splitItem`、
+    单/多 Tensor 等离散条件给出目标 Tensor 的二维/三维等 rank 差异，必须满足：
+    a. `dimensions.value` 保留文档允许 rank 的全集；
+    b. 每个合法场景分支均存在引用门控参数与目标 Tensor 的条件 rank expr；
+    c. rank 使用 `len(param.shape)` 表达，不得使用约束语言不存在的 `.dimNum`；
+    d. 不得只保留无条件 rank 并集，使求解器在具体场景中任意选择非法 rank。
 24. **format↔rank 完整性**：逐平台遍历所有 `aclTensor` / `aclTensorList` 参数；若
     `format.value` 是包含不同标准 rank 格式的列表，必须满足**全部**：
     a. 存在且仅存在一条引用该参数的 `format_rank_consistency` 约束；
@@ -790,7 +886,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
        `(cacheModeOptional.range_value == "PA_NZ") or (...)` 和
        `optional is None or x.dtype == optional.dtype` 必须均为
        `type_dependency`，不得为 `type_equality`。
-32. **聚合表达式求解器兼容性自检**：遍历所有 `expr`：
+**聚合表达式求解器兼容性补充检查**：遍历所有 `expr`：
     a. 不得出现 `sum(... for ... in ...)`、`sum(... for ... in zip(...))` 或
        `sum([comprehension])`；当前生成器只支持 `sum(param.range_value)` 这类
        对完整数组的直接求和；
@@ -830,6 +926,30 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     d. 同样检查 `allowed_range_value.value` 的字符串枚举候选、`format.value` 的格式串，
        以及 `dtype_support_description` / `format_support_description` 中的
        combo 表 dtype/format 值；发现不一致即重做该条目。
+
+34. **条件布局门控自检**：遍历每个平台 `constraints_in_parameters` 中所有
+    `shape_value_dependency` / `shape_equality` / `shape_choice` 条目；凡同一 expr
+    引用同一 weight/x 参数的两种 shape 顺序并以无前提 `or` 连接（如
+    `(x.shape[1]==weight.shape[0]...) or (x.shape[1]==weight.shape[1]...)`），且文档
+    同时写明布局切换条件时，不得保留无前提 `or` 析取。必须使用真实 API/场景参数门控；
+    只有用例模型与 executor 都能物化隐式状态时才可引入隐式 bool。执行能力只能覆盖
+    单一布局时，将收窄写入专项 `TEMP_CAPABILITY_GUARD`，不得篡改文档合法域。
+
+35. **条件性取值/存在性关系自检**：重新扫描全部参数 `description`、`src_text` 与
+    文档「约束说明」原文，凡含「A 取 v 时 B …」「B 仅在 A=w 场景支持」「A=v 时 B
+    必须传空/不取某值」者，**必须**存在引用 A 与 B 的
+    `cross_param_constraint`（或 `value_dependency` / `presence_dependency`）expr；
+    只在 `description` / `allowed_range_value.src_text` 自然语言备注而未形式化者，
+    视为漏抽，必须补产 `expr` 条目（见 §4.7.3 item 15）。若仅写“失效/不影响计算”，
+    先确认是否真有限制；没有“必须传空/限定取值”原文时不得擅自收窄合法域。
+
+36. **可选参数语义与临时能力护栏回扫**：遍历所有 `is_optional.value=true` 参数上
+    形如 `param is None or (...)` 的约束（`type_dependency` / `shape_equality` /
+    `shape_value_dependency` / `cross_param_constraint` 等含 `param is None` 前置析取支）；
+    确认 presence/absence 是否有文档或所选场景的直接证据。不得根据一次 cases_executor
+    的构造行为把可选参数提升为必选。若 `[null]` 仅因生成能力不足而设置，必须位于精确
+    operator/feature 知识的 `TEMP_CAPABILITY_GUARD`，并包含解除条件；base 和文档合法域
+    仍保持参数可选。能力恢复后必须删除护栏并补跑 present/absent 两分支回归。
 
 ## 7. 调用模板
 
@@ -884,9 +1004,9 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 ## 你的任务
 1. 完整阅读算子说明文档；
 2. 按 §3 输出对象合同（`OperatorRule`）输出 JSON；
-3. 内部执行第 6 章 33 项自检（含 §6.15 NZ 块尺寸、§6.16 一段式一致性自检、§6.17 非 Tensor 数组禁用、§6.18 条件 Shape 与 shape_value_dependency 门控完整性、
-   §6.19 TensorList 长度关系、§6.20 动态取值边界、§6.21 Partial-Shape 自检、§6.25 大小/数量语义隐式 >0、§6.26 公共互推导/broadcast 知识展开、
-   §6.28 derived_value 可求解性、§6.29 格式转换 dtype 等式、§6.30 联合交叉 dtype/format 组合表、§6.31 支持场景表→维数联动、§6.32 必选参数"只支持 nullptr"取值语义、§6.33 dtype/value 逐字一致性）；
+3. 内部执行第 6 章全部自检项（含 §6.15 NZ 块尺寸、§6.16 一段式一致性自检、§6.17 非 Tensor 数组禁用、§6.18 条件 Shape 与 shape_value_dependency 门控完整性、
+   §6.19 TensorList 长度关系、§6.20 动态取值边界、§6.21 Partial-Shape 自检、§6.23 支持场景表→rank 联动、§6.25 大小/数量语义隐式 >0、§6.26 公共互推导/broadcast 知识展开、
+   §6.28 derived_value 可求解性、§6.29 格式转换 dtype 等式、§6.30 联合交叉 dtype/format 组合表、§6.32 必选参数"只支持 nullptr"取值语义、§6.33 dtype/value 逐字一致性、§6.34 条件布局门控、§6.35 条件存在性关系、§6.36 临时能力护栏）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 

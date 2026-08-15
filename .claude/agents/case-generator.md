@@ -28,10 +28,11 @@ color: green
    `python scripts/generation_progress.py launch --output-dir <iter> -- <generate_cases.py 参数>`。
 2. launcher 在 ~1 秒内返回，stdout 打印一行 JSON 标记（含 `pid`、`breakaway`、`state=running`）。
 3. 最终消息里报告：**`<iter>` 路径**、cases 路径、`test_framework`、count、platforms、生成子进程 `pid`，
-   并明确告知主协调器："生成在脱离会话的进程里跑（pid=…）；主协调器须每 60 秒**前台**跑一次
-   `python scripts/generation_progress.py status --output-dir <iter>` 读那行 JSON 的 `state` 字段：
-   `running` 则再等一轮（到点返回属正常轮询节奏、非失败），`complete`（`generation_summary.json`
-   已产出）则 `validate_artifacts.py cases`，`failed` 则读 `error` 字段诊断。"
+   并明确告知主协调器："生成在脱离会话的进程里跑（pid=…）；主协调器优先让 Monitor 执行单条
+   无 shell 包装的绝对路径命令 `<venv-python> <repo>/scripts/generation_progress.py watch
+   --output-dir <iter> --interval 60`，读取逐行 JSON；`complete` 后校验 cases，`failed` 读取 `error`。
+   禁止在 Monitor 中拼变量、管道或 `while`/`grep`/`sleep` 循环。不能使用 Monitor 时才单次调用
+   `status`。"
 4. **然后结束本轮**。不等待、不 TaskOutput、不 Read 轮询 stdout 或 `generation_progress.json`——
    等待与校验全由主协调器做。脱离会话的 `generate_cases.py` 子进程不随本 Agent 退出而死。
 

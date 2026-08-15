@@ -45,14 +45,15 @@ launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoc
 （同步执行，结束本轮即结束，收不到异步通知）。故**无论长短，一律脱离启动 + 交棒，等待与校验
 由主协调器负责**。
 
-每条 Bash/PowerShell 都弹询问，`Read`/`Glob`/`Grep` 不弹。据此（主协调器适用）：
+据此（主协调器适用）：
 
-- **等待完成（无询问）**：每 ~60 秒**前台**跑一次
-  `python scripts/generation_progress.py status --output-dir <iter>` 读 stdout 那行 JSON 的 `state`：
-  `running` 则再等一轮，`complete`（`generation_summary.json` 已产出）则 `validate_artifacts.py cases`，
-  `failed` 则读 `error` 字段。`status` 自身 ~1 秒 exit、stdout 只一行，反复调不撑爆上下文。
-  **禁止**据此换 grep/sleep 轮询。
-- **查进度（无询问，主协调器适用）**：每次 `status` 返回后**必须**向用户报告
+- **等待完成（无业务询问）**：优先让 `Monitor` 执行一条无 shell 包装的绝对路径命令：
+  `<venv-python-absolute> <repo-absolute>/scripts/generation_progress.py watch --output-dir <iter-absolute> --interval 60`。
+  `watch` 立即采样，随后每约 60 秒输出一行 JSON，`complete`/`failed` 自动退出。不能使用 Monitor
+  时，才每 ~60 秒前台执行一次相同绝对路径形式的 `status` 子命令。**禁止**在 Monitor command
+  内使用变量、`cd`、管道、命令替换、`while`/`case`/`sleep`/`grep`/`head`/`ps`；否则安全审批器
+  无法静态分析，向用户弹出非业务询问。
+- **查进度（无询问，主协调器适用）**：每次 `watch`/`status` 采样返回后**必须**向用户报告
   `per_platform.done`/`total`/`elapsed`/`pid_alive`（递增即活跃），再发起下一次——每 ~60 秒给用户一次
   进度，**不得**用"平台名看起来不对"之类的旁支判断替换进度数字。不循环 Read。
 - **轮询回合排他（强制，防进度丢失）**：`state=running` 期间主协调器每回合**只**做"跑 status → 报进度

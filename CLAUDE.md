@@ -29,10 +29,13 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 > 跳过 Q1 进 Q2）→ Q2 逐设备量化模板（multiSelect 真实模板、不设"全部模板"聚合项；
 > 某设备仅 1 模板自动选中、跳过该设备 Q2）→ Q3 逐（设备,模板）特性参数（**single-select**，
 > 每问 2 预设 + Other：选项1「保持自动/继承文档约束（未填写）」→`null`、选项2「全部固定
-> 默认值」→`"fix_all_default"`、Other→值级 JSON 如 `{"groupType":[-1,0],"splitItem":[3]}`，
-> 单值→fix、多值→expand 子集、未列参数→全展开；question 文本含完整 feature_params 编号表
-> + 提示语「明确填写（Other 输 JSON）→ 按用户值限制；选保持自动（未填写）→ 保持自动/继承
-> 文档约束」），`scripts/render_scene_directive.py`
+> 默认值」→`"fix_all_default"`、Other（可自定义输入参数特性配置）→**任意格式**输入
+> （值级 JSON / `param=value` 串 / 自然语言均可，如 `groupType=-1,0; splitItem=0~3`），
+> 主协调器按 scene_scan feature_params 表识别+组装为标准 `{param:[values]}` dict 写入
+> `selection.json`（识别不了的参数/取值当场提示用户澄清）；单值→fix、多值→expand 子集、
+> 未列参数→全展开；question 文本含完整 feature_params 编号表 + Other 提示语「Other
+> （可自定义输入参数特性配置）= 贴入任意格式配置，主协调器识别组装；选保持自动（未填写）
+> → 保持自动/继承文档约束」），`scripts/render_scene_directive.py` 做最终严格校验、
 > 解析选择为每设备每参数的 `param_modes` 三态（`{"expand": [取值清单]}` 清单=用户子集或所选模板 values 并集、
 > 禁止回文档拉全集 / `{"fix": X}` 单值（用户单值输入或 values[0]） / 缺键 presence 丢）并渲染
 > `inputs/scene_directive.md`（含机读块 `device_types`/`param_modes`）并回写
