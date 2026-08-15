@@ -645,9 +645,9 @@ class ParamConstraintUtils(CommonDispatcher):
             expr_ori = constraint.expr
             if expr_ori is None or expr_ori.strip() == "":
                 continue
-            new_expr = remove_missing_param_exprs(expression=expr_ori, existing_params=existing_params)
             logger.debug("Solve none in constraint : ")
             logger.debug(f"     ori expr : '{expr_ori}'")
+            new_expr = remove_missing_param_exprs(expression=expr_ori, existing_params=existing_params)
             logger.debug(f"after replace : '{new_expr}'")
             constraint_solve_none = copy.deepcopy(constraint)
             constraint_solve_none.expr = new_expr
@@ -711,7 +711,7 @@ class ParamConstraintUtils(CommonDispatcher):
             if stripped == "False":
                 # 约束恒假（如缺失参数的 is not None），标记冲突后跳过
                 logger.error(f"Constraint evaluates to False (conflict): '{expr}'")
-                continue
+                return False
             expr_list.append(expr)
 
         # 先添加 JSON 约束到求解器
