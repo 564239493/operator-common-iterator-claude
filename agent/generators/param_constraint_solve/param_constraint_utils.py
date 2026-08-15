@@ -25,6 +25,8 @@ from agent.generators.data_definition.param_models_def import ParameterPropertyD
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
+from common_utils.expression_analysis import ExpressionPreprocessor
+from operator_param_combine.combination_result_generator.constraint.remover import remove_missing_param_exprs
 
 logger = LazyLogger()
 
@@ -610,41 +612,6 @@ class ParamConstraintUtils(CommonDispatcher):
         else:
             constraint_exprs.extend(length_static_value_expr_list)
 
-    def analysis_param_is_present(self, builder: Z3ConstraintBuilder):
-        """
-        根据参数组合中的 ``is_present`` 和 only-None 值域添加 presence 硬约束。
-
-        参数是否存在由组合生成结果决定；约束表达式中出现属性引用或
-        ``is None`` / ``is not None`` 不应再隐式改变参数的存在性。
-        """
-        force_false_params = set()
-
-        for param_name in self.case_input_map:
-            param_combination_data = self.param_combinations.get(param_name)
-            param_ori_data = (
-                self.operator_rule_data.inputs.get(param_name)
-                if param_name in self.operator_rule_data.inputs
-                else self.operator_rule_data.outputs.get(param_name)
-            )
-            if param_ori_data is not None:
-                rv, rv_type = DataHandleUtil.get_relevant_attribute_value(
-                    param_name, param_ori_data.allowed_range_value, "allowed_range_value"
-                )
-                if (rv is not None and rv_type == ParamRangeValueType.ENUM.value
-                        and isinstance(rv, list) and all(v is None for v in rv)):
-                    force_false_params.add(param_name)
-
-        for param_name in self.case_input_map:
-            if param_name in force_false_params:
-                builder.solver.add(z3.Not(builder.var_map[param_name].is_present))
-                continue
-            param_combination_data = self.param_combinations.get(param_name)
-            if param_combination_data is None:
-                continue
-            builder.solver.add(
-                builder.var_map[param_name].is_present == param_combination_data.is_present
-            )
-
     def set_param_is_present(self, builder: Z3ConstraintBuilder):
         """
         设置求解器中is_present的取值，因为在组合生成阶段，已根据allowed_range_value和部分is_None表达式，预处理参数的is_present取值，
@@ -660,30 +627,24 @@ class ParamConstraintUtils(CommonDispatcher):
                 continue
             builder.solver.add(builder.var_map[param_name].is_present == is_present_value)
 
-    def solve_none_in_constraint(self, constraints):
+    def solve_no_present_param_in_constraint(self, constraints):
         """
         对于表达式中的 is None 和 is not None,根据is_present属性进行后处理，如果is_present为False,则将表达式中的和此参数相关的子表达式，
         如x is None 整个替换为True
         """
         constraint_after_solve_none = []
+        existing_params = set()
+        if self.param_combinations is not None:
+            for param_name, property_data in self.param_combinations.items():
+                if property_data.is_present:
+                    existing_params.add(param_name)
+
         for constraint in constraints:
             # 处理当前参数和约束相关的参数，如果参数不在case_input_map中，则认为其is_present为False
-            relation_params = constraint.relation_params
             expr_ori = constraint.expr
-            new_expr = copy.deepcopy(expr_ori)
-            for param_name in relation_params:
-                param_property_data = self.param_combinations.get(param_name)
-                if param_property_data is None:
-                    is_present_value = False
-                else:
-                    is_present_value = param_property_data.is_present
-                if not is_present_value:
-                    is_none_pattern = f"{param_name} is None"
-                    is_not_none_pattern = f"{param_name} is not None"
-                    if is_none_pattern not in new_expr and is_not_none_pattern not in new_expr:
-                        continue
-                    new_expr = new_expr.replace(is_none_pattern, "True")
-                    new_expr = new_expr.replace(is_not_none_pattern, "False")
+            if expr_ori is None or expr_ori.strip() == "":
+                continue
+            new_expr = remove_missing_param_exprs(expression=expr_ori, existing_params=existing_params)
             logger.debug(f"Solve none in constraint, ori expr : '{expr_ori}', after replace : '{new_expr}'")
             constraint_solve_none = copy.deepcopy(constraint)
             constraint_solve_none.expr = new_expr
@@ -733,9 +694,22 @@ class ParamConstraintUtils(CommonDispatcher):
         logger.info(f"Start solving solution of constraints by Z3, operator name : {self.operator_name}")
         builder = Z3ConstraintBuilder()
         self.declare_param_in_z3(builder=builder, is_print_log=True)
-        constraint_after_solve_no = self.solve_none_in_constraint(z3_constraints)
-        expr_list = [constraint_expr.expr for constraint_expr in constraint_after_solve_no if
-                     constraint_expr.expr is not None and constraint_expr.expr]
+        constraint_after_solve_no = self.solve_no_present_param_in_constraint(z3_constraints)
+        expr_list = []
+        for constraint_expr in constraint_after_solve_no:
+            expr = constraint_expr.expr
+            if expr is None or not expr:
+                continue
+            stripped = expr.strip()
+            if stripped == "True":
+                # 所有子式都涉及缺失参数，约束空泛满足，无约束力，跳过
+                logger.debug(f"Skip vacuous constraint (True): '{expr}'")
+                continue
+            if stripped == "False":
+                # 约束恒假（如缺失参数的 is not None），标记冲突后跳过
+                logger.error(f"Constraint evaluates to False (conflict): '{expr}'")
+                continue
+            expr_list.append(expr)
 
         # 先添加 JSON 约束到求解器
         json_expr_dict = {f"json:{expr}": expr for expr in expr_list}

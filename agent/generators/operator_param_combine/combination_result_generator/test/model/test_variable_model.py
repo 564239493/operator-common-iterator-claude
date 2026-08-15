@@ -1,6 +1,6 @@
-import pytest
+﻿import pytest
 
-from model.variable_model import (
+from agent.generators.operator_param_combine.combination_result_generator.model.variable_model import (
     VariableModel
 )
 

@@ -65,7 +65,7 @@ def _resolve_operator_name(operator_constraint: Union[str, os.PathLike, Mapping]
 
 
 def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
-                           case_num=1,jsonl_save_path=None) -> List:
+                           case_num=1, jsonl_save_path=None, json_file_name = None) -> tuple[List, str]:
     """
     算子用例生成的主入口。
 
@@ -126,8 +126,8 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     case_list = operator_case_generate.handle_single_operator(
         operator_constraint_data=effective_operator_constraint_data, param_domain_data=param_domain_data,
         param_combination_list=param_combination_list, target_platform=platform,
-        case_num=case_num, jsonl_save_path=jsonl_save_path)
-    return case_list
+        case_num=case_num, jsonl_save_path=jsonl_save_path, json_file_name = json_file_name)
+    return case_list, operator_name
 
 
 def batch_operator_handel(operator_constraint_directory, operators: List = None,
@@ -170,7 +170,7 @@ def batch_operator_handel(operator_constraint_directory, operators: List = None,
         time_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
         with DocumentLogContext(f"{operator_name}_{time_str}"):
             single_operator_handle(operator_constraint_path, platform=platform,
-                                   case_num=case_num, jsonl_save_path=case_save_path)
+                                   case_num=case_num, jsonl_save_path=case_save_path, json_file_name=operator_name)
             data_handle_utils.convert_jsonl_to_json(api_name=operator_name, jsonl_save_path=case_save_path,
                                                      json_save_path=case_save_path)
 

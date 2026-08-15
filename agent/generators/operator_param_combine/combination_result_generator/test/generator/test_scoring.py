@@ -1,17 +1,17 @@
-import pytest
+﻿import pytest
 
-from coverage.coverage import CoverageTracker
-from coverage.pair_builder import PairBuilder
-from coverage.parameter import Factor
-from coverage.universe import PairUniverse
-from coverage.value import FactorValue
+from agent.generators.operator_param_combine.combination_result_generator.coverage.coverage import CoverageTracker
+from agent.generators.operator_param_combine.combination_result_generator.coverage.pair_builder import PairBuilder
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.universe import PairUniverse
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
 
-from generator.scoring import (
+from agent.generators.operator_param_combine.combination_result_generator.generator.scoring import (
     ScoringStrategy,
     UncoveredPairScoring,
     WeightedUncoveredPairScoring,
 )
-from generator.model import TestCase, TestValue
+from agent.generators.operator_param_combine.combination_result_generator.generator.model import TestCase, TestValue
 
 
 def make_universe_and_tracker():

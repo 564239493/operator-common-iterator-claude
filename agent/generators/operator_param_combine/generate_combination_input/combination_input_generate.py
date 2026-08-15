@@ -9,6 +9,8 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from agent.generators import OperatorRule, ParamAttributes
 
+from agent.generators.common_model_definition import InterParamConstraint, InterConstraintsRuleType
+
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.common_utils.logger_util import LazyLogger
@@ -434,13 +436,22 @@ class CombinationInputGenerate:
         self.constraint_generate.propagate_constraint_values(parameters, param_type_dict)
         valid_expr_list.extend(
             self.constraint_generate.check_constraint_expr(parameters=parameters, param_type_dict=param_type_dict))
-        dtype_support_constraint = self.constraint_generate.solve_dtype_support_description()
-        format_support_constraint = self.constraint_generate.solve_format_support_map()
+        dtype_support_constraint, dtype_relation_param = self.constraint_generate.solve_dtype_support_description()
+        format_support_constraint, format_relation_param = self.constraint_generate.solve_format_support_map()
         if dtype_support_constraint is not None:
             valid_expr_list.append(dtype_support_constraint)
+            dtype_constraint_in_param = InterParamConstraint(expr_type=InterConstraintsRuleType.TYPE_DEPENDENCY.value,
+                                                             expr=dtype_support_constraint,
+                                                             relation_params=dtype_relation_param)
+            self.operator_rule_data.constraints_in_parameters.append(dtype_constraint_in_param)
         if format_support_constraint is not None:
             valid_expr_list.append(format_support_constraint)
+            format_constraint_in_param = InterParamConstraint(expr_type=InterConstraintsRuleType.FORMAT_EQUALITY.value,
+                                                              expr=format_support_constraint,
+                                                              relation_params=format_relation_param)
+            self.operator_rule_data.constraints_in_parameters.append(format_constraint_in_param)
         combination_input_data["constraints"] = valid_expr_list
+
         return combination_input_data
 
     def save_input_data(self, input_data: Dict):

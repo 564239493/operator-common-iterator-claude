@@ -1,4 +1,4 @@
-"""
+﻿"""
 Coverage integration test.
 
 Verify:
@@ -24,7 +24,7 @@ CoverageTracker
 from typing import Dict, Any
 
 
-from coverage import (
+from agent.generators.operator_param_combine.combination_result_generator.coverage import (
     Pair,
     PairUniverse,
     CoverageTracker,
@@ -32,11 +32,14 @@ from coverage import (
 )
 
 
-from constraint.interfaces import (
+from agent.generators.operator_param_combine.combination_result_generator.constraint.interfaces import (
     ConstraintProtocol,
 )
-from coverage.parameter import Factor
-from coverage.value import FactorValue
+from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
+from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
+
+
+from agent.generators.operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
 
 
 class MockConstraint(
@@ -103,9 +106,12 @@ class TestCoverageInterface:
 
         constraint = MockConstraint()
 
+        compiler = ConstraintCompiler()
+        compiled = compiler.compile("x.dtype == 'fp16'")
 
         checker = PairExistenceChecker(
-            constraint
+            constraint,
+            compiled_list=[compiled],
         )
 
 

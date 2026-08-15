@@ -1,22 +1,22 @@
-import pytest
+﻿import pytest
 
-from constraint.interfaces import (
+from agent.generators.operator_param_combine.combination_result_generator.constraint.interfaces import (
     ConstraintProtocol,
 )
 
-from generator.candidate_generator import (
+from agent.generators.operator_param_combine.combination_result_generator.generator.candidate_generator import (
     CandidateGenerator,
 )
 
-from generator.exceptions import (
+from agent.generators.operator_param_combine.combination_result_generator.generator.exceptions import (
     CandidateGenerationError,
 )
 
-from model.generator_config import (
+from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import (
     GeneratorConfig,
 )
 
-from model.parameter_model import (
+from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import (
     ParameterModel,
 )
 
@@ -99,7 +99,7 @@ class TestCandidateGenerator:
 
         case, _ = generator.generate_candidate()
 
-        from generator.model import TestCase
+        from agent.generators.operator_param_combine.combination_result_generator.generator.model import TestCase
 
         assert isinstance(
             case,

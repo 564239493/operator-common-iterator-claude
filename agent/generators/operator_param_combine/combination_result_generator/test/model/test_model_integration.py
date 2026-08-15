@@ -1,16 +1,16 @@
-from model.parameter_model import (
+﻿from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import (
     ParameterModel
 )
 
-from model.variable_registry import (
+from agent.generators.operator_param_combine.combination_result_generator.model.variable_registry import (
     VariableRegistry
 )
 
-from model.value_registry import (
+from agent.generators.operator_param_combine.combination_result_generator.model.value_registry import (
     ValueRegistry
 )
 
-from model.constraint_context import (
+from agent.generators.operator_param_combine.combination_result_generator.model.constraint_context import (
     ConstraintContext
 )
 

@@ -1,7 +1,7 @@
-import pytest
+﻿import pytest
 
-from generator import InvalidGeneratorConfigError, GeneratorError
-from generator.model import (
+from agent.generators.operator_param_combine.combination_result_generator.generator import InvalidGeneratorConfigError, GeneratorError
+from agent.generators.operator_param_combine.combination_result_generator.generator.model import (
     TestValue,
     TestCase,
     TestSuite,
