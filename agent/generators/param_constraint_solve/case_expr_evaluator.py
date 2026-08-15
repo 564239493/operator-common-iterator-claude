@@ -8,10 +8,12 @@ Z3 `solver.check()` 复检——后者对 `Length(SeqSort)`+`ProdShape` 递归�
 且 `_pin_case_value` 的 shape pin per-项异常仅 debug 静默跳过，抓不到 shape-rank 违例。
 """
 import ast
+import re
 from typing import Dict, Optional, Tuple
 
 from agent.generators.atk_common_utils.case_config import InputCaseConfig
 from agent.generators.common_utils.logger_util import LazyLogger
+from agent.generators.data_definition.constants import DataMatchMap
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import ExpressionPreprocessor
 
 logger = LazyLogger()
@@ -50,18 +52,29 @@ class Param:
     也成立（`.range_value` 暴露标量 int）。`__eq__` 仅对纯数值匹配，否则 NotImplemented 回退身份比较。
     """
 
-    __slots__ = ("name", "format", "dtype", "shape", "range_value", "is_attr_scalar")
+    __slots__ = ("name", "format", "dtype", "shape", "range_value", "length", "is_attr_scalar")
 
     def __init__(self, case_input: InputCaseConfig):
         self.name = getattr(case_input, "name", None)
         short = getattr(case_input, "dtype", None)
         # 兼容短名（表内映射到 Python 小写）与已 Python 化形式（不在表内 → lower 后回写）。
         # 不再强制 UPPERCASE：prompt/knowledge 用 'float16'/'bfloat16'，与 'FLOAT16' 不相等。
-        self.dtype = DTYPE_SHORT_TO_CANON.get(short, (short.lower() if short else None))
+        normalized = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(short, short)
+        self.dtype = DTYPE_SHORT_TO_CANON.get(
+            normalized, (normalized.lower() if normalized else None)
+        )
         self.format = getattr(case_input, "format", None)
         self.shape = getattr(case_input, "shape", None)
         self.range_value = getattr(case_input, "range_values", None)
+        self.length = getattr(case_input, "length", None)
         self.is_attr_scalar = getattr(case_input, "type", None) == "attr"
+
+    def __len__(self):
+        if self.length is not None:
+            return self.length
+        if isinstance(self.shape, list):
+            return len(self.shape)
+        raise TypeError(f"length is unavailable for parameter {self.name}")
 
     def __eq__(self, other):
         if isinstance(other, bool):
@@ -108,6 +121,19 @@ def eval_constraint(expr: str, namespace: Dict[str, Param]) -> Tuple[Optional[bo
         return True, None
     try:
         normed = ExpressionPreprocessor.normalize_json_null(expr)
+        # Constraints are extracted with both ACL spellings ("INT8") and
+        # internal spellings ("int8").  Compare one canonical representation.
+        quoted = re.compile(r"(?P<quote>['\"])(?P<dtype>[A-Za-z0-9_]+)(?P=quote)")
+
+        def normalize_dtype_literal(match):
+            raw = match.group("dtype")
+            dtype = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(raw)
+            if dtype is None:
+                return match.group(0)
+            canonical = DTYPE_SHORT_TO_CANON.get(dtype, dtype.lower())
+            return f"{match.group('quote')}{canonical}{match.group('quote')}"
+
+        normed = quoted.sub(normalize_dtype_literal, normed)
     except Exception as e:  # 病态 expr tokenize 失败
         return None, f"normalize: {type(e).__name__}: {e}"
     try:

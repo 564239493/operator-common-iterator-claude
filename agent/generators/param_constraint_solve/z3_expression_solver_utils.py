@@ -116,6 +116,14 @@ class Z3ConstraintBuilder:
             replace_expr = ExpressionPreprocessor.apply_keyword_replace(expr_str)
             if ExpressionPreprocessor.validate_expression(replace_expr):
                 self.add_constraint(expr_str_name, replace_expr)
+            else:
+                self.dropped_constraints.append({
+                    "name": expr_str_name,
+                    "expr": expr_str,
+                    "error": "invalid_expression",
+                    "reason": "invalid_expression",
+                })
+                logger.error(f"[DROP] invalid constraint expression: '{expr_str}'")
 
     def add_constraint(self, expr_name, expr_str, is_print_log=False):
         # 通用规则：约束文本以 `# TODO:` 开头时跳过 solver（Z3 求解不完备或约束语义
@@ -175,9 +183,21 @@ class Z3ConstraintBuilder:
                 if is_print_log:
                     logger.debug(f"[OK] {expr_str}")
             else:
+                self.dropped_constraints.append({
+                    "name": expr_name,
+                    "expr": expr_str,
+                    "error": "converter_returned_none",
+                    "reason": "converter_returned_none",
+                })
                 if is_print_log:
                     logger.debug(f"[SKIP] '{expr_str}': converter returned None, ignored")
         except Exception as e:
+            self.dropped_constraints.append({
+                "name": expr_name,
+                "expr": expr_str,
+                "error": f"{type(e).__name__}: {e}",
+                "reason": "conversion_error",
+            })
             logger.error(f"[FAIL] expr : '{expr_str}': err msg : '{e}'")
 
     def solve(self):

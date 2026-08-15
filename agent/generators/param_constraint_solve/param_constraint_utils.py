@@ -6,7 +6,6 @@
 功能：参数约束关系实现
 """
 import ast
-import copy
 import re
 from collections import defaultdict
 from typing import List, Dict, Any
@@ -24,9 +23,9 @@ from agent.generators.data_definition.constants import ParamModelConfig, DataMat
 from agent.generators.data_definition.param_models_def import ParameterPropertyData, ParamRangeValueType
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
+from agent.generators.param_constraint_solve.case_expr_evaluator import Param, eval_constraint
+from agent.generators.param_constraint_solve.param_var_definition import normalize_dtype_name
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
-from common_utils.expression_analysis import ExpressionPreprocessor
-from operator_param_combine.combination_result_generator.constraint.remover import remove_missing_param_exprs
 
 logger = LazyLogger()
 
@@ -622,34 +621,16 @@ class ParamConstraintUtils(CommonDispatcher):
             param_property_data = self.param_combinations.get(param_name)
             if param_property_data is None:
                 continue
-            is_present_value = param_property_data.is_present
-            if not is_present_value:
-                continue
-            builder.solver.add(builder.var_map[param_name].is_present == is_present_value)
+            if param_name not in builder.var_map:
+                raise ValueError(f"Z3 variable was not declared for parameter '{param_name}'")
+            builder.solver.add(
+                builder.var_map[param_name].is_present == bool(param_property_data.is_present)
+            )
 
     def solve_no_present_param_in_constraint(self, constraints):
-        """
-        对于表达式中的 is None 和 is not None,根据is_present属性进行后处理，如果is_present为False,则将表达式中的和此参数相关的子表达式，
-        如x is None 整个替换为True
-        """
-        constraint_after_solve_none = []
-        existing_params = set()
-        if self.param_combinations is not None:
-            for param_name, property_data in self.param_combinations.items():
-                if property_data.is_present:
-                    existing_params.add(param_name)
-
-        for constraint in constraints:
-            # 处理当前参数和约束相关的参数，如果参数不在case_input_map中，则认为其is_present为False
-            expr_ori = constraint.expr
-            if expr_ori is None or expr_ori.strip() == "":
-                continue
-            new_expr = remove_missing_param_exprs(expression=expr_ori, existing_params=existing_params)
-            logger.debug(f"Solve none in constraint, ori expr : '{expr_ori}', after replace : '{new_expr}'")
-            constraint_solve_none = copy.deepcopy(constraint)
-            constraint_solve_none.expr = new_expr
-            constraint_after_solve_none.append(constraint_solve_none)
-        return constraint_after_solve_none
+        """Keep optional guards intact; presence is represented in Z3."""
+        return [constraint for constraint in constraints
+                if constraint.expr and constraint.expr.strip()]
 
     def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False):
         """
@@ -664,17 +645,17 @@ class ParamConstraintUtils(CommonDispatcher):
             if not param_info:
                 continue
             param_property_data = self.param_combinations.get(param_name)
-            is_present_value = param_property_data.is_present if param_property_data is not None else False
-            if not is_present_value:
-                continue
+            is_present_value = bool(param_property_data.is_present) if param_property_data else False
             param_type = param_info.type
             z3_param_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(param_type, "tensor")
             param_dtype = param_info.dtype
             param_length = param_info.length
             range_values = self.case_input_map.get(param_name).range_values
             if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
-                dtype_domain = self.dtype_domain_data.get(param_name)
-                format_domain = self.format_domain_data.get(param_name)
+                # Absent optionals still need a symbolic variable for guarded
+                # expressions, but their placeholder dtype/format need no domain.
+                dtype_domain = self.dtype_domain_data.get(param_name) if is_present_value else None
+                format_domain = self.format_domain_data.get(param_name) if is_present_value else None
                 builder.declare_var(param_name, type_hint=z3_param_type, dtype=param_dtype, allowed_dtypes=dtype_domain,
                                     allowed_formats=format_domain, range_value=range_values,
                                     length=param_length if z3_param_type == "tensor_list" else None,
@@ -684,6 +665,39 @@ class ParamConstraintUtils(CommonDispatcher):
                                     length=param_length, is_print_log=is_print_log)
 
         self.set_param_is_present(builder)
+
+    def _post_check_resolved_case(self) -> bool:
+        """Validate the materialized case with Python semantics, fail closed."""
+        namespace = {
+            name: None
+            for name in set(self.operator_rule_data.inputs) | set(self.operator_rule_data.outputs)
+        }
+        namespace.update({name: Param(case_input)
+                          for name, case_input in self.case_input_map.items()})
+
+        for param_name, case_input in self.case_input_map.items():
+            allowed = self.dtype_domain_data.get(param_name)
+            if allowed:
+                actual = normalize_dtype_name(case_input.dtype)
+                allowed_normalized = {normalize_dtype_name(dtype) for dtype in allowed}
+                if actual not in allowed_normalized:
+                    logger.error(
+                        f"PostCheck dtype domain violation: {param_name}={case_input.dtype}, "
+                        f"allowed={allowed}"
+                    )
+                    return False
+
+        for constraint in self.inter_param_constraints:
+            expr = (constraint.expr or "").strip()
+            if not expr or expr.startswith("# TODO:"):
+                continue
+            ok, error = eval_constraint(expr, namespace)
+            if ok is not True:
+                logger.error(
+                    f"PostCheck rejected constraint '{expr}', result={ok}, error={error}"
+                )
+                return False
+        return True
 
     def solve_z3_constraints(self, z3_constraints: List[InterParamConstraint]):
         """
@@ -708,25 +722,60 @@ class ParamConstraintUtils(CommonDispatcher):
             if stripped == "False":
                 # 约束恒假（如缺失参数的 is not None），标记冲突后跳过
                 logger.error(f"Constraint evaluates to False (conflict): '{expr}'")
-                continue
+                return False
             expr_list.append(expr)
 
         # 先添加 JSON 约束到求解器
         json_expr_dict = {f"json:{expr}": expr for expr in expr_list}
         builder.add_constraints(expr_str_dict=json_expr_dict)
+        real_drops = [drop for drop in builder.dropped_constraints
+                      if drop.get("reason") != "todo_skip"]
+        if real_drops:
+            logger.error(f"Reject case because JSON constraints were dropped: {real_drops[:5]}")
+            return False
 
         # 收集所有静态表达式，一次性批量冲突检测（5 次 choice_no_conflicts_expr → 1 次）
-        all_static = []
-        self.build_param_dtype_constraint(all_static, builder, check=False)
-        self.build_param_format_constraint(all_static, builder, check=False)
-        self.build_param_shape_constraint(all_static, builder, check=False)
-        self.build_param_range_value_constraint(all_static, builder, check=False)
-        self.build_param_shape_len_constraint(all_static, builder, check=False)
-        self.build_param_length_constraint(all_static, builder, check=False)
+        # Combination factors are hard coverage decisions.  Never remove a
+        # dtype/format/presence/rank/value pin merely to obtain SAT.
+        hard_static = []
+        self.build_param_dtype_constraint(hard_static, builder, check=False)
+        self.build_param_format_constraint(hard_static, builder, check=False)
+        self.build_param_range_value_constraint(hard_static, builder, check=False)
+        self.build_param_shape_len_constraint(hard_static, builder, check=False)
+        self.build_param_length_constraint(hard_static, builder, check=False)
+        hard_static = [expr for expr in hard_static if expr and expr.strip()]
+        for index, static_expr in enumerate(hard_static):
+            builder.add_constraint(f"static:{index}", static_expr)
+        static_drops = [drop for drop in builder.dropped_constraints
+                        if drop.get("reason") != "todo_skip"]
+        if static_drops:
+            logger.error(f"Reject case because static constraints were dropped: {static_drops[:5]}")
+            return False
+        if builder.solver.check() != z3.sat:
+            logger.error("Reject case because the selected combination conflicts with operator constraints")
+            return False
 
-        if all_static:
-            self.choice_no_conflicts_expr_core(builder=builder, param_union_expr=expr_list,
-                                               param_static_expr_list=all_static)
+        # Keep sampled concrete shapes only when the complete set is legal.
+        # Otherwise let Z3 correct shapes while retaining all coverage factors.
+        sampled_shapes = []
+        self.build_param_shape_constraint(sampled_shapes, builder, check=False)
+        sampled_shapes = [expr for expr in sampled_shapes if expr and expr.strip()]
+        if sampled_shapes:
+            builder.solver.push()
+            drop_count = len(builder.dropped_constraints)
+            for index, static_expr in enumerate(sampled_shapes):
+                builder.add_constraint(f"sampled_shape:{index}", static_expr)
+            shape_status = builder.solver.check()
+            shape_drops = builder.dropped_constraints[drop_count:]
+            builder.solver.pop()
+            if shape_drops:
+                logger.error(f"Reject case because sampled shapes were dropped: {shape_drops[:5]}")
+                return False
+            if shape_status == z3.sat:
+                for index, static_expr in enumerate(sampled_shapes):
+                    builder.add_constraint(f"fixed_shape:{index}", static_expr)
+            else:
+                logger.info("Sampled shapes conflict; solve new shapes without changing combination factors")
 
         logger.info("Start whole expr solve")
         try:
@@ -767,8 +816,4 @@ class ParamConstraintUtils(CommonDispatcher):
                         self.case_input_map[param_name].__setattr__(field_name, attr_value)
                 elif param_attr_ori_status and attr_value is not None:
                     self.case_input_map[param_name].__setattr__(field_name, attr_value)
-        # 生成优先：Z3 已给出解后直接保留用例。旧的 Python PostCheck 会再次 eval
-        # constraints_in_parameters，并把“伪 SAT”用例 fail-closed 丢弃；复杂算子中
-        # Param 包装、可选参数和 SeqSort 语义不完整，曾导致 0/10 用例全部被误杀。
-        # 真实合法性改由后续 TTK/ATK 执行结果观察，不在生成阶段二次阻断。
-        return True
+        return self._post_check_resolved_case()

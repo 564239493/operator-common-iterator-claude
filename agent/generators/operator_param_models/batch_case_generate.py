@@ -90,11 +90,18 @@ class OperatorCaseGenerator:
             jsonl_fp = open(jsonl_file, "w", encoding="utf-8")
         final_case_list = []
         case_index = 0
+        combination_cursor = 0
         solve_time = 0
         while case_index < case_num:
             logger.info(f"###### Start generate case data, case id : '{case_index}/{case_num}' ######")
             t_start = time.time()
-            param_combination = param_combination_list[case_index % len(param_combination_list)]
+            # Advance even when a combination is rejected.  Retrying the same
+            # unsatisfiable combination until the global limit starves all
+            # later, valid combinations.
+            param_combination = param_combination_list[
+                combination_cursor % len(param_combination_list)
+            ]
+            combination_cursor += 1
             param_combination_dict = {each.param_name: each for each in param_combination.parameter_property}
             case_config = case_generate_instance.generate_case(param_combination_dict)
             correct_status, correct_case = self.correct_case(case=case_config,

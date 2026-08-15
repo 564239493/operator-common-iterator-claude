@@ -245,6 +245,28 @@ DType, DT_ENUMS = z3.EnumSort('DType', list(DataMatchMap.DTYPE_SPECS.keys()))
 DTYPE_MAP = {name: const for name, const in zip(DataMatchMap.DTYPE_SPECS.keys(), DT_ENUMS)}
 
 
+def normalize_dtype_name(dtype):
+    """Normalize ACL/document dtype spellings to the internal Z3 dtype key."""
+    if dtype is None:
+        return None
+    value = str(dtype)
+    return DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(value, value)
+
+
+def normalize_allowed_dtypes(allowed_dtypes):
+    """Translate a dtype domain and reject domains that become unconstrained."""
+    if not allowed_dtypes:
+        return []
+    normalized = []
+    for dtype in allowed_dtypes:
+        dtype_name = normalize_dtype_name(dtype)
+        if dtype_name in DTYPE_MAP and dtype_name not in normalized:
+            normalized.append(dtype_name)
+    if not normalized:
+        raise ValueError(f"No supported dtype remains after normalization: {allowed_dtypes}")
+    return normalized
+
+
 class BaseVar:
     def __init__(self, name, solver=None):
         self.name = name
@@ -741,9 +763,8 @@ class TensorVar(BaseVar):
     def _add_dtype_constraints(self, allowed_dtypes):
         # A. 定义域约束
         if allowed_dtypes:
-            valid_dtypes = [dt for dt in allowed_dtypes if dt in DTYPE_MAP]
-            if valid_dtypes:
-                self.solver.add(z3.Or([self.dtype == DTYPE_MAP.get(dt) for dt in valid_dtypes]))
+            valid_dtypes = normalize_allowed_dtypes(allowed_dtypes)
+            self.solver.add(z3.Or([self.dtype == DTYPE_MAP[dt] for dt in valid_dtypes]))
 
     def _add_format_constraints(self, allowed_formats):
         if allowed_formats:
@@ -877,9 +898,8 @@ class TensorListVar(BaseVar):
 
     def _add_dtype_constraints(self, dtype, allowed_dtypes):
         if allowed_dtypes:
-            valid_dtypes = [dt for dt in allowed_dtypes if dt in DTYPE_MAP]
-            if valid_dtypes:
-                self.solver.add(z3.Or([self.elem_dtype == DTYPE_MAP.get(dt) for dt in valid_dtypes]))
+            valid_dtypes = normalize_allowed_dtypes(allowed_dtypes)
+            self.solver.add(z3.Or([self.elem_dtype == DTYPE_MAP[dt] for dt in valid_dtypes]))
 
     def _add_format_constraints(self, allowed_formats):
         if allowed_formats:
