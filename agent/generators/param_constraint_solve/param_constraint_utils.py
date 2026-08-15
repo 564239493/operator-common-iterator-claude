@@ -15,18 +15,18 @@ import z3
 from pydantic import BaseModel
 
 from agent.generators.atk_common_utils.case_config import CaseConfig
-from agent.generators.common_model_definition import InterParamConstraint, InterConstraintsRuleType, OperatorRule
+from agent.generators.common_model_definition import InterParamConstraint, OperatorRule
 from agent.generators.common_utils.common_dispatcher import CommonDispatcher
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.data_definition.constants import ParamModelConfig, DataMatchMap
 from agent.generators.data_definition.param_models_def import ParameterPropertyData, ParamRangeValueType
+from agent.generators.operator_param_combine.combination_result_generator.constraint.remover import \
+    remove_missing_param_exprs
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
-from common_utils.expression_analysis import ExpressionPreprocessor
-from operator_param_combine.combination_result_generator.constraint.remover import remove_missing_param_exprs
 
 logger = LazyLogger()
 
@@ -645,7 +645,9 @@ class ParamConstraintUtils(CommonDispatcher):
             if expr_ori is None or expr_ori.strip() == "":
                 continue
             new_expr = remove_missing_param_exprs(expression=expr_ori, existing_params=existing_params)
-            logger.debug(f"Solve none in constraint, ori expr : '{expr_ori}', after replace : '{new_expr}'")
+            logger.debug("Solve none in constraint : ")
+            logger.debug(f"     ori expr : '{expr_ori}'")
+            logger.debug(f"after replace : '{new_expr}'")
             constraint_solve_none = copy.deepcopy(constraint)
             constraint_solve_none.expr = new_expr
             constraint_after_solve_none.append(constraint_solve_none)
