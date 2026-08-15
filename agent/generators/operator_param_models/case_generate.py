@@ -160,7 +160,7 @@ class CaseGenerate:
                                                         param_shape)
                 input_case_config = InputCaseConfig(name=param_name, type=param_type, dtype=param_dtype,
                                                     shape=param_shape, range_values=param_range,
-                                                    format=param_attributes.format)
+                                                    format=param_attributes.format, length=param_length)
             else:
                 param_range = self.generate_param_range(param_name, param_attributes.range_value_profile,
                                                         param_dtype)
