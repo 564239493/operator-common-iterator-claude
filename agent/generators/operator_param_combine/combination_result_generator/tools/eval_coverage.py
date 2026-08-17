@@ -22,8 +22,8 @@ from agent.generators.operator_param_combine.combination_result_generator.engine
 from agent.generators.operator_param_combine.combination_result_generator.engine import \
         _PARAMETER_ATTRIBUTE_KEYS
 from agent.generators.data_definition.constants import DataMatchMap
-from operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
-from operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
+from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
+from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
 from agent.generators.common_utils.logger_util import init_logger, LazyLogger
 
 logger = LazyLogger()

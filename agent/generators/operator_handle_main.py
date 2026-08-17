@@ -126,7 +126,7 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     case_list = operator_case_generate.handle_single_operator(
         operator_constraint_data=effective_operator_constraint_data, param_domain_data=param_domain_data,
         param_combination_list=param_combination_list, target_platform=platform,
-        case_num=case_num, jsonl_save_path=jsonl_save_path, json_file_name = json_file_name)
+        case_num=case_num, jsonl_save_path=jsonl_save_path)
     return case_list, operator_name
 
 

@@ -60,3 +60,17 @@ v4 合同表达，多个离散 rank 不得误合并出文档未支持的中间 r
 - rank 格式：`0 ≤ min ≤ max ≤ 10`；
 - per-dim 格式：每维 `min ≤ max`（或 `null`），最多 10 维；
 - `[]` 永远合法。
+
+## §裸数值区间 / 悬空参数引用的维度须交叉核对示例
+
+当张量参数表「维度(shape)」列是纯数值区间（如 `0-8`），或「使用说明」引用签名不存在的
+参数名（如 `self`）时，该列取值**不得**直接形式化为 `dimensions.value` 的 rank 区间；必须
+交叉核对「调用示例」的显式 shape 声明（如 `outShape = {batch, n}`）确定真实 rank，据示例
+槽数写固定 rank（如 `[2,2]`），并补 `y.shape[0]==batch`、`y.shape[1]==n` 的
+`shape_value_dependency`；`src_text` 同时摘录「维度(shape)」列与「调用示例」两处原文；
+悬空参数（self）不生成跨参数约束。
+
+**反例**：aclnnGroupedMatmulFinalizeRouting 输出 y「维度(shape)」列写 `0-8`、「使用说明」写
+`shape与self相同`（该算子无 self 参数），提取器直接形式化 `[0,8]`，生成器产出 0 维/8 维 y，
+100/100 失败（`must have at least 2 dimensions` / `should be equal to 2, but is 8`）；正确做法
+是核对 `outShape={batch,n}` → 固定 `[2,2]`。

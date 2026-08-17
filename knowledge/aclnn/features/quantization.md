@@ -52,3 +52,25 @@ depends_on: [expression_language, quantization_intro]
 > 参数——`null` 是缺席语义（非量化场景），present 候选是量化场景取值。二者 `null` 语义相反，
 > 不可混用。
 
+## 量化 weight 的 INT32 打包（物理 dtype/shape 与逻辑 n 分离）
+
+量化 weight（MatMul 右矩阵，通常名 w/weight）在文档中可能同时以「逻辑量化维 n」与
+「物理打包维 n/8」出现，二者相差打包位宽（8 个低比特权重装入 1 个 INT32 容器）。
+
+**触发信号**（下述同时出现才认定 INT32 打包）：
+1. 「数据类型」列 INT4/INT8 等低比特量化类型；
+2. 「维度(shape)」列或「调用示例」明示物理输入为 INT32 打包：(e,k,n/8) + ACL_INT32 +
+   std::vector<int32_t> host data + 「转为 int_4」注释。
+
+**规则**：
+1. 物理接口 dtype 取 INT32（量化类型是内部转换结果，非接口 dtype）；
+2. shape 取打包维 (e,k,n/8)，`w.shape[2]==n/8`（禁写 n）；
+3. 引入独立逻辑 n = 打包维×8；scale/bias/sharedInput/y 与「w 的 n 一致」绑定逻辑 n
+   （`== w.shape[2]*8`），禁止 `== w.shape[2]`；
+4. `dtype_support_description` 中该 weight 的 combo dtype 同源写 INT32；
+5. e/k 依赖无打包变换，保持不变。
+
+**反例**：aclnnGroupedMatmulFinalizeRouting 把 w 提取为 dtype=INT4、shape=(e,k,n) 并写
+`w.shape[2]==7168`、`y.shape[1]==w.shape[2]`，生成器产出 w int4+[e,2048,7168]，CANN 按
+INT32 打包反推 weight NDim=7168*8=57344，与 y 第二维 7168 不符，100/100 失败。
+
