@@ -35,7 +35,9 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 
 **场景屏蔽规则**（仅当 `inputs/scene_directive.md` 存在时执行；不存在则按全场景
 提取，行为不变）：优先读取 directive 末尾机读块作为权威锚点（prose 段仅供人读）。
-机读块为 `<!-- scene: {device_types, param_modes} -->`。
+机读块为 `<!-- scene: {device_types, selection, param_modes, selection_policy} -->`。
+其中 `selection` 是逐设备选中的模板及显式值配置；即使 `param_modes` 为空，也必须先按
+`selection` 限定模板范围，不得回退到未选模板的参数域。
 
 **设备→`product_support` 规则**（同一 directive 存在条件下，覆盖提示词 §4.3 的
 "仅取 √ 行"为"按选定设备收窄"）：先读文档"产品支持情况"表得到 √ 行全集 `D`；再按
@@ -47,14 +49,14 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 `deterministic_computing`/`constraints_in_parameters` 的二级平台 key 仅按收窄后的
 `product_support` 逐平台产出（仍不得用单一平台代笔）。
 
-**屏蔽（`param_modes` 三态）**——按机读块 `param_modes[device][param]` 以**选择内容为基本限制**收窄每设备
+**场景适配（`param_modes`）**——按机读块 `param_modes[device][param]` 以**选择内容为基本限制**收窄每设备
 每参数（未提及的按文档原文提取）：
-- `{"expand": [取值清单]}` → **所选清单是该特性参数的基本限制**：凡依赖该参数取值的约束均按清单收窄——无论体现为该参数自身的 `allowed_range_value` 枚举候选，还是以该取值为条件的 `dtype`/`format`/`dimensions` 分支或 `constraints_in_parameters` 行（保留命中清单内取值者、丢弃绑定清单外取值者，清单为所选模板 `values` 并集，**禁止回文档拉全集**）；与该参数取值**无关联**的约束按文档原文提取、不受清单影响。
+- `{"expand": [取值清单]}` → **用户明确选择的清单是该特性参数的基本限制**：凡依赖该参数取值的约束均按清单收窄——无论体现为该参数自身的 `allowed_range_value` 枚举候选，还是以该取值为条件的 `dtype`/`format`/`dimensions` 分支或 `constraints_in_parameters` 行（保留命中清单内取值者、丢弃绑定清单外取值者）；与该参数取值**无关联**的约束按文档原文提取、不受清单影响。
 - `{"fix": X}` → **仅产单值候选** `X`（取该值、不展开取值分支）；
-- **缺键** → 该参数仅出现在未选模板（Q2 未选）下，若是 Optional 参数则**不产
-  `presence_dependency`**（presence 丢、不测试该量化路径）；非 Optional 参数不受此态影响。
-  若该参数同时出现在已选模板下，则按已选模板的 `expand`/`fix` 决策处理（并集语义，
-  `expand` 优先）。
+- **缺键** → 继续根据算子文档和已选场景提取、适配 presence、dtype、shape、value
+  等约束，不得解释为删除约束。已选场景明确禁止的 Optional 参数必须显式生成
+  `param is None`；无 presence 约束会令 Optional 在存在/缺席之间自由生成，不能表示
+  “不测试”。
 
 **保留**与参数取值**无关**的通用约束（`shape_equality`、维度、`groupType` 等）；`dtype`/`format`/`dimensions` 以取值为条件分支者随选择收窄（保留命中已选取值的分支、丢弃绑定未选取值的分支），无条件者保留。
 场景只做"屏蔽"，不臆造文档未声明的限制；结果仍须满足 `OperatorRule` 与
@@ -106,10 +108,11 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
    `{"value":[0,1],"type":"enum"}`。
 11. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因。
 12. **场景屏蔽完整性自检**（仅当 `inputs/scene_directive.md` 存在时）：确认
-    `param_modes` 三态已应用——`{"expand": [取值清单]}` 参数凡依赖其取值的约束（自身 `allowed_range_value`、
+    `param_modes` 已应用——`{"expand": [取值清单]}` 参数凡依赖其取值的约束（自身 `allowed_range_value`、
     `dtype`/`format`/`dimensions` 条件分支、`constraints_in_parameters` 行）均已按清单收窄（**不得超出清单回文档拉全集**）、
-    `{"fix": X}` 参数取单值 `X` 且依赖其取值的约束同此收窄、缺键的 Optional 参数其
-    `presence_dependency` 未产出；与取值**无关**的通用约束（shape/维度/groupType 等）未被误删。
+    `{"fix": X}` 参数取单值 `X` 且依赖其取值的约束同此收窄；缺键参数已按文档和
+    已选场景适配，场景禁止的 Optional 参数均有 `param is None` 可执行约束；与取值
+    **无关**的通用约束（shape/维度/groupType 等）未被误删。
     确认 `product_support` 已按机读块 `device_types` 收窄并与文档 √ 行取交集
     （直接交集，无"通用"展开），`inputs`/
     `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。自检不通过则回到步骤 1

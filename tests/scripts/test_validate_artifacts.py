@@ -5,10 +5,95 @@ constraints 语义校验（validate_constraints）依赖 agent.generators 包（
 """
 
 import json
+import ast
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from scripts import validate_artifacts as va
+from scripts.atk_to_ttk_aclnn import audit_case, convert_case
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_collection_prompt_proposal_decision_and_application(tmp_path):
+    run_dir = tmp_path / "run"
+    inputs = run_dir / "inputs"
+    inputs.mkdir(parents=True)
+    proposal_path = inputs / "prompt_update_proposal.json"
+    decisions_path = inputs / "prompt_update_decisions.json"
+    proposal_path.write_text(json.dumps({
+        "run_id": "collection-test",
+        "proposals": [{
+            "id": "p1",
+            "destination": "base_prompt",
+            "canonical_target": "prompts/operator_constraints/base.md §test",
+            "change_summary": "test collection proposal",
+            "status": "deferred",
+        }],
+    }), encoding="utf-8")
+    decisions_path.write_text(
+        json.dumps({"schema_version": "1.0", "decisions": []}),
+        encoding="utf-8",
+    )
+
+    decision = subprocess.run([
+        sys.executable, str(ROOT / "scripts" / "record_prompt_update_decision.py"),
+        "--proposal", str(proposal_path), "--proposal-id", "p1",
+        "--decisions", str(decisions_path), "--decision", "approve",
+        "--confirmed-by-user",
+    ], cwd=ROOT, capture_output=True, text=True, check=False)
+    assert decision.returncode == 0, decision.stderr or decision.stdout
+
+    application = subprocess.run([
+        sys.executable, str(ROOT / "scripts" / "record_prompt_update_application.py"),
+        "--proposal", str(proposal_path), "--proposal-id", "p1",
+        "--decisions", str(decisions_path), "--validation", "unit-test:passed",
+    ], cwd=ROOT, capture_output=True, text=True, check=False)
+    assert application.returncode == 0, application.stderr or application.stdout
+
+    proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+    decision_log = json.loads(decisions_path.read_text(encoding="utf-8"))
+    assert proposal["proposals"][0]["status"] == "applied"
+    assert decision_log["decisions"][0]["proposal_id"] == "p1"
+    assert decision_log["decisions"][0]["canonical_applied"] is True
+
+
+def test_atk_to_ttk_tensor_list_metadata_repeated_to_length():
+    signature = [
+        {"name": "x", "tensor_list": True, "output": False, "optional": False},
+        {"name": "y", "tensor_list": False, "output": False, "optional": False},
+    ]
+    case = {
+        "id": 0,
+        "name": "aclnnExample",
+        "inputs": [
+            {
+                "name": "x", "type": "tensors", "shape": [2, 3],
+                "dtype": "float16", "format": "nz", "length": 3,
+            },
+            {
+                "name": "y", "type": "tensor", "shape": [1],
+                "dtype": "int32", "format": "nd",
+            },
+        ],
+    }
+
+    row = convert_case(case, 0, signature=signature, attr_names=[])
+
+    assert ast.literal_eval(row["tensor_view_shapes"]) == (
+        ((2, 3), (2, 3), (2, 3)), (1,),
+    )
+    assert ast.literal_eval(row["tensor_dtypes"]) == (
+        ("float16", "float16", "float16"), "int32",
+    )
+    assert ast.literal_eval(row["tensor_formats"]) == (
+        ("NZ", "NZ", "NZ"), "ND",
+    )
+    assert audit_case(case, signature, row, []) == []
 
 
 # ── load ─────────────────────────────────────────────────────────────────────
@@ -172,9 +257,48 @@ def test_executor_with_dummy_marker(tmp_path):
     assert errors and "dummy" in errors[0]
 
 
+def test_executor_with_end_golden_marker(tmp_path):
+    target = tmp_path / "cases_executor.py"
+    target.write_text(
+        "def __call__(self):\n    return out\n# END_CPU_GOLDEN\n",
+        encoding="utf-8",
+    )
+    errors = va.validate_executor(str(target))
+    assert errors and "END_CPU_GOLDEN" in errors[0]
+
+
 def test_executor_clean(tmp_path):
     target = tmp_path / "cases_executor.py"
     target.write_text("def __call__(self):\n    return out\n", encoding="utf-8")
+    assert va.validate_executor(str(target)) == []
+
+
+def test_executor_rejects_incomplete_generated_binding(tmp_path):
+    target = tmp_path / "cases_executor.py"
+    target.write_text(
+        "class Function:\n"
+        "    _REQUIRED_TENSOR_NAMES = ['x']\n"
+        "    def __call__(self, input_data):\n"
+        "        return input_data.args[0]\n",
+        encoding="utf-8",
+    )
+    errors = va.validate_executor(str(target))
+    assert any("通用入参绑定不完整" in error for error in errors)
+
+
+def test_executor_accepts_generated_kwargs_args_binding(tmp_path):
+    target = tmp_path / "cases_executor.py"
+    target.write_text(
+        "class Function:\n"
+        "    _REQUIRED_TENSOR_NAMES = ['x']\n"
+        "    def __call__(self, input_data):\n"
+        "        kwargs = getattr(input_data, \"kwargs\", None) or {}\n"
+        "        args = getattr(input_data, \"args\", None) or []\n"
+        "        if not kwargs and not args:\n"
+        "            raise TypeError('missing required tensor inputs')\n"
+        "        return kwargs.get('x', args[0] if args else None)\n",
+        encoding="utf-8",
+    )
     assert va.validate_executor(str(target)) == []
 
 

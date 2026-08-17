@@ -432,7 +432,37 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 1. **跨参数约束优先**：涉及 ≥2 个参数的约束**必须**进入 `constraints_in_parameters`，不要只在 `inputs`/`outputs` 中备注。
 2. **单参数约束复写**：若约束在 `allowed_range_value` 中已有表达，仍可在 `constraints_in_parameters` 中**附加一条带 `expr` 的形式化版本**（不视为冗余，而是机器可判定性的增强）。
 3. **单参数 shape 约束**：若已在 `dimensions` 中表达（如 `[2,3]`），可省略重复。
-4. **存在性约束**必须用完整布尔表达式（如 `(scale is None) == (zeroPoint is None)`），不允许退化为"可选/必选"自然语言。
+4. **存在性约束**必须用完整、可求解的布尔表达式，不允许退化为“可选/必选”自然语言。
+   当前生成链路中，凡等价关系任一侧含 `is None` / `is not None`，**禁止**写成
+   `(A) == (B)`。两个 Optional 参数共存时，当前生成链路使用 `if/else` 表达完整两态；
+   例如 `scale` 与 `zeroPoint` 必须共存时生成：
+
+   ```text
+   (zeroPoint is None) if (scale is None) else (zeroPoint is not None)
+   ```
+
+   不要把两个 Optional 的共存关系写成 OR-of-ANDs；当前缺参预处理在混合 presence
+   组合上可能把“两个分支均为 False”错误清空。presence 与**必选 Tensor** rank 双向
+   绑定也使用 `if/else`，避免求解器把分支内的“presence and 属性”改写成蕴含后令
+   整个 OR 空泛为 True。例如“P 为空时 T 为 2D，P 存在时 T 为 3D”生成：
+
+   ```text
+   (len(T.shape) == 2) if (P is None) else (len(T.shape) == 3)
+   ```
+
+   上式只适用于 `T` 是必选参数、在两个分支都存在的情况。若 `T` 也可缺席，必须把
+   `T is None` / `T is not None` 纳入对应分支，禁止在 `T is None` 分支访问 `T.shape`。
+   若原文只给出单向规则（例如仅写“P 为空时 T 为 2D”），只生成
+   `P is not None or len(T.shape) == 2`，不得臆造“P 存在时 T 为 3D”的反向分支。
+
+   还要避免把“必须存在/缺席”与 dtype、shape、value 条件放进同一个 `and`，例如
+   `P is not None and P.range_value == 1` 在当前求解器中会被解释为
+   `P is not None -> P.range_value == 1`，并不会强制 P 存在。需要同时强制 presence 时，
+   拆成 `P is not None` 与 `P is None or P.range_value == 1` 两条约束。
+
+   **不得**只保留 `P is None and len(T.shape) == 2`，否则会错误删除合法的 P 存在
+   分支。只有所选场景已明确固定 P 必须缺席时，才可在该场景的条件分支内直接合取
+   `P is None` 与 rank 条件。
 5. **禁止**把"算子功能说明"或"参数描述"塞入 `constraints_in_parameters`。
 6. **保护值语义**：参数名为 `epsilon`/`eps`，且功能描述明确称其为"除0保护值"、
    "分母保护值"或数值稳定项时，应推导严格正值约束。若另有上界说明，合并成链式
@@ -521,6 +551,20 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 12. **MatMul Reduce 维度相等必须落库**：当文档写
     "mat2 的 Reduce 维度需要与 self 的 Reduce 维度大小相等"、"self 的 last dim 与
     mat2 的 penultimate dim 相同" 等语义时，必须按实际布局落为 `shape_value_dependency`。
+    文档即使没有另写“Reduce 维度相等”，只要参数 shape 表使用同名符号明确给出轴语义，
+    也必须建立真实 Tensor 轴关系。例如 `x=[M,K1]`、`weight1=[K1,N1]`、
+    `weight2=[K2,N2]`、`y=[M,N2]` 至少产出：
+
+    ```text
+    x.shape[-1] == weight1.shape[-2]
+    x.shape[:-1] == y.shape[:-1]
+    weight2.shape[-1] == y.shape[-1]
+    ```
+
+    若正文另有 `K1=N2`、`N1=K2` 或 `N1=2*K2`，还要把它们绑定到对应真实轴；不得只
+    生成 weight 间关系而遗漏 `x` 与第一个 weight 的 Reduce 轴。优先直接表达 Tensor
+    轴等式；只有该符号还参与外部参数计算或无法用真实轴直接表达时，才登记隐式
+    `dimension_variable`。
 13. **派生值可求解约束必须落库**：当 `knowledge/aclnn/features/format_cast.md` §4.6.7 适用（存在派生子接口）且
     文档存在从子接口入参到派生输出 `D` 取值的**确定映射**（`dtype_support_description` /
     `format_support_description` 或正文 combo 表）时，必须在 `constraints_in_parameters`
@@ -631,6 +675,8 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 | 文档引用 `互推导关系.md` 或写"数据类型推导规则" | 按 `knowledge/aclnn/features/broadcast.md` §A 的推导表生成 `type_dependency`；输出若要求与推导后 dtype 一致，必须绑定输出 dtype；推导结果不在输出 dtype 允许集合内的输入组合必须排除 |
 | 文档引用 `broadcast关系.md` 或写"满足 broadcast 关系" | 按 `knowledge/aclnn/features/broadcast.md` §B 的广播规则生成 `shape_broadcast`；若输出轴由 broadcast 推导得到，还要生成输出轴等于 broadcast 结果的 `shape_value_dependency` |
 | MatMul 文档写"Reduce 维度需要相等" | 生成 `shape_value_dependency` 绑定真实 Reduce 轴；若存在转置/非转置布局，必须按对应 bool 门控分支；不得只写 `ceil(k,k0)=k1` 而允许 NPU 逻辑 Reduce 维度不等 |
+| 多个参数 shape 表复用同名符号，如 `x=[M,K1]`、`weight1=[K1,N1]`、`weight2=[K2,N2]`、`y=[M,N2]` | 将每次出现映射到真实 Tensor 轴并生成 `shape_value_dependency`；至少绑定首个 MatMul Reduce 轴和输出前导轴。不得因正文未重复写“相等”而把同名轴独立随机生成 |
+| 场景指令选择 non-quant/quant/pseudo-quant，文档规定其他场景参数不得输入 | 将场景选择落为完整的可执行约束；被排除场景的全部专属 Optional 参数必须**逐参数**生成 `expr_type="presence_dependency"`、`expr="<param> is None"`、`relation_params=["<param>"]` 的条目，`src_text` 摘录文档中的禁止输入依据。不能只在 `description` / `src_text` 中备注，也不能通过省略 `presence_dependency` 期待参数自动缺席；无 presence 约束的 Optional 参数仍可能被生成器随机置为存在。仅“未选择参数”不能作为强制缺席依据：未选择参数继续按文档和已选场景适配，只有已选场景或文档明确禁止时才生成 `<param> is None` |
 | 文档写"仅 Atlas A3 支持 BF16" | 在对应平台的 `dtype.value` 中体现差异，`src_text` 摘录原文 |
 | 文档给出"确定性计算：默认确定性" | `deterministic_computing["平台"].value = "true"`，`src_text` 摘录该句 |
 | 文档给出"确定性计算：默认非确定性" | `deterministic_computing["平台"].value = "false"`，`src_text` 摘录该句 |
@@ -649,7 +695,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 | 文档写"支持配置空或者[-2,-1]"（aclIntArray） | `allowed_range_value.value=[null, [-2, -1]]`，`type=enum`；"空"表示未传值，不得写成字符串 |
 | 文档写"仅 Atlas A2 支持 BF16" | 在对应平台的 `dtype.value` 中体现差异，`src_text` 摘录原文 |
 | 文档写"shape 为 [E, N1] / [N1]（per-channel / per-tensor）" | `dimensions.value=[1, 3]`（HTML 多变体取区间），shape 选择逻辑走 `shape_choice` / `shape_value_dependency` 约束 |
-| 文档写"x 和 y 必须共存，要么都存在要么都不存在" | `expr_type=presence_dependency`，`expr=(x is None) == (y is None)` |
+| 文档写"x 和 y 必须共存，要么都存在要么都不存在" | 生成一条 `presence_dependency`：`(y is None) if (x is None) else (y is not None)`。禁止写布尔 `==`；两个 Optional 共存也不使用 OR-of-ANDs，避免混合 presence 在当前缺参预处理中空泛通过 |
 | 文档写"actType 取值为 0 到 5" | `allowed_range_value.value=[[0, 5]]`，`type=range`；可附加 `self_value_range`：`0 <= actType.range_value <= 5` 增强机器可判定性 |
 | 文档把 epsilon/eps 描述为"除0保护值"，并建议"≤1e-4" | `allowed_range_value.value=[]`；增加 `value_dependency`：`0 < epsilon.range_value <= 1e-4`，`src_text` 同时摘录两句 |
 | **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"** | 按 `knowledge/aclnn/features/nz_matmul.md` §4.6.5 全流程处理：①`mat2.dimensions.value=[5,5]`；②`mat2.allowed_range_value.value=[]`（块尺寸是 shape 约束，不入元素取值字段）；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
@@ -950,6 +996,16 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     的构造行为把可选参数提升为必选。若 `[null]` 仅因生成能力不足而设置，必须位于精确
     operator/feature 知识的 `TEMP_CAPABILITY_GUARD`，并包含解除条件；base 和文档合法域
     仍保持参数可选。能力恢复后必须删除护栏并补跑 present/absent 两分支回归。
+
+37. **场景选择与 Optional 缺席落地自检**：按以下三态逐参数检查场景指令：
+    a. 用户明确选择的参数，按选择值 `fix` 或按选择子集 `expand`；
+    b. 用户未明确选择的参数，继续根据算子文档和已选场景提取、适配，不能把
+       `param_modes` 缺键解释为删除 presence 或自动缺席；
+    c. 已选场景或文档明确禁止的 Optional 参数 `P`，必须在每个支持平台生成独立的
+       `presence_dependency` 条目，`expr="P is None"`、`relation_params=["P"]`，并以
+       禁止输入原文作为 `src_text`。不得只写自然语言备注，不得依赖“未产出 presence
+       约束”隐式屏蔽。多场景同时保留时使用场景条件门控；已收窄到单一场景时可化简为
+       无条件 `P is None`。
 
 ## 7. 调用模板
 
