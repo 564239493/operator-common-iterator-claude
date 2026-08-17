@@ -801,6 +801,16 @@ _EXECUTOR_DUMMY_MARKERS = (
     "_dummy_output",
     "# [FALLBACK]",
     "# TODO: CPU_GOLDEN",
+    "# END_CPU_GOLDEN",
+)
+
+# 通用模板生成的 CPU 类带有该字段。CPU golden skill 只允许替换 TODO 块，
+# 不允许覆盖模板提供的 kwargs/args 双通道绑定和必填 tensor 诊断。
+_EXECUTOR_BINDING_MARKER = "_REQUIRED_TENSOR_NAMES"
+_EXECUTOR_BINDING_SNIPPETS = (
+    'getattr(input_data, "kwargs"',
+    'getattr(input_data, "args"',
+    "missing required tensor inputs",
 )
 
 
@@ -820,6 +830,18 @@ def validate_executor(path: str) -> list[str]:
             + ", ".join(hits)
             + " — 需先跑 atc-cpu-golden-derivation skill 替换后再执行 real"
         )
+    if _EXECUTOR_BINDING_MARKER in source:
+        missing_binding = [
+            snippet for snippet in _EXECUTOR_BINDING_SNIPPETS
+            if snippet not in source
+        ]
+        if missing_binding:
+            errors.append(
+                "CPU golden 通用入参绑定不完整: "
+                + ", ".join(missing_binding)
+                + " — 推导时只能替换 CPU_GOLDEN 标记之间的占位语句，"
+                "必须保留 kwargs/args 双通道绑定与必填 tensor 诊断"
+            )
     try:
         ast.parse(source)
     except SyntaxError as exc:

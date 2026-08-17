@@ -656,6 +656,17 @@ async def _downlaod_fusion_logs(
     except Exception as e:
         logger.warning("[fusion log] failed to download %s for phase %s: %s", remote_log_path, phase_name, e)
 
+def _executor_validation_errors(executor_files: list[Path]) -> list[str]:
+    """Return upload-blocking errors for generated executor files."""
+    from scripts.validate_artifacts import validate_executor
+
+    return [
+        f"{executor_path.name}: {error}"
+        for executor_path in executor_files
+        for error in validate_executor(str(executor_path))
+    ]
+
+
 # ── Orchestrator ───────────────────────────────────────────────────────────
 
 
@@ -866,11 +877,10 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
     )
 
     # ── 2. Locate generate-generated executor + expanded cases ───────
-    # real 模式不再重生成: ``generator.py`` 永远产出 dummy CPU golden
-    # (``_dummy_output`` / ``torch.ones``), 若在此重调 ``_generate_atk_executor``
-    # 会覆盖 Claude 推导 (``atc-cpu-golden-derivation`` skill) 已改写的
-    # ``cases_executor.py``, 推导白做. 生成职责已整体移到 ``--generate``;
-    # real 只复用 iter_dir 里已落盘的 executor + expanded.
+    # real 模式不再重生成: 通用模板先产出带 TODO 标记的 CPU golden 占位，
+    # 专属模板则直接产出完整实现。若在此重调 ``_generate_atk_executor``，会覆盖
+    # atc-cpu-golden-derivation skill 已改写的通用 executor。生成职责已整体移到
+    # ``--generate``；real 只复用 iter_dir 里已落盘的 executor + expanded.
     #
     # ``scoped_request.cases_path`` 经 ``_resolve_iter_cases_for_server``
     # 定到 ``iter_dir/cases.json`` (stem="cases"), 与 generate 一致, 因此
@@ -902,6 +912,21 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         "executor_files": executor_files,
         "expanded_cases": expanded,
     }
+
+    # Agent 流程之外（人工 CLI、恢复执行、第三方调度）也可能直接进入 real。
+    # 因此必须在 runner 内再次执行门禁，不能只依赖提示词要求。专属模板没有
+    # TODO 标记，会通过语法检查；通用模板必须完成 golden 推导并保留稳健绑定。
+    executor_errors = _executor_validation_errors(executor_files)
+    if executor_errors:
+        result.status = "error"
+        result.error_message = (
+            "real 模式执行前 executor 校验失败: "
+            + "; ".join(executor_errors)
+        )
+        result.duration = time.monotonic() - overall_start
+        logger.error("execute_real: %s", result.error_message)
+        _cleanup_log_handler(log_handler)
+        return result
     logger.info(
         "execute_real: reuse generate executor=%s expanded=%s (no regeneration)",
         executor_files[0], expanded,
@@ -1206,6 +1231,13 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
             f"(iter_dir={generator_work_dir})"
         )
     cases_executor_local = executor_files[0]
+
+    executor_errors = _executor_validation_errors(executor_files)
+    if executor_errors:
+        return _bail(
+            "fusion real 模式执行前 executor 校验失败: "
+            + "; ".join(executor_errors)
+        )
 
     # ── 2. Connect + upload ──────────────────────────────────────────
     try:
