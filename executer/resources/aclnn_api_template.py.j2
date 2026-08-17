@@ -236,16 +236,18 @@ class {{ class_name }}(AclnnBaseApi):
                 if data_name not in param_list:
                     continue
                 for config_item in config:
-                    if config_item.type == "attrs" or config_item.type == "attr_tuple":
-                        range_val = config_item.range_values[0] if isinstance(config_item.range_values, list) else config_item.range_values
-                        if range_val is None:
-                            AclIntArrayPtr = ctypes.POINTER(AclIntArray)
-                            null_void_ptr = ctypes.c_void_p(None)
-                            null_array_ptr = ctypes.cast(null_void_ptr, AclIntArrayPtr)
-                            input_tmp[data_name] = null_array_ptr
-                            return
-                        data.append(self.get_ctype(config_item.dtype)(range_val))
-                        input_tmp[data_name] = nnopbase.create_x_list(data)
+                      if config_item.type == "attrs" or config_item.type == "attr_tuple":
+                          range_val = config_item.range_values
+                          if isinstance(range_val, list):
+                              range_val = range_val[0] if range_val else None
+                          if range_val is None:
+                              AclIntArrayPtr = ctypes.POINTER(AclIntArray)
+                              null_void_ptr = ctypes.c_void_p(None)
+                              null_array_ptr = ctypes.cast(null_void_ptr, AclIntArrayPtr)
+                              input_tmp[data_name] = null_array_ptr
+                              break
+                          data.append(self.get_ctype(config_item.dtype)(range_val))
+                          input_tmp[data_name] = nnopbase.create_x_list(data)
 
     def handle_special_param(self, operator_name, input_data):
 
@@ -510,6 +512,10 @@ class {{ class_name }}(AclnnBaseApi):
         PYTYPE_TO_CTYPE = {
             "float": ctypes.c_float,
             "float32": ctypes.c_float,
+            "float64": ctypes.c_double,
+            "fp": ctypes.c_float,
+            "fp32": ctypes.c_float,
+            "fp64": ctypes.c_double,
             "double": ctypes.c_double,
             "int": ctypes.c_int64,
             "int8_t": ctypes.c_int8,

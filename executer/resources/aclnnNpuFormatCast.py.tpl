@@ -93,6 +93,10 @@ class MethodNpuFormatCast(BaseApi):
         PYTYPE_TO_CTYPE = {
             "float": ctypes.c_float,
             "float32": ctypes.c_float,
+            "float64": ctypes.c_double,
+            "fp": ctypes.c_float,
+            "fp32": ctypes.c_float,
+            "fp64": ctypes.c_double,
             "double": ctypes.c_double,
             "int": ctypes.c_int64,
             "int8_t": ctypes.c_int8,
@@ -760,6 +764,10 @@ class AclnnNpuFormatCast(AclnnBaseApi):
         PYTYPE_TO_CTYPE = {
             "float": ctypes.c_float,
             "float32": ctypes.c_float,
+            "float64": ctypes.c_double,
+            "fp": ctypes.c_float,
+            "fp32": ctypes.c_float,
+            "fp64": ctypes.c_double,
             "double": ctypes.c_double,
             "int": ctypes.c_int64,
             "int8_t": ctypes.c_int8,
