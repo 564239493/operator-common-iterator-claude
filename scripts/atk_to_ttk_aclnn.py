@@ -455,7 +455,12 @@ def convert_case(
                 shapes_parts.append("None")
             dtypes_parts.append(repr(tuple(dtype_ttk for _ in range(count))))
             formats_parts.append(repr(tuple(format_ttk for _ in range(count))))
-            data_ranges.append((None, None))
+            # TTK ACLNN 对 None 槽无差别填 (-2,2),不按 dtype/role 挑默认,
+            # 会退化 int 权重并丢弃 ATK 写死的 range_values;按顶层参数解析
+            # 真实范围(标量→(v,v)、[lo,hi]→(lo,hi)、clamp 到 dtype 界)。
+            # 一个 (lo,hi) 应用于该 TensorList 的全部子张量,与 TTK 的
+            # per-slot 粒度一致(absent 可选项在上方早退分支已处理为 None)。
+            data_ranges.append(_tensor_data_range(item))
         else:
             shapes_parts.append(_format_single_tensor_shape(shape))
             dtypes_parts.append(f"'{dtype_ttk}'")
