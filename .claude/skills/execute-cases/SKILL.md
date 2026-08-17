@@ -25,12 +25,15 @@ python scripts/execute_cases.py --generate \
   --server-config servers.json --run-id <run-id>
 ```
 
-产出 `<iter>/cases_executor.py`（含 dummy `# TODO: CPU_GOLDEN` 块）与
-`<iter>/cases_expanded.json`。不连 SSH。
+产出 `<iter>/cases_executor.py` 与 `<iter>/cases_expanded.json`。通用模板含 dummy
+`# TODO: CPU_GOLDEN` 块；`generator.py::_SPECIAL_TEMPLATES` 中的算子直接生成完整实现。
+不连 SSH。
 
 ### 2. CPU golden 推导（atc-cpu-golden-derivation skill）
 
-对 `<iter>/cases_executor.py` 调用 skill，doc 用 `inputs/<doc>.md` 快照。随后自检：
+若 executor 含 `# TODO: CPU_GOLDEN`，对其调用 skill，替换包含起止标记在内的整个
+CPU_GOLDEN 占位块并保留块外绑定逻辑；doc 使用 `inputs/<doc>.md` 快照。若不含标记，必须确认算子属于
+`_SPECIAL_TEMPLATES`，跳过推导；非专属模板缺少标记视为产物损坏。随后统一自检：
 
 ```text
 # 使用 Grep 工具确认 _dummy_output|FALLBACK|TODO: CPU_GOLDEN 无命中
@@ -125,7 +128,8 @@ fusion 的 `cases_executor.py` 走专属 `.tpl`，无 `# TODO: CPU_GOLDEN` 块�
 ### 2. 跳过 CPU golden 推导
 
 fusion `.tpl` 已是真实实现，`atc-cpu-golden-derivation` skill 天然无操作，不执行
-额外的占位自检。
+golden 推导；仍执行 `validate_artifacts.py executor`。runner 会在连接和上传前重复执行
+该门禁，失败时直接终止。
 
 ### 3. real-run（4 步流程）
 

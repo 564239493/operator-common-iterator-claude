@@ -243,13 +243,22 @@ relation_params: ["biasOptional", "x"]
 
 ##### M. A2/A8W8、groupType=0 单 TensorList 场景补充（精确场景）
 
-> 仅用于 scene 已同时固定为 Atlas A2/A8W8、`groupType=0`、`groupListType=0`，且
-> `x`、`weight`、`out` 均为单 TensorList 的场景。不得推广到非量化、伪量化、
-> `groupType=2`、`groupListType=1/2` 或多 TensorList 场景。
+> 仅用于 scene 已同时固定为 Atlas A2/A8W8、`groupType=0`，且 `x`、`weight`、
+> `out` 均为单 TensorList 的场景；覆盖文档允许的 `groupListType=0/1/2`。不得推广到
+> 非量化、伪量化、`groupType=2` 或多 TensorList 场景。
+
+**M.0 3-D A8W8 weight cases 布局（不得套用 K.2 的 2-D 规则）**
+
+文档数学布局及运行 `aclnnGroupedMatmulV5-20260814-090720-714289` case 5 的 K 维错误
+共同确认：`weight_transposed=False` 时 cases 已为 `[E,K,N]`，executor 应保持连续且
+不得再次转置；`weight_transposed=True` 时 cases 为 `[E,N,K]`，executor 必须执行一次
+`transpose(-1,-2)`，向 ACLNN 传入数学布局 `[E,K,N]`。不得用“双重转置”保持原 shape，
+否则 K 维仍按 N 解释。K.2 的 false `(N,K)->(K,N)` 仅适用于其明确限定的
+`groupType=-1 + 2-D FP32 ND` 场景。
 
 **M.1 biasOptional 与 perTokenScaleOptional 的完整 rank/shape**
 
-该场景中 `weight` 的单个 tensor 为 `[E,K,N]`，`out` 的单个 tensor 为 `[M,N]`。
+该场景中 weight 的归一化数学布局为 `[E,K,N]`，`out` 的单个 tensor 为 `[M,N]`。
 `biasOptional` 存在时不是一维 `[N]`，而是二维 `[E,N]`；
 `perTokenScaleOptional` 存在时必须是一维 `[M]`。可选参数缺席仍是合法分支，不得把
 本轮 present 样本沉淀成强制必传：
@@ -259,10 +268,6 @@ expr_type: rank_constraint
 expr: biasOptional is None or len(biasOptional.shape) == 2
 relation_params: ["biasOptional"]
 src_text: "A2/A8W8, groupType=0, single TensorList: biasOptional shape=[E,N]"
-
-expr_type: shape_equality
-expr: biasOptional is None or biasOptional.shape[0] == weight.shape[0]
-relation_params: ["biasOptional", "weight"]
 
 expr_type: shape_equality
 expr: biasOptional is None or biasOptional.shape[1] == out.shape[1]
@@ -276,22 +281,63 @@ src_text: "A2/A8W8, groupType=0: perTokenScaleOptional shape=[M]"
 expr_type: shape_equality
 expr: perTokenScaleOptional is None or perTokenScaleOptional.shape[0] == x.shape[0]
 relation_params: ["perTokenScaleOptional", "x"]
+
+expr_type: rank_constraint
+expr: scaleOptional is None or len(scaleOptional.shape) == 2
+relation_params: ["scaleOptional"]
+src_text: "A2/A8W8, groupType=0, single TensorList: scaleOptional 必须为二维"
 ```
 
-**M.2 groupListType=0 的内容语义不转换为普通 range_value 约束**
+**TEMP_CAPABILITY_GUARD: TENSOR_LIST_ELEMENT_SHAPE_INDEX_UNSUPPORTED**：
+`biasOptional.shape[0] == E` 的 `E` 来自单个 weight Tensor 的
+`weight[0].shape[0]`，不是 TensorList 外层长度 `weight.shape[0]`。当前生成器尚不能稳定
+求解 TensorList 元素的深层 shape 索引，因此本节不得输出
+`biasOptional.shape[0] == weight.shape[0]` 作为替代；该错误表达会把 E 绑定成 TensorList
+长度 1。保留文档原始 shape 语义并标记为生成器能力缺口，待支持
+`weight[0].shape[0]` 后再恢复可执行 `shape_equality`。
 
-文档约束是：`groupListOptional` 为长度 E 的非负、单调非递减累计边界，末项不大于
-`M=x.shape[0]`。这是 tensor **内容序列关系**，不能用当前生成器的单个离散
-`range_values` 候选表达；因此不得提炼成“每个元素从若干标量 enum 中任选”的 Z3
-约束。执行器在上述精确场景中采用均匀分组并令末项等于 M，是一个合法、确定性的
-测试数据物化策略，不是把 API 文档收紧为“末项必须等于 M”。shape 侧仍应保留：
+**M.2 groupListType 0/1/2 的 shape 与内容职责分离**
+
+三种类型均包含 tensor **内容序列关系**，不能用当前生成器的单个离散
+`range_values` 候选表达，也不得提炼成“每个元素从若干标量 enum 中任选”的 Z3
+约束：
+
+- type0：长度 E 的非负、单调非递减累计边界，末项不大于 M；
+- type1：长度 E 的非负分组大小，各元素之和不大于 M；
+- type2：shape `[E,2]`，每行为 `[groupIdx,groupSize]`，非零组前置，第二列之和不大于 M。
+
+shape/rank 是约束层职责，必须完整表达，尤其不能只约束 type2 为“二维”而漏掉固定的
+第二维 `2`：
 
 ```text
-expr_type: rank_constraint
-expr: len(groupListOptional.shape) == 1
+expr_type: presence_dependency
+expr: groupListOptional is not None
 relation_params: ["groupListOptional"]
+src_text: "A2/A8W8, groupType=0, single TensorList: groupListOptional 为必传输入"
 
-expr_type: shape_equality
-expr: groupListOptional.shape[0] == weight.shape[0]
-relation_params: ["groupListOptional", "weight"]
+expr_type: cross_param_constraint
+expr: groupListOptional is None or groupListType.range_value == 2 or len(groupListOptional.shape) == 1
+relation_params: ["groupListOptional", "groupListType"]
+src_text: "groupListType=0/1: groupListOptional shape=[E]"
+
+expr_type: cross_param_constraint
+expr: groupListOptional is None or not(groupListType.range_value == 2) or (len(groupListOptional.shape) == 2 and groupListOptional.shape[1] == 2)
+relation_params: ["groupListOptional", "groupListType"]
+src_text: "groupListType=2: groupListOptional shape=[E,2]，每行为[组索引,组大小]"
+
 ```
+
+`groupListOptional.shape[0] == E` 同样必须绑定到 `weight[0].shape[0]`，不能绑定
+TensorList 外层长度 `weight.shape[0]`。在深层 shape 索引能力补齐前，不生成这条错误的
+可执行等式；executor 仍以运行时 `weight_tensor.shape[0]` 校验 groupList shape，明确报错
+而不修改输入 shape。
+
+解除条件：生成器能够解析并求解 `TensorList[0].shape[0]`，随后恢复 bias/groupList 的
+两条 E 轴等式，并分别回归 E=1、E>1、Optional present/absent 与 groupListType=0/1/2。
+能力修复任务应检索本标识并整体复核，不能只删除说明文本。
+
+执行器只负责在 shape 已合法时物化内容：将 M 尽量均匀分配到 E 组，type0 生成累计和，
+type1 生成每组大小，type2 生成 `[groupIdx,groupSize]`。该策略令覆盖范围末端/总和等于
+M，是合法、确定性的测试构造，不是把文档的“不大于 M”收紧为永久 API 约束。
+当 E 大于 M 时，非零组排在前面、零大小组排在末尾。executor 遇到错误 shape 必须明确
+报错，不得通过 reshape、截断或补齐掩盖约束提取问题。

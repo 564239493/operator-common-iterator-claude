@@ -545,6 +545,10 @@ def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str) -
 
     optional_names = {inp.get("name") for inp in _collect_all_inputs(cases)
                       if not inp.get("required", True)}
+    required_tensor_names = [
+        p["name"] for p in input_tensor_params
+        if p["name"] not in optional_names and "Optional" not in p["name"]
+    ]
 
     # 参数注释行
     _kind_labels = {"tensor": "input tensor", "scalar": "scalar", "scalarList": "scalar list",
@@ -596,6 +600,7 @@ def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str) -
         op_name=op_name,
         cpu_classes=cpu_classes,
         input_sig_names=input_sig_names,
+        required_tensor_names=required_tensor_names,
         param_comments=param_comments,
         tensor_lines=tensor_lines,
         scalar_lines=scalar_lines,

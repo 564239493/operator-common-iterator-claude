@@ -117,6 +117,8 @@ _CREATE_NEW_PROCESS_GROUP = 0x00000200
 # gets the cause without reading the verbose file itself.
 _ERROR_MARKERS = (
     "Traceback (most recent call last)",
+    "error: unrecognized arguments:",
+    "error: the following arguments are required:",
     "ZERO_CASES_GENERATED",
     "HS_SEMANTIC_GATE_FAILED",
     "HS_SCENARIO_GENERATION_INCOMPLETE",
@@ -173,6 +175,40 @@ def _resolve_output_dir(argv: list[str], explicit: str | None) -> Path:
     if not p.is_absolute():
         p = (ROOT / p).resolve()
     return p.parent
+
+
+def _normalize_generate_argv(argv: list[str]) -> tuple[list[str], bool]:
+    """Accept an accidentally repeated ``python generate_cases.py`` prefix.
+
+    ``launch`` supplies both entries itself, but copying a direct invocation
+    after ``--`` is an easy mistake.  Normalize that exact legacy form while
+    still rejecting unrelated positional arguments.
+    """
+    args = list(argv)
+
+    def is_python(token: str) -> bool:
+        return Path(token).name.lower() in {
+            "python", "python.exe", "python3", "python3.exe",
+        }
+
+    def is_generate_script(token: str) -> bool:
+        return Path(token).name.lower() == GENERATE_CASES.name.lower()
+
+    normalized = False
+    if len(args) >= 2 and is_python(args[0]) and is_generate_script(args[1]):
+        args = args[2:]
+        normalized = True
+    elif args and is_generate_script(args[0]):
+        args = args[1:]
+        normalized = True
+
+    if args and not args[0].startswith("--"):
+        raise SystemExit(
+            "generation_progress launch: everything after '--' must be "
+            "generate_cases.py options beginning with --constraints; do not "
+            "pass an unrelated command or positional argument"
+        )
+    return args, normalized
 
 
 def _progress_path(output_dir: Path) -> Path:
@@ -427,6 +463,12 @@ def cmd_launch(
     requested = int(requested_raw) if requested_raw and requested_raw.isdigit() else None
 
     cmd = [sys.executable, str(GENERATE_CASES), *passthrough]
+    child_env = os.environ.copy()
+    # stdout/stderr are redirected to a binary file.  Without an explicit
+    # encoding, Windows Python selects the active ANSI code page (typically
+    # CP936), while all readers treat generation_console.log as UTF-8.
+    child_env["PYTHONUTF8"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
     # Detach the child from this launcher's job/session so a harness session/job
     # kill cannot reach it. stdin=DEVNULL so the child never blocks on a tty
     # owned by the (soon-dead) launcher. close_fds keeps no inherited handles.
@@ -436,6 +478,7 @@ def cmd_launch(
         "stdout": None,  # set below
         "stderr": subprocess.STDOUT,
         "close_fds": True,
+        "env": child_env,
     }
     if _IS_WINDOWS:
         creationflags = _CREATE_BREAKAWAY_FROM_JOB | _CREATE_NEW_PROCESS_GROUP
@@ -595,7 +638,7 @@ def _parse_launch(argv: list[str]) -> tuple[Path, Path, list[str]]:
         )
     sep = argv.index("--")
     own = argv[:sep]
-    passthrough = argv[sep + 1:]
+    passthrough, _ = _normalize_generate_argv(argv[sep + 1:])
     parser = argparse.ArgumentParser(prog="generation_progress launch", add_help=False)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--console-log", default=None)

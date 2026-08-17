@@ -36,6 +36,14 @@ if str(ROOT) not in sys.path:
 logger = logging.getLogger("generate_cases")
 
 
+def _configure_utf8_stdio() -> None:
+    """Keep redirected console logs UTF-8 on every host and entry path."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     """Replace a generated artifact only after its complete content is ready."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1053,6 +1061,7 @@ def _record_generation_failure(argv: list[str], exc: BaseException) -> None:
 
 
 def main() -> int:
+    _configure_utf8_stdio()
     try:
         return _main()
     except BaseException as exc:

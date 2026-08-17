@@ -28,13 +28,15 @@ dummy executor。
    `python scripts/execute_cases.py --generate --cases <iter>/<any-generated-cases-json> \
      --output <iter>/generate_result.json --doc <inputs>/<doc>.md --operator <op> \
      --server-config servers.json --run-id <run-id>`
-   产出 `<iter>/cases_executor.py`（CPU golden 段为 dummy `_dummy_output`）与
-   `<iter>/cases_expanded.json`。
+   产出 `<iter>/cases_executor.py` 与 `<iter>/cases_expanded.json`。通用模板含
+   `# TODO: CPU_GOLDEN` 占位；`generator.py::_SPECIAL_TEMPLATES` 中的算子为完整实现。
 
 2. **CPU golden 推导（skill）**
-   对 `<iter>/cases_executor.py` 调用 `atc-cpu-golden-derivation` skill，算子文档用
-   `inputs/<doc>.md` 项目内快照（不读项目外原文档）。skill 会把 `# TODO: CPU_GOLDEN …
-   # END_CPU_GOLDEN` 之间的 dummy 块替换为真实 `torch.*` 计算。
+   若 executor 含 `# TODO: CPU_GOLDEN`，调用 `atc-cpu-golden-derivation` skill，
+   算子文档用 `inputs/<doc>.md` 项目内快照。skill 替换包含起止标记在内的整个占位块，
+   但保留块外的通用入参绑定与诊断。
+   若不含标记，必须确认算子属于 `_SPECIAL_TEMPLATES`，跳过推导并直接进入自检；
+   非专属模板缺少标记视为生成产物损坏，不得执行。
 
 3. **自检（必须通过才进 real-run）**
    - `grep -E "_dummy_output|FALLBACK|TODO: CPU_GOLDEN" <iter>/cases_executor.py` 无命中；
@@ -89,7 +91,9 @@ HS 执行 E2E 并下载到 `ttk_artifacts/`；ACLNN 执行原生 ACLNN 模式并
    `<iter>/cases_executor.py` 无 `# TODO: CPU_GOLDEN` 块。
 
 2. **跳过 CPU golden 推导**：fusion `.tpl` 已是真实实现，`atc-cpu-golden-derivation`
-   skill 天然无操作（找不到标记即跳过）。不自检 dummy 标记。
+   skill 天然无操作。仍须运行
+   `python scripts/validate_artifacts.py executor <iter>/cases_executor.py`；runner 在连接和
+   上传前还会执行同一门禁，校验失败不得连接远端。
 
 3. **real-run（4 步流程）**：
    `python scripts/execute_cases.py --mode real --strategy fusion --num <case_count> \
