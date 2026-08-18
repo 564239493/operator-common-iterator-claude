@@ -52,10 +52,15 @@ def validate(root: Path) -> list[str]:
         for dependency in item.get("depends_on", []):
             if dependency not in modules:
                 errors.append(f"unknown dependency: {module_id} -> {dependency}")
-        if item["scope"] == "operator":
+        if item["scope"] in {"operator", "source_analysis"}:
             exact = [trigger for trigger in item.get("triggers", []) if trigger.get("kind") == "operator_name_eq"]
             if len(exact) != 1:
-                errors.append(f"operator module must have exactly one operator_name_eq trigger: {module_id}")
+                errors.append(
+                    f"{item['scope']} module must have exactly one "
+                    f"operator_name_eq trigger: {module_id}"
+                )
+        if item["scope"] == "source_analysis" and item.get("default_load"):
+            errors.append(f"source_analysis module must not default_load: {module_id}")
         positive_keys = {_trigger_key(t) for t in item.get("triggers", [])}
         for trigger in item.get("reject_on", []):
             kind = trigger.get("kind")

@@ -272,6 +272,14 @@ def main() -> int:
             "结构: op_host/<op>_def.cpp|_tiling*.cpp|op_api/aclnn_<op>.cpp|docs/*.md。"
         ),
     )
+    parser.add_argument(
+        "--source-analysis-knowledge",
+        action="store_true",
+        help=(
+            "显式启用源码分析约束知识。默认关闭；仅 ACLNN 自动装配提示词时生效，"
+            "并继续按算子名精准路由。"
+        ),
+    )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument(
@@ -375,6 +383,15 @@ def main() -> int:
         else (find_latest_hs_prompt() if is_hs else find_active_aclnn_prompt())
     )
     explicit_prompt = bool(args.prompt)
+    if args.source_analysis_knowledge and explicit_prompt:
+        parser.error(
+            "--source-analysis-knowledge 不能与 --prompt 同用；"
+            "显式 prompt 按合同原样复制，不追加任何知识模块。"
+        )
+    if args.source_analysis_knowledge and is_hs:
+        parser.error(
+            "--source-analysis-knowledge 当前仅支持 ACLNN 算子。"
+        )
     if prompt is None or not prompt.is_file():
         print(json.dumps(
             {
@@ -517,6 +534,7 @@ def main() -> int:
             prompt_snapshot,
             record_path=prompt_assembly_record,
             preanalysis_path=prompt_preanalysis,
+            source_analysis_knowledge=args.source_analysis_knowledge,
         )
 
     prompt_update_decisions.write_text(
@@ -532,6 +550,7 @@ def main() -> int:
         "current_prompt_source": str(prompt),
         "current_prompt": str(prompt_snapshot),
         "current_prompt_modules": loaded_modules,
+        "source_analysis_knowledge": args.source_analysis_knowledge,
         "prompt_preanalysis": str(prompt_preanalysis) if not explicit_prompt else "",
         "prompt_preanalysis_sha256": _file_sha256(prompt_preanalysis) if prompt_preanalysis.is_file() else "",
         "prompt_assembly_record": str(prompt_assembly_record) if not explicit_prompt else "",

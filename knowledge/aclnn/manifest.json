@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "family": "aclnn",
-  "policy": "v4_split_operator_name_eq_gated",
+  "policy": "v4_split_operator_name_eq_source_analysis_opt_in",
   "modules": [
     {"id":"official_basics","scope":"foundation","path":"foundation/official_basics.md","default_load":true,"priority":100},
     {"id":"dimensions","scope":"common","path":"common/dimensions.md","default_load":true,"priority":95},
@@ -24,6 +24,7 @@
     {"id":"sparse_mode","scope":"feature","path":"features/sparse_mode.md","priority":66},
     {"id":"transpose_shape","scope":"feature","path":"features/transpose_shape.md","priority":65},
     {"id":"acl_format_enum","scope":"reference","path":"reference/acl_format_enum.md","priority":50},
+    {"id":"source_analysis_grouped_matmul_v5","scope":"source_analysis","path":"source_analysis/grouped_matmul_v5.md","default_load":false,"priority":89},
     {"id":"grouped_matmul_v5","scope":"operator","path":"operators/grouped_matmul_v5.md","priority":85},
     {"id":"batch_matmul_weight_nz","scope":"operator","path":"operators/batch_matmul_weight_nz.md","priority":85},
     {"id":"ffn_v3","scope":"operator","path":"operators/ffn_v3.md","priority":85},

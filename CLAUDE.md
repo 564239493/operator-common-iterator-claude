@@ -92,6 +92,8 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python scripts/init_run.py --doc operator_docs/aclnnFoo.md --max-iterations 3
+# 源码分析约束知识默认关闭；仅 ACLNN 且按算子名精准命中后加载
+python scripts/init_run.py --doc operator_docs/aclnnGroupedMatmulV5.md --source-analysis-knowledge
 python scripts/validate_artifacts.py constraints runs/.../iter_001/constraints.json
 python scripts/validate_artifacts.py cases runs/.../iter_001/cases.json
 python scripts/validate_artifacts.py execution runs/.../iter_001/execution_result.json
