@@ -35,7 +35,10 @@ depends_on: [implicit_parameters]
    - **形式 B（unless 结构）**：`not(A) or B` —— 条件不满足时约束不生效
      - ✅ `not(quantization_type.range_value == "per-channel") or (bias.shape == [E, N1])`
      - ✅ `not(A and B) or C` 用于"两个条件同时成立才约束"的场景
-   - 等价关系（"A 当且仅当 B"）：`(A) == (B)`，如 `(scales2 is None) == (zeroPoints2 is None)`
+   - 等价关系若涉及 presence（任一侧含 `is None` / `is not None`），禁止使用布尔
+     `(A) == (B)`。两个 Optional 参数共存时使用 `if/else`：`(zeroPoints2 is None)
+     if (scales2 is None) else (zeroPoints2 is not None)`。presence 与必选 Tensor 的
+     rank 两态绑定也使用下方模式 3 的 `if/else`。
 4. **生成器**：必须用 `all()` / `any()` 包裹：
    - ✅ `all(v >= 1 for v in padding.range_value)`
    - ✅ `all(d > 0 for d in x.shape)`（不允许空 Tensor）
@@ -141,10 +144,32 @@ else True
 ### 模式 3：存在性依赖
 
 ```text
-# 互斥共存：(A is None) == (B is None)
+# 两个 Optional A/B 共存：使用 if/else，禁止布尔 == 和 OR-of-ANDs
+(B is None) if (A is None) else (B is not None)
+
+# P 缺席 ↔ T 为2D，且 P 存在 ↔ T 为3D
+(len(T.shape) == 2) if (P is None) else (len(T.shape) == 3)
+
 # 条件存在：(B is not None) if (A is not None) else True
 # 条件不存在：(B is None) if (A is not None) else True
 ```
+
+presence/rank 双向关系不得只保留 `P is None and len(T.shape) == 2`；必须在 `else`
+中保留 P 存在时的 rank=3 分支。仅当平台或场景已经明确排除 P 存在分支时，才可只
+使用缺席分支的合取。
+
+该模板假定 `T` 在两态中都存在；若 `T` 本身 Optional，分支中必须先约束 T 的
+presence，再访问 `T.shape`。若文档只陈述一个方向，应使用单向蕴含 `not(A) or B`，
+不得擅自补成双向合法组合。
+
+注意：presence 参与合法组合时统一优先使用 `if/else`。当前求解器会把同一 `and`
+中的纯 presence 守卫与属性条件解释成蕴含，所以把两个 presence/rank 分支写成
+OR-of-ANDs 会退化为两个蕴含的 OR，并可能恒为 True；两个 Optional 的 OR-of-ANDs
+还会在缺参预处理阶段错误清空 False 分支。
+
+若业务同时要求 Optional 参数存在且属性满足，不写 `P is not None and P.attr == v`；
+应拆成两条约束：`P is not None` 强制存在，`P is None or P.attr == v` 在存在时限制属性。
+“允许缺席，存在时限制属性”则只需要第二条。
 
 ### 模式 4：单参数自身约束
 
@@ -244,7 +269,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | `type_dependency` | dtype 依赖模式/取值/存在性/条件分支/合法组合（含互推导关系） | `optional is None or x.dtype == optional.dtype`；`(mode.range_value == "PA_NZ") or (x.dtype == y.dtype)`；互推导用合法 dtype 组合析取表达 |
 | `value_dependency` | 取值依赖/取值范围 | `BS.range_value % rankSize.range_value == 0` |
 | `format_equality` | 数据格式必须一致 | `x1.format == x2.format` |
-| `presence_dependency` | 共存规则（None/非None） | `(scale is None) == (zeroPoint is None)` |
+| `presence_dependency` | 两个 Optional 共存规则（None/非None） | `(zeroPoint is None) if (scale is None) else (zeroPoint is not None)` |
 | `derived_value` | 派生输出取值由子接口确定映射推导（须可求解，见 `knowledge/aclnn/features/format_cast.md` §4.6.7 模式 9） | `actualFormat.range_value == dstFormat.range_value`（恒等）；查找表用析取 |
 
 ### 单参数约束（扩展值，不在枚举中但实际广泛使用）

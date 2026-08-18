@@ -104,19 +104,23 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
     回来确定选中 (device,template) 对后再发起本轮。
   - 汇总答案写入 `selection.json`（**值级**形态）
     `{"device_types": [<...>], "selection": {<device>: {<template>: <tpl_value>}}}`
-    其中 `<tpl_value>` ∈ `null`（选项1/未填写，全展开）| `"fix_all_default"`（选项2）|
-    `{<param>: [<values>]}`（Other 任意格式，主协调器组装为该 dict：单值→fix、多值→expand 子集、未列参数→全展开）；
+    其中 `<tpl_value>` ∈ `null`（选项1/未填写，按文档和已选场景自动适配）| `"fix_all_default"`（选项2）|
+    `{<param>: [<values>]}`（Other 任意格式，主协调器组装为该 dict：单值→fix、多值→expand 子集、未列参数→按文档和已选场景自动适配）；
     缺模板键 = 该模板未选（Q2 未选）→ 跑
     `python scripts/render_scene_directive.py --scan <run-dir>/inputs/scene_scan.json --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
-    （校验设备/模板/param 名/值 ∈ scan、按 `param_modes` 三态解析每设备每参数的
-    展开/固定/缺键、写 `inputs/scene_directive.md`（含机读块
-    `<!-- scene: {device_types, param_modes} -->`，`param_modes[device][param]` ∈
-    `{"expand": [取值清单]}` 清单=用户子集或所选模板 values 并集（禁止回文档拉全集） | `{"fix": X}` 单值（用户单值输入或 values[0]） | 缺键 presence 丢）、
+    （校验设备/模板/param 名/值 ∈ scan、解析用户明确选择参数的 `param_modes`、写
+    `inputs/scene_directive.md`（含机读块
+    `<!-- scene: {device_types, selection, param_modes, selection_policy} -->`，其中
+    `selection` 保留逐设备选中的模板，使“保持自动”且 `param_modes` 为空时仍能机器判定场景，
+    `param_modes[device][param]` ∈ `{"expand": [用户明确选择的取值子集]}` |
+    `{"fix": X}`；缺键按文档和已选场景自动适配，已选场景禁止的 Optional 参数显式
+    生成 `param is None`）、
     回写 `run_state.scene`；非法选择 exit 2 阻断，提示用户重选，不静默回退）。
     EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`
     （设备类型为具体设备名，直接与文档 √ 行取交集，无"通用"展开）；按 `param_modes`
-    三态产 `allowed_range_value`（`expand` 用机读块取值清单、`fix` 单值、缺键 Optional 参数不产
-    `presence_dependency`）。该 `product_support` 随后驱动 `generate_cases.py` 逐平台
+    产 `allowed_range_value`（`expand` 用机读块取值清单、`fix` 单值、缺键按文档和已选
+    场景适配）。已选场景禁止的 Optional 参数必须产出 `param is None`。该
+    `product_support` 随后驱动 `generate_cases.py` 逐平台
     生成——**设备选择经约束提取驱动生成，不直接改生成逻辑**。
 EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入
 constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 directive，

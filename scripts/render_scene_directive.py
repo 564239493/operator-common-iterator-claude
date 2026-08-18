@@ -6,18 +6,18 @@ Scene model (three-level): 设备类型 → 量化模板 → 特性参数. The s
 ``scene_scan.json`` with nested ``devices[].templates[].feature_params[].params[]``;
 no ``通用`` wildcard group (``device_types`` come verbatim from the doc "产品支持
 情况" table). The orchestrator asks the user Q1 (devices) → Q2 (templates) → Q3
-(value-level config; "保持自动/未填写" = expand all of the template's params),
+(value-level config; "保持自动/未填写" = document-adaptive extraction),
 producing ``selection.json``:
 ``{device_types:[...], selection:{device:{template: None|"fix_all_default"|{param:[values]}}}}``.
 
-``_param_modes`` resolves that selection into per-device per-param three states:
-``{"expand": [values]}`` (candidate set = the user's value subset when given, else
-the order-preserving de-duplicated union of the param's ``values`` across the
-selected templates that expand it — NOT the doc full enum; the extractor must not
-fall back to the doc) | ``{"fix": X}`` (single value — either the user's single-value
-input or ``values[0]`` under ``"fix_all_default"``) | missing key (Optional param
-under a deselected template → no ``presence_dependency``, presence dropped). The
-directive carries these in a machine block ``<!-- scene: {device_types, param_modes} -->``
+``_param_modes`` resolves explicitly selected feature parameters into two states:
+``{"expand": [values]}`` (candidate set = the user's selected value subset) |
+``{"fix": X}`` (single value — either the user's single-value input or ``values[0]``
+under ``"fix_all_default"``). A missing key is not a third
+pruning state: the extractor continues from the operator document and adapts the
+parameter to the selected scene. If the selected scene forbids an Optional parameter,
+the extractor must emit ``param is None``. The directive carries this policy in a
+machine block ``<!-- scene: {device_types, selection, param_modes, selection_policy} -->``
 (the extractor reads only the directive, never the scan).
 
 Scope (decided by the orchestrator from ``--scene`` + ``has_scenarios``):
@@ -44,6 +44,11 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+SELECTION_POLICY = {
+    "selected_param": "fix_or_expand",
+    "unselected_param": "document_adaptive",
+    "forbidden_optional": "emit_is_none",
+}
 
 
 def _load_json(path: Path) -> Any:
@@ -103,22 +108,24 @@ def _resolve_selection(
 
     where ``<tpl_value>`` per selected (device, template) is one of:
 
-    - ``None`` / ``"全部"``      → preset 1: expand **all** of the template's
-      params at their full ``values`` (inherit doc, no pruning).
+    - ``None`` / ``"全部"``      → preset 1: keep every parameter automatic;
+      extract and adapt it from the document and selected scene.
     - ``"fix_all_default"``     → preset 2: fix **every** param to ``values[0]``
       (minimal coverage / smoke).
     - ``{param: [values]}``      → value-level (Other JSON): for each listed
       param, a single value → ``fix`` that value, multiple values → ``expand``
-      that subset; params **not listed** → expand all ``values`` (inherit doc).
+      that subset; params **not listed** remain automatic (document-adaptive).
       Listed values are validated to be ⊆ the param's scan ``values`` (type-aware
       so ``1`` does not match bool ``true``); invalid values are dropped with a
-      warning; an empty list is treated as "not listed" (expand all).
+      warning; an empty list is treated as "not listed" (automatic/document-adaptive).
 
     Returns ``(errors, warnings, sel_devices, selection_resolved)`` where
     ``selection_resolved = {device: {template: None | "fix_all_default" |
     {param: [values]}}}`` with ``"全部"`` normalized to ``None``. A template
     absent from ``selection[device]`` = deselected (Q2 not chosen) → its params'
-    presence is dropped (union semantics resolved in ``_param_modes``).
+    constraints continue to be extracted from the document and adapted to the
+    selected scenes (union semantics for explicitly selected values is resolved in
+    ``_param_modes``).
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -169,7 +176,7 @@ def _resolve_selection(
                 warnings.append(f"template {t!r} not in device {d!r} templates; ignored")
                 continue
             if feats in ("全部", "all") or feats is None:
-                dev_resolved[t] = None  # preset 1: expand all (inherit doc)
+                dev_resolved[t] = None  # preset 1: automatic/document-adaptive
             elif isinstance(feats, str) and feats == "fix_all_default":
                 dev_resolved[t] = "fix_all_default"  # preset 2: fix all to values[0]
             elif isinstance(feats, dict):
@@ -204,7 +211,7 @@ def _resolve_selection(
                             f"(template {t!r}, device {d!r}); dropped"
                         )
                     if not kept:
-                        # empty / all-invalid list → treat as unmentioned → expand all
+                        # empty / all-invalid list → treat as unmentioned → automatic
                         continue
                     subset[pname] = kept
                 dev_resolved[t] = subset if subset else None
@@ -230,21 +237,23 @@ def _param_modes(
 ) -> dict[str, dict]:
     """Resolve per-device per-param expand/fix decision (value-level, union semantics).
 
-    For each device, iterate its templates in scan order. The selection value for
-    each selected template decides how **each** of its params contributes:
+    For each device, iterate its templates in scan order. Only an explicit value
+    choice contributes a mode:
 
-    - ``None``              → expand: contribute **all** of the param's ``values``.
+    - ``None``              → automatic: contribute no explicit mode.
     - ``"fix_all_default"`` → fix: contribute ``values[0]``.
     - ``{param: [values]}`` → listed param: single value contributes ``fix`` that
       value, multiple values contribute ``expand`` of that subset; an **unlisted**
-      param contributes expand of all ``values`` (inherit doc).
+      param contributes no explicit mode and remains document-adaptive.
 
     Reconcile across selected templates with **expand wins over fix, expand = union**:
     if a param is expanded in any selected template it ends up expanded (union of all
     expand subsets across templates; fix-only templates add no value); only if a param
     is fix-only in every selected template does it end up fix (first-seen value). A
     param appearing ONLY in deselected templates is absent from
-    ``param_modes[device]`` → presence drop.
+    ``param_modes[device]``. Absence means document-adaptive extraction, not presence
+    removal; selected-scene prohibitions must become explicit ``param is None``
+    constraints.
     """
     devices_by_name = _devices_by_name(scan)
     out: dict[str, dict] = {}
@@ -275,7 +284,7 @@ def _param_modes(
                         continue
                     # determine this template's contribution for pname
                     if sel is None:
-                        contrib_mode, contrib_vals = "expand", list(vals)
+                        continue
                     elif isinstance(sel, str) and sel == "fix_all_default":
                         contrib_mode, contrib_vals = "fix", vals[0]
                     elif isinstance(sel, dict):
@@ -286,7 +295,7 @@ def _param_modes(
                             else:
                                 contrib_mode, contrib_vals = "expand", list(subset)
                         else:
-                            contrib_mode, contrib_vals = "expand", list(vals)
+                            continue
                     else:
                         contrib_mode, contrib_vals = "expand", list(vals)
                     # reconcile into param_state (expand wins over fix; expand = union)
@@ -321,8 +330,9 @@ def _render_directive(
     selection_resolved: dict,
     param_modes: dict[str, dict],
 ) -> str:
-    """Render the directive: per-device per-template listing + three-state
-    masking prose + machine block ``{device_types, param_modes}``."""
+    """Render the directive: per-device per-template listing + selection
+    masking prose + machine block
+    ``{device_types, selection, param_modes, selection_policy}``."""
     devices_by_name = _devices_by_name(scan)
     dev_sections: list[str] = []
     for d in sel_devices:
@@ -358,7 +368,7 @@ def _render_directive(
                     elif isinstance(pm, dict) and "fix" in pm:
                         tag = f"固定取单值 {pm['fix']!r}"
                     else:
-                        tag = "presence 丢（未选模板专属）"
+                        tag = "未显式选择；按文档和已选场景适配"
                     lines.append(
                         f"    - {pname}: 取值：{vals}；{tag}；描述：{p.get('description', '')}"
                     )
@@ -376,14 +386,19 @@ def _render_directive(
                 fix_params.append(f"{d}/{p}={v.get('fix')}")
 
     machine = json.dumps(
-        {"device_types": sel_devices, "param_modes": param_modes},
+        {
+            "device_types": sel_devices,
+            "selection": selection_resolved,
+            "param_modes": param_modes,
+            "selection_policy": dict(SELECTION_POLICY),
+        },
         ensure_ascii=False,
     )
 
     return f"""## 场景指令（run 级，本次提取范围）
 
 由 `scripts/render_scene_directive.py` 渲染；源 `inputs/scene_scan.json` + 用户三级选择
-（设备类型 → 量化模板 → 特性参数）。提取器必须读本文件并据此屏蔽非选定场景的参数与约束。
+（设备类型 → 量化模板 → 特性参数）。提取器必须读本文件并据此按选定场景适配参数与约束。
 
 ### 选定模板（逐设备逐模板）
 
@@ -391,23 +406,29 @@ def _render_directive(
 
 ### 特性参数剪枝（值级语义）
 
-- **展开**（保留取值分支）：用户在 Q3 明确填写了取值清单的参数（多值 → 该子集），
-  或未填写/选"保持自动"的参数（继承文档全集），保留对应取值清单参与组合生成。
+- **展开**（保留取值分支）：用户在 Q3 明确填写了多值取值清单的参数，仅保留该子集。
 - **固定**（取单值不展开）：用户在 Q3 明确填写了单值（如 `[-1]`）的参数 → 该值；
   或选"全部固定默认值"的模板下各参数 → `values[0]`；仅产单值候选，不展开取值分支。
-- **丢弃 presence**（不测试）：未选模板（Q2 未选）的专属参数，其 `presence_dependency`
-  不产出（若该参数同时出现在已选模板下，按已选模板的展开/固定决策处理——并集语义，
-  expand 胜 fix、expand 取并集）。
+- **未显式选择**：继续根据算子文档和已选场景提取、适配该参数的约束，不得因为参数
+  缺少 `param_modes` 键而删除其 presence、dtype、shape、value 等约束。
+- **已选场景明确禁止的 Optional 参数**：必须显式产出 `param is None`；“不产
+  `presence_dependency`”不等价于“不测试”，因为无 presence 约束的 Optional 参数会
+  继续在存在/缺席之间生成。
 - 展开参数：{expand_params or '(无)'}
 - 固定参数：{fix_params or '(无)'}
 
 提取要求：
-1. **选择内容是基本限制，未提及的按文档原文提取**——按机读块 `param_modes` 三态收窄：
+1. **选择内容是基本限制，未提及的按文档原文提取**——先按机读块 `selection` 确定
+   每个设备选中的模板，再按 `param_modes` 收窄用户明确配置的参数：
    `{{"expand": [取值清单]}}` → 所选清单是该特性参数的基本限制：凡依赖该参数取值的约束均按清单收窄——
    无论体现为该参数自身的 `allowed_range_value` 枚举候选，还是以该取值为条件的 `dtype`/`format`/`dimensions`
-   分支或 `constraints_in_parameters` 行（保留命中清单内取值的候选/分支、丢弃绑定清单外取值者，清单为用户在 Q3 填写的取值子集或所选模板 values 并集，**禁止回文档拉全集**）；`{{"fix": X}}` → 该参数取单值 `X`，依赖其取值的约束同此收窄；
-   缺键（仅出现在未选模板下的 Optional 参数）→ 不产 `presence_dependency`（presence 丢）。
-2. `constraints_in_parameters` 仅保留与选定模板一致的约束行，未选模板绑定的专属约束不产出；其内以取值为条件的分支按条 1 随选择收窄。
+   分支或 `constraints_in_parameters` 行（保留命中清单内取值的候选/分支、丢弃绑定清单外取值者，清单为用户在 Q3 明确填写的取值子集）；`{{"fix": X}}` → 该参数取单值 `X`，依赖其取值的约束同此收窄；
+   缺键 → 仅在机读块 `selection` 指定的模板范围内按文档继续提取适配，不得回退到
+   未选模板的参数域，也不得解释为删除 presence。已选场景明确禁止
+   某 Optional 参数时，必须产出该参数 `is None` 的可执行约束。
+2. `constraints_in_parameters` 仅保留与选定模板一致的业务分支；未选模板自身的计算规则
+   不产出，但用于保证已选模板合法的排除规则必须保留。例如已选 non-quant 时，quant /
+   pseudo-quant 专属 Optional 参数必须产出 `is None`，不能随未选模板规则一起删除。
 3. 与参数取值**无关**的通用约束（`shape_equality`、维度、`groupType` 等）原样保留，不得因场景删除；
    `dtype`/`format`/`dimensions` 以取值为条件分支者按条 1 收窄，无条件者原样保留。
 4. `product_support` 按机读块 `device_types` 与文档"产品支持情况"√ 行取交集（无"通用"展开）。
@@ -434,6 +455,7 @@ def _scene_payload(
         "device_types": device_types or [],
         "selection": selection or {},
         "param_modes": param_modes or {},
+        "selection_policy": dict(SELECTION_POLICY),
         "directive": str(directive_path) if directive_path else "",
         "scan": str(scan_path),
     }
@@ -504,7 +526,7 @@ def main() -> int:
     # ----- all ------------------------------------------------------------ #
     if args.scope == "all":
         scan_devices = [d for d in (scan.get("device_types") or []) if isinstance(d, str)]
-        # all devices, all templates, Q3 skipped → expand all features (None)
+        # all devices, all templates, Q3 skipped → document-adaptive (None)
         dev_map = _devices_by_name(scan)
         full_sel: dict[str, dict] = {}
         for d in scan_devices:

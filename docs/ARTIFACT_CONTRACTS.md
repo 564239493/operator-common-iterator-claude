@@ -16,7 +16,7 @@ runs/<operator>-<timestamp>/
     conflict_resolution.json           # 可选：用户裁决 [{conflict_id, winner}]
     supplement_constraints.md          # 可选：--supplement-constraints 手写快照
     scene_scan.json                    # 可选：scene-scanner 产，设备→量化模板→特性参数三级嵌套
-    scene_directive.md                 # 可选：render_scene_directive.py 渲染（含 param_modes 三态机读块），extractor 据此屏蔽
+    scene_directive.md                 # 可选：render_scene_directive.py 渲染（含 param_modes/selection_policy 机读块），extractor 据此适配
   iter_001/
     constraints.json
     constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
@@ -165,10 +165,10 @@ bullet 拆成独立 `params[]` 条目；"与 X 相同"的设备直接内联复�
 
 `run_state.scene`（`init_run` 写 `null`，SCENE_SCAN 子步骤由
 `scripts/render_scene_directive.py` 回写）：形态 `{enabled, scope, device_types,
-selection, param_modes, directive, scan}`。`scope=subset` 时 `selection` 为
-`{device:{template:<tpl_value>}}`（`<tpl_value>` ∈ `null`（选项1/未填写，全展开）|
+selection, param_modes, selection_policy, directive, scan}`。`scope=subset` 时 `selection` 为
+`{device:{template:<tpl_value>}}`（`<tpl_value>` ∈ `null`（选项1/未填写，按文档和场景自动适配）|
 `"fix_all_default"`（选项2，各参数取 `values[0]`）| `{param:[values]}`（Other JSON：单值→fix、
-多值→expand 子集、未列参数→全展开）；缺模板键=该模板未选 Q2），
+多值→expand 子集、未列参数→按文档和已选场景自动适配）；缺模板键=该模板未选 Q2），
 `directive` 指向 `inputs/scene_directive.md`；`scope=all` 全设备全模板全特性参数
 全展开（不剪枝）；`scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件
 （extractor 见无 directive 即按全场景提取，行为不变）。
@@ -177,11 +177,14 @@ selection, param_modes, directive, scan}`。`scope=subset` 时 `selection` 为
 执行时不传 `--scene`。
 
 `scene_directive.md`（`render_scene_directive.py` 渲染，落 `inputs/`，仅 `scope=subset`
-时存在）：逐设备逐模板列出选定模板及其特性参数取值，按 `param_modes` 三态给屏蔽语义
-（`{"expand": [取值清单]}` 清单=用户子集或所选模板 values 并集、禁止回文档拉全集 / `{"fix": X}` 单值（用户单值输入或 values[0]） / 缺键 Optional 参数 presence 丢），
-末尾附机读块 `<!-- scene: {device_types, param_modes} -->`（设备类型为具体设备名，
-无"通用"）；constraint-extractor 据此按 `param_modes` 三态产 `allowed_range_value`、
-屏蔽未选模板专属 Optional 参数的 `presence_dependency` 与专属约束，保留通用约束
+时存在）：逐设备逐模板列出选定模板及其特性参数取值，按 `param_modes` 收窄用户明确
+选择的参数（`{"expand": [取值清单]}` 清单=用户明确选择的子集 /
+`{"fix": X}` 单值=用户单值输入或 values[0]）。缺键参数继续按算子文档和
+已选场景提取适配；已选场景明确禁止的 Optional 参数必须显式生成 `param is None`。
+末尾附机读块 `<!-- scene: {device_types, selection, param_modes, selection_policy} -->`
+（`selection` 保留逐设备选中模板，使 `param_modes` 为空时仍能机器判定场景；设备类型为具体设备名，
+无"通用"）；constraint-extractor 据此按 `param_modes` 产 `allowed_range_value`，并按
+`selection_policy` 保留未显式选择参数的文档约束，保留通用约束
 （shape/dtype/format 等），并按 `device_types` 收窄 `product_support`（直接与文档
 "产品支持情况" √ 行取交集，无"通用"展开）；该列表
 随后驱动 `generate_cases.py` 逐平台生成）。轮 2+ `optimize-prompt` 重写 `prompt_vN`

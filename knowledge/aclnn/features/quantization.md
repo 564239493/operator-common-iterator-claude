@@ -74,3 +74,38 @@ depends_on: [expression_language, quantization_intro]
 `w.shape[2]==7168`、`y.shape[1]==w.shape[2]`，生成器产出 w int4+[e,2048,7168]，CANN 按
 INT32 打包反推 weight NDim=7168*8=57344，与 y 第二维 7168 不符，100/100 失败。
 
+## 非量化场景必须显式屏蔽量化参数（反向规则）
+
+当 `scene_directive` 已选定非量化场景，并且算子文档明确说明“非量化场景不能输入
+量化参数和伪量化参数”或含义等价的互斥规则时，被排除场景的全部专属 Optional 参数
+必须逐参数生成可执行的缺席约束。例如：
+
+```json
+{
+  "expr_type": "presence_dependency",
+  "expr": "scaleOptional is None",
+  "relation_params": ["scaleOptional"],
+  "src_text": "非量化场景不能输入量化参数和伪量化参数",
+  "origin": "doc"
+}
+```
+
+对 `offsetOptional`、`deqScale*Optional`、`antiquantScale*Optional`、
+`antiquantOffset*Optional` 等文档明确归属于量化或伪量化场景的参数应用同一规则；示例
+参数名只是常见命名，实际参数集合必须从当前算子文档确定，不能按名称臆造。
+
+必须区分以下三种情况：
+
+1. 用户明确选择的参数：按所选单值固定，或按所选多值子集展开；
+2. 用户未明确选择的参数：继续根据文档与已选场景提取、适配，不能因
+   `param_modes` 缺键而自动删除；
+3. 已选场景或文档明确禁止的 Optional 参数：生成 `<param> is None`。
+
+不能使用“省略 `presence_dependency`”表达缺席。生成器对没有 presence 约束的 Optional
+参数仍可在存在与缺席之间随机生成，因此只在 `description` / `src_text` 中写“不测试”也
+没有约束效果。
+
+若当前 run 同时保留量化、伪量化和非量化等多个场景，不得无条件将相关参数全部置为
+`None`；应使用能够区分场景的门控表达式分别约束。只有场景已经收窄为单一非量化分支
+时，才能化简为无条件 `<param> is None`。
+

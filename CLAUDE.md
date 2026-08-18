@@ -33,13 +33,16 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 > （值级 JSON / `param=value` 串 / 自然语言均可，如 `groupType=-1,0; splitItem=0~3`），
 > 主协调器按 scene_scan feature_params 表识别+组装为标准 `{param:[values]}` dict 写入
 > `selection.json`（识别不了的参数/取值当场提示用户澄清）；单值→fix、多值→expand 子集、
-> 未列参数→全展开；question 文本含完整 feature_params 编号表 + Other 提示语「Other
+> 未列参数→按文档和已选场景自动适配；question 文本含完整 feature_params 编号表 + Other 提示语「Other
 > （可自定义输入参数特性配置）= 贴入任意格式配置，主协调器识别组装；选保持自动（未填写）
 > → 保持自动/继承文档约束」），`scripts/render_scene_directive.py` 做最终严格校验、
-> 解析选择为每设备每参数的 `param_modes` 三态（`{"expand": [取值清单]}` 清单=用户子集或所选模板 values 并集、
-> 禁止回文档拉全集 / `{"fix": X}` 单值（用户单值输入或 values[0]） / 缺键 presence 丢）并渲染
-> `inputs/scene_directive.md`（含机读块 `device_types`/`param_modes`）并回写
-> `run_state.scene`，constraint-extractor 据此按 `param_modes` 三态屏蔽并按
+> 解析用户明确选择的参数为每设备每参数的 `param_modes`（`{"expand": [取值清单]}`
+> 清单=用户明确选择的子集 / `{"fix": X}` 单值=
+> 用户单值输入或 values[0]）；缺键参数继续按算子文档和已选场景提取适配，已选场景
+> 明确禁止的 Optional 参数必须显式生成 `param is None`。随后渲染
+> `inputs/scene_directive.md`（含机读块 `device_types`/`selection`/`param_modes`/`selection_policy`；
+> `selection` 保留逐设备选中的模板，避免“保持自动”时场景信息丢失）
+> 并回写 `run_state.scene`，constraint-extractor 据此按 `param_modes` 收窄并按
 > `device_types` 收窄 `product_support`——设备类型为"产品支持情况"具体设备名，
 > 直接与 √ 行取交集（无"通用"展开）；`product_support` 随后驱动用例生成
 > （`generate_cases.py` 按 `product_support` 逐平台生成，不读场景）。为独立子步骤而非
@@ -94,7 +97,10 @@ python scripts/validate_artifacts.py cases runs/.../iter_001/cases.json
 python scripts/validate_artifacts.py execution runs/.../iter_001/execution_result.json
 python scripts/validate_artifacts.py analysis runs/.../iter_001/analysis.json
 python scripts/validate_artifacts.py executor runs/.../iter_001/cases_executor.py
+# 前台直接运行：命令中包含 python 和 generate_cases.py
 python scripts/generate_cases.py --constraints .../constraints.json --output .../cases.json --count 10
+# 后台 launch：`--` 后只放 generate_cases.py 的参数，不能重复放上面两个命令项
+python scripts/generation_progress.py launch --output-dir runs/.../iter_001 -- --constraints .../constraints.json --output .../cases.json --count 10
 python scripts/normalize_constraints.py .../constraints.json  # 原地规范化
 ```
 
@@ -184,7 +190,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
-- `render_scene_directive.py` — 校验三级场景选择、解析 `param_modes` 三态、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
+- `render_scene_directive.py` — 校验三级场景选择、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
 - `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 `base + 命中知识` → 冻结 `prompt_v1.md`+`prompt_preanalysis.json`+`prompt_assembly.json`
 - `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
 - `route_aclnn_knowledge.py` / `route_torch_npu_knowledge.py` — manifest 驱动知识路由（正向 trigger + `reject_on` 负向否决 + `depends_on` 依赖闭包）

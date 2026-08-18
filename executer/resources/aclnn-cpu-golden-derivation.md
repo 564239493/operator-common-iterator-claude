@@ -11,24 +11,29 @@ metadata:
 
 本 skill 由 EXECUTE 阶段的 case-executor 对每个生成的 ATK 测试脚本(`cases_executor.py`)调用。
 
-**默认行为(本次变更起):** 模板 `executer/resources/aclnn_api_template.py.j2` 已为 CPU 标杆类直接生成一个开箱即用的占位 `__call__`:
+模板 `executer/resources/aclnn_api_template.py.j2` 会生成参数绑定 prelude 和带明确标记的
+CPU golden 占位块：
 
 ```python
-def __call__(self, input_data: InputDataset, with_output: bool = False):
-    return torch.ones([1024, 1, 16], dtype=torch.float16)
+# TODO: CPU_GOLDEN
+return torch.ones([1024, 1, 16], dtype=torch.float16)
+# END_CPU_GOLDEN
 ```
 
-**除下方“跳过算子”外,所有算子一律沿用此占位,不替换为真实 PyTorch 计算**——本 skill 不再修改非跳过算子的 CPU `__call__`,仅确认文件语法通过、`__call__` 返回一个 `torch.Tensor` 即可。下方 Step 1–8 与各 Example 仅作历史参考,不再对非跳过算子执行。
+该占位只允许存在于 generate 阶段。除下方“跳过算子”外，real accuracy 执行前必须把
+标记之间的占位替换为真实 PyTorch CPU golden；固定 shape 的 `torch.ones` 不能上传执行。
 
 ## Skip These Operators (Do NOT Process)
 
 If the operator is **`aclnnSwinAttentionScoreQuant`**, **`aclnnSwinTransformerLnQkvQuant`**, **`aclnnBatchMatMulWeightNz`**, **`aclnnNpuFormatCast`**, **`aclnnReflectionPad1dBackward`**, **`aclnnCalculateMatmulWeightSize`**, **`aclnnCalculateMatmulWeightSizeV2`**, or **`aclnnAlltoAllMatmul`**, **stop immediately** — do not read docs, do not modify any files, do not derive CPU golden code. These operators use completely pre-defined test scripts that are output verbatim by `generator.py` via special `.tpl` templates. There is no `# TODO: CPU_GOLDEN` marker and no dummy computation to replace. The skill flow ends here for these operators.
 
-## Non-Skip Operators: Use the Template Dummy As-Is (Do NOT Derive)
+## Non-Skip Operators: Derive a Real CPU Golden
 
-对于**不在上面跳过列表内**的算子(即走 `aclnn_api_template.py.j2` 通用模板的算子):**不要修改其 CPU `__call__` 方法**。模板已直接产出占位实现 `return torch.ones([1024, 1, 16], dtype=torch.float16)`,直接用即可——不要替换为真实 PyTorch 计算、不要读文档、不要跑下方的 Step 1–8 推导。
+对于**不在上面跳过列表内**的算子，必须读取当前 run 的文档快照并执行下方推导流程。
+将 `# TODO: CPU_GOLDEN` 至 `# END_CPU_GOLDEN` 的整个占位块（包括两行标记）
+替换为真实 golden 语句，保留模板生成的 kwargs/args 参数映射、helper 和必选输入诊断。
 
-本 skill 对非跳过算子的唯一动作:确认生成的 `cases_executor.py` 语法通过、`__call__` 返回一个 `torch.Tensor`,然后结束。其余章节(Step 0–8、各 Example、Robustness 规则、Constraint 参考、WeightNZ / Distributed 推导)仅作历史参考保留,**不再对非跳过算子执行**。
+推导完成后必须通过 executor 门禁，并确认返回 shape/dtype 与算子输出契约一致。
 
 > 跳过算子仍走各自的 `.tpl` 特殊模板(verbatim),不受本变更影响。
 
@@ -310,20 +315,22 @@ dims = _get_param("dims")  # e.g. [0, 2, 1]
 
 ### Step 5: Write the Code
 
-Replace the code between `# TODO: CPU_GOLDEN` and `# END_CPU_GOLDEN` with:
+Replace the complete placeholder block from `# TODO: CPU_GOLDEN` through
+`# END_CPU_GOLDEN`, including both marker lines; keep the surrounding generated
+binding prelude:
 
 ```python
-def __call__(self, input_data: InputDataset, with_output: bool = False):
-    # Use _get_param(name) to extract inputs — handles both kwargs and args modes
-    self_t = _get_param("self")  # example: first input tensor
-    other = _get_param("other", None)  # example: optional param with default
-    result = torch.abs(self_t)
-    return result
+self_t = _get_tensor("self")
+other = _get_tensor("other", None)
+result = torch.abs(self_t)
+return result
 ```
 
 **Use `_get_param(name)` for ALL parameter extraction.** This helper function is auto-generated in the class and handles ATK data-passing transparently:
 
-**How ATK passes data (CRITICAL):** ATK's `base_dataset.py` appends every generated parameter value to `input_data.args` in JSON `inputs[]` order. **`input_data.kwargs` is always empty** for ACLNN operators. The `_get_param` helper builds a name→value mapping by zipping `input_data.args` with `self.task_result.case_config.inputs[].name`, so you can look up by parameter name regardless of JSON ordering.
+**How ATK passes data (CRITICAL):** 带非空 name 的 ACLNN inputs 通常通过
+`input_data.kwargs` 传递；旧用例或无名 inputs 可能通过 `input_data.args` 按 JSON 顺序传递。
+模板 helper 先读取 kwargs，再用 case config 名称和签名顺序回退映射 args。
 
 **NEVER access `input_data.kwargs` or `input_data.args` directly** in CPU golden code — always use `_get_param(name)` or `_get_tensor(name)`.
 
@@ -332,7 +339,7 @@ def __call__(self, input_data: InputDataset, with_output: bool = False):
 - `_INPUT_PARAM_NAMES` class attribute
 - The `with_output` parameter
 - The method signature
-- The `_get_param` helper function and `_arg_idx` counter
+- The generated `_param_map`, `_get_param`, `_get_tensor`, and required-input diagnostics
 
 **Do NOT modify existing import lines** — leave every existing `import` / `from ... import ...` line exactly as it is. Do not rename module paths, do not reorder, do not remove, do not change aliases. Example: if the file has `from atk.tasks.api_execute.base_api import BaseApi`, keep it exactly that — do NOT "correct" it to `from atk.tasks.base_api import BaseApi`. You MAY add new imports after the existing ones if the CPU golden needs them (e.g. `import torch.nn.functional as F`).
 
@@ -342,10 +349,11 @@ def __call__(self, input_data: InputDataset, with_output: bool = False):
 - The `get_cpp_func_signature_type` method
 
 **You may modify:**
-- The `BaseApi` subclass's `__call__` method (this is the primary target — CPU golden logic)
+- Only the marked CPU-golden block inside the `BaseApi` subclass's `__call__` method
 - The `AclnnBaseApi` class's `init_by_input_data` and `after_call` methods (e.g., when `convert_output_data` doesn't handle `aclTensorList*` / `aclScalarList*` outputs correctly, or when `after_call` needs to handle list conversion)
 
 **Do remove:**
+- Both `# TODO: CPU_GOLDEN` and `# END_CPU_GOLDEN` marker lines after replacement
 - The `# [FALLBACK]` dummy computation block
 - The `_dummy_output` inner function
 
@@ -1056,22 +1064,19 @@ return result
 - Statistics output (mean/var/rstd) → always `.float()` (fp32)
 - Index output (argmax/topk/sort indices) → `torch.int64`
 
-## Rule 4: `_get_param` — Name-Based Lookup via `_param_map` (from args by case_config)
+## Rule 4: `_get_param` — Name-Based Lookup via kwargs and args
 
-**How ATK passes data:** ATK's `base_dataset.py` appends every generated value to `input_data.args`
-in JSON `inputs[]` order. **`input_data.kwargs` is always empty** for ACLNN operators.
+**How ATK passes data:** named ACLNN inputs normally arrive in `input_data.kwargs`; legacy or
+unnamed cases may arrive in `input_data.args` in JSON order.
 
-**The auto-generated `_get_param` helper builds a `_param_map` dict by matching `input_data.args[i]`
-with `case_config.inputs[i].name`:**
+**The auto-generated helper builds `_param_map` from kwargs first and uses args as fallback:**
 ```python
 # In __call__:
 _param_map = {}
-if input_data.args and hasattr(self, 'task_result') and self.task_result.case_config.inputs:
-    flat_configs = self.task_result.case_config.flatten_list(self.task_result.case_config.inputs)
-    for idx, conf in enumerate(flat_configs):
-        if idx < len(input_data.args) and conf.name:
-            _param_map[conf.name] = input_data.args[idx]
-            _param_map[conf.name.lower()] = input_data.args[idx]
+for name, value in (getattr(input_data, "kwargs", None) or {}).items():
+    _param_map[name] = value
+    _param_map[name.lower()] = value
+# args are then mapped with case-config names/signature-order fallback
 
 def _get_param(name, default=None):
     v = _param_map.get(name)
@@ -1085,10 +1090,10 @@ def _get_param(name, default=None):
 **IMPORTANT:**
 - This approach is **name-based**, not positional — it works regardless of JSON `inputs[]` order vs C++ signature order
 - The lookup supports case-insensitive matching (e.g. `negativeslope` vs `negativeSlope`)
-- If a JSON input entry has no `name` field, it will NOT be in `_param_map` — use `_get_param` with a sensible default
+- If a JSON input entry has no `name`, args use `_INPUT_PARAM_NAMES` as fallback
 - **Do NOT write this mapping code yourself** — it is auto-generated by `generator.py`. You only call `_get_param(name)` and `_get_tensor(name)` in the CPU golden code
-- **NEVER access `input_data.kwargs` directly** — it is empty for ACLNN function-type operators
-- The `self.task_result.case_config.inputs` list may contain nested lists (for grouped params like backward pairs). Use `case_config.flatten_list()` to get a flat list matching `input_data.args`
+- **NEVER access `input_data.kwargs` or `.args` directly in derived code** — use the generated helpers
+- The generated helper flattens nested case inputs without relying on an ATK-specific `flatten_list()` implementation
 
 ## Rule 5: Optional Tensor Params — Pass `None` to PyTorch, Not Empty Tensors
 
@@ -1502,43 +1507,87 @@ result = torch.matmul(x, weight_for_matmul)
 - [ ] CPU golden：false 使用 `weight.T`，true 直接使用 weight
 - [ ] `activationFeatureOutOptional` / `dynQuantScaleOutOptional` 使用 `pop(..., None)`
 
-### A2/A8W8 groupType=0 的 groupList 内容物化
+### A2/A8W8 groupType=0 的 3-D weight 与 groupList 物化
 
-**精确适用范围：** `aclnnGroupedMatmulV5`，A2/A8W8，`groupType=0`、
-`groupListType=0`，并且 x、weight、out 都是单 TensorList；其中 x tensor 为 `[M,K]`，
-weight tensor 为 `[E,K,N]`（`weight_transposed=True`）或 cases 表示的 `[E,N,K]`
-（`weight_transposed=False`）。不要把本节实现用于 groupListType 1/2、groupType 2、
-多 TensorList、非量化或伪量化场景。
+**精确适用范围：** `aclnnGroupedMatmulV5`，A2/A8W8，`groupType=0`，x、weight、out
+均为单 TensorList，覆盖 `groupListType=0/1/2`。不要推广到 groupType 2、多 TensorList、
+非量化或伪量化场景。
 
-此场景的 groupList 是长度 E 的累计 M 轴边界。cases 中普通 `range_values` 只描述生成器
-采样值，不能表达“非负、单调非递减、末项不大于 M”的序列语义。公共 executor 因而用
-`_build_grouped_matmul_v5_group_list_cumsum(M, E, device)` 生成均匀分组边界，并选择末项
-等于 M。`==M` 是合法的确定性测试构造，不是 API 的必要条件；文档允许末项小于等于 M。
+#### 3-D A8W8 weight 与旧 2-D 规则不同
 
-CPU golden 必须复用相同边界进行分组，不能忽略 groupList，也不能用 TensorList 的长度
-作为 E（本场景 TensorList 长度为 1，而 E 在 3-D weight 的第 0 轴）：
+本场景 cases 严格按文档的数学布局保存：
+
+- `weight_transposed=False`：`[E,K,N]`，NPU 侧保持连续、不得再次转置；
+- `weight_transposed=True`：case 为 `[E,N,K]`，NPU 侧执行一次 `transpose(-1,-2)`，
+  传入数学布局 `[E,K,N]`。禁止双重转置后仍保留 `[E,N,K]`。
 
 ```python
-x_tensor = x[0]                  # [M,K]
-weight_tensor = weight[0]        # [E,K,N] or [E,N,K] in cases
-if not weight_transposed:
-    weight_tensor = weight_tensor.transpose(-1, -2)
+if weight_transposed:
+    weight_for_npu = weight.transpose(-1, -2)
+else:
+    weight_for_npu = weight.contiguous()
+```
 
-group_list = _build_grouped_matmul_v5_group_list_cumsum(
-    x_tensor.shape[0], weight_tensor.shape[0], x_tensor.device
+此前 `groupType=-1 + 2-D FP32` 场景的 false `(N,K) -> (K,N)` 规则必须单独保留，不能
+无条件套到本场景。CPU golden 只恢复数学 `[E,K,N]`：
+
+```python
+weight_for_matmul = (
+    weight.transpose(-1, -2) if weight_transposed else weight
 )
+```
+
+#### type0/type1/type2 使用同一组确定性 sizes
+
+普通 `range_values` 不能表达 groupList 的序列内容。公共 executor 先把 M 尽量均匀分到
+E 组；E>M 时非零组在前、零组在后，然后按类型物化：
+
+```python
+base, remainder = divmod(M, E)
+sizes = torch.full((E,), base, dtype=torch.int64, device=device)
+sizes[:remainder] += 1
+
+if group_list_type == 0:
+    group_list = torch.cumsum(sizes, dim=0)
+elif group_list_type == 1:
+    group_list = sizes
+elif group_list_type == 2:
+    indexes = torch.arange(E, dtype=torch.int64, device=device)
+    group_list = torch.stack((indexes, sizes), dim=1)
+```
+
+该构造选择覆盖/总和等于 M，是合法的测试数据，不代表 API 从“不大于 M”收紧为
+“必须等于 M”。shape 必须先由约束层保证：type0/1 为 `[E]`，type2 为 `[E,2]`；
+executor 遇到错误 shape 必须报错，不能 reshape 成合法形状。
+
+CPU golden 必须复用同一构造，不能读取 cases 的随机内容，也不能把 TensorList 长度 1
+误当成 E。将 type0 直接视为结束边界；type1 对 sizes 求累计和；type2 使用第一列选择
+weight group、对第二列求累计和：
+
+```python
+group_list = _build_grouped_matmul_v5_group_list(M, E, group_list_type)
+if group_list_type == 0:
+    weight_indexes = list(range(E))
+    ends = group_list
+elif group_list_type == 1:
+    weight_indexes = list(range(E))
+    ends = torch.cumsum(group_list, dim=0)
+else:
+    weight_indexes = group_list[:, 0].tolist()
+    ends = torch.cumsum(group_list[:, 1], dim=0)
+
 start = 0
 group_outputs = []
-for group_index, end_tensor in enumerate(group_list):
+for weight_index, end_tensor in zip(weight_indexes, ends):
     end = int(end_tensor.item())
     x_group = x_tensor[start:end]
-    y_group = torch.matmul(x_group.float(), weight_tensor[group_index].float())
-    # 按算子文档应用该 group 的 scale/bias，并对 perTokenScale 使用 [start:end] 切片。
+    y_group = torch.matmul(
+        x_group.float(), weight_for_matmul[weight_index].float()
+    )
+    # scale/bias 按 weight_index 选择；perTokenScale 使用 [start:end]。
     group_outputs.append(y_group)
     start = end
 result = torch.cat(group_outputs, dim=0)
 ```
 
-附加 shape 要求也必须在约束层满足，executor 不负责修 shape：groupList 为 `[E]`；
-bias 存在时为 `[E,N]`；perTokenScale 存在时为 `[M]`。若 groupList 的元素数不等于 E，
-executor 应明确报错，不能通过截断、补齐或改 shape 掩盖约束提取问题。
+附加 shape：bias 存在时为 `[E,N]`，perTokenScale 存在时为 `[M]`。

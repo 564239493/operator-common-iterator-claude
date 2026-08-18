@@ -389,6 +389,16 @@ def _format_attrs(case: dict[str, Any], attr_names: set[str]) -> dict[str, Any]:
             elif not isinstance(value, list):
                 value = [value]
         attrs[name] = value
+    # 签名声明但 case 缺失的可选属性(如 tuningConfigOptional 这类
+    # aclIntArray 可选参数,case 里不提供即为 nullptr)补 None 占位,
+    # 使属性计数恒等于签名属性数,避免 TTK "configured N vs M" 计数报错。
+    # 与张量侧第 426-432 行的 absent 占位对称;此处绕开上面的
+    # tuningConfigOptional 列表包装分支(那分支只对 case 里存在的项生效,
+    # 缺失项直接 None 才对应 C 侧 nullptr 语义)。ScatterPaKvCache 等已
+    # 在上方补默认值的算子不受影响(其属性本就齐全,不进此分支)。
+    for name in attr_names:
+        if name not in attrs:
+            attrs[name] = None
     return attrs
 
 
@@ -455,7 +465,12 @@ def convert_case(
                 shapes_parts.append("None")
             dtypes_parts.append(repr(tuple(dtype_ttk for _ in range(count))))
             formats_parts.append(repr(tuple(format_ttk for _ in range(count))))
-            data_ranges.append((None, None))
+            # TTK ACLNN 对 None 槽无差别填 (-2,2),不按 dtype/role 挑默认,
+            # 会退化 int 权重并丢弃 ATK 写死的 range_values;按顶层参数解析
+            # 真实范围(标量→(v,v)、[lo,hi]→(lo,hi)、clamp 到 dtype 界)。
+            # 一个 (lo,hi) 应用于该 TensorList 的全部子张量,与 TTK 的
+            # per-slot 粒度一致(absent 可选项在上方早退分支已处理为 None)。
+            data_ranges.append(_tensor_data_range(item))
         else:
             shapes_parts.append(_format_single_tensor_shape(shape))
             dtypes_parts.append(f"'{dtype_ttk}'")

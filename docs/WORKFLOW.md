@@ -111,12 +111,13 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 自动选中、跳过该设备 Q2）→ Q3 逐（设备,模板）特性参数（**single-select**，批量 ≤4 问/次，
 每问固定 2 预设 + Other：选项1「保持自动/继承文档约束（未填写）」→`null`、选项2「全部固定
 默认值」→`"fix_all_default"`、Other→值级 JSON 如 `{"groupType":[-1,0],"splitItem":[3]}`
-（单值→fix、多值→expand 子集、未列参数→全展开）；question 文本含完整 feature_params 编号表
+（单值→fix、多值→expand 子集、未列参数→按文档和已选场景自动适配）；question 文本含完整 feature_params 编号表
 + 提示语「明确填写（Other 输 JSON）→ 按用户值限制；选保持自动（未填写）→ 保持自动/继承文档
 约束」），写 `selection.json={"device_types":[...],"selection":{device:{template:<tpl_value>}}}`
 （`<tpl_value>` ∈ `null|"fix_all_default"|{param:[values]}`）+
-`scripts/render_scene_directive.py`（校验设备/模板/param 名/值 ∈ scan、解析 `param_modes` 三态、渲染 `inputs/scene_directive.md`
-（含机读块 `{device_types, param_modes}`）、回写 `run_state.scene`）。
+`scripts/render_scene_directive.py`（校验设备/模板/param 名/值 ∈ scan、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`
+（含机读块 `{device_types, selection, param_modes, selection_policy}`；`selection` 保留
+逐设备选中模板，确保“保持自动”时仍可机器判定场景）、回写 `run_state.scene`）。
 `--scene off` 跳过；`--scene auto`（默认）文档有场景则征询、无则跳过；`--scene all` 取
 全设备全模板全特性参数不剪枝（批处理默认）。文档无场景（`has_scenarios=false`）跳过，
 退回纯文档驱动；仅有量化参数信号而未提取到模板时只写 `scan_notes`
@@ -131,8 +132,10 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 输入：run/inputs 中的算子文档快照、prompt_vN，以及（若存在）`inputs/scene_directive.md`。
 执行者：constraint-extractor。若 directive 存在，按其 `device_types` 收窄
 `product_support`（设备类型为"产品支持情况"具体设备名，直接与文档 √ 行取交集，
-无"通用"展开）并按机读块 `param_modes` 三态屏蔽
-（`{"expand": [取值清单]}` 清单=用户子集或所选模板 values 并集、禁止回文档拉全集 / `{"fix": X}` 单值（用户单值输入或 values[0]） / 缺键 Optional 参数 presence 丢）；
+无"通用"展开）并按机读块 `param_modes` 收窄用户明确选择的参数
+（`{"expand": [取值清单]}` 清单=用户明确选择的子集 /
+`{"fix": X}` 单值=用户单值输入或 values[0]）；缺键参数继续按算子文档和已选场景
+提取适配，已选场景明确禁止的 Optional 参数必须显式生成 `param is None`；
 该 `product_support` 随后驱动 `generate_cases.py` 逐平台生成。
 完成条件：constraints.json 通过 Pydantic/结构校验。
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。
