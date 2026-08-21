@@ -113,6 +113,16 @@ V5 接口的 `groupListOptional` 是 `aclTensor`；调用链内部同时存在�
 
 - `groupListType == 2` 时：`ndim == 2` 且 `dim(groupListOptional, 1) == 2`。
 - `dim(groupListOptional, 0) ≤ 1024`。
+
+  > **形式化强制（v3 新增）**：本条 `dim(groupListOptional, 0) ≤ 1024` **不得**只抄进
+  > `src_text`，**必须**在 `constraints_in_parameters` 中产出 `shape_inequality`（或
+  > `shape_value_dependency`）expr 把上界编码为可求解不等式
+  > `groupListOptional.shape[0] <= 1024`，并在单 TensorList 场景同时产出
+  > `weight.shape[0] <= 1024`（E=分组数=weight.shape[0]）。iter_002 闭环 10/50 用例因
+  > E=weight.shape[0]=65534/1587301 > 1024 失败（NPU `AclNN_Parameter_Error(EZ1001): size
+  > of groupList <E> should be less than or equal to 1024`），extractor 仅把「最大1024组」
+  > 抄进 src_text 却未在 expr 编码上界，对 case 12 求值 `65534==65534 → True` 放行。
+  > 文本记录 ≠ 形式化约束：src_text 摘录上界而 expr 不含 `<=1024` 即为漏抽。
 - `dim(groupListOptional, 0) == groupNum` 且 `groupNum > 1`，或 `groupNum == 1`（此时长度不受约束）。`groupNum` 的取值随场景而定，见 3.1 各小节。
 - `dtype(groupListOptional) == ACL_INT64`。
 
