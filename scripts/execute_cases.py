@@ -44,6 +44,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+ACLNN_GOLDEN_PLUGINS = {
+    "aclnnGroupedMatmulV5": "aclnn_grouped_matmul_v5_golden.py",
+    "aclnnScatterPaKvCache": "aclnn_scatter_pa_kv_cache_golden.py",
+}
+
 try:  # noqa: E402  (sys.path bootstrap above)
     from runtime_config import (
         config_error_payload,
@@ -134,6 +139,33 @@ def _read_ttk_csv_identity(path: Path) -> tuple[str, str]:
     if not api_name:
         raise ValueError("TTK CSV has no data row with api_name")
     return ("aclnn" if api_name.startswith("aclnn") else "e2e"), api_name
+
+
+def _resolve_aclnn_golden_plugin(
+    iter_dir: Path,
+    api_name: str,
+    *,
+    disabled: bool = False,
+) -> Path | None:
+    """Resolve iteration-specific Golden first, then the operator registry."""
+    if disabled:
+        return None
+    iteration_golden = iter_dir / "golden.py"
+    if iteration_golden.is_file():
+        return iteration_golden
+
+    registered_name = ACLNN_GOLDEN_PLUGINS.get(api_name)
+    if registered_name:
+        registered = (
+            ROOT
+            / "agent"
+            / "hs"
+            / "ttk_plugins"
+            / registered_name
+        )
+        if registered.is_file():
+            return registered
+    return None
 
 
 def _platform_from_cases_name(path: Path) -> str | None:
@@ -577,6 +609,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--proc-timeout",
+        type=int,
+        default=180,
+        help=(
+            "TTK ACLNN 单用例超时时间（秒）；0 表示不设置，默认 180。"
+        ),
+    )
+    parser.add_argument(
         "--strategy",
         choices=("default", "fusion"),
         default="default",
@@ -606,6 +646,8 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    if args.proc_timeout < 0:
+        parser.error("--proc-timeout 必须大于等于 0")
 
     cases_path = resolve_input_path(args.cases)
     output_path = resolve_input_path(args.output)
@@ -622,6 +664,18 @@ def main() -> int:
         if ttk_mode == "aclnn":
             from scripts.validate_ttk_aclnn_csv import validate_csv
 
+            iter_dir = cases_path.parent
+            golden_plugin = _resolve_aclnn_golden_plugin(
+                iter_dir, csv_api_name, disabled=args.no_golden,
+            )
+            if args.no_golden:
+                golden_resolution = "disabled"
+            elif golden_plugin == iter_dir / "golden.py":
+                golden_resolution = "iteration"
+            elif golden_plugin is not None:
+                golden_resolution = "registry"
+            else:
+                golden_resolution = "none"
             validation = validate_csv(cases_path)
             if not validation["valid"]:
                 # 执行优先：本地严格校验只作诊断，不阻止把 CSV 交给真实 TTK。
@@ -637,6 +691,10 @@ def main() -> int:
                 f"python3 -m ttk aclnn -i {cases_path.name} "
                 "--plat=<servers.json.ttk.plat> --warmup False"
             )
+            if golden_plugin is not None:
+                command += f" --plugin {golden_plugin.name}"
+            if args.proc_timeout > 0:
+                command += f" --proc-timeout {args.proc_timeout}"
             if args.generate:
                 result = {
                     "status": "generate",
@@ -650,6 +708,12 @@ def main() -> int:
                         "--plat=<servers.json.ttk.plat> --validate"
                     ),
                     "golden_required": False,
+                    "golden_plugin": (
+                        str(golden_plugin) if golden_plugin is not None else None
+                    ),
+                    "golden_resolution": golden_resolution,
+                    "proc_timeout": args.proc_timeout,
+                    "precision_blocking": False,
                     "validation": validation,
                     "engine_error": None,
                 }
@@ -700,7 +764,6 @@ def main() -> int:
                     "message": "servers.json 中没有包含 ttk 配置的服务器。",
                 })
                 return 2
-            iter_dir = cases_path.parent
             operator_platforms = _load_operator_supported_platforms(iter_dir)
             csv_platform = _load_ttk_selected_platform(iter_dir)
             if csv_platform:
@@ -732,21 +795,13 @@ def main() -> int:
             )
             from scripts.execute_ttk_aclnn import run_aclnn
 
-            golden_plugin = None
-            if csv_api_name == "aclnnScatterPaKvCache":
-                golden_plugin = (
-                    ROOT
-                    / "agent"
-                    / "hs"
-                    / "ttk_plugins"
-                    / "aclnn_scatter_pa_kv_cache_golden.py"
-                )
             result = run_aclnn(
                 csv_path=cases_path,
                 server=server,
                 artifact_dir=artifact_dir,
                 mode="npu",
                 timeout=1800.0,
+                proc_timeout=args.proc_timeout,
                 plugin_path=golden_plugin,
             )
             result.update({
@@ -754,9 +809,13 @@ def main() -> int:
                 "ttk_mode": "aclnn",
                 "operator_name": args.operator or csv_api_name,
                 "selected_platform": selected_platform,
+                "golden_resolution": golden_resolution,
                 "passed": int(result.get("npu_passed", 0)),
                 "failed": int(result.get("npu_failed", 0)),
                 "total": int(result.get("npu_total", 0)),
+                "precision_passed": int(result.get("precision_passed", 0)),
+                "precision_failed": int(result.get("precision_failed", 0)),
+                "precision_blocking": False,
                 "records": result.get("records", []),
                 "engine_error": result.get("engine_error") or "",
             })
@@ -766,6 +825,8 @@ def main() -> int:
             )
             _emit({key: result.get(key) for key in (
                 "status", "passed", "failed", "total", "engine_error",
+                "precision_passed", "precision_failed", "precision_blocking",
+                "golden_plugin", "golden_resolution", "proc_timeout",
                 "remote_dir", "results_csv",
             )})
             return 0 if result.get("status") == "success" else 2
