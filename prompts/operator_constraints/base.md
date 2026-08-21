@@ -455,8 +455,10 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 
    上式只适用于 `T` 是必选参数、在两个分支都存在的情况。若 `T` 也可缺席，必须把
    `T is None` / `T is not None` 纳入对应分支，禁止在 `T is None` 分支访问 `T.shape`。
-   若原文只给出单向规则（例如仅写“P 为空时 T 为 2D”），只生成
-   `P is not None or len(T.shape) == 2`，不得臆造“P 存在时 T 为 3D”的反向分支。
+   若原文只给出单向规则（例如仅写“P 为空时 T 为 2D”），优先生成
+   `(len(T.shape) == 2) if (P is None) else True`，不得臆造“P 存在时 T 为 3D”的反向
+   分支。只有 if/else 无法清晰承载时，才回退到等价的
+   `P is not None or len(T.shape) == 2`。
 
    还要避免把“必须存在/缺席”与 dtype、shape、value 条件放进同一个 `and`，例如
    `P is not None and P.range_value == 1` 在当前求解器中会被解释为
@@ -487,7 +489,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
    else True
    ```
 
-   或者使用 `unless` 等价形式（多条分支合并）：
+   只有 if/elif/else 无法清晰承载或存在求解器兼容性要求时，才使用 `unless` 等价形式：
 
    ```text
    not(Y.range_value == "{value_A}") or (X.shape == [A, B])
