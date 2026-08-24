@@ -976,6 +976,16 @@ def _validate_scene_scan(value: dict) -> tuple[list[str], list[str]]:
             if not isinstance(fps, list):
                 errors.append(f"devices[{i}].templates[{j}].feature_params must be a list")
                 fps = []
+            # collect all selectable param names in this template for value_conflicts
+            # target cross-ref (target must be a selectable param, not a tensor/dim).
+            tpl_param_names: set[str] = set()
+            _fps_scan = t.get("feature_params") or []
+            if isinstance(_fps_scan, list):
+                for _fp in _fps_scan:
+                    if isinstance(_fp, dict):
+                        for _p in (_fp.get("params") or []):
+                            if isinstance(_p, dict) and isinstance(_p.get("name"), str):
+                                tpl_param_names.add(_p["name"])
             for k, fp in enumerate(fps):
                 if not isinstance(fp, dict):
                     errors.append(f"devices[{i}].templates[{j}].feature_params[{k}] must be an object")
@@ -1034,6 +1044,63 @@ def _validate_scene_scan(value: dict) -> tuple[list[str], list[str]]:
                                 f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}].{opt} "
                                 f"must be string or null"
                             )
+                    vc = p.get("value_conflicts")
+                    if vc is not None:
+                        vc_loc = (
+                            f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}]"
+                            f".value_conflicts"
+                        )
+                        if not isinstance(vc, list):
+                            errors.append(f"{vc_loc} must be a list")
+                        else:
+                            for ci, entry in enumerate(vc):
+                                eloc = f"{vc_loc}[{ci}]"
+                                if not isinstance(entry, dict):
+                                    errors.append(f"{eloc} must be an object")
+                                    continue
+                                target = entry.get("target")
+                                if not isinstance(target, str) or not target.strip():
+                                    errors.append(f"{eloc}.target must be a non-empty string")
+                                elif target not in tpl_param_names:
+                                    warnings.append(
+                                        f"{eloc}.target {target!r} not a selectable param "
+                                        f"in template {tname!r}; conflict rule will not fire"
+                                    )
+                                forbidden = entry.get("forbidden")
+                                required = entry.get("required")
+                                for fld, val in (("forbidden", forbidden), ("required", required)):
+                                    if val is not None:
+                                        if not isinstance(val, list):
+                                            errors.append(f"{eloc}.{fld} must be a list")
+                                        elif val and not all(
+                                            isinstance(x, (str, int, float, bool)) for x in val
+                                        ):
+                                            errors.append(f"{eloc}.{fld} entries must be str/int/float/bool")
+                                forb_ok = isinstance(forbidden, list) and len(forbidden) > 0
+                                req_ok = isinstance(required, list) and len(required) > 0
+                                if forb_ok and req_ok:
+                                    errors.append(
+                                        f"{eloc}: forbidden and required are mutually exclusive; "
+                                        f"provide exactly one"
+                                    )
+                                elif not forb_ok and not req_ok:
+                                    errors.append(
+                                        f"{eloc}: must provide exactly one of forbidden/required "
+                                        f"(non-empty list)"
+                                    )
+                                ws = entry.get("when_self")
+                                if ws is not None:
+                                    if not isinstance(ws, list):
+                                        errors.append(f"{eloc}.when_self must be a list")
+                                    elif ws and not all(
+                                        isinstance(x, (str, int, float, bool)) for x in ws
+                                    ):
+                                        errors.append(
+                                            f"{eloc}.when_self entries must be str/int/float/bool"
+                                        )
+                                reason = entry.get("reason")
+                                if reason is not None and not isinstance(reason, str):
+                                    errors.append(f"{eloc}.reason must be a string or null")
 
     # derived consistency: device_types == set of devices[].device
     if device_types and declared_devices != device_set:

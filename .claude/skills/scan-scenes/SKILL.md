@@ -27,7 +27,11 @@ description: 扫描算子文档按设备类型→量化模板→特性参数三�
      单/多在模板支持 ≥2 取值时按枚举可选项提取为 `feature_params`（bool 用 `[true,false]`、
      TensorList 用 `["单","多"]`、format 用文档原文 token 如 `["ND","NZ"]`），仅单值时仍归 `definition`。
    - 按"特性名"分组（布局（inputLayout）/Mask/PagedAttention/DequantChecker（反量化）/
-     转置…），关联参数取值牵动其他选择型参数时作为该条目的 `related`。
+     转置…），关联参数取值牵动其他选择型参数时作为该条目的 `related`。**当 `related` 描述的是
+     "本参数取 X 值时另一选择型特性参数禁止取 Y / 必须取 Z"且该关联参数也在同一模板 `feature_params`
+     中（选择型）时，必须同步结构化为该参数的 `value_conflicts`**（`when_self`/`target`/
+     `forbidden`|`required`/`reason`）；关联指向输入 tensor/dim/dtype 等非选择项时只留 `related`
+     文本、不加 `value_conflicts`；不臆造文档未声明的禁止/要求关系。详见 `prompts/scan_scenes.md` §4/§5。
 2. **不设"通用"组**：设备类型来自文档"产品支持情况"表，**逐字照抄 `<term>…</term>` 原文、不得简写/合并**（如 `Atlas A2 训练系列产品/Atlas A2 推理系列产品` 不得改成 `Atlas A2 训练/推理系列`，否则后续 √ 行交集落空）；无设备标注的内容合并到每个
    具体设备组下（不单独成"通用"组）。场景/模板同属多设备 → 在每个相关设备组下都列出。
    **"与 X 相同"的设备直接内联复制 X 的 `templates`**（不写 `same_as` 引用字段，各设备

@@ -25,13 +25,20 @@ op-scene 提取规则、设备类型划分表、特性参数筛选规则、输�
   分类名，其说明拆入其下各真实量化模板）。
 - **不设"通用"组**：设备类型来自文档"产品支持情况"表，**逐字照抄 `<term>…</term>` 原文、不得简写/合并**（如 `Atlas A2 训练系列产品/Atlas A2 推理系列产品` 不得改成 `Atlas A2 训练/推理系列`，否则后续与约束表 √ 行交集落空）；无设备标注的内容合并到每个具体
   设备组下（不单独成组）。场景/模板同属多设备 → 在每个相关设备组下都列出。
-- **两条落地规则（必落实）**：
+- **三条落地规则（必落实）**：
   1. **含多参数的 bullet 拆成独立 `params[]` 条目**（如文档原文
      `x: 取值：…；weight: 取值：…` → 两条 params，各带 `name`/`values`/`description`）；
      复杂取值的逐值注记（如 `0 KEEP_DOTO（…）`）只保留值 token 在 `values`，注记并入
      `description`/`constraint`。
   2. **"与 X 相同"的设备直接内联复制 X 的 `templates`**（不写 `same_as` 引用字段，各设备
      `templates` 自洽，下游消费者无需做引用解析）。
+  3. **参数间冲突规则结构化为 `value_conflicts`**：当某参数 `related` 描述的是"本参数取
+     X 值时另一**选择型**特性参数禁止取 Y / 必须取 Z"，且该关联参数也在同一模板
+     `feature_params` 中时，必须同步结构化为该参数的 `value_conflicts`
+     （`when_self`/`target`/`forbidden`|`required`/`reason`，二者有且仅一非空）；关联指向
+     输入 tensor/dim/dtype 等非选择项时只留 `related` 文本、不加 `value_conflicts`；不臆造
+     文档未声明的禁止/要求关系。详见 `prompts/scan_scenes.md` §4/§5。该字段供
+     `scripts/check_scene_conflicts.py` 在用户 Q3 选完特性参数后做确定性冲突识别。
 - **不臆造**：只提炼文档原文内容，不增补、不推断、不改写语义；纯算子名推断（如见
   `AscendAntiQuant` 就臆断有伪量化）**不**算依据。数值、类型、范围必须保留。
 - **不做约束提取**：不写参数 dtype/format/shape、不写 `constraints_in_parameters`、不下
