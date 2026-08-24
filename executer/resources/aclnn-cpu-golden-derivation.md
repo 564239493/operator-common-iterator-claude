@@ -1448,9 +1448,11 @@ return result
 
 ## GroupedMatmulV5 weight 方向与 ND 转置布局处理
 
-**适用范围：** `aclnnGroupedMatmulV5` 的二维 ND weight。以下规则由运行
-`aclnnGroupedMatmulV5-20260813-075223-209105` 的 executor 修复及硬件重跑验证；NZ
-物理排布、三维 weight 和 `x_transposed=True` 需要分别验证，不能直接套用本节实现。
+**适用范围：** `aclnnGroupedMatmulV5` 的二维 ND weight。FP32 规则由运行
+`aclnnGroupedMatmulV5-20260813-075223-209105` 的 executor 修复及硬件重跑验证；A16W8
+的二维 INT8 weight 使用相同的 cases 布局契约，已纳入模板和非方阵单元测试，仍须通过
+A2 小样确认 NPU stride 物化。NZ 物理排布、其他 dtype 和 `x_transposed=True` 需要分别
+验证，不能直接套用本节实现。
 
 ### cases 层与 ACLNN 调用层不是同一表示
 
@@ -1493,6 +1495,31 @@ else:
 result = torch.matmul(x, weight_for_matmul)
 ```
 
+实现时优先调用模板提供的确定性 helper
+`_grouped_matmul_v5_weight_for_matmul(weight, group_type, weight_transposed)`，不得在
+CPU golden 内重新发明一个对 2-D/3-D 共用的 `_orient_weight`：二维与三维的 False/True
+方向正好不同，统一分支会在非方阵上暴露错误。`groupType=2` 的二维 weight 已是
+`(K,N)`，也不得套用 False 分支转置。
+
+### A16W8 perchannel 反量化顺序
+
+CPU golden 必须先把 weight 恢复为数学布局 `(K,N)` 或 `(E,K,N)`，再沿逻辑 N 轴广播
+反量化参数，并严格按文档公式计算：
+
+```python
+weight_for_matmul = _grouped_matmul_v5_weight_for_matmul(
+    weight, group_type, weight_transposed
+)
+weight_for_matmul = _grouped_matmul_v5_dequant_perchannel(
+    weight_for_matmul, antiquant_scale, antiquant_offset
+)
+```
+
+二维参数 shape 必须为 `[N]`，广播为 `[1,N]`；三维参数必须为 `[E,N]`，广播为
+`[E,1,N]`。公式是 `(weight + antiquantOffset) * antiquantScale`，禁止写成
+`weight * antiquantScale + antiquantOffset`。shape 不匹配时明确抛错，不得 reshape、
+截断或利用方阵掩盖布局错误。以上 helper 由 `aclnn_api_template.py.j2` 确定性生成。
+
 若当前场景还生成了 `x_transposed=True`，CPU golden 可将 cases 中的 `(K,M)` 转回
 `(M,K)` 后计算；但 NPU executor 是否也需要为 x 构造非连续 view，必须用相应 groupType=2
 用例单独验证，不能由本次 weight 结果推断。
@@ -1505,6 +1532,9 @@ result = torch.matmul(x, weight_for_matmul)
 - [ ] true：cases `(K,N)` → NPU shape 不变、非连续转置 view
 - [ ] kwargs 与 positional args 路径互斥，避免重复转换
 - [ ] CPU golden：false 使用 `weight.T`，true 直接使用 weight
+- [ ] A16W8：先恢复数学 weight，再广播 `[N]`/`[E,N]` 反量化参数
+- [ ] A16W8：反量化顺序为 `(weight + offset) * scale`
+- [ ] 回归 shape 使用 `K != N`，不得只用方阵
 - [ ] `activationFeatureOutOptional` / `dynQuantScaleOutOptional` 使用 `pop(..., None)`
 
 ### A2/A8W8 groupType=0 的 3-D weight 与 groupList 物化

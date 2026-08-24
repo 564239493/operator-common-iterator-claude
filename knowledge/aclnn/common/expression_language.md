@@ -29,12 +29,15 @@ depends_on: [implicit_parameters]
    - ✅ `transposeX1.range_value == False`（bool 等号）
    - ❌ `actType.range_value in [[0, 5]]`（嵌套列表是数据结构，不是区间谓词）
    - ❌ `epsilon.range_value in [[null, 0.0001]]`（不得用 `null` 充当数值边界）
-3. **复合逻辑 —— 蕴含两种等价形式**：
-   - **形式 A（if/else）**：`(B) if (A) else True` —— 条件不满足时返回 True（约束不适用）
+3. **复合逻辑 —— 单向蕴含优先使用 if/else**：
+   - **首选形式（if/else）**：`(B) if (A) else True` —— 条件不满足时返回 True（约束不适用）。
+     对“当 A 时必须 B”这类单层业务规则统一优先使用本形式，使约束可直接按自然语言阅读。
      - ✅ `(bias.dtype == "FLOAT16") if (x.dtype == "FLOAT16") else True`
-   - **形式 B（unless 结构）**：`not(A) or B` —— 条件不满足时约束不生效
+   - **回退形式（unless 结构）**：`not(A) or B` —— 与上式逻辑等价；仅当条件表达式无法
+     清晰承载、需要与既有复合 OR 结构组合，或求解器兼容性要求时使用。
      - ✅ `not(quantization_type.range_value == "per-channel") or (bias.shape == [E, N1])`
      - ✅ `not(A and B) or C` 用于"两个条件同时成立才约束"的场景
+   - `if/else` 单向蕴含的兜底必须为 `else True`；禁止写成 `else False`，否则会反向强迫 A 成立。
    - 等价关系若涉及 presence（任一侧含 `is None` / `is not None`），禁止使用布尔
      `(A) == (B)`。两个 Optional 参数共存时使用 `if/else`：`(zeroPoints2 is None)
      if (scales2 is None) else (zeroPoints2 is not None)`。presence 与必选 Tensor 的
@@ -159,8 +162,9 @@ presence/rank 双向关系不得只保留 `P is None and len(T.shape) == 2`；�
 使用缺席分支的合取。
 
 该模板假定 `T` 在两态中都存在；若 `T` 本身 Optional，分支中必须先约束 T 的
-presence，再访问 `T.shape`。若文档只陈述一个方向，应使用单向蕴含 `not(A) or B`，
-不得擅自补成双向合法组合。
+presence，再访问 `T.shape`。若文档只陈述一个方向，优先使用单向蕴含
+`(B) if (A) else True`；仅在该形式无法清晰表达时回退到 `not(A) or B`。不得擅自补成
+双向合法组合。
 
 注意：presence 参与合法组合时统一优先使用 `if/else`。当前求解器会把同一 `and`
 中的纯 presence 守卫与属性条件解释成蕴含，所以把两个 presence/rank 分支写成
@@ -263,6 +267,7 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | `shape_broadcast` | 形状需满足广播关系 | `all(a.shape[i] == b.shape[i] or a.shape[i]==1 or b.shape[i]==1 for i in range(N))` |
 | `shape_choice` | 形状在多个候选中选其一（含 v3 新增的门控条件 Shape） | `bias.shape == gamma.shape or bias.shape == x.shape` |
 | `shape_equality` | 形状完全相等 | `out.shape == x.shape` |
+| `shape_inequality` | shape 某维数值上界/下界约束（非 shape 间相等，而是单维数值不超阈值） | `weight.shape[0] <= 1024` |
 | `shape_dependency` | 输出 shape 由输入 + 辅助参数推导 | `out.shape[0] == pad + x.shape[0]` |
 | `shape_value_dependency` | shape 中具体轴值/元素值依赖 | `x1.shape[0] == x2.shape[1] and x2.shape[1] == BS.range_value` |
 | `type_equality` | 无条件、独立的纯 dtype 属性相等；整条 expr 不得含门控、`None`、`.range_value` 或非 dtype 属性 | `x1.dtype == x2.dtype`；`x.dtype == y.dtype and x.dtype == z.dtype` |

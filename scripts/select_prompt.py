@@ -38,10 +38,15 @@ def assemble(
     knowledge_path: Path = DEFAULT_KNOWLEDGE,
     record_path: Path | None = None,
     preanalysis_path: Path | None = None,
+    source_analysis_knowledge: bool = False,
 ) -> list[str]:
     base_path, doc_path, output_path = base_path.resolve(), doc_path.resolve(), output_path.resolve()
     knowledge_path = knowledge_path.resolve()
-    result = route(doc_path, knowledge_path)
+    result = route(
+        doc_path,
+        knowledge_path,
+        source_analysis_knowledge=source_analysis_knowledge,
+    )
     base = base_path.read_text(encoding="utf-8").rstrip()
     bundle = render_bundle(result, knowledge_path).rstrip()
     snapshot = "\n".join([
@@ -85,6 +90,7 @@ def assemble(
                 "manifest_path": str(manifest_path.resolve()),
                 "manifest_sha256": _sha256(manifest_path),
                 "route_source": result["route_source"],
+                "feature_flags": result["applicability"].get("feature_flags", {}),
             },
             "applicability": result["applicability"],
             "assembly": {
@@ -109,10 +115,19 @@ def main() -> int:
     parser.add_argument("--record")
     parser.add_argument("--preanalysis-output")
     parser.add_argument("--list-modules", action="store_true")
+    parser.add_argument(
+        "--source-analysis-knowledge",
+        action="store_true",
+        help="显式启用按算子名精准命中的源码分析约束知识；默认关闭。",
+    )
     args = parser.parse_args()
     doc, knowledge = Path(args.doc).resolve(), Path(args.knowledge).resolve()
     if args.list_modules:
-        print(",".join(route(doc, knowledge)["resolved_modules"]))
+        print(",".join(route(
+            doc,
+            knowledge,
+            source_analysis_knowledge=args.source_analysis_knowledge,
+        )["resolved_modules"]))
         return 0
     if not args.output:
         parser.error("--output is required unless --list-modules is set")
@@ -120,6 +135,7 @@ def main() -> int:
         Path(args.base), doc, Path(args.output), knowledge,
         Path(args.record) if args.record else None,
         Path(args.preanalysis_output) if args.preanalysis_output else None,
+        source_analysis_knowledge=args.source_analysis_knowledge,
     )
     print(",".join(names))
     return 0

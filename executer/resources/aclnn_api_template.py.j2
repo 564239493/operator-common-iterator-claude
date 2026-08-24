@@ -50,7 +50,7 @@ def _build_grouped_matmul_v5_group_list(
 
 def _prepare_grouped_matmul_v5_group_list(
         x_value, weight_value, group_list, group_type, group_list_type):
-    """Materialise type-0/1/2 content for the verified A8W8 scope."""
+    """Materialise type-0/1/2 content for quantized single-list cases."""
     def single_tensor(value):
         if isinstance(value, torch.Tensor):
             return value
@@ -66,7 +66,9 @@ def _prepare_grouped_matmul_v5_group_list(
         and group_list_type in (0, 1, 2)
         and isinstance(x_tensor, torch.Tensor)
         and x_tensor.dim() == 2
-        and x_tensor.dtype == torch.int8
+        and x_tensor.dtype in (
+            torch.float16, torch.bfloat16, torch.int8
+        )
         and isinstance(weight_tensor, torch.Tensor)
         and weight_tensor.dim() == 3
         and weight_tensor.dtype == torch.int8
@@ -76,7 +78,7 @@ def _prepare_grouped_matmul_v5_group_list(
     if not isinstance(group_list, torch.Tensor):
         raise ValueError(
             "GroupedMatmulV5 groupListOptional is required in the "
-            "A8W8 groupType=0 single-list scope"
+            "quantized groupType=0 single-list scope"
         )
     if group_list.dtype != torch.int64:
         raise ValueError(
@@ -111,15 +113,92 @@ def _prepare_grouped_matmul_v5_weight(
         # A8W8 non-transposed cases already store contiguous [E,K,N].
         return tensor.contiguous()
 
-    # Legacy hardware-validated groupType=-1, 2-D FP32 convention.  Keep the
-    # guard exact: other group types, ranks, and dtypes have different layout
-    # contracts and must not inherit this conversion by fall-through.
-    if group_type == -1 and tensor.dim() == 2 and tensor.dtype == torch.float32:
+    # groupType=-1 stores 2-D cases as [N,K] when not transposed and [K,N]
+    # when transposed.  ACLNN consumes mathematical [K,N] in both branches,
+    # with a non-contiguous view carrying the transposed-layout signal.
+    # A16W8 uses int8 weight and follows the same documented 2-D convention.
+    if (group_type == -1 and tensor.dim() == 2
+            and tensor.dtype in (torch.float32, torch.int8)):
         if weight_transposed:
             return tensor.transpose(-1, -2).contiguous().transpose(-1, -2)
         return tensor.transpose(-1, -2).contiguous()
 
     return tensor
+
+
+def _grouped_matmul_v5_weight_for_matmul(
+        tensor, group_type, weight_transposed):
+    """Restore a cases-layer weight to its mathematical matmul layout."""
+    if not isinstance(tensor, torch.Tensor):
+        return tensor
+
+    if group_type == 2 and tensor.dim() == 2:
+        # K-axis grouping stores weight directly as [K,N].
+        return tensor
+
+    if group_type in (-1, 0) and tensor.dim() == 2:
+        # False: cases [N,K] -> [K,N].  True: cases already [K,N].
+        return tensor if weight_transposed else tensor.transpose(-1, -2)
+
+    if group_type == 0 and tensor.dim() == 3:
+        # False: cases [E,K,N].  True: cases [E,N,K] -> [E,K,N].
+        return tensor.transpose(-1, -2) if weight_transposed else tensor
+
+    raise ValueError(
+        "Unsupported GroupedMatmulV5 CPU weight layout: "
+        f"groupType={group_type}, rank={tensor.dim()}, "
+        f"weight_transposed={weight_transposed}"
+    )
+
+
+def _grouped_matmul_v5_broadcast_perchannel(param, weight, name):
+    """Validate and align A16W8 per-channel data to logical N."""
+    if param is None:
+        return None
+    if not isinstance(param, torch.Tensor):
+        raise TypeError(f"GroupedMatmulV5 {name} must be a tensor")
+
+    value = param.float()
+    if weight.dim() == 2:
+        expected = (weight.shape[-1],)
+        if tuple(value.shape) != expected:
+            raise ValueError(
+                f"GroupedMatmulV5 {name} must have shape [N]={expected}, "
+                f"got {tuple(value.shape)}"
+            )
+        return value.unsqueeze(0)
+
+    if weight.dim() == 3:
+        expected = (weight.shape[0], weight.shape[-1])
+        if tuple(value.shape) != expected:
+            raise ValueError(
+                f"GroupedMatmulV5 {name} must have shape [E,N]={expected}, "
+                f"got {tuple(value.shape)}"
+            )
+        return value.unsqueeze(-2)
+
+    raise ValueError(
+        "GroupedMatmulV5 per-channel dequant requires rank-2 or rank-3 "
+        f"weight, got rank {weight.dim()}"
+    )
+
+
+def _grouped_matmul_v5_dequant_perchannel(weight, scale, offset=None):
+    """Apply A16W8 dequant as (weight + offset) * scale."""
+    value = weight.float()
+    offset_value = _grouped_matmul_v5_broadcast_perchannel(
+        offset, value, "antiquantOffsetOptional"
+    )
+    scale_value = _grouped_matmul_v5_broadcast_perchannel(
+        scale, value, "antiquantScaleOptional"
+    )
+    if scale_value is None:
+        raise ValueError(
+            "GroupedMatmulV5 A16W8 requires antiquantScaleOptional"
+        )
+    if offset_value is not None:
+        value = value + offset_value
+    return value * scale_value
 
 
 @register("{{ aclnn_api_type }}")
@@ -320,9 +399,10 @@ class {{ class_name }}(AclnnBaseApi):
                 input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
             return
         if "aclnnGroupedMatmulV5" in operator_name:
-            # The ND weight direction/stride conversion was hardware-validated
-            # for groupType=-1 with 2-D FP32 weight.  Other weight branches must
-            # not infer a different direction solely from their shape.
+            # Materialise only explicitly supported layout contracts.  In
+            # particular, A16W8 groupType=-1 uses the same 2-D cases convention
+            # as the hardware-validated FP32 path; invalid groupType=0 rank-2
+            # pseudo-quant cases must not be repaired by fall-through.
             def case_scalar(name, default=None):
                 config = self.get_config_by_name(
                     self.task_result.case_config.inputs, name
@@ -611,6 +691,30 @@ class {{ cpu_class_name }}(BaseApi):
                 _flat_configs.extend(_item)
             else:
                 _flat_configs.append(_item)
+
+        # ATK materialises tensors in InputDataset, but scalar attrs may live
+        # only in task_result.case_config.  Keep a separate fallback map so a
+        # valid 0/False value is not confused with a missing attr.
+        _case_attr_map = {}
+        for _config in _flat_configs:
+            _config_type = getattr(_config, "type", None)
+            if _config_type not in ("attr", "attrs", "attr_tuple"):
+                continue
+            _name = getattr(_config, "name", None)
+            if not _name:
+                continue
+            _value = getattr(_config, "range_values", None)
+            while isinstance(_value, (list, tuple)) and len(_value) == 1:
+                _value = _value[0]
+            # A multi-value attrs/attr_tuple is not a scalar and must not be
+            # silently collapsed.  Its executor-specific handling remains in
+            # the ACLNN path.
+            if isinstance(_value, (list, tuple)):
+                continue
+            if _value is not None:
+                _case_attr_map[_name] = _value
+                if isinstance(_name, str):
+                    _case_attr_map[_name.lower()] = _value
         for _index, _value in enumerate(_args):
             _name = None
             if _index < len(_flat_configs):
@@ -625,6 +729,10 @@ class {{ cpu_class_name }}(BaseApi):
             value = _param_map.get(name)
             if value is None and isinstance(name, str):
                 value = _param_map.get(name.lower())
+            if value is None:
+                value = _case_attr_map.get(name)
+            if value is None and isinstance(name, str):
+                value = _case_attr_map.get(name.lower())
             return default if value is None else value
 
         def _get_tensor(name, default=None):

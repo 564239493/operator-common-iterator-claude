@@ -452,11 +452,14 @@ torch_npu 原型中的每个真实输入参数以及原型/返回段定义的每
 (layout.range_value == "TND") and (len(query.shape) == 3)
 ```
 
-这会强迫 layout 必须为 TND。正确写法：
+这会强迫 layout 必须为 TND。单向条件约束优先使用：
 
 ```text
-(layout.range_value != "TND") or (len(query.shape) == 3)
+(len(query.shape) == 3) if (layout.range_value == "TND") else True
 ```
+
+仅当 if/else 无法清晰承载时，才回退到等价的
+`(layout.range_value != "TND") or (len(query.shape) == 3)`。
 
 多个完整场景可写：
 
@@ -478,11 +481,12 @@ layout↔rank 对应。
 ((mode_a.range_value == 3) and (mode_b.range_value == 3))
 ```
 
-然后为每行分别写同一条件门控的 dtype/presence/shape 约束：
+然后为每行分别写同一条件门控的 dtype/presence/shape 约束，优先使用 if/else：
 
 ```text
-not ((mode_a.range_value == 1) and (mode_b.range_value == 2)) or
-((weight.dtype == "int8") and (scale is not None))
+((weight.dtype == "int8") and (scale is not None)) if (
+    (mode_a.range_value == 1) and (mode_b.range_value == 2)
+) else True
 ```
 
 禁止只写 `mode_a in [0,1,3]`、`mode_b in [0,2,3]` 后允许 9 种笛卡尔积。
