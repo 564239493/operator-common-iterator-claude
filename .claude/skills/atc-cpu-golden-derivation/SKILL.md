@@ -1423,6 +1423,41 @@ return result
 - [ ] **CPU error "batch2 must be a 3D tensor"** — mat2 is 5D NZ on CPU → need NZ→dense decompression
 - [ ] **CPU code handles self_transposed** — reads `self_transposed` from `_get_param` and transposes self before matmul: `if self_transposed: self_t = self_t.transpose(1, 2)`
 
+## aclnnGroupedMatmulV5 weight 布局与 A16W8 反量化硬规则
+
+推导 `aclnnGroupedMatmulV5` CPU golden 时，必须调用通用模板已生成的确定性 helper，禁止
+在 `Function.__call__` 内另写一套对二维/三维共用的 `_orient_weight` 或 `_dequant_weight`：
+
+```python
+weight_for_matmul = _grouped_matmul_v5_weight_for_matmul(
+    weight, group_type, weight_transposed
+)
+if is_a16w8:
+    weight_for_matmul = _grouped_matmul_v5_dequant_perchannel(
+        weight_for_matmul, antiquant_scale, antiquant_offset
+    )
+```
+
+布局真值表：
+
+- `groupType=-1`（以及合法的 `groupType=0` 多 weight）二维：False cases=`[N,K]`，
+  CPU 转成 `[K,N]`；True cases 已为 `[K,N]`，CPU 保持。
+- `groupType=0` 单 weight 三维：False cases=`[E,K,N]`，CPU 保持；True
+  cases=`[E,N,K]`，CPU 转成 `[E,K,N]`。
+- `groupType=2` 二维：cases 已为 `[K,N]`，不得因 `weight_transposed=False` 再转置。
+- A16W8 `groupType=0` 单 weight 必须是三维；遇到二维不得由 executor 自动修复，须明确
+  暴露为约束/生成问题。
+
+A16W8 只支持 perchannel 时，二维 antiquant 参数必须为 `[N]`，三维必须为 `[E,N]`；
+先恢复 weight 数学布局，再广播参数。反量化公式严格为
+`(weight + antiquantOffset) * antiquantScale`，禁止写成
+`weight * antiquantScale + antiquantOffset`。所有布局自检和回归必须含 `K != N` 的非方阵，
+因为方阵无法揭示轴向颠倒。
+
+NPU 侧的 `_prepare_grouped_matmul_v5_weight` 由
+`executer/resources/aclnn_api_template.py.j2` 负责；CPU golden 不得复用 NPU 的
+non-contiguous stride 构造，只恢复数学 shape/数值。
+
 ## 两段式 + 前置 CalculateSizeAndFormat 算子（自动 prelude 注入）
 
 某些两段式算子（如 `aclnnNpuFormatCast`）文档要求"必须先调用 `aclnnXxxCalculateSizeAndFormat` 推导 dstTensor 的 shape 和 actualFormat，再调用两段式 GetWorkspaceSize"。`dstTensor`/`actualFormat`/`dstShape`/`dstShapeSize` 是 `[DERIVED]` 输出，由前置 API 运行时派生，**生成器不得独立随机赋值**。若 executor 不调前置 API，dstTensor 沿用 cases.json 占位 shape（可能是未初始化内存模式的垃圾值），流入主 API 触发 tiling 崩溃（如 trans_data `c0 should be 8 or 16 for b32...` / 507035 vector-core 异常）+ 毒化设备级联。详见项目 memory `calculate-size-and-format-prerequisite-executor-bug`。

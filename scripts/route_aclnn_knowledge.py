@@ -12,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_KNOWLEDGE = ROOT / "knowledge" / "aclnn"
+SOURCE_ANALYSIS_SCOPE = "source_analysis"
 
 
 def _sha_text(text: str) -> str:
@@ -145,13 +146,42 @@ def _trigger_evidence(trigger: dict, operator_name: str, text: str) -> str | Non
     return f"{kind}:{value}; excerpt={excerpt[:220]}"
 
 
-def route(doc: Path, knowledge: Path = DEFAULT_KNOWLEDGE) -> dict:
+def route(
+    doc: Path,
+    knowledge: Path = DEFAULT_KNOWLEDGE,
+    *,
+    source_analysis_knowledge: bool = False,
+) -> dict:
     text = doc.read_text(encoding="utf-8", errors="replace")
     preanalysis = preanalyze_document(doc, text)
     manifest, modules = _load_modules(knowledge)
     selected: set[str] = set()
     evidence: dict[str, list[str]] = {}
+    rejected_candidates: list[dict] = []
+    disabled_ids: set[str] = set()
     for module_id, item in modules.items():
+        if (
+            item.get("scope") == SOURCE_ANALYSIS_SCOPE
+            and not source_analysis_knowledge
+        ):
+            disabled_ids.add(module_id)
+            disabled_hits = [
+                hit for trigger in item.get("triggers", [])
+                if (hit := _trigger_evidence(
+                    trigger, preanalysis["operator_name"], text
+                ))
+            ]
+            if item.get("default_load") or disabled_hits:
+                rejected_candidates.append({
+                    "module_id": module_id,
+                    "scope": item["scope"],
+                    "reason": "feature_disabled",
+                    "evidence": [
+                        "source_analysis_knowledge=false",
+                        *disabled_hits,
+                    ],
+                })
+            continue
         if item.get("default_load"):
             selected.add(module_id)
             evidence[module_id] = ["default_load"]
@@ -164,7 +194,6 @@ def route(doc: Path, knowledge: Path = DEFAULT_KNOWLEDGE) -> dict:
     # precedence wins over default_load / positive triggers, so a doc that
     # explicitly negates a concept (e.g. "不支持广播") does not pull the rule.
     rejected_ids: set[str] = set()
-    rejected_candidates: list[dict] = []
     for module_id, item in modules.items():
         if module_id not in selected:
             continue
@@ -188,6 +217,8 @@ def route(doc: Path, knowledge: Path = DEFAULT_KNOWLEDGE) -> dict:
             for dependency in modules[module_id].get("depends_on", []):
                 if dependency not in modules:
                     raise ValueError(f"unknown dependency {dependency!r} for {module_id!r}")
+                if dependency in disabled_ids:
+                    continue
                 if dependency in rejected_ids:
                     # reject_on takes precedence; do not re-pull a rejected dep.
                     continue
@@ -200,6 +231,7 @@ def route(doc: Path, knowledge: Path = DEFAULT_KNOWLEDGE) -> dict:
     for module_id in resolved:
         item = modules[module_id]
         basis = "default" if item.get("default_load") else (
+            "explicit_source_analysis" if item["scope"] == SOURCE_ANALYSIS_SCOPE else
             "exact_operator" if item["scope"] == "operator" else
             "dependency" if all(x.startswith("required_by:") for x in evidence.get(module_id, [])) else
             "document_or_operator_signal"
@@ -207,7 +239,13 @@ def route(doc: Path, knowledge: Path = DEFAULT_KNOWLEDGE) -> dict:
         decisions.append({
             "module_id": module_id,
             "scope": item["scope"],
-            "decision": "applicable_exact_operator_match" if item["scope"] == "operator" else "applicable",
+            "decision": (
+                "applicable_explicit_source_analysis"
+                if item["scope"] == SOURCE_ANALYSIS_SCOPE
+                else "applicable_exact_operator_match"
+                if item["scope"] == "operator"
+                else "applicable"
+            ),
             "basis": basis,
             "evidence": evidence.get(module_id, []),
         })
@@ -217,7 +255,13 @@ def route(doc: Path, knowledge: Path = DEFAULT_KNOWLEDGE) -> dict:
         "preanalysis": preanalysis,
         "resolved_modules": resolved,
         "applicability": {
-            "policy": "exact-operator modules load only on operator_name_eq match; current operator document is authoritative",
+            "policy": (
+                "exact-operator modules load only on operator_name_eq match; "
+                "source_analysis modules additionally require an explicit feature flag"
+            ),
+            "feature_flags": {
+                "source_analysis_knowledge": source_analysis_knowledge,
+            },
             "selected_modules": decisions,
             "rejected_candidates": rejected_candidates,
             "selected_count": len(decisions),
@@ -228,11 +272,21 @@ def route(doc: Path, knowledge: Path = DEFAULT_KNOWLEDGE) -> dict:
 
 def render_bundle(result: dict, knowledge: Path = DEFAULT_KNOWLEDGE) -> str:
     _, modules = _load_modules(knowledge)
+    has_source_analysis = any(
+        modules[module_id].get("scope") == SOURCE_ANALYSIS_SCOPE
+        for module_id in result["resolved_modules"]
+    )
+    authority_note = (
+        "> 当前算子文档是常规约束的最高优先级来源；显式启用的 source_analysis "
+        "模块是锁定源码版本的附加约束源，冲突时必须保留来源、版本与可信度，不得静默覆盖。"
+        if has_source_analysis else
+        "> 当前算子文档是唯一事实源；知识只用于防漏、规范表达和检查适用性。"
+    )
     lines = [
         "# 已装配的 ACLNN 约束知识", "",
         f"- 算子：`{result['preanalysis']['operator_name'] or 'UNKNOWN'}`",
         f"- 接口：`{result['preanalysis']['interface_mode']}`", "",
-        "> 当前算子文档是唯一事实源；知识只用于防漏、规范表达和检查适用性。", "",
+        authority_note, "",
     ]
     for module_id in result["resolved_modules"]:
         lines.extend(["---", "", f"<!-- knowledge-module: {module_id} -->", "", modules[module_id]["body"].rstrip(), ""])
@@ -245,8 +299,17 @@ def main() -> int:
     parser.add_argument("--knowledge", default=str(DEFAULT_KNOWLEDGE))
     parser.add_argument("--json")
     parser.add_argument("--bundle")
+    parser.add_argument(
+        "--source-analysis-knowledge",
+        action="store_true",
+        help="显式启用按算子名精准命中的源码分析约束知识；默认关闭。",
+    )
     args = parser.parse_args()
-    result = route(Path(args.doc).resolve(), Path(args.knowledge).resolve())
+    result = route(
+        Path(args.doc).resolve(),
+        Path(args.knowledge).resolve(),
+        source_analysis_knowledge=args.source_analysis_knowledge,
+    )
     if args.json:
         Path(args.json).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.bundle:

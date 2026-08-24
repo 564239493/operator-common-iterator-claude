@@ -50,14 +50,59 @@ async def _download_via_shell(conn, remote_path: str, local_path: Path) -> bool:
 
 def _parse_results(path: Path) -> dict[str, Any]:
     if not path.is_file():
-        return {"passed": 0, "failed": 0, "total": 0, "rows": []}
+        return {
+            "passed": 0, "failed": 0, "total": 0,
+            "precision_passed": 0, "precision_failed": 0,
+            "rows": [],
+        }
     with path.open(encoding="utf-8", newline="") as handle:
         rows = list(csv_mod.DictReader(handle))
-    passed = sum(
+
+    precision_passed = sum(
         1 for r in rows
         if str(r.get("precision_status") or r.get("status") or "").upper() == "PASS"
     )
-    return {"passed": passed, "failed": len(rows) - passed, "total": len(rows), "rows": rows}
+
+    def execution_succeeded(row: dict[str, Any]) -> bool:
+        """Whether the NPU produced a result, independent of precision."""
+        precision = str(row.get("precision") or "").strip().upper()
+        if precision == "NO_OUTPUT":
+            return False
+        if str(row.get("api_perf_us") or "").strip():
+            return True
+        if str(row.get("op_perf_us") or "").strip():
+            return True
+        perf_status = str(row.get("perf_status") or "").strip().upper()
+        if perf_status in {"PASS", "FAIL"}:
+            return True
+        # GOLDEN_FAILURE and numerical FAIL both happen after NPU output exists.
+        return precision in {"PASS", "FAIL", "GOLDEN_FAILURE"}
+
+    execution_passed = 0
+    for row in rows:
+        row["execution_status"] = "PASS" if execution_succeeded(row) else "FAIL"
+        row["precision_result"] = str(
+            row.get("precision_status") or row.get("status") or "UNKNOWN"
+        ).upper()
+        execution_passed += row["execution_status"] == "PASS"
+
+    return {
+        "passed": execution_passed,
+        "failed": len(rows) - execution_passed,
+        "total": len(rows),
+        "precision_passed": precision_passed,
+        "precision_failed": len(rows) - precision_passed,
+        "rows": rows,
+    }
+
+
+def _write_remote_plan(
+    artifact_dir: Path, *, command: str, remote_dir: str,
+) -> None:
+    """Persist the remote launch plan before any SSH operation can fail."""
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "remote_command.txt").write_text(command, encoding="utf-8")
+    (artifact_dir / "remote_dir.txt").write_text(remote_dir, encoding="utf-8")
 
 
 async def _run_aclnn(
@@ -67,6 +112,7 @@ async def _run_aclnn(
     mode: str = "validate",
     test_indexes: str = "",
     timeout: float = 600,
+    proc_timeout: int = 180,
     plugin_path: Path | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
@@ -86,7 +132,36 @@ async def _run_aclnn(
         f"{remote_dir}/{plugin_path.name}" if plugin_path is not None else None
     )
 
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    ttk_args = (
+        f"-i {shlex.quote(csv_path.name)} "
+        f"--plat={shlex.quote(plat)} "
+    )
+    if remote_plugin is not None:
+        ttk_args += f" --plugin {shlex.quote(plugin_path.name)}"
+    if mode == "validate":
+        ttk_args += " --validate"
+    if test_indexes:
+        ttk_args += f" --ti={shlex.quote(test_indexes)}"
+    if proc_timeout > 0:
+        ttk_args += f" --proc-timeout {proc_timeout}"
+    if mode == "npu":
+        ttk_args += " --warmup False"
+
+    parts = []
+    if env_init:
+        parts.append(env_init)
+    parts.append(f"cd {shlex.quote(remote_dir)}")
+    parts.append(
+        f"PYTHONPATH={shlex.quote(repo_path)}:${{PYTHONPATH:-}} "
+        f"{shlex.quote(python)} -m ttk aclnn {ttk_args}"
+    )
+    command = " && ".join(parts)
+
+    # Write these before connect/mkdir/upload/run.  They remain available when
+    # SSH setup fails or the outer execution is interrupted before TTK exits.
+    _write_remote_plan(
+        artifact_dir, command=command, remote_dir=remote_dir,
+    )
     endpoint = ServerEndpoint.from_server_row(server)
     conn = None
 
@@ -101,35 +176,11 @@ async def _run_aclnn(
                 raise SSHEngineError(f"golden plugin not found: {plugin_path}")
             await upload_file(conn, plugin_path, remote_plugin)
 
-        ttk_args = (
-            f"-i {shlex.quote(csv_path.name)} "
-            f"--plat={shlex.quote(plat)}"
-        )
-        if remote_plugin is not None:
-            ttk_args += f" --plugin {shlex.quote(plugin_path.name)}"
-        if mode == "validate":
-            ttk_args += " --validate"
-        if test_indexes:
-            ttk_args += f" --ti={shlex.quote(test_indexes)}"
-        if mode == "npu":
-            ttk_args += " --warmup False"
-
-        parts = []
-        if env_init:
-            parts.append(env_init)
-        parts.append(f"cd {shlex.quote(remote_dir)}")
-        parts.append(
-            f"PYTHONPATH={shlex.quote(repo_path)}:${{PYTHONPATH:-}} "
-            f"{shlex.quote(python)} -m ttk aclnn {ttk_args}"
-        )
-        command = " && ".join(parts)
-
         result = await run(conn, command, timeout=timeout)
         duration = time.monotonic() - started
 
         (artifact_dir / "remote_stdout.log").write_text(result.stdout, encoding="utf-8")
         (artifact_dir / "remote_stderr.log").write_text(result.stderr, encoding="utf-8")
-        (artifact_dir / "remote_command.txt").write_text(command, encoding="utf-8")
 
         # Download result CSV (TTK outputs <input>_result.csv or results.csv)
         local_results = artifact_dir / "results.csv"
@@ -164,6 +215,8 @@ async def _run_aclnn(
         npu_pass = results_info.get("passed", 0)
         npu_fail = results_info.get("failed", 0)
         npu_total = results_info.get("total", 0)
+        precision_pass = results_info.get("precision_passed", 0)
+        precision_fail = results_info.get("precision_failed", 0)
 
         status = "success"
         if not passed:
@@ -179,16 +232,20 @@ async def _run_aclnn(
             "exit_code": result.exit_code,
             "stdout": result.stdout, "stderr": result.stderr,
             "duration": duration,
+            "proc_timeout": proc_timeout,
             "remote_dir": remote_dir, "remote_command": command,
             "golden_plugin": str(plugin_path) if plugin_path is not None else None,
             "local_artifact_dir": str(artifact_dir),
             "results_csv": str(local_results) if local_results.is_file() else None,
             "npu_passed": npu_pass, "npu_failed": npu_fail, "npu_total": npu_total,
+            "precision_passed": precision_pass,
+            "precision_failed": precision_fail,
+            "precision_blocking": False,
             "passed": npu_pass, "failed": npu_fail, "total": npu_total,
             "records": results_info.get("rows", []),
             "engine_error": "" if status == "success" else (
                 "TTK ACLNN command failed" if not passed else
-                "TTK ACLNN produced no passing result set"
+                f"TTK ACLNN NPU output missing for {npu_fail}/{npu_total} cases"
             ),
         }
     except SSHEngineError as exc:
@@ -198,7 +255,8 @@ async def _run_aclnn(
             "passed": 0, "failed": 0, "total": 0, "records": [],
             "engine_error": str(exc),
             "duration": time.monotonic() - started,
-            "remote_dir": remote_dir,
+            "proc_timeout": proc_timeout,
+            "remote_dir": remote_dir, "remote_command": command,
             "golden_plugin": str(plugin_path) if plugin_path is not None else None,
             "local_artifact_dir": str(artifact_dir),
         }
@@ -220,8 +278,16 @@ def main() -> None:
     parser.add_argument("--server-config", type=Path, default="servers.json")
     parser.add_argument("--artifact-dir", type=Path, default=None)
     parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument(
+        "--proc-timeout",
+        type=int,
+        default=180,
+        help="Single-case timeout in seconds; 0 disables it (default: 180)",
+    )
     parser.add_argument("--plugin", type=Path, default=None)
     args = parser.parse_args()
+    if args.proc_timeout < 0:
+        parser.error("--proc-timeout must be >= 0")
 
     config = json.loads(args.server_config.read_text(encoding="utf-8"))
     servers = config.get("servers", [])
@@ -243,6 +309,7 @@ def main() -> None:
     result = run_aclnn(
         csv_path=args.csv, server=server, artifact_dir=artifact_dir,
         mode=mode, test_indexes=args.ti, timeout=args.timeout,
+        proc_timeout=args.proc_timeout,
         plugin_path=args.plugin,
     )
 
@@ -252,12 +319,19 @@ def main() -> None:
 
     if mode == "npu":
         print(f"NPU Pass: {result.get('npu_passed', '?')}/{result.get('npu_total', '?')}")
+        print(
+            "Precision Pass: "
+            f"{result.get('precision_passed', '?')}/{result.get('npu_total', '?')} "
+            "(non-blocking)"
+        )
         if result.get("npu_failed", 0) > 0:
             print(f"NPU Fail: {result['npu_failed']}")
             for row in _parse_results(Path(result.get("results_csv", ""))).get("rows", []):
-                st = str(row.get("precision_status", "")).upper()
-                if st != "PASS":
-                    print(f"  FAIL {row.get('testcase_name', '?')}: {st}")
+                if row.get("execution_status") != "PASS":
+                    print(
+                        f"  NPU FAIL {row.get('testcase_name', '?')}: "
+                        f"{row.get('precision', row.get('precision_status', 'UNKNOWN'))}"
+                    )
 
     if result.get("engine_error"):
         print(f"Error:    {result['engine_error']}")

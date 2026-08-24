@@ -5,12 +5,14 @@
 
 ## 事实源与分层
 
-- 当前算子文档是算子事实的最高优先级来源；知识只用于防漏、规范表达和检查。
+- 当前算子文档是常规算子事实的最高优先级来源；知识只用于防漏、规范表达和检查。
+  例外是显式开启的 `source_analysis` 类模块：它是锁定源码版本的附加约束源，必须保留
+  commit、章节、可信度和 `origin=source_analysis`，不得静默覆盖公开文档。
 - `prompts/operator_constraints/base.md` 为 **canonical 直接编辑**的 ACLNN 提示词
   （保留流程与未迁移规则，不复制 Pydantic schema）；`v4` 为历史来源（一次性机械拆分已完成，
   原迁移工具 `build_aclnn_prompt_base.py` 已退场归档于 `archive/builders/`，不再 gate）。
 - `knowledge/aclnn/manifest.json` 是 ACLNN 知识唯一清单，依次包含 foundation、common、
-  feature/reference 与 exact operator。
+  feature/reference、exact operator 与默认关闭的 source_analysis。
 - `knowledge/torch_npu` 继续由 `select_torch_npu_prompt.py` 独立装配，两套根目录不互扫。
 
 ## 冻结产物
@@ -29,6 +31,24 @@ python scripts/validate_prompt_assembly.py --record runs/<id>/inputs/prompt_asse
 ```
 
 显式 `--prompt` 与 torch_npu 维持各自原有路径；它们不会隐式加载 ACLNN 知识。
+
+### 源码分析约束知识（显式开启）
+
+`source_analysis` 是 ACLNN manifest 中独立的知识类别。它同时受两层门控：
+
+1. 初始化时显式传入 `--source-analysis-knowledge`；
+2. 模块的 `operator_name_eq` 与当前算子名精确匹配。
+
+默认不传开关时，即使算子名命中也以 `reason=feature_disabled` 记录为未加载。示例：
+
+```text
+python scripts/init_run.py --doc operator_docs/aclnnGroupedMatmulV5.md \
+  --source-analysis-knowledge
+```
+
+该开关不能与 `--prompt` 同用，也不适用于 torch_npu。是否开启会写入
+`run_state.source_analysis_knowledge`、`prompt_assembly.json` 的
+`knowledge.feature_flags` 与 `applicability.feature_flags`，首轮冻结后不在迭代中变化。
 
 ## 知识预校验（run 初始化前）
 
@@ -69,15 +89,18 @@ torch_npu 分支待对称实现后接入 `validate_torch_npu_knowledge`（见 to
 | --- | --- |
 | `schema_version` | manifest 自身结构版本，当前 `1.0`。 |
 | `family` | `aclnn`；与 torch_npu 严格隔离，禁止跨 family 引用。 |
-| `policy` | 装配策略语义。当前 `v4_split_operator_name_eq_gated` = v4 拆分（base + 知识模块）+ exact-operator 模块仅在 `operator_name_eq` 命中时加载；当前算子文档是唯一事实源。 |
+| `policy` | 装配策略语义。当前 `v4_split_operator_name_eq_source_analysis_opt_in` = v4 拆分（base + 知识模块）+ exact-operator 精确命中 + source_analysis 显式开关门控。 |
 | `modules[].id` | 模块唯一标识，必须等于模块 frontmatter 的 `module:` 字段（`_load_modules` 校验）。 |
-| `modules[].scope` | `foundation` / `common` / `feature` / `reference` / `operator`。 |
+| `modules[].scope` | `foundation` / `common` / `feature` / `reference` / `operator` / `source_analysis`。 |
 | `modules[].path` | 相对 `knowledge/aclnn/` 的模块文件路径。 |
 | `modules[].default_load` | `true` 则无条件进装配集（6 个：official_basics / dimensions / allowed_range / implicit_parameters / platform_dtype / expression_language）；`false` 需 trigger 命中。 |
 | `modules[].priority` | 装配顺序权重，高优先；同 `default_load` 内用于排序。 |
 | `modules[].triggers` | 正向命中触发器，任一命中即加入候选集。kind ∈ `operator_name_eq` / `operator_name_regex` / `name_contains` / `doc_contains` / `format_any`。 |
 | `modules[].reject_on` | 负向否决触发器（kind 同 triggers）。命中即从候选集移除，**负向优先**于 `default_load` 与正向 trigger；闭包不再拉取被否决模块的依赖。正/负向同 (kind,value) 视为矛盾，校验阶段拒绝。 |
 | `modules[].depends_on` | 依赖模块 id 列表；命中模块会补拉依赖（闭包）。 |
+
+`source_analysis` 模块必须 `default_load=false`，且必须且只能有一个
+`operator_name_eq` trigger；开启全局开关不会让它跨算子加载。
 
 foundation 与 feature 的区分：`foundation/*` 是官方原始概念参考（如
 `broadcast_relation`、`sparse_mode_foundation`、`type_derivation`、

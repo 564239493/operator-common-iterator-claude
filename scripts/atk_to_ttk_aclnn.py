@@ -44,6 +44,11 @@ DTYPE_MAP = {
     "bool": "bool",
 }
 
+_INT4_VALUES_PER_INT32 = 8
+_PACKED_INT4_CARRIER_PARAMS = {
+    "aclnnGroupedMatmulV5": {"weight"},
+}
+
 
 # ---------------------------------------------------------------------------
 # full tensor-parameter signature (ordered)
@@ -348,6 +353,61 @@ def _format_tensor_format(format_str: str | None) -> str:
     return str(format_str).strip().upper()
 
 
+def _pack_int4_shape_last_axis(
+    shape: list[Any] | tuple[Any, ...], *, context: str,
+) -> list[Any]:
+    """Return the INT32 carrier shape for logical INT4 tensor data.
+
+    CANN represents eight contiguous INT4 values in one INT32.  Therefore the
+    physical carrier's final axis is one eighth of the logical INT4 axis.  A
+    nested shape represents heterogeneous TensorList elements and is packed
+    element by element.
+    """
+    if shape and isinstance(shape[0], (list, tuple)):
+        return [
+            _pack_int4_shape_last_axis(list(element), context=context)
+            for element in shape
+        ]
+    if not shape:
+        raise ValueError(f"{context}: INT4 carrier requires a concrete shape")
+    logical_width = shape[-1]
+    if (
+        not isinstance(logical_width, int)
+        or isinstance(logical_width, bool)
+        or logical_width <= 0
+    ):
+        raise ValueError(
+            f"{context}: INT4 packed axis must be a positive integer, "
+            f"got {logical_width!r}"
+        )
+    if logical_width % _INT4_VALUES_PER_INT32:
+        raise ValueError(
+            f"{context}: logical INT4 packed axis {logical_width} must be "
+            f"divisible by {_INT4_VALUES_PER_INT32}"
+        )
+    packed = list(shape)
+    packed[-1] = logical_width // _INT4_VALUES_PER_INT32
+    return packed
+
+
+def _ttk_carrier_shape(
+    api_name: str, parameter_name: str, item: dict[str, Any],
+) -> list[Any] | None:
+    """Project a logical generated shape to the physical TTK carrier shape."""
+    shape = item.get("shape")
+    if shape is None:
+        return None
+    copied = deepcopy(shape)
+    if (
+        parameter_name in _PACKED_INT4_CARRIER_PARAMS.get(api_name, set())
+        and str(item.get("dtype") or "").lower() == "int4"
+    ):
+        return _pack_int4_shape_last_axis(
+            copied, context=f"{api_name}.{parameter_name}",
+        )
+    return copied
+
+
 def _tensor_list_element_count(item: dict[str, Any]) -> int:
     """Return the number of TensorList elements represented by one ATK item."""
     length = item.get("length")
@@ -412,6 +472,9 @@ def convert_case(
     attr_names: list[str] | None = None,
 ) -> dict[str, str]:
     """Convert one ATK compact case to a TTK ACLNN CSV row dict."""
+    api_name = case.get("name") or case.get(
+        "aclnn_name", "aclnnGroupedMatmulV5",
+    )
     # index ATK inputs by name
     by_name: dict[str, dict[str, Any]] = {}
     for item in case.get("inputs", []):
@@ -441,7 +504,7 @@ def convert_case(
             data_ranges.append((None, None))
             continue
 
-        shape = item.get("shape")
+        shape = _ttk_carrier_shape(api_name, name, item)
         dtype_raw = item.get("dtype", "")
         dtype_ttk = _format_dtype(dtype_raw)
         format_ttk = _format_tensor_format(item.get("format"))
@@ -486,7 +549,19 @@ def convert_case(
     tensor_formats = f"({','.join(formats_parts)})"
 
     attrs = _format_attrs(case, attr_name_set)
-    api_name = case.get("name") or case.get("aclnn_name", "aclnnGroupedMatmulV5")
+    # A8W4 with offset=null is interpreted by CANN as count mode regardless
+    # of the incoming attribute.  Keep the CSV explicit and consistent with
+    # the device behaviour; the companion input plugin materialises counts.
+    if (
+        api_name == "aclnnGroupedMatmulV5"
+        and (
+            by_name.get("offsetOptional") is None
+            or by_name["offsetOptional"].get("type") not in ("tensor", "tensors")
+            or by_name["offsetOptional"].get("shape") is None
+        )
+        and "groupListType" in attr_name_set
+    ):
+        attrs["groupListType"] = 1
     case_id = int(case.get("id", case_index))
 
     output_tensor_indexes = repr(tuple(output_indexes)) if output_indexes else "()"
@@ -530,6 +605,61 @@ def audit_case(
     if not str(api_name).startswith("aclnn"):
         issues.append(f"api_name is not ACLNN: {api_name!r}")
     if converted_row is not None:
+        packed_params = _PACKED_INT4_CARRIER_PARAMS.get(str(api_name), set())
+        for packed_name in packed_params:
+            source_item = by_name.get(packed_name)
+            if (
+                source_item is None
+                or str(source_item.get("dtype") or "").lower() != "int4"
+            ):
+                continue
+            packed_index = next(
+                (
+                    index for index, entry in enumerate(signature)
+                    if entry["name"] == packed_name
+                ),
+                None,
+            )
+            if packed_index is None:
+                issues.append(f"packed INT4 parameter missing from signature: {packed_name}")
+                continue
+            try:
+                converted_shapes = ast.literal_eval(
+                    converted_row.get("tensor_view_shapes", "")
+                )
+                converted_dtypes = ast.literal_eval(
+                    converted_row.get("tensor_dtypes", "")
+                )
+                expected_shape = _ttk_carrier_shape(
+                    str(api_name), packed_name, source_item,
+                )
+                count = _tensor_list_element_count(source_item)
+                if (
+                    expected_shape
+                    and isinstance(expected_shape[0], list)
+                ):
+                    expected_slot = tuple(tuple(part) for part in expected_shape)
+                else:
+                    expected_slot = tuple(
+                        tuple(expected_shape or ()) for _ in range(count)
+                    )
+                expected_dtype = tuple("int32" for _ in range(count))
+                if converted_shapes[packed_index] != expected_slot:
+                    issues.append(
+                        f"{packed_name}: packed INT4 carrier shape mismatch: "
+                        f"expected={expected_slot!r}, "
+                        f"got={converted_shapes[packed_index]!r}"
+                    )
+                if converted_dtypes[packed_index] != expected_dtype:
+                    issues.append(
+                        f"{packed_name}: packed INT4 carrier dtype mismatch: "
+                        f"expected={expected_dtype!r}, "
+                        f"got={converted_dtypes[packed_index]!r}"
+                    )
+            except (IndexError, SyntaxError, TypeError, ValueError) as exc:
+                issues.append(
+                    f"{packed_name}: cannot audit packed INT4 carrier: {exc}"
+                )
         if api_name == "aclnnScatterPaKvCache":
             try:
                 converted_attrs = ast.literal_eval(converted_row.get("attributes", ""))

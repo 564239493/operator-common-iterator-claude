@@ -91,7 +91,7 @@ src_text: "groupType=0 单单单 splitItem=2/3 时 weight 为 3D"
 
 ```text
 expr_type: cross_param_constraint
-expr: not(groupListType.range_value == 2) or (groupType.range_value == 0)
+expr: (groupType.range_value == 0) if (groupListType.range_value == 2) else True
 relation_params: ["groupListType", "groupType"]
 src_text: "groupListType=2：仅全量化且groupType=0场景下支持"
 ```
@@ -288,13 +288,38 @@ relation_params: ["scaleOptional"]
 src_text: "A2/A8W8, groupType=0, single TensorList: scaleOptional 必须为二维"
 ```
 
-**TEMP_CAPABILITY_GUARD: TENSOR_LIST_ELEMENT_SHAPE_INDEX_UNSUPPORTED**：
-`biasOptional.shape[0] == E` 的 `E` 来自单个 weight Tensor 的
-`weight[0].shape[0]`，不是 TensorList 外层长度 `weight.shape[0]`。当前生成器尚不能稳定
-求解 TensorList 元素的深层 shape 索引，因此本节不得输出
-`biasOptional.shape[0] == weight.shape[0]` 作为替代；该错误表达会把 E 绑定成 TensorList
-长度 1。保留文档原始 shape 语义并标记为生成器能力缺口，待支持
-`weight[0].shape[0]` 后再恢复可执行 `shape_equality`。
+**M.1a biasOptional / scaleOptional 的 E 轴等式（v2 增补，必须落库）**
+
+> 原 `TEMP_CAPABILITY_GUARD: TENSOR_LIST_ELEMENT_SHAPE_INDEX_UNSUPPORTED` 已**解除**（证伪
+> 依据见下）。iter_001 闭环 44/50 用例因 `biasOptional/scaleOptional/groupListOptional`
+> 的 `shape[0]` 未与分组数 E 绑定而失败（生成器自由产出 `(65534,1)` 等）。同一
+> `constraints.json` 已成功使用 `weight.shape[1]`/`weight.shape[2]`（见 K.2 的
+> `weight.shape[0]`/`weight.shape[1]` 等式），证明单 TensorList 场景下
+> `weight.shape[i]` 指首元素张量第 i 维、可解，故 `weight.shape[0]`（= E = 分组数 g）
+> 同样可解。**禁止**用 `len(weight)` 作为 E（会把 E 绑成 TensorList 长度 1）；**禁止**
+> 只约束 ndim 不约束 shape[0]。
+
+guard 解除后，`biasOptional.shape[0] == E` 与 `scaleOptional.shape[0] == E` 必须绑定到
+`weight.shape[0]`（首元素张量第 0 维 = E = 分组数 g），与上方 M.1 的
+`shape[1]==out.shape[1]`、`ndim==2` 并存（一个管 shape[0]=E，一个管 shape[1]=N）。
+以下两条 `shape_equality` **必须**逐平台落库：
+
+```text
+expr_type: shape_equality
+expr: biasOptional is None or biasOptional.shape[0] == weight.shape[0]
+relation_params: ["biasOptional", "weight"]
+src_text: "A2/A8W8, groupType=0, single TensorList: biasOptional shape=[E,N]，E=weight.shape[0]（分组数g）"
+
+expr_type: shape_equality
+expr: scaleOptional is None or scaleOptional.shape[0] == weight.shape[0]
+relation_params: ["scaleOptional", "weight"]
+src_text: "A2/A8W8, groupType=0, single TensorList: scaleOptional shape=[E,N]或[E,1]，E=weight.shape[0]（分组数g）"
+```
+
+E=1（`weight.shape[0]==1`）时 bias/scale 首维被钉死为 1，消除 `(65534,1)` 等非法 shape。
+适用边界：仅 A2/A8W8、groupType=0、单 TensorList（weight 3D (E,K,N)）。多 TensorList
+（weight 2D）E 由 `len(weight)` 决定；groupType=2 groupNum 取自 `dim(out[0],0)`，不套用
+`weight.shape[0]`。
 
 **M.2 groupListType 0/1/2 的 shape 与内容职责分离**
 
@@ -327,17 +352,111 @@ src_text: "groupListType=2: groupListOptional shape=[E,2]，每行为[组索引,
 
 ```
 
-`groupListOptional.shape[0] == E` 同样必须绑定到 `weight[0].shape[0]`，不能绑定
-TensorList 外层长度 `weight.shape[0]`。在深层 shape 索引能力补齐前，不生成这条错误的
-可执行等式；executor 仍以运行时 `weight_tensor.shape[0]` 校验 groupList shape，明确报错
-而不修改输入 shape。
+**M.2a groupListOptional 的 E 轴等式（v2 增补，必须落库）**
 
-解除条件：生成器能够解析并求解 `TensorList[0].shape[0]`，随后恢复 bias/groupList 的
-两条 E 轴等式，并分别回归 E=1、E>1、Optional present/absent 与 groupListType=0/1/2。
-能力修复任务应检索本标识并整体复核，不能只删除说明文本。
+guard 已解除（见 M.1a 上方），`groupListOptional.shape[0] == E` 必须绑定到
+`weight.shape[0]`（首元素张量第 0 维 = E = 分组数 g），与上方 M.2 的 ndim/`shape[1]==2`
+约束并存。以下两条 `shape_equality` **必须**逐平台落库：
+
+```text
+expr_type: shape_equality
+expr: groupListOptional is None or groupListType.range_value == 2 or groupListOptional.shape[0] == weight.shape[0]
+relation_params: ["groupListOptional", "weight", "groupListType"]
+src_text: "groupListType=0/1: groupListOptional shape=[E]，E=weight.shape[0]（分组数g）；groupList 必传且末值/总和≤x第一维、最大1024组"
+
+expr_type: shape_equality
+expr: groupListOptional is None or not(groupListType.range_value == 2) or (groupListOptional.shape[0] == weight.shape[0] and groupListOptional.shape[1] == 2)
+relation_params: ["groupListOptional", "weight", "groupListType"]
+src_text: "groupListType=2: groupListOptional shape=[E,2]，每行为[组索引,组大小]；E=weight.shape[0]（分组数g）"
+```
+
+E=1（`weight.shape[0]==1`）时 groupList 首维被钉死为 1，消除 `(127,)`/`(65,)` 等非法
+shape。适用边界同 M.1a：仅 A2/A8W8、groupType=0、单 TensorList。多 TensorList / groupType=2
+不套用 `weight.shape[0]`（见 M.1a 边界说明）。
 
 执行器只负责在 shape 已合法时物化内容：将 M 尽量均匀分配到 E 组，type0 生成累计和，
 type1 生成每组大小，type2 生成 `[groupIdx,groupSize]`。该策略令覆盖范围末端/总和等于
 M，是合法、确定性的测试构造，不是把文档的“不大于 M”收紧为永久 API 约束。
 当 E 大于 M 时，非零组排在前面、零大小组排在末尾。executor 遇到错误 shape 必须明确
 报错，不得通过 reshape、截断或补齐掩盖约束提取问题。
+
+> **约束层职责边界（内容语义，v2 增补明确）**：`groupListType` 0/1/2 的元素取值序列
+> 语义（cumsum/sum/shape(E,2) 第二列总和 ≤ M）由 executor 在 shape 已合法时物化，
+> **约束层不产出元素取值 `constraints_in_parameters`，只负责 shape/rank 完整表达**。
+> 该策略令覆盖范围末端/总和等于 M，是合法确定性测试构造，不是把文档「不大于 M」
+> 收紧为永久 API 约束。
+
+**M.2b 分组数 E 的 ≤1024 上界不等式（v3 新增，必须落库）**
+
+文档「最大 1024 组」（groupType=0 单单单行）与「非量化场景支持最多 1024 个 Tensor」
+是同一上界 1024 在不同参数上的体现。`weight.shape[0] <= 1024` 是 E 本身的**数值上界**，
+不是 shape 之间的相等/依赖关系，故 `expr_type` **必须**为 `shape_inequality`，不得用
+`shape_equality`。这两条与 §M.2a 的 shape_equality 并存：等式管「E 在 weight 和
+groupListOptional 间传递一致」，不等式管「E 本身不超过 1024」。iter_002 闭环 10/50
+用例因 E=weight.shape[0]=65534（8 例）/1587301（2 例）> 1024 失败，NPU 报
+`AclNN_Parameter_Error(EZ1001): size of groupList <E> should be less than or equal to
+1024`；extractor 仅把「最大1024组」抄进 src_text 却未在 expr 编码上界（文本记录 ≠
+形式化约束）。以下两条 `shape_inequality` **必须**逐平台落库：
+
+```text
+expr_type: shape_inequality
+expr: weight.shape[0] <= 1024
+relation_params: ["weight"]
+src_text: "A2/A8W8, groupType=0, single TensorList: 分组数 E=weight.shape[0]，
+           文档「最大1024组」（aclnnGroupedMatmulV5.md line 332）；
+           iter_002 失败证伪：E=65534/1587301 > 1024 触发 EZ1001"
+
+expr_type: shape_inequality
+expr: groupListOptional is None or groupListType.range_value == 2 or groupListOptional.shape[0] <= 1024
+relation_params: ["groupListOptional", "groupListType"]
+src_text: "groupListType=0/1: groupListOptional shape=[E]，
+           dim(groupListOptional,0)≤1024（source_analysis §2.5）；文档「最大1024组」"
+```
+
+`weight` 参数 `allowed_range_value.value` 仍为 `[]`（上界由 shape_inequality 承载，
+不入 allowed_range_value，符合 nz_matmul §D 的语义修正规则）。适用边界同 §M.1a/§M.2a：
+仅 A2/A8W8、groupType=0、单 TensorList。多 TensorList 场景 E 由 `len(weight)` 决定，
+上界仍为 1024 但表达式不同（`len(weight) <= 1024`，见 source_analysis §2.9），不在本节
+范围；groupType=2 groupNum 取自 `dim(out[0],0)`，不套用 `weight.shape[0]`。
+
+### N. splitItem 与输出 TensorList 长度
+
+`splitItem` 直接决定输出是否分离。文档 return_info 161002 明确拒绝：`splitItem=2/3`
+但 `out` 长度不为 1，以及 `splitItem=0/1` 但 `out` 与 `weight` 长度不同。该关系必须
+形式化，不能只写进参数说明或错误码描述。优先使用条件表达式保持正向语义清晰：
+
+```text
+expr_type: shape_equality
+expr: (len(out) == len(weight)) if (splitItem.range_value in [0, 1]) else (len(out) == 1) if (splitItem.range_value in [2, 3]) else True
+relation_params: ["splitItem", "out", "weight"]
+src_text: "splitItem=0/1 时 out 长度等于 weight 长度；splitItem=2/3 时 out 长度为 1（文档 return_info 161002）"
+```
+
+不得仅约束 `len(x) == len(weight)` 后在 `src_text` 中声称三者相等；表达式本身必须覆盖
+`out`。该规则与 groupType 场景表一致：groupType=-1 使用 splitItem=0/1，输出多 Tensor；
+groupType=0 单单单使用 splitItem=2/3，输出单 Tensor。
+
+### O. A2/A8W4 offset 空场景的执行护栏
+
+仅在 Atlas A2、A8W4、`offsetOptional is None`、weight 为不转置的三维
+`[E,K,N]` 场景应用：
+
+```text
+expr_type: cross_param_constraint
+expr: offsetOptional is not None or groupListType.range_value == 1
+relation_params: ["offsetOptional", "groupListType"]
+src_text: "A8W4 offset为空时仅支持groupListType=1；算子不检查属性值并按1处理"
+
+expr_type: shape_inequality
+expr: weight.shape[2] <= 65535
+relation_params: ["weight"]
+src_text: "Atlas A2 SPLIT_M 非转置 weight 的逻辑 N 轴不大于65535；运行 aclnnGroupedMatmulV5-20260821-023252-894602 中全部 N>65535 用例均被 N dim mismatch 拒绝"
+```
+
+A8W4 offset 空场景已有 `weight.shape[2] % 8 == 0`，与第二条共同作用时生成器实际最大
+合法 N 为 65528。INT4 转 INT32 仅压缩 TTK 物理载体的最后一维为 `N/8`，上述表达式
+仍约束转换前的逻辑 N，不得误写为物理 INT32 宽度。
+
+`groupListOptional` 的元素内容继续由执行层物化：TTK ACLNN 模式由同一个 `--plugin`
+文件中的 `__input__` hook 生成总和等于 M 的合法 count 序列；约束层只固定 type/shape，
+不尝试用单一 `range_values` 表达跨元素求和关系。

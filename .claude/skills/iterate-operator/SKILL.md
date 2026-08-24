@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -24,8 +24,11 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
+   `--source-analysis-knowledge` 默认关闭；显式传入时，仅对 ACLNN 自动提示词装配
+   启用 `source_analysis` 类知识，并继续要求 `operator_name_eq` 精准命中。不得与
+   `--prompt` 同用，也不得用于 torch_npu。
 2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
-   `--supplement-constraints`、`--operator-family`、`--test-framework`、
+   `--supplement-constraints`、`--source-analysis-knowledge`、`--operator-family`、`--test-framework`、
    `--hs-scenario-mode` 等参数，
    `--batch-dir` 是目录批次内部参数不传）。该命令把外部文档只读复制到 run 的 `inputs/` 目录，
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。若传入 `--src`，把算子

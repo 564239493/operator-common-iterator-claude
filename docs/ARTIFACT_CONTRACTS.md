@@ -40,7 +40,7 @@ runs/<operator>-<timestamp>/
 ## run_state.json
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
-`current_prompt_modules`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
+`current_prompt_modules`、`source_analysis_knowledge`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
 `server_config`、`max_iterations`、`case_count`、`human_checkpoint_round`、`human_checkpoint_resolved_iteration`、`operator_family`、`test_framework`、
 `hs_scenario_mode`、
 `run_scope`、`scene`、`current_iteration`、`state`、
@@ -74,6 +74,11 @@ v1/v2 仅作为历史任务复现材料。
 `current_prompt_modules=[]`。constraint-extractor 始终只读 `current_prompt` 快照，
 不感知装配过程。
 
+`source_analysis_knowledge` 默认为 `false`。仅在 ACLNN 初始化显式传入
+`--source-analysis-knowledge` 时为 `true`；此时仍须通过模块自身的
+`operator_name_eq` 精准命中才会进入 `current_prompt_modules`。开关状态与命中/拒绝证据
+同时冻结在 `prompt_assembly.json`，不得在 re-EXTRACT 中动态改变。
+
 `run_scope` 为 `full` 或 `constraints_only`。后者由尚未适配 TTK 的 torch_npu API 在
 auto 模式下使用：约束 normalize/validate 通过后可进入 SUCCESS，但 history 必须包含
 `CONSTRAINTS_ONLY_SUCCESS`；不得生成 cases 或宣称执行/精度成功。
@@ -87,7 +92,8 @@ TND/BSND/paged-attention 场景拆分和投影。case-generator 必须从 run_st
 
 必须满足 `agent.generators.common_model_definition.OperatorRule`。关键字段包括
 operator_name、product_support、parameters 和 constraints_in_parameters。每个约束
-应来自原文，不用聊天内容补充。每条约束带 `origin` 字段：`doc`（文档提取）或
+应来自已冻结的有效事实源，不用聊天内容补充。每条约束带 `origin` 字段：`doc`（文档提取）、
+`source_analysis`（显式启用且精准命中的锁定源码分析知识）或
 `supplement`（约束补充阶段合并）。约束补充阶段产出的 `constraints_patch.json` 经
 `scripts/apply_supplement_constraints.py` 确定性合并后追加/替换条目并标 `origin="supplement"`。
 

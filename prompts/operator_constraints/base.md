@@ -28,7 +28,10 @@ extractor 只执行步骤 6（读冻结快照提取 JSON 并实际校验）：
 1. 完整阅读当前算子文档并完成结构预分析（`route_aclnn_knowledge.preanalyze_document`）；
 2. 加载 ACLNN 默认基础知识与通用知识（manifest `default_load` 模块）；
 3. 依据当前文档信号加载特征知识，并按算子名精确加载单算子知识（`triggers` / `operator_name_eq`）；
-4. 逐模块做适用性判断（含 `reject_on` 负向否决），以当前文档为最高事实源；
+   `source_analysis` 类知识还必须由运行配置显式开启，默认不加载；
+4. 逐模块做适用性判断（含 `reject_on` 负向否决）。默认以当前文档为最高事实源；若冻结
+   快照中含显式启用的 `source_analysis` 模块，则将其作为锁定源码版本的附加约束源，
+   所有采用或冲突条目必须保留来源、commit 与可信度，不得静默覆盖；
 5. 冻结 `base + applicable knowledge` 快照和组装记录后再提取（`select_prompt.assemble`）；
 6. 生成 JSON，执行规范化与 `OperatorRule` 实际校验。
 
@@ -452,8 +455,10 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 
    上式只适用于 `T` 是必选参数、在两个分支都存在的情况。若 `T` 也可缺席，必须把
    `T is None` / `T is not None` 纳入对应分支，禁止在 `T is None` 分支访问 `T.shape`。
-   若原文只给出单向规则（例如仅写“P 为空时 T 为 2D”），只生成
-   `P is not None or len(T.shape) == 2`，不得臆造“P 存在时 T 为 3D”的反向分支。
+   若原文只给出单向规则（例如仅写“P 为空时 T 为 2D”），优先生成
+   `(len(T.shape) == 2) if (P is None) else True`，不得臆造“P 存在时 T 为 3D”的反向
+   分支。只有 if/else 无法清晰承载时，才回退到等价的
+   `P is not None or len(T.shape) == 2`。
 
    还要避免把“必须存在/缺席”与 dtype、shape、value 条件放进同一个 `and`，例如
    `P is not None and P.range_value == 1` 在当前求解器中会被解释为
@@ -484,7 +489,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
    else True
    ```
 
-   或者使用 `unless` 等价形式（多条分支合并）：
+   只有 if/elif/else 无法清晰承载或存在求解器兼容性要求时，才使用 `unless` 等价形式：
 
    ```text
    not(Y.range_value == "{value_A}") or (X.shape == [A, B])
