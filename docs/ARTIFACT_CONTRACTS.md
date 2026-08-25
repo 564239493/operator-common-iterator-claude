@@ -19,6 +19,7 @@ runs/<operator>-<timestamp>/
     scene_directive.md                 # 可选：render_scene_directive.py 渲染（含 param_modes/selection_policy 机读块），extractor 据此适配
   iter_001/
     constraints.json
+    constraint_check.json              # 本轮最终约束的语义检查/修复累计报告
     constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
     constraints.json.pre_conflict      # 可选：冲突合并前备份
     constraints_patch.json             # 可选：约束补充阶段产出的 add/replace patch
@@ -39,7 +40,7 @@ runs/<operator>-<timestamp>/
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`source_analysis_knowledge`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
-`server_config`、`max_iterations`、`case_count`、`human_checkpoint_round`、`human_checkpoint_resolved_iteration`、`operator_family`、`test_framework`、
+`server_config`、`max_iterations`、`constraint_check`、`case_count`、`human_checkpoint_round`、`human_checkpoint_resolved_iteration`、`operator_family`、`test_framework`、
 `hs_scenario_mode`、
 `run_scope`、`scene`、`current_iteration`、`state`、
 `history` 和时间戳。state 只能取
@@ -78,8 +79,12 @@ v1/v2 仅作为历史任务复现材料。
 同时冻结在 `prompt_assembly.json`，不得在 re-EXTRACT 中动态改变。
 
 `run_scope` 为 `full` 或 `constraints_only`。后者由尚未适配 TTK 的 torch_npu API 在
-auto 模式下使用：约束 normalize/validate 通过后可进入 SUCCESS，但 history 必须包含
+auto 模式下使用：约束 normalize/validate 且当前轮 constraint_check passed 后可进入 SUCCESS，但 history 必须包含
 `CONSTRAINTS_ONLY_SUCCESS`；不得生成 cases 或宣称执行/精度成功。
+
+`constraint_check={max_rounds, iteration, current_round, status, report}` 保存当前外层
+iteration 的 EXTRACT 内部检查进度。`max_rounds` 默认 3；每次 re-EXTRACT 的 iteration
+变化时重置其他字段并保留上限。同 iteration 恢复时不得重置已通过结果。
 
 `hs_scenario_mode` 为 `original` 或 `planned`，默认 `original`。它只影响
 torch_npu + TTK 的 GENERATE：`original` 使用原生生成器，`planned` 才启用
@@ -104,6 +109,40 @@ re-EXTRACT。`value=[]`（空）时不强制 `type`（tensor 参数无值域约�
 无界；单边或开区间写入 `constraints_in_parameters`，使用不等式表达。
 `type=enum` 允许 `null` 作为明确的离散候选。`expr` 中允许裸 `null`，校验和求解前
 会规范化为 Python `None`，但只能用于空值/存在性判断，不能参与数值大小比较。
+
+## constraint_check.json
+
+每个外层 iteration 在最终 constraints 完成 SUPPLEMENT/已裁决 conflict 合并后生成一个
+累计报告。只保留当前轮单文件，不创建逐 check 轮目录。最小结构：
+
+```json
+{
+  "schema_version": "1.0",
+  "iteration": 1,
+  "max_rounds": 3,
+  "current_round": 1,
+  "status": "needs_repair",
+  "constraints_file": "<constraints.json 绝对路径>",
+  "issues": [{
+    "id": "CR-001",
+    "found_round": 1,
+    "last_checked_round": 1,
+    "line": 86,
+    "constraint": "groupType.allowed_range_value",
+    "problem": "当前连续范围与文档有限枚举冲突。",
+    "suggestion": "改为 enum [0,1]。",
+    "status": "open"
+  }],
+  "summary": {"total": 1, "open": 1, "fixed": 0, "unfixed": 0}
+}
+```
+
+`status` 只能为 `passed|needs_repair|failed`，issue status 只能为
+`open|fixed|unfixed`。只有 constraint-checker 能确认 fixed；constraint-repairer 不修改
+报告。`passed` 不得含 active issue；`needs_repair` 要求尚未到上限；`failed` 要求已到
+上限且仍有 active issue。使用：
+
+`python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`
 
 ## constraints_patch.json
 
@@ -275,7 +314,8 @@ specific_issues 应关联 case id、日志或文档证据。
 ## quality_gate.json
 
 至少包含 status、checks、blocking_issues、next_state。blocking_issues 非空时
-status 必须为 blocked，主协调器不得越过门禁。
+status 必须为 blocked，主协调器不得越过门禁。门禁必须重新校验当前 iteration 的
+`constraint_check.json`，并确认 `status=passed` 且轮次与 run_state 一致。
 
 ## 目录批次产物
 
@@ -287,7 +327,7 @@ runs/batches/<batch-id>/
 
 `batch_state.json` 必须冻结 source_directory、glob、recursive、prompt、
 `prompt_explicit`、`prompt_sources`、operator_family、test_framework、max_iterations、
-case_count、mode、server_config、supplement_constraints（可选，整批共享）、
+case_count、constraint_check_rounds、mode、server_config、supplement_constraints（可选，整批共享）、
 continue_on_error 和有序 operators。`prompt` 只在用户显式指定原样 prompt 时非空；
 自动模式通过 `prompt_sources` 记录初始化时可用的各 family baseline，并让每个单算子
 `init_run` 自行选择/装配，防止混合目录把一个 family 的 prompt 传给另一个 family。

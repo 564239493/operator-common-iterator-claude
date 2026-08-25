@@ -24,6 +24,20 @@ RUN_DOC_SNAPSHOT = "runs/<current-run>/inputs/<operator-doc>.md"
 WINDOWS_ABSOLUTE_PATH = re.compile(
     r"(?i)(?<![A-Z0-9])(?:[A-Z]:[\\/]|\\\\[^\\\s]+[\\/])"
 )
+REQUIRED_AGENTS = {
+    "case-executor", "case-generator", "constraint-checker",
+    "constraint-extractor", "constraint-repairer", "constraint-supplementer",
+    "failure-analyst", "prompt-optimizer", "quality-reviewer",
+    "scene-scanner", "source-analyst",
+}
+REQUIRED_SKILLS = {
+    "analyze-source", "atc-cpu-golden-derivation", "check-constraints",
+    "collect-operator-source", "derive-ttk-golden", "diagnose-failure",
+    "execute-cases", "extract-constraints", "generate-cases",
+    "iterate-directory", "iterate-operator", "optimize-prompt",
+    "repair-constraints", "scan-scenes", "show-workforce",
+    "supplement-constraints", "validate-run",
+}
 
 
 def has_frontmatter(path: Path, required: tuple[str, ...]) -> list[str]:
@@ -77,10 +91,12 @@ def main() -> int:
 
     agents = list((ROOT / ".claude" / "agents").glob("*.md"))
     skills = list((ROOT / ".claude" / "skills").glob("*/SKILL.md"))
-    if len(agents) != 9:
-        errors.append(f"expected exactly 9 project agents, found {len(agents)}")
-    if len(skills) != 14:
-        errors.append(f"expected exactly 14 project skills, found {len(skills)}")
+    missing_agents = REQUIRED_AGENTS - {path.stem for path in agents}
+    missing_skills = REQUIRED_SKILLS - {path.parent.name for path in skills}
+    if missing_agents:
+        errors.append(f"missing required project agents: {sorted(missing_agents)}")
+    if missing_skills:
+        errors.append(f"missing required project skills: {sorted(missing_skills)}")
     for path in agents:
         errors.extend(has_frontmatter(path, ("name", "description")))
     for path in skills:

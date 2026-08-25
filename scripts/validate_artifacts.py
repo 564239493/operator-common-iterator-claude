@@ -674,6 +674,155 @@ def validate_constraints(value) -> list[str]:
     return errors
 
 
+def validate_constraint_check(value) -> list[str]:
+    """Validate the compact semantic-review report for one EXTRACT iteration."""
+    if not isinstance(value, dict):
+        return ["constraint_check must be an object"]
+
+    errors: list[str] = []
+    required = {
+        "schema_version", "iteration", "max_rounds", "current_round",
+        "status", "constraints_file", "issues", "summary",
+    }
+    errors.extend(
+        f"constraint_check missing field: {key}"
+        for key in sorted(required - set(value))
+    )
+    if value.get("schema_version") != "1.0":
+        errors.append("constraint_check.schema_version must be '1.0'")
+
+    iteration = value.get("iteration")
+    max_rounds = value.get("max_rounds")
+    current_round = value.get("current_round")
+    if not isinstance(iteration, int) or isinstance(iteration, bool) or iteration < 1:
+        errors.append("constraint_check.iteration must be a positive integer")
+    if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) or max_rounds < 1:
+        errors.append("constraint_check.max_rounds must be a positive integer")
+    if not isinstance(current_round, int) or isinstance(current_round, bool) or current_round < 1:
+        errors.append("constraint_check.current_round must be a positive integer")
+    elif isinstance(max_rounds, int) and current_round > max_rounds:
+        errors.append("constraint_check.current_round must not exceed max_rounds")
+
+    allowed_statuses = {"passed", "needs_repair", "failed"}
+    status = value.get("status")
+    if status not in allowed_statuses:
+        errors.append(
+            "constraint_check.status must be passed, needs_repair or failed"
+        )
+
+    constraints_file = value.get("constraints_file")
+    constraints_line_count: int | None = None
+    if not isinstance(constraints_file, str) or not constraints_file.strip():
+        errors.append("constraint_check.constraints_file must be a non-empty string")
+    else:
+        constraints_path = Path(constraints_file)
+        if not constraints_path.is_file():
+            errors.append(
+                f"constraint_check.constraints_file does not exist: {constraints_file}"
+            )
+        else:
+            try:
+                constraints_line_count = len(
+                    constraints_path.read_text(encoding="utf-8").splitlines()
+                )
+            except OSError as exc:
+                errors.append(f"cannot read constraint_check.constraints_file: {exc}")
+
+    issues = value.get("issues")
+    if not isinstance(issues, list):
+        errors.append("constraint_check.issues must be an array")
+        issues = []
+
+    issue_counts = {"open": 0, "fixed": 0, "unfixed": 0}
+    seen_ids: set[str] = set()
+    for index, issue in enumerate(issues):
+        prefix = f"constraint_check.issues[{index}]"
+        if not isinstance(issue, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        issue_id = issue.get("id")
+        if not isinstance(issue_id, str) or not issue_id.strip():
+            errors.append(f"{prefix}.id must be a non-empty string")
+        elif issue_id in seen_ids:
+            errors.append(f"{prefix}.id is duplicated: {issue_id}")
+        else:
+            seen_ids.add(issue_id)
+
+        found_round = issue.get("found_round")
+        last_checked_round = issue.get("last_checked_round")
+        if not isinstance(found_round, int) or isinstance(found_round, bool) or found_round < 1:
+            errors.append(f"{prefix}.found_round must be a positive integer")
+        if (
+            not isinstance(last_checked_round, int)
+            or isinstance(last_checked_round, bool)
+            or last_checked_round < 1
+        ):
+            errors.append(f"{prefix}.last_checked_round must be a positive integer")
+        elif isinstance(current_round, int) and last_checked_round > current_round:
+            errors.append(f"{prefix}.last_checked_round exceeds current_round")
+        if (
+            isinstance(found_round, int)
+            and isinstance(last_checked_round, int)
+            and found_round > last_checked_round
+        ):
+            errors.append(f"{prefix}.found_round exceeds last_checked_round")
+
+        line = issue.get("line")
+        if not isinstance(line, int) or isinstance(line, bool) or line < 1:
+            errors.append(f"{prefix}.line must be a positive integer")
+        elif constraints_line_count is not None and line > constraints_line_count:
+            errors.append(
+                f"{prefix}.line {line} exceeds constraints file line count "
+                f"{constraints_line_count}"
+            )
+
+        for field in ("constraint", "problem", "suggestion"):
+            field_value = issue.get(field)
+            if not isinstance(field_value, str) or not field_value.strip():
+                errors.append(f"{prefix}.{field} must be a non-empty string")
+
+        issue_status = issue.get("status")
+        if issue_status not in issue_counts:
+            errors.append(f"{prefix}.status must be open, fixed or unfixed")
+        else:
+            issue_counts[issue_status] += 1
+
+    summary = value.get("summary")
+    expected_summary = {"total": len(issues), **issue_counts}
+    if not isinstance(summary, dict):
+        errors.append("constraint_check.summary must be an object")
+    else:
+        for key, expected in expected_summary.items():
+            actual = summary.get(key)
+            if actual != expected:
+                errors.append(
+                    f"constraint_check.summary.{key} must be {expected}, got {actual!r}"
+                )
+
+    active_count = issue_counts["open"] + issue_counts["unfixed"]
+    if status == "passed" and active_count:
+        errors.append("passed constraint_check must not contain open/unfixed issues")
+    if status == "needs_repair":
+        if active_count == 0:
+            errors.append("needs_repair constraint_check must contain an active issue")
+        if (
+            isinstance(current_round, int)
+            and isinstance(max_rounds, int)
+            and current_round >= max_rounds
+        ):
+            errors.append("needs_repair requires current_round < max_rounds")
+    if status == "failed":
+        if active_count == 0:
+            errors.append("failed constraint_check must contain an active issue")
+        if (
+            isinstance(current_round, int)
+            and isinstance(max_rounds, int)
+            and current_round != max_rounds
+        ):
+            errors.append("failed constraint_check requires current_round == max_rounds")
+    return errors
+
+
 def validate_cases(value) -> list[str]:
     if not isinstance(value, list):
         return ["cases must be an array"]
@@ -1071,6 +1220,7 @@ def validate_scene_scan(value) -> tuple[list[str], list[str]]:
 
 VALIDATORS = {
     "constraints": validate_constraints,
+    "constraint_check": validate_constraint_check,
     "cases": validate_cases,
     "ttk_cases": validate_ttk_cases,
     "execution": validate_execution,

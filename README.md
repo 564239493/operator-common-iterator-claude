@@ -41,6 +41,7 @@ PyTorch/昇腾镜像，请按内部源安装后再执行其余依赖。
 ```text
 /show-workforce
 /iterate-operator operator_docs/aclnnAlltoAllMatmul.md --max-iterations 3 --case-count 10
+/iterate-operator operator_docs/aclnnAlltoAllMatmul.md --constraint-check-rounds 3
 ```
 
 ACLNN 默认使用 ATK；如需完整 TTK ACLNN 流程，显式指定：
@@ -74,6 +75,7 @@ paged-attention 场景拆分和投影时才显式指定：
 
 ```text
 /iterate-directory operator_docs --max-iterations 3 --case-count 10
+/iterate-directory operator_docs --constraint-check-rounds 3
 ```
 
 默认某个算子失败后继续执行下一个；需要首个失败即停止时增加 `--fail-fast`，需要扫描
@@ -130,7 +132,7 @@ claude -p "/iterate-operator D:\operator_docs\aclnnFoo.md --max-iterations 3" `
 
 ```text
 .claude/
-  agents/              # 9 个专职 Agent
+  agents/              # 专职 Agent（含独立约束 Checker/Repairer）
   skills/              # 主流程及阶段 Skills
   hooks/               # CLI 生命周期调度观测
   settings.json        # 项目级权限与 Hooks

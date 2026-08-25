@@ -60,6 +60,12 @@ def main() -> int:
         ),
     )
     parser.add_argument("--max-iterations", type=int, default=5)
+    parser.add_argument(
+        "--constraint-check-rounds",
+        type=int,
+        default=3,
+        help="每个算子每轮 EXTRACT 内的约束检查/修复最大轮数，默认 3。",
+    )
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument(
         "--operator-family",
@@ -123,10 +129,14 @@ def main() -> int:
             ),
             supplement_constraints=str(supplement_path),
         )
-    if args.max_iterations < 1 or args.case_count < 1:
+    if (
+        args.max_iterations < 1
+        or args.constraint_check_rounds < 1
+        or args.case_count < 1
+    ):
         return print_error(
             "INVALID_BATCH_ARGUMENT",
-            "max-iterations 和 case-count 必须为正整数。",
+            "max-iterations、constraint-check-rounds 和 case-count 必须为正整数。",
         )
 
     server_config: Path | None = None
@@ -219,6 +229,7 @@ def main() -> int:
         "test_framework": args.test_framework,
         "hs_scenario_mode": args.hs_scenario_mode,
         "max_iterations": args.max_iterations,
+        "constraint_check_rounds": args.constraint_check_rounds,
         "case_count": args.case_count,
         "mode": args.mode,
         "server_config": str(server_config) if server_config else "",
@@ -258,6 +269,7 @@ def main() -> int:
             "batch_summary": str(batch_dir / "batch_summary.json"),
             "total": len(documents),
             "continue_on_error": args.continue_on_error,
+            "constraint_check_rounds": args.constraint_check_rounds,
             "prompt_mode": "explicit_raw" if explicit_prompt else "per_document_family_auto",
             "prompt_sources": prompt_sources,
             "skipped_catalog_documents": [str(path) for path in skipped_catalogs],
