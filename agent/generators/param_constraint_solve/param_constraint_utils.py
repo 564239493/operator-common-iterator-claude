@@ -607,6 +607,8 @@ class ParamConstraintUtils(CommonDispatcher):
         for param in relation_param:
             if self.case_input_map.get(param).type in ParamModelConfig.LIST_ATK_TYPE and self.case_input_map.get(
                     param).length is not None:
+                logger.debug(
+                    f"******************* param.length : len({param}) == {self.case_input_map.get(param).length} ******************")
                 length_static_value_expr_list.append(f"len({param}) == {self.case_input_map.get(param).length}")
         if check:
             self.choice_no_conflicts_expr(builder=builder, param_union_expr=constraint_exprs,
@@ -623,9 +625,11 @@ class ParamConstraintUtils(CommonDispatcher):
         for param_name in self.case_input_map:
             param_property_data = self.param_combinations.get(param_name)
             if param_property_data is None:
-                continue
-            is_present_value = param_property_data.is_present
-            if not is_present_value:
+                is_present_value = False
+            else:
+                is_present_value = param_property_data.is_present if hasattr(param_property_data,
+                                                                             "is_present") else False
+            if param_name not in builder.var_map:
                 continue
             builder.solver.add(builder.var_map[param_name].is_present == is_present_value)
 
@@ -646,9 +650,9 @@ class ParamConstraintUtils(CommonDispatcher):
             expr_ori = constraint.expr
             if expr_ori is None or expr_ori.strip() == "":
                 continue
-            new_expr = remove_missing_param_exprs(expression=expr_ori, existing_params=existing_params)
             logger.debug("Solve none in constraint : ")
             logger.debug(f"     ori expr : '{expr_ori}'")
+            new_expr = remove_missing_param_exprs(expression=expr_ori, existing_params=existing_params)
             logger.debug(f"after replace : '{new_expr}'")
             constraint_solve_none = copy.deepcopy(constraint)
             constraint_solve_none.expr = new_expr
@@ -712,7 +716,7 @@ class ParamConstraintUtils(CommonDispatcher):
             if stripped == "False":
                 # 约束恒假（如缺失参数的 is not None），标记冲突后跳过
                 logger.error(f"Constraint evaluates to False (conflict): '{expr}'")
-                continue
+                return False
             expr_list.append(expr)
 
         # 先添加 JSON 约束到求解器

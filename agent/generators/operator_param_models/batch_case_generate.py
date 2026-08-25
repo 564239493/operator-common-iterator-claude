@@ -89,12 +89,16 @@ class OperatorCaseGenerator:
                 jsonl_file = os.path.join(jsonl_save_path, f"{operator_name}.jsonl")
             jsonl_fp = open(jsonl_file, "w", encoding="utf-8")
         final_case_list = []
+        combination_total = len(param_combination_list)
         case_index = 0
+        combination_index = 0
         solve_time = 0
         while case_index < case_num:
-            logger.info(f"###### Start generate case data, case id : '{case_index}/{case_num}' ######")
+            logger.info(
+                f"###### Start generate case data, case id : '{case_index}/{case_num}', "
+                f"combination index : '{combination_index}/{combination_total}' ######")
             t_start = time.time()
-            param_combination = param_combination_list[case_index % len(param_combination_list)]
+            param_combination = param_combination_list[combination_index % len(param_combination_list)]
             param_combination_dict = {each.param_name: each for each in param_combination.parameter_property}
             case_config = case_generate_instance.generate_case(param_combination_dict)
             correct_status, correct_case = self.correct_case(case=case_config,
@@ -117,6 +121,7 @@ class OperatorCaseGenerator:
                 logger.debug(
                     f"###### Operator constraint solve running, correct case index : '{case_index}/{case_num}' "
                     f"| use time : {t_end - t_start}s ######")
+            combination_index += 1
             if solve_time >= GlobalConfig.Z3_SOLVE_TIME_LIMIT:
                 logger.error(
                     f"Operator : {operator_name} has run Z3 solve {solve_time} times, "
