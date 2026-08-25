@@ -145,6 +145,8 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         var_name = node.value.id
         t_var = self.builder.get_var(var_name)
         if isinstance(t_var, TensorListVar):
+            if node.attr == 'is_present':
+                return t_var.is_present
             if node.attr == 'length':
                 return t_var.length
             elif node.attr == 'dtype':
