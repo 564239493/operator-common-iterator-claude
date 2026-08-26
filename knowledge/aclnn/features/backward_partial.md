@@ -59,7 +59,7 @@ relation_params: ["gradOutput", "self", "padding"]
 
 1. `gradInput.shape == self.shape` 不能替代 `gradOutput` 与 `self` 的跟随关系；
 2. 末维公式成立不能推出前缀维度或 rank 一致，三类约束必须分别检查；
-3. `dimensions.value` 只记录静态 rank 范围，跨参数跟随必须进入
+3. `dimensions.value` 只记录静态合法 rank 的显式枚举，跨参数跟随必须进入
    `constraints_in_parameters`；
 4. 每条 `src_text` 摘录对应的维度一致或派生公式原文；同一句覆盖多条约束时可复用；
 5. 正向算子、MatMul broadcast、卷积反向等不满足上述语义的场景不得套用此模板。
