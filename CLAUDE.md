@@ -35,12 +35,16 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 > `selection.json`（识别不了的参数/取值当场提示用户澄清）；单值→fix、多值→expand 子集、
 > 未列参数→按文档和已选场景自动适配；question 文本含完整 feature_params 编号表 + Other 提示语「Other
 > （可自定义输入参数特性配置）= 贴入任意格式配置，主协调器识别组装；选保持自动（未填写）
-> → 保持自动/继承文档约束」），`scripts/render_scene_directive.py` 做最终严格校验、
+> → 保持自动/继承文档约束」），`scripts/check_scene_conflicts.py` 先做**特性参数冲突识别**
+> （advisory、exit 0；判据 = `scene_scan.params[].value_conflicts` 结构化规则，仅当冲突双方
+> 参数都被用户显式选择时才判；`n_conflicts>0` 时 AskUserQuestion 三选一：返回修改特性参数
+> 重选 / 已知冲突强制继续（标注进 directive 交下游）/ 贴修改说明；冲突不阻断，仅值合法性非法
+> exit 2 才阻断重输），随后 `scripts/render_scene_directive.py` 做最终严格校验、
 > 解析用户明确选择的参数为每设备每参数的 `param_modes`（`{"expand": [取值清单]}`
 > 清单=用户明确选择的子集 / `{"fix": X}` 单值=
 > 用户单值输入或 values[0]）；缺键参数继续按算子文档和已选场景提取适配，已选场景
 > 明确禁止的 Optional 参数必须显式生成 `param is None`。随后渲染
-> `inputs/scene_directive.md`（含机读块 `device_types`/`selection`/`param_modes`/`selection_policy`；
+> `inputs/scene_directive.md`（含机读块 `device_types`/`selection`/`param_modes`/`selection_policy`/`known_conflicts`；
 > `selection` 保留逐设备选中的模板，避免“保持自动”时场景信息丢失）
 > 并回写 `run_state.scene`，constraint-extractor 据此按 `param_modes` 收窄并按
 > `device_types` 收窄 `product_support`——设备类型为"产品支持情况"具体设备名，
@@ -193,6 +197,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
 - `render_scene_directive.py` — 校验三级场景选择、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
+- `check_scene_conflicts.py` — Q3 组装 selection.json 后、渲染 directive 前做特性参数取值冲突识别（advisory、exit 0；判据 `scene_scan.params[].value_conflicts`；产 `inputs/scene_conflicts.json`，render_scene_directive 据此标注 `known_conflicts`）
 - `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 `base + 命中知识` → 冻结 `prompt_v1.md`+`prompt_preanalysis.json`+`prompt_assembly.json`
 - `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
 - `route_aclnn_knowledge.py` / `route_torch_npu_knowledge.py` — manifest 驱动知识路由（正向 trigger + `reject_on` 负向否决 + `depends_on` 依赖闭包）
