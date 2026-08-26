@@ -15,8 +15,8 @@ depends_on: ["acl_format_enum"]
 
 #### 4.6.7 格式-秩（format↔rank）硬对应表（v7 新增，通用规则）
 
-> 本节来自 `aclnnNpuFormatCast` 闭环：iter_001 把 `dstTensor.dimensions=[4,8]`
-> 与 `srcTensor.dimensions=[2,6]` 当成**扁平 rank 区间**提取，但漏掉 format 与
+> 本节来自 `aclnnNpuFormatCast` 闭环：iter_001 把 `dstTensor.dimensions=[4,5,6,7,8]`
+> 与 `srcTensor.dimensions=[2,3,4,5,6]` 当成**扁平 rank 枚举**提取，但漏掉 format 与
 > rank 的一一对应关系，生成器把 `format` 与 `dimensions` 当独立字段采样，产出
 > `NCDHW + 8D`、`NDC1HWC0 + 2D`、`FRACTAL_Z_3D + 6D` 这类非法组合。NPU 真机校验
 > 直接拒绝（`AclNN_Parameter_Error(EZ1001): Input Tensor format not match it's
@@ -51,8 +51,8 @@ depends_on: ["acl_format_enum"]
    §A 对应表中**存在不同的标准 rank**；
 2. 文档原文出现"format 与 shape 维度需匹配 / shape 维度需与 format 对应 /
    Input Tensor format not match it's shape"等 format↔rank 一致性约束信号；
-3. 文档给出某张量 view shape rank 区间（如 `[2,6]`）与 storage shape rank
-   区间（如 `[4,8]`），且 format 列表跨多种 rank 不同的格式族（ND/NCDHW/
+3. 文档给出某张量 view shape rank 范围（如 2～6 维，对应枚举 `[2,3,4,5,6]`）与 storage shape rank
+   范围（如 4～8 维，对应枚举 `[4,5,6,7,8]`），且 format 列表跨多种 rank 不同的格式族（ND/NCDHW/
    NDC1HWC0/FRACTAL_Z_3D 等）。
 
 ##### C. 必须产出的 `constraints_in_parameters` 条目
@@ -79,11 +79,11 @@ shape 维度不在[4, 8]的范围；Input Tensor format not match it's shape。"
 1. **逐格式守卫不可省略**：只要 `format.value` 列表里出现某格式，上表中对应
    rank 必须在 `expr` 中以 `(T.format == "X" and len(T.shape) == R)` 形式出现；
    ND 类按文档区间写 `min <= len(T.shape) <= max`。**不允许**只保留 `dimensions.value`
-   的扁平 `[min,max]` 区间而省略逐格式守卫。
+   的扁平 rank 枚举而省略逐格式守卫。
 2. **合并为单一 expr**：所有分支用 `or` 串接为**一条** `format_rank_consistency`
    条目，**不**拆成多条独立 `shape_equality`（否则生成器会把它们当作并列候选
    而丢失 format 门控上下文，与 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 6 反例同理）。
-3. **`dimensions.value` 仍可保留**文档给出的 `[min,max]` 作为弱范围（供生成器
+3. **`dimensions.value` 仍可保留**文档给出的完整 rank 枚举（如 2～6 维写成 `[2,3,4,5,6]`）作为弱范围（供生成器
    初筛 rank 槽数），但**必须**同时落库上述逐格式守卫，作为不可违反的硬约束。
 4. **src 必须可溯**：`src_text` 摘录文档中"维度区间""format↔shape 一致性"等
    原文短语；若文档未显式写一致性短语但 format 列表跨多种 rank，仍须按 §A 表
@@ -119,7 +119,7 @@ shape 维度不在[4, 8]的范围；Input Tensor format not match it's shape。"
       "description": "输入张量，view shape rank∈[2,6]，format 与 rank 须满足 §4.6.7 逐格式守卫",
       "type": {"value": "aclTensor", "src_text": ""},
       "format": {"value": ["ND","NCL","NCDHW","NDC1HWC0","NZ","FRACTAL_Z_3D"], "src_text": "支持的数据格式..."},
-      "dimensions": {"value": [2, 6], "src_text": "srcTensor 的 view shape 维度不在[2, 6]的范围"},
+      "dimensions": {"value": [2, 3, 4, 5, 6], "src_text": "srcTensor 的 view shape 维度不在[2, 6]的范围"},
       "dtype": {"value": ["FLOAT16","FLOAT32","INT8","BFLOAT16"], "src_text": ""},
       "is_optional": {"value": false, "src_text": ""},
       "is_support_discontinuous": {"value": true, "src_text": ""},
@@ -131,7 +131,7 @@ shape 维度不在[4, 8]的范围；Input Tensor format not match it's shape。"
       "description": "[DERIVED] shape 与 format 由 aclnnNpuFormatCastCalculateSizeAndFormat(srcTensor, dstFormat, additionalDtype) 派生，见 §4.6.8；storage shape rank∈[4,8]，format↔rank 须满足 §4.6.7 逐格式守卫",
       "type": {"value": "aclTensor", "src_text": ""},
       "format": {"value": ["ND","NZ","NCDHW","NDC1HWC0","FRACTAL_Z_3D","FRACTAL_NZ_C0_16","FRACTAL_NZ_C0_32"], "src_text": "actualFormat 取值：ACL_FORMAT_ND(2)/FRACTAL_NZ(29)/NCDHW(30)/NDC1HWC0(32)/FRACTAL_Z_3D(33)/FRACTAL_NZ_C0_16(50)/FRACTAL_NZ_C0_32(51)"},
-      "dimensions": {"value": [4, 8], "src_text": "dstTensor 的 storage shape 维度不在[4, 8]的范围"},
+      "dimensions": {"value": [4, 5, 6, 7, 8], "src_text": "dstTensor 的 storage shape 维度不在[4, 8]的范围"},
       "dtype": {"value": ["FLOAT16","FLOAT32","INT8","BFLOAT16"], "src_text": ""},
       "is_optional": {"value": false, "src_text": ""},
       "is_support_discontinuous": {"value": true, "src_text": ""},

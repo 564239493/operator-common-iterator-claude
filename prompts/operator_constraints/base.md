@@ -190,7 +190,7 @@ python scripts/validate_artifacts.py constraints <constraints.json>
   禁止错误合并为 `[1, 1024]`。
 | `dtype.value` | 是 | `List[str]` | 支持的 dtype 字符串（见 `knowledge/aclnn/common/platform_dtype.md` §dtype）；标量参数允许填写其自身类型字符串（如 `"bool"`、`"char"`、`"int"`）；不适用 → `[]` |
 | `dtype.src_text` | 是 | `str` | 摘录原文 |
-| `dimensions.value` | 是 | `List[int]` 或 `[]` | **维度（rank）约束**：如 `[2, 3]` 表示 `2 ≤ rank ≤ 3`；不适用 → `[]` |
+| `dimensions.value` | 是 | `List[int]` 或 `[]` | **合法 rank 的显式枚举**：列表中的每个整数都是一个真实可选 rank，不表示区间；如 `[1, 2, 3]` 表示支持 1～3 维，`[1, 3]` 表示只支持 1 维或 3 维；固定 3 维写 `[3]`；不适用 → `[]` |
 | `dimensions.src_text` | 是 | `str` | 摘录原文（如 `"2-3"`、`"2维"`） |
 
 **`is_optional` 判定强制规则**：
@@ -690,20 +690,20 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 | **文档写 bool 参数（无固定值约束）** | `allowed_range_value.type="enum"`、`value=[false, true]`；强行 bool 枚举，不允许填 `[]` 配 `type="range"`（否则下游生成器按浮点填充，会产生 1.0/1.23e-40 等非法值） |
 | 表达式无法用 Python 表达（自然语言公式） | **不**产出 `constraints_in_parameters` 条目（空 `expr` 违 §4.7.2）；把语义记入相关参数 `description`/`src_text` 摘录原文，待人工校对 |
 | 文档出现矛盾（A段dtype=X，B段dtype=Y） | 优先**保守**取值（取并集），`src_text` 摘录矛盾原文，等待人工确认 |
-| 文档写"1维，最大长度256" | `dimensions.value=[1, 1]`，**长度256 不得放入 `dimensions`**；须在 `constraints_in_parameters` 中加 `self_shape_axis_value` 约束 |
+| 文档写"1维，最大长度256" | `dimensions.value=[1]`，**长度256 不得放入 `dimensions`**；须在 `constraints_in_parameters` 中加 `self_shape_axis_value` 约束 |
 | 文档写"shape 与 weight1 一致" / "与输入相同" | `dimensions.value=[]`；**跨参数引用留给 `constraints_in_parameters`** 的 `shape_equality` 约束 |
-| 文档写"(BS, H) 或 (BS/rankSize, rankSize*H)" | 拆为 `shape_choice` 约束 + `parameter_representation` 约束；`dimensions.value` 按区间取值 |
+| 文档写"(BS, H) 或 (BS/rankSize, rankSize*H)" | 拆为 `shape_choice` 约束 + `parameter_representation` 约束；两个 shape 都是 2 维，因此 `dimensions.value=[2]` |
 | 文档写"其中k0=16" | `k0` 归类为 `constant`，`constant_value=16`；不放入 `inputs`（直接写入 `expr` 表达式） |
 | 文档写"H*rankSize"中的 `rankSize` 仅在复合表达式出现 | 归类为 `external_constant`，按平台分别给 `allowed_range_value` |
 | 文档写"Reduce 维度需要…" | `Reduce` 是 reduce 操作概念词，**不**抽取为隐式维度变量 |
 | 文档写"Softmax、LayerNorm" | **不**抽取为隐式维度变量（是操作名 / 算法名） |
 | 文档写"支持配置空或者[-2,-1]"（aclIntArray） | `allowed_range_value.value=[null, [-2, -1]]`，`type=enum`；"空"表示未传值，不得写成字符串 |
 | 文档写"仅 Atlas A2 支持 BF16" | 在对应平台的 `dtype.value` 中体现差异，`src_text` 摘录原文 |
-| 文档写"shape 为 [E, N1] / [N1]（per-channel / per-tensor）" | `dimensions.value=[1, 3]`（HTML 多变体取区间），shape 选择逻辑走 `shape_choice` / `shape_value_dependency` 约束 |
+| 文档写"shape 为 [E, N1] / [N1]（per-channel / per-tensor）" | `dimensions.value=[1, 2]`（按各 shape 的实际 rank 去重枚举），shape 选择逻辑走 `shape_choice` / `shape_value_dependency` 约束；若同段还出现 3 维 shape，才扩为 `[1, 2, 3]` |
 | 文档写"x 和 y 必须共存，要么都存在要么都不存在" | 生成一条 `presence_dependency`：`(y is None) if (x is None) else (y is not None)`。禁止写布尔 `==`；两个 Optional 共存也不使用 OR-of-ANDs，避免混合 presence 在当前缺参预处理中空泛通过 |
 | 文档写"actType 取值为 0 到 5" | `allowed_range_value.value=[[0, 5]]`，`type=range`；可附加 `self_value_range`：`0 <= actType.range_value <= 5` 增强机器可判定性 |
 | 文档把 epsilon/eps 描述为"除0保护值"，并建议"≤1e-4" | `allowed_range_value.value=[]`；增加 `value_dependency`：`0 < epsilon.range_value <= 1e-4`，`src_text` 同时摘录两句 |
-| **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"** | 按 `knowledge/aclnn/features/nz_matmul.md` §4.6.5 全流程处理：①`mat2.dimensions.value=[5,5]`；②`mat2.allowed_range_value.value=[]`（块尺寸是 shape 约束，不入元素取值字段）；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
+| **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"** | 按 `knowledge/aclnn/features/nz_matmul.md` §4.6.5 全流程处理：①`mat2.dimensions.value=[5]`；②`mat2.allowed_range_value.value=[]`（块尺寸是 shape 约束，不入元素取值字段）；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
 | **文档写"NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 16， k0为16"（转置 NZ）** | 同上，但**作为独立两条约束**落库（与上一种布局不合并），`src_text` 摘录对应的转置原文；`mat2.allowed_range_value.value=[]` |
 | **文档同时写明非转置与转置 NZ 两种布局** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`mat2.allowed_range_value.value=[]`（块尺寸约束不入元素取值字段，约束条目按布局拆分） |
 | **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
@@ -744,7 +744,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 6. **关系参数一致**：`expr` 中**所有出现的标识符**都在 `relation_params` 中；`relation_params` 中所有参数名都在 `inputs`/`outputs` 有对应卡片（隐式维度变量/外部常量允许例外，但须在 `inputs` 中登记）。
 7. **来源可溯**：`function_explanation`/`dtype`/`format`/`dimensions`/`allowed_range_value` 的 `src_text` 至少 30% 非空（无来源的纯模型外推视为无效）。
 8. **隐式参数完整性**：所有在 `constraints_in_parameters` 的 `expr` 中出现的**非函数签名标识符**（如 `BS`、`H`、`N`、`rankSize`），必须**全部**出现在 `inputs` 中，且 `is_operator_param.value=false`。
-9. **dimensions 合理性与类型门禁**：仅 `aclTensor` / `aclTensorList` 允许 `dimensions.value` 非空；其他类型必须为 `[]`。非空时形态必须合规（rank 格式 `[min, max]` 且 `0 ≤ min ≤ max ≤ 10`，或 per-dim 格式 `[[min,max], ...]`）。
+9. **dimensions 合理性与类型门禁**：仅 `aclTensor` / `aclTensorList` 允许 `dimensions.value` 非空；其他类型必须为 `[]`。非空时必须是去重、升序的合法 rank 显式枚举，且每项均为满足 `0 ≤ rank ≤ 10` 的整数。连续范围必须完整展开：原文“1～3维”写 `[1,2,3]`，禁止写成 `[1,3]`；只有原文明示“1维或3维”时才写 `[1,3]`。轴长度及每轴范围不得写入 `dimensions.value`，应由 `constraints_in_parameters` 表达。
 10. **枚举拆分完整**：若 `allowed_range_value.type=enum` 且 value 是 `List[str]`，则字符串中**不得**再包含 `/`、`、`、`以及`、`and`、`/` 等分隔符（必须已被拆成独立元素）。
 11. **range 的 null 禁令**：若 `allowed_range_value.type=range`，所有区间端点必须为
     实际数值且不得为 `null`；`type=enum` 的离散候选允许包含 `null`。
@@ -825,7 +825,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     `format.value` 是包含不同标准 rank 格式的列表，必须满足**全部**：
     a. 存在且仅存在一条引用该参数的 `format_rank_consistency` 约束；
     b. `format.value` 中除 `ND` 外的每种已知格式，都在该约束中有对应的精确
-       `len(T.shape) == rank` 分支；`ND` 使用文档给出的 rank 区间；
+       `len(T.shape) == rank` 分支；`ND` 使用文档给出的显式 rank 枚举，并在关系表达式中按原文范围约束；
     c. `relation_params` 包含该参数，表达式同时引用 `T.format` 与 `T.shape`；
     d. 对表达式逐分支做反例检查：`NCDHW + 非5D`、`NDC1HWC0 + 非6D`、
        `FRACTAL_Z_3D + 非4D`、`NZ/FRACTAL_NZ + 非5D` 必须全部求值为 false；
