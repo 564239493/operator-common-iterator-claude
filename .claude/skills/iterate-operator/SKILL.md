@@ -111,7 +111,24 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
     `{"device_types": [<...>], "selection": {<device>: {<template>: <tpl_value>}}}`
     其中 `<tpl_value>` ∈ `null`（选项1/未填写，按文档和已选场景自动适配）| `"fix_all_default"`（选项2）|
     `{<param>: [<values>]}`（Other 任意格式，主协调器组装为该 dict：单值→fix、多值→expand 子集、未列参数→按文档和已选场景自动适配）；
-    缺模板键 = 该模板未选（Q2 未选）→ 跑
+    缺模板键 = 该模板未选（Q2 未选）。
+  - **特性参数冲突识别（Q3 组装后、渲染 directive 前）**：`selection.json` 落盘后先跑
+    `python scripts/check_scene_conflicts.py --scan <run-dir>/inputs/scene_scan.json --selection <run-dir>/inputs/selection.json --run-dir <run-dir>`
+    （确定性、advisory、**exit 0**；判据 = `scene_scan.params[].value_conflicts` 结构化规则，
+    见 `prompts/scan_scenes.md` §4/§5；仅当冲突涉及的**两个参数都被用户显式选择**时才判，
+    任一方为自动/继承文档则跳过——下游 extractor 会自适应兼容值；产物
+    `<run-dir>/inputs/scene_conflicts.json` + stdout `{ok,n_conflicts,conflicts,warnings}`）。
+    读 stdout `n_conflicts`：
+    `n_conflicts > 0` → AskUserQuestion（单问，2 预设 + Other），question 正文逐条列出冲突
+    （device/template/参数→target/kind：forbidden 禁止取值|required 必须取值/当前取值/原因）：
+    - 选项1「返回修改特性参数」→ 对受影响 (device,template) 重发 Q3、更新 selection.json、重跑
+      check，直至 `n_conflicts==0`；
+    - 选项2「已知冲突强制继续」→ 进 render_scene_directive.py（directive 标注
+      `known_conflicts` 交下游 EXTRACT/GENERATE 处理，不阻断流程）；
+    - Other→用户贴修改说明，主协调器据此改 selection.json 后重跑 check。
+    `n_conflicts == 0` → 直接进 render_scene_directive.py。**冲突不阻断**（allow-continue）；
+    仅 selection 值合法性非法（check 返回 exit 2 `INVALID_SELECTION`/`EMPTY_SCENE`）才阻断、提示重输。
+  - 跑
     `python scripts/render_scene_directive.py --scan <run-dir>/inputs/scene_scan.json --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
     （校验设备/模板/param 名/值 ∈ scan、解析用户明确选择参数的 `param_modes`、写
     `inputs/scene_directive.md`（含机读块

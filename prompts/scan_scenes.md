@@ -54,7 +54,12 @@ op-scene 提取出的"量化模板"是**具体量化场景**，模板名直接�
 但 op-scene 未提取到量化模板，可能遗漏剪枝"}`。**不补造模板、不置 `has_scenarios`、不
 填模板字段**。宁可放过少数算子剪枝，也不臆造场景。
 
-## 4. 输出 JSON schema（v3，三级嵌套）
+## 4. 输出 JSON schema（v4，三级嵌套）
+
+> v3→v4：`params[]` 新增**可选结构化字段 `value_conflicts`**，把 `related` 中
+> "取值→关联参数禁止/要求"关系机读化，供 `scripts/check_scene_conflicts.py` 在
+> 用户 Q3 选完特性参数后做确定性冲突识别。`related` 自由文本保留做人读说明，
+> `value_conflicts` 是其机读编码；无关联关系的参数省略该字段，不臆造。
 
 ```json
 {
@@ -139,7 +144,26 @@ op-scene 提取出的"量化模板"是**具体量化场景**，模板名直接�
   取值 token 如 `"BNSD"`/`0`/`true`/`"空"`/`[-2,-1]`；复杂取值的逐值注记如
   `0 KEEP_DOTO（…）` 只保留值 token，注记并入 `description`/`constraint`）、`description`
   （文档原文参数描述，非空）、`constraint`（公共约束中该参数取值约束，可空）、`related`
-  （取值牵动的其他选择型关联参数约束，可空）。
+  （取值牵动的其他选择型关联参数约束，可空）、`value_conflicts`（**可选**，list，把
+  `related` 中"取值→关联参数禁止/要求"关系机读化，供 `scripts/check_scene_conflicts.py`
+  在用户 Q3 选完特性参数后做确定性冲突识别；`related` 自由文本保留做人读说明，
+  `value_conflicts` 是其机读编码；无关联关系则省略，不臆造）。
+  - `value_conflicts[]` 每条 dict：`when_self`（可选 list，本参数取这些值时触发；
+    缺省/null/空=无条件）、`target`（必填非空 str，关联参数名，**须存在于同一模板的
+    `feature_params[].params[].name`**——target 必须是选择型特性参数，不可是输入
+    tensor/dimension 等非选择项；若文档关联指向非选择项，则不结构化为
+    `value_conflicts`，只留在 `related` 文本）、`forbidden`（list，与 `required`
+    互斥，target 不可取这些值）、`required`（list，与 `forbidden` 互斥，target 必须
+    取其中之一）、`reason`（str，文档原文依据，人读）。每条 `forbidden`/`required`
+    有且仅一非空。**只结构化"两个选择型参数取值之间"的禁止/要求关系**；固定后果
+    （必传、固定 shape/dtype）不结构化。
+  - 结构示例（非真实提取，仅示字段形态）：
+    `{ "name": "actType", "values": [0,1,2,4,5], "description": "...",
+       "constraint": "", "related": "actType=0/1 时 groupType 仅取 0",
+       "value_conflicts": [
+         { "when_self": [0,1], "target": "groupType", "required": [0],
+           "reason": "actType=0/1 时 groupType 仅取 0" }
+       ] }`
 - `scan_notes` (list[{kind,message}], 可选)：兜底 warning；`kind="quant_signal_no_template"`
   时 warn 通过（不阻断）。
 
@@ -161,6 +185,13 @@ op-scene 提取出的"量化模板"是**具体量化场景**，模板名直接�
   仅单值时仍归 `definition`。
 - **关联参数同样只提取有选择型的**：特性参数取值牵动其他参数时，作为该条目的 `related`
   信息提取，但关联参数本身也须有可选项（枚举/分档）；固定后果不作为关联参数提取。
+  **`value_conflicts` 机读化**：当 `related` 描述的是"本参数取 X 值时，另一选择型
+  特性参数禁止取 Y / 必须取 Z"的关系，且该关联参数也存在于同一模板的 `feature_params`
+  中（选择型），必须同步结构化为 `value_conflicts`（`when_self`/`target`/`forbidden`|
+  `required`/`reason`，详见 §4）。**不结构化的情况**：关联指向的是输入 tensor/
+  dimension/dtype 等非选择项（如"sparseMode=0/1 时 attenMask 输入维度为 2 维不支持"——
+  attenMask 维度不是选择型特性参数）→ 只留在 `related` 文本，不加 `value_conflicts`；
+  固定后果（必传、固定 shape/dtype）→ 不结构化。不臆造文档未声明的禁止/要求关系。
 - **错误/校验场景不提取**：ACLNN_ERR_* 返回码、参数校验失败的报错描述一律跳过。
 
 ## 6. 自校验
@@ -178,6 +209,9 @@ python scripts/validate_artifacts.py scene_scan <run-dir>/inputs/scene_scan.json
   `feature_params` 每条 `feature` 非空、`params` 非空、每条 `name`/`values`（非空
   list）/`description` 非空。
 - 派生一致性：`device_types` == `devices[].device` 全集。
+- `value_conflicts`（若存在）：每条 `target` 非空且须为同模板选择型特性参数名，
+  `forbidden`/`required` 有且仅一非空 list、元素 str/int/float/bool，`when_self`
+  （若有）为 list，`reason`（若有）为 str；不通过据错修正。
 - `scan_notes` 含 `quant_signal_no_template` 时 warn 通过。
 
 失败则据错误修正，最多三次；仍失败则返回阻断原因，不静默放过。
@@ -374,7 +408,7 @@ CANN算子量化是指对神经网络中Matmul等矩阵（cube）类算子的输
 2. **量化模板**（第二级）：量化模板需要在同一层级平铺排列，**禁止再按"非量化/伪量化/全量化"分为大组**。具体拆分规则：
    - 先从文档中分析该算子有哪些量化场景，比如非量化、伪量化、全量化、反量化等等，也有可能具体到数据类型，比如全量化-A8W8、全量化-A4W4
    - **后量化（PostQuant）处理**：后量化不是独立模板，也不作为特性参数挂到基础模板下。而是以"**XX+后量化**"形式与基础量化模板平级排列。例如"伪量化"和"伪量化+后量化"为同级两个独立模板；"非量化"和"非量化+后量化"为同级。+后量化模板的模板定义中需说明必须传入 quantScale2、attentionOut 的限制等。从文档的 PostQuantChecker 章节判断哪些基础模板支持+后量化，不支持的（如全量化明确标注"不支持后量化"）不拆分出+后量化版本
-   - **伪量化子模式不拆分模板**：伪量化包含的子模式（如 mode=0,1,2,3,4,5,6 等 per-channel/per-token/pergroup 等）**不作为独立模板拆分**，统一为一个"伪量化"模板和一个"伪量化+后量化"模板。mode 的取值范围及其对应的约束作为特性参数（如 keyAntiquantMode/valueAntiquantMode）列出
+    - **伪量化子模式不拆分模板**：伪量化包含的子模式（如 mode=0,1,2,3,4,5,6 等 per-channel/per-token/pergroup 等）**不作为独立模板拆分**，统一为一个"伪量化"模板和一个"伪量化+后量化"模板。mode 的取值范围及其对应的约束作为特性参数（如 keyAntiquantMode/valueAntiquantMode）列出
    - **分类词不作为模板**：文档中的概括性分类术语（如"该算子支持K-C量化、K-C动态量化和mx量化模式"中的"量化模式"）只是量化场景的上级分类名，不代表具体场景，不提取为与量化模板平级的条目；分类词下的内容（通用说明、参数约束）按归属拆分并入分类下的各真实量化模板
    - **量化模板命名需按"量化模式推导规则"推导得出**（如 T-C、K-T 等），推导结果作为模板名写在模板定义前
    - **同一约束小节内的多模式须拆成独立模板**：当一个文档约束小节 / 场景表行 / 计算公式同时覆盖多个推导模式（如 950「动态量化（T-T/T-C/K-T/K-C）」一个小节含 4 个模式），按每个模式名各产一个独立模板，不得合并为单一"多模式"模板、不得把左右矩阵量化粒度降级为 feature_params 代替拆分；共享约束复制到各模板 definition，模式专属 shape 作该模板固定条件（详见「量化模式推导规则·第四步」）。仅当左矩阵 scale 必须为空或文档无 shape 区分规则时才不拆分

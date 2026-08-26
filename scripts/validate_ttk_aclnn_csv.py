@@ -16,7 +16,7 @@ from pathlib import Path
 # Valid dtype names (TTK accepts both forms)
 VALID_DTYPES = {
     "float16", "fp16", "float32", "fp32", "float64", "fp64",
-    "bfloat16", "bf16", "int8", "int16", "int32", "int64",
+    "bfloat16", "bf16", "int4", "int8", "int16", "int32", "int64",
     "uint8", "uint16", "uint32", "uint64",
     "bool", "complex64", "complex128",
     "None",  # absent optional

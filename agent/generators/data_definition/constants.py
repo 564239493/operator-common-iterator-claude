@@ -19,7 +19,7 @@ class GlobalConfig:
     # 对于可选参数，以OPTIONAL_PARAM_PROBABILITY的概率选择是否为其赋值
     OPTIONAL_PARAM_PROBABILITY = 0.5
     # 每个用例使用Z3求解次数的上限，如果每个算子使用Z3求解次数的次数超出该上限，则终止求解过程，输出已有用例，并通知工作人员查看是否约束冲突导致无解
-    Z3_SOLVE_TIME_LIMIT = 10
+    Z3_SOLVE_TIME_LIMIT = 10000
     # 不区分平台时，代码通用平台的关键字
     COMMON_PLATFORM = "common"
 

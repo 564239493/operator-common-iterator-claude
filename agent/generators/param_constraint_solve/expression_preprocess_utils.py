@@ -145,6 +145,8 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         var_name = node.value.id
         t_var = self.builder.get_var(var_name)
         if isinstance(t_var, TensorListVar):
+            if node.attr == 'is_present':
+                return t_var.is_present
             if node.attr == 'length':
                 return t_var.length
             elif node.attr == 'dtype':
@@ -496,14 +498,15 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         raise TypeError(f"prod() on unsupported type: {type(arg).__name__}")
 
     def _handle_len(self, node, func_name):
-        if len(node.args) != 1: raise ValueError("len() expects 1 argument")
+        if len(node.args) != 1:
+            raise ValueError("len() expects 1 argument")
         arg = self.visit(node.args[0])
-        if arg is None: raise ValueError("len() argument failed")
+        if arg is None:
+            raise ValueError("len() argument failed")
         if isinstance(arg, TensorListVar):
-            return arg.length
-        if hasattr(arg, 'shape'): return z3.Length(arg.shape)
-        if hasattr(arg, 'z3_var') and z3.is_seq(arg.z3_var): return z3.Length(arg.z3_var)
-        if z3.is_seq(arg): return z3.Length(arg)
+            return arg.length  # TensorListVar → tensor 个数
+        if z3.is_seq(arg):
+            return z3.Length(arg)  # shape / ListVar → 维度数 / 元素个数
         raise TypeError(f"len() on unsupported type: {type(arg).__name__}")
 
     def _handle_all(self, node, func_name):

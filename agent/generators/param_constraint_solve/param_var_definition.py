@@ -964,6 +964,8 @@ class ListVar(BaseVar):
             elif isinstance(length, (list, tuple)) and len(length) == 2:
                 self.solver.add(z3.Length(self.z3_var) >= length[0])
                 self.solver.add(z3.Length(self.z3_var) <= length[1])
+        else:
+            self.solver.add(z3.Length(self.z3_var) >= 1)
         # 不再添加约束，仅作为建议保存
         # self._add_initial_range_constraints(range_value)
         if self.dtype_arg and self.dtype_arg in DataMatchMap.DTYPE_SPECS:

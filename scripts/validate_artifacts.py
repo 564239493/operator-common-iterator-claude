@@ -26,6 +26,17 @@ _CONDITIONAL_SHAPE_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DIMENSION_RANGE_RES = (
+    re.compile(
+        r"(?P<low>\d+)\s*(?:~|～|至|到|-)\s*(?P<high>\d+)\s*(?:维|[dD]\b)"
+    ),
+    re.compile(
+        r"(?:维度|rank)[^\n]{0,24}?\[\s*(?P<low>\d+)\s*,\s*"
+        r"(?P<high>\d+)\s*\][^\n]{0,8}?(?:范围|区间)",
+        re.IGNORECASE,
+    ),
+)
+
 
 def _looks_like_mojibake(text: str) -> bool:
     """Detect strongly corrupted UTF-8/legacy-codepage text conservatively."""
@@ -159,6 +170,51 @@ def validate_constraint_semantics(value) -> list[str]:
     errors: list[str] = []
 
     for section, param, platform, attributes in _iter_param_attributes(value):
+        dimensions = attributes.get("dimensions")
+        if isinstance(dimensions, dict):
+            dimension_values = dimensions.get("value", [])
+            dimension_path = f"{section}.{param}[{platform}].dimensions.value"
+            if not isinstance(dimension_values, list):
+                errors.append(f"{dimension_path} must be a list of explicit ranks")
+            elif any(
+                not isinstance(rank, int) or isinstance(rank, bool)
+                for rank in dimension_values
+            ):
+                errors.append(
+                    f"{dimension_path} must contain only integer ranks; "
+                    "axis ranges do not belong in dimensions.value"
+                )
+            elif dimension_values:
+                canonical = sorted(set(dimension_values))
+                if dimension_values != canonical:
+                    errors.append(
+                        f"{dimension_path} must be sorted and deduplicated; "
+                        f"expected {canonical}"
+                    )
+                invalid = [rank for rank in dimension_values if not 0 <= rank <= 10]
+                if invalid:
+                    errors.append(
+                        f"{dimension_path} contains ranks outside [0, 10]: {invalid}"
+                    )
+
+                src_text = dimensions.get("src_text", "")
+                if isinstance(src_text, str):
+                    match = next(
+                        (pattern.search(src_text) for pattern in _DIMENSION_RANGE_RES
+                         if pattern.search(src_text)),
+                        None,
+                    )
+                    if match:
+                        low, high = int(match.group("low")), int(match.group("high"))
+                        if low <= high:
+                            expected = list(range(low, high + 1))
+                            if dimension_values != expected:
+                                errors.append(
+                                    f"{dimension_path} must expand the continuous "
+                                    f"rank range {match.group(0)!r} to {expected}; "
+                                    f"got {dimension_values}"
+                                )
+
         allowed = attributes.get("allowed_range_value")
         if not isinstance(allowed, dict):
             continue
@@ -210,6 +266,19 @@ def validate_constraint_semantics(value) -> list[str]:
                 f"is not valid after null->None normalization: {exc}"
             )
             continue
+        subscript_attribute = next((
+            item for item in ast.walk(tree)
+            if isinstance(item, ast.Attribute)
+            and isinstance(item.value, ast.Subscript)
+        ), None)
+        if subscript_attribute is not None:
+            errors.append(
+                f"constraints_in_parameters[{platform}][{index}].expr accesses "
+                f".{subscript_attribute.attr} on a subscripted value; the constraint "
+                "engine requires an attribute root to be a parameter variable. For "
+                "TensorList metadata use P.shape/P.dtype/P.format and len(P), never "
+                "P[0].shape/P[i].dtype"
+            )
         if _is_nested_numeric_interval_membership(tree):
             errors.append(
                 f"constraints_in_parameters[{platform}][{index}].expr uses "
@@ -376,6 +445,173 @@ def _validate_tensor_format_values(value) -> list[str]:
                 f"{section}.{param}[{platform}].format.value must be a "
                 "list[str] for Tensor parameters; use ['ND'] for a single format"
             )
+    return errors
+
+
+_COMBO_MERGED_VALUE_RE = re.compile(r"[/|、]|\b(?:or|and)\b|或|以及", re.IGNORECASE)
+_COMBO_NULL_VALUE_RE = re.compile(r"(?:\bnull\b|\bnone\b|空)", re.IGNORECASE)
+
+
+def _attribute_domain(attributes: dict, attribute_name: str) -> set[str]:
+    raw = attributes.get(attribute_name)
+    raw_value = raw.get("value") if isinstance(raw, dict) else raw
+    if isinstance(raw_value, list):
+        return {item for item in raw_value if isinstance(item, str)}
+    if isinstance(raw_value, str):
+        return {raw_value}
+    return set()
+
+
+def _validate_support_descriptions(value) -> list[str]:
+    """Reject combo tables that the case generator cannot interpret safely."""
+    errors: list[str] = []
+    parameter_cards: dict[str, dict] = {}
+    for section_name in ("inputs", "outputs"):
+        section = value.get(section_name, {})
+        if not isinstance(section, dict):
+            continue
+        for param_name, platforms in section.items():
+            if isinstance(platforms, dict):
+                parameter_cards[param_name] = platforms
+
+    for field_name, attribute_name in (
+        ("dtype_support_description", "dtype"),
+        ("format_support_description", "format"),
+    ):
+        support = value.get(field_name, {})
+        if not isinstance(support, dict):
+            continue
+        for platform, combos in support.items():
+            if not isinstance(combos, list):
+                continue
+            for combo_index, combo in enumerate(combos):
+                if not isinstance(combo, dict):
+                    continue
+                combo_path = f"{field_name}[{platform}][{combo_index}]"
+                for param_name, combo_value in combo.items():
+                    if param_name not in parameter_cards:
+                        errors.append(
+                            f"{combo_path} uses unknown parameter {param_name!r}; "
+                            "combo keys must exactly match inputs/outputs names"
+                        )
+                        continue
+                    if not isinstance(combo_value, str):
+                        errors.append(
+                            f"{combo_path}.{param_name} must be one atomic string value"
+                        )
+                        continue
+                    if (
+                        combo_value != "N/A"
+                        and _COMBO_MERGED_VALUE_RE.search(combo_value)
+                    ):
+                        errors.append(
+                            f"{combo_path}.{param_name}={combo_value!r} merges multiple "
+                            f"{attribute_name} values; expand rows or leave {field_name} empty"
+                        )
+                    if _COMBO_NULL_VALUE_RE.search(combo_value):
+                        errors.append(
+                            f"{combo_path}.{param_name}={combo_value!r} encodes absence as "
+                            f"{attribute_name}; use a presence_dependency instead"
+                        )
+
+                    cards = parameter_cards[param_name]
+                    candidate_cards = []
+                    if isinstance(cards.get(platform), dict):
+                        candidate_cards.append(cards[platform])
+                    else:
+                        candidate_cards.extend(
+                            card for card in cards.values() if isinstance(card, dict)
+                        )
+                    domain = set().union(*(
+                        _attribute_domain(card, attribute_name)
+                        for card in candidate_cards
+                    )) if candidate_cards else set()
+                    if domain and combo_value not in domain:
+                        errors.append(
+                            f"{combo_path}.{param_name}={combo_value!r} is outside "
+                            f"{attribute_name}.value domain {sorted(domain)!r}"
+                        )
+    return errors
+
+
+def _validate_grouped_matmul_v5_constraints(value) -> list[str]:
+    """Protect trial-verified GMMV5 3D NZ rules from LLM strengthening."""
+    if value.get("operator_name") != "aclnnGroupedMatmulV5":
+        return []
+
+    errors: list[str] = []
+    constraints_by_platform: dict[str, list[str]] = {}
+    for platform, _, constraint in _iter_constraints(value):
+        expr = constraint.get("expr")
+        if isinstance(expr, str):
+            constraints_by_platform.setdefault(platform, []).append(expr)
+
+    def compact(expr: str) -> str:
+        return re.sub(r"\s+", "", expr).replace("'", '"')
+
+    for platform, expressions in constraints_by_platform.items():
+        for expr in expressions:
+            normalized = compact(expr)
+            if re.search(r"weight\.shape\[1\]%64", normalized):
+                errors.append(
+                    f"constraints_in_parameters[{platform}] adds unsupported "
+                    "weight.shape[1] % 64 alignment; GMMV5 evidence only constrains "
+                    "the logical N axis weight.shape[2]"
+                )
+            if "weight.shape[2]%16==0" not in normalized:
+                continue
+            has_format_guard = (
+                'not(weight.format=="NZ")or' in normalized
+                or 'weight.format!="NZ"or' in normalized
+            )
+            guarded_dtype = next((
+                dtype for dtype in ("INT4", "INT8")
+                if (
+                    f'not(weight.dtype=="{dtype}")or' in normalized
+                    or f'weight.dtype!="{dtype}"or' in normalized
+                )
+            ), None)
+            if not has_format_guard or guarded_dtype is None:
+                errors.append(
+                    f"constraints_in_parameters[{platform}] has GMMV5 N%16 alignment "
+                    "without the required NZ and INT4/INT8 guards; preserve "
+                    "not(weight.format == 'NZ') or not(weight.dtype == '<dtype>') or ..."
+                )
+
+    weight_cards = ((value.get("inputs") or {}).get("weight") or {})
+    if not isinstance(weight_cards, dict):
+        return errors
+    for platform, attributes in weight_cards.items():
+        if not isinstance(attributes, dict):
+            continue
+        dtype_domain = _attribute_domain(attributes, "dtype")
+        format_domain = _attribute_domain(attributes, "format")
+        if "NZ" not in format_domain:
+            continue
+        platform_exprs = list(constraints_by_platform.get(platform, []))
+        if platform != "common":
+            platform_exprs.extend(constraints_by_platform.get("common", []))
+        normalized_exprs = [compact(expr) for expr in platform_exprs]
+        for dtype in ("INT4", "INT8"):
+            if dtype not in dtype_domain:
+                continue
+            has_exact_guard = any(
+                "weight.shape[2]%16==0" in expr
+                and (
+                    'not(weight.format=="NZ")or' in expr
+                    or 'weight.format!="NZ"or' in expr
+                )
+                and (
+                    f'not(weight.dtype=="{dtype}")or' in expr
+                    or f'weight.dtype!="{dtype}"or' in expr
+                )
+                for expr in normalized_exprs
+            )
+            if not has_exact_guard:
+                errors.append(
+                    f"constraints_in_parameters[{platform}] misses the trial-verified "
+                    f"GMMV5 NZ/{dtype} logical-N alignment guard on weight.shape[2]"
+                )
     return errors
 
 
@@ -660,10 +896,12 @@ def validate_constraints(value) -> list[str]:
             + validate_constraint_semantics(value)
             + array_length_errors
             + _validate_tensor_format_values(value)
+            + _validate_support_descriptions(value)
             + _validate_conditional_shape_constraints(value)
             + _validate_tensor_list_length_constraints(value)
             + _validate_dynamic_allowed_ranges(value)
             + _validate_scatter_pa_kv_cache_constraints(value)
+            + _validate_grouped_matmul_v5_constraints(value)
         )
         if str(value.get("operator_name", "")).startswith(("torch_npu.", "torch.npu.")):
             from agent.hs.constraint_validation import validate_hs_constraints
@@ -1125,6 +1363,16 @@ def _validate_scene_scan(value: dict) -> tuple[list[str], list[str]]:
             if not isinstance(fps, list):
                 errors.append(f"devices[{i}].templates[{j}].feature_params must be a list")
                 fps = []
+            # collect all selectable param names in this template for value_conflicts
+            # target cross-ref (target must be a selectable param, not a tensor/dim).
+            tpl_param_names: set[str] = set()
+            _fps_scan = t.get("feature_params") or []
+            if isinstance(_fps_scan, list):
+                for _fp in _fps_scan:
+                    if isinstance(_fp, dict):
+                        for _p in (_fp.get("params") or []):
+                            if isinstance(_p, dict) and isinstance(_p.get("name"), str):
+                                tpl_param_names.add(_p["name"])
             for k, fp in enumerate(fps):
                 if not isinstance(fp, dict):
                     errors.append(f"devices[{i}].templates[{j}].feature_params[{k}] must be an object")
@@ -1183,6 +1431,63 @@ def _validate_scene_scan(value: dict) -> tuple[list[str], list[str]]:
                                 f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}].{opt} "
                                 f"must be string or null"
                             )
+                    vc = p.get("value_conflicts")
+                    if vc is not None:
+                        vc_loc = (
+                            f"devices[{i}].templates[{j}].feature_params[{k}].params[{m}]"
+                            f".value_conflicts"
+                        )
+                        if not isinstance(vc, list):
+                            errors.append(f"{vc_loc} must be a list")
+                        else:
+                            for ci, entry in enumerate(vc):
+                                eloc = f"{vc_loc}[{ci}]"
+                                if not isinstance(entry, dict):
+                                    errors.append(f"{eloc} must be an object")
+                                    continue
+                                target = entry.get("target")
+                                if not isinstance(target, str) or not target.strip():
+                                    errors.append(f"{eloc}.target must be a non-empty string")
+                                elif target not in tpl_param_names:
+                                    warnings.append(
+                                        f"{eloc}.target {target!r} not a selectable param "
+                                        f"in template {tname!r}; conflict rule will not fire"
+                                    )
+                                forbidden = entry.get("forbidden")
+                                required = entry.get("required")
+                                for fld, val in (("forbidden", forbidden), ("required", required)):
+                                    if val is not None:
+                                        if not isinstance(val, list):
+                                            errors.append(f"{eloc}.{fld} must be a list")
+                                        elif val and not all(
+                                            isinstance(x, (str, int, float, bool)) for x in val
+                                        ):
+                                            errors.append(f"{eloc}.{fld} entries must be str/int/float/bool")
+                                forb_ok = isinstance(forbidden, list) and len(forbidden) > 0
+                                req_ok = isinstance(required, list) and len(required) > 0
+                                if forb_ok and req_ok:
+                                    errors.append(
+                                        f"{eloc}: forbidden and required are mutually exclusive; "
+                                        f"provide exactly one"
+                                    )
+                                elif not forb_ok and not req_ok:
+                                    errors.append(
+                                        f"{eloc}: must provide exactly one of forbidden/required "
+                                        f"(non-empty list)"
+                                    )
+                                ws = entry.get("when_self")
+                                if ws is not None:
+                                    if not isinstance(ws, list):
+                                        errors.append(f"{eloc}.when_self must be a list")
+                                    elif ws and not all(
+                                        isinstance(x, (str, int, float, bool)) for x in ws
+                                    ):
+                                        errors.append(
+                                            f"{eloc}.when_self entries must be str/int/float/bool"
+                                        )
+                                reason = entry.get("reason")
+                                if reason is not None and not isinstance(reason, str):
+                                    errors.append(f"{eloc}.reason must be a string or null")
 
     # derived consistency: device_types == set of devices[].device
     if device_types and declared_devices != device_set:

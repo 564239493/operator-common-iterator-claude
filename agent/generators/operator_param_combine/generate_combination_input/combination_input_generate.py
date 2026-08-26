@@ -454,13 +454,15 @@ class CombinationInputGenerate:
 
         return combination_input_data
 
-    def save_input_data(self, input_data: Dict):
-        if self.json_save_path is None:
+    def save_input_data(self, input_data: Dict, save_directory=None):
+        if self.json_save_path is None and save_directory is None:
             logger.debug("Json_save_path is None, don't save input data to json file")
             return
-        if not os.path.exists(self.json_save_path):
-            os.makedirs(self.json_save_path)
-        save_path = os.path.join(self.json_save_path, self.operator_rule_data.operator_name + ".json")
+        if save_directory is None:
+            save_directory = self.json_save_path
+        if not os.path.exists(save_directory):
+            os.makedirs(save_directory)
+        save_path = os.path.join(save_directory, self.operator_rule_data.operator_name + "_domain_data.json")
         input_data_dict = json.dumps(input_data, ensure_ascii=False, indent=4)
         with open(save_path, "w", encoding="utf-8") as f:
             f.write(input_data_dict)

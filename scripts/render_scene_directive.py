@@ -329,10 +329,12 @@ def _render_directive(
     sel_devices: list[str],
     selection_resolved: dict,
     param_modes: dict[str, dict],
+    conflicts: list[dict] | None = None,
 ) -> str:
     """Render the directive: per-device per-template listing + selection
-    masking prose + machine block
-    ``{device_types, selection, param_modes, selection_policy}``."""
+    masking prose + (optional) known-conflict listing + machine block
+    ``{device_types, selection, param_modes, selection_policy, known_conflicts}``."""
+    conflicts = conflicts or []
     devices_by_name = _devices_by_name(scan)
     dev_sections: list[str] = []
     for d in sel_devices:
@@ -385,12 +387,35 @@ def _render_directive(
             elif isinstance(v, dict) and "fix" in v:
                 fix_params.append(f"{d}/{p}={v.get('fix')}")
 
+    conflict_lines: list[str] = []
+    for c in conflicts:
+        rule = c.get("rule", {}) if isinstance(c, dict) else {}
+        if c.get("kind") == "required":
+            rule_txt = f"要求 {c.get('target')} 取 {rule.get('required')}"
+        else:
+            rule_txt = f"禁止 {c.get('target')} 取 {rule.get('forbidden')}"
+        ws = c.get("when_self")
+        ws_txt = f"当 {c.get('param')}={ws} 时 " if ws else ""
+        conflict_lines.append(
+            f"- {c.get('device')}/{c.get('template')}: {ws_txt}"
+            f"{c.get('param')}={c.get('param_values')} → {rule_txt}"
+            f"（当前 {c.get('target')}={c.get('target_values')}）；"
+            f"原因：{c.get('reason', '')}"
+        )
+    conflicts_section = (
+        "\n\n### 已知特性参数冲突（用户确认强制继续）\n\n"
+        + "\n".join(conflict_lines)
+        if conflict_lines
+        else ""
+    )
+
     machine = json.dumps(
         {
             "device_types": sel_devices,
             "selection": selection_resolved,
             "param_modes": param_modes,
             "selection_policy": dict(SELECTION_POLICY),
+            "known_conflicts": conflicts,
         },
         ensure_ascii=False,
     )
@@ -415,7 +440,7 @@ def _render_directive(
   `presence_dependency`”不等价于“不测试”，因为无 presence 约束的 Optional 参数会
   继续在存在/缺席之间生成。
 - 展开参数：{expand_params or '(无)'}
-- 固定参数：{fix_params or '(无)'}
+- 固定参数：{fix_params or '(无)'}{conflicts_section}
 
 提取要求：
 1. **选择内容是基本限制，未提及的按文档原文提取**——先按机读块 `selection` 确定
@@ -448,6 +473,7 @@ def _scene_payload(
     selection: dict | None = None,
     param_modes: dict[str, dict] | None = None,
     directive_path: Path | None = None,
+    known_conflicts: list[dict] | None = None,
 ) -> dict:
     return {
         "enabled": scope != "off",
@@ -456,6 +482,7 @@ def _scene_payload(
         "selection": selection or {},
         "param_modes": param_modes or {},
         "selection_policy": dict(SELECTION_POLICY),
+        "known_conflicts": known_conflicts or [],
         "directive": str(directive_path) if directive_path else "",
         "scan": str(scan_path),
     }
@@ -588,8 +615,12 @@ def main() -> int:
         ))
         return 2
     param_modes = _param_modes(scan, sel_devices, selection_resolved)
+    # lazy import: avoid a module-load cycle (check_scene_conflicts imports
+    # helpers from this module at its top level).
+    from check_scene_conflicts import detect_conflicts
+    conflicts = detect_conflicts(scan, sel_devices, selection_resolved)
     directive_text = _render_directive(
-        scan, sel_devices, selection_resolved, param_modes
+        scan, sel_devices, selection_resolved, param_modes, conflicts
     )
     inputs_dir.mkdir(parents=True, exist_ok=True)
     directive_path.write_text(directive_text, encoding="utf-8")
@@ -597,13 +628,14 @@ def main() -> int:
         run_dir,
         _scene_payload(
             "subset", scan_path, scan, sel_devices, selection_resolved,
-            param_modes, directive_path
+            param_modes, directive_path, conflicts
         ),
     )
     n_templates = sum(len(v) for v in selection_resolved.values())
     print(json.dumps(
         {"ok": True, "scope": "subset", "directive": str(directive_path),
          "n_devices": len(sel_devices), "n_templates": n_templates,
+         "n_conflicts": len(conflicts), "known_conflicts": conflicts,
          "warnings": warnings, "scene_scan": str(scan_path)},
         ensure_ascii=False,
     ))
