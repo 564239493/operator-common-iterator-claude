@@ -14,7 +14,8 @@ description: 对照算子文档及本轮明确补充证据检查最终 constrain
 - 当前 `<iter-dir>/constraint_check.json`（第 2 轮起存在）；
 - 若存在：`inputs/scene_directive.md`、`inputs/supplementary-doc.md`、
   `inputs/supplement_constraints.md`、`inputs/conflict_candidates.json`、
-  `inputs/conflict_resolution.json`。
+  `inputs/conflict_resolution.json`、当前轮 `analysis.json`、
+  `constraints_patch.json`。
 
 只允许读取这些输入与为理解结构所必需的 schema/校验代码。禁止读取其他 run、历史
 constraints、memory 或其他 Agent 对话。
@@ -33,6 +34,9 @@ constraints、memory 或其他 Agent 对话。
 6. 第 2 轮起逐条复核原有 open/unfixed：已正确则 fixed，仍错误则 unfixed 并更新
    `last_checked_round`。新问题追加新 id，不能复用旧 id。
 7. fixed 历史项保留在同一个报告中，不删除。
+8. 当前轮有诊断 finding/patch 时，逐条核对 finding_ids、basis 与 expected_effect；新增
+   约束必须能拒绝/修正对应失败 case，同时不得与文档明确合法样例冲突。没有覆盖、效果
+   不成立或 patch 只是等价 noop 时记为 blocking issue。
 
 ## 唯一报告
 

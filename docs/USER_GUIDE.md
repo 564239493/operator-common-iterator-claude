@@ -35,7 +35,8 @@ OPCI（Operator Common Iterator）是 CANN 算子迭代测试的自动化编排�
 核心状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE`
 
 - 全部通过 → `SUCCESS`
-- 有失败 → `DIAGNOSE`；根因为 `constraint_extraction` 时进入 `OPTIMIZE → EXTRACT` 循环
+- 有失败 → `DIAGNOSE`；根因为 `constraint_extraction` 时优先使用已确认补充，只有能定位
+  Prompt 规则缺口时才进入 `OPTIMIZE → EXTRACT`
 - `generator_bug` / `executor_bug` → 立即止损
 - 达到 max-iterations → `MAX_ITERATIONS`
 
@@ -275,7 +276,9 @@ GATE → quality-reviewer Agent → 质量门禁 → 决定下一步
 
 全通过 → SUCCESS
 有失败 → failure-analyst Agent 诊断根因
-  根因 = constraint_extraction → prompt-optimizer 优化提示词 → 下一轮
+  根因 = constraint_extraction + 明确补充已落库 → 下一轮 EXTRACT/SUPPLEMENT
+  根因 = constraint_extraction + 无补充 + Prompt 规则缺口明确 → prompt-optimizer → 下一轮
+  根因 = constraint_extraction + 两者都无 → 请求人工补充证据
   根因 = generator_bug / executor_bug → 立即止损
 ```
 

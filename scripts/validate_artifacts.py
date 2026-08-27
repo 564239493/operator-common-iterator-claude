@@ -1177,7 +1177,269 @@ def validate_analysis(value) -> list[str]:
         "constraint_extraction", "generator_bug", "executor_bug",
         "ttk_adapter", "golden_derivation", "execution_environment",
     }
-    return [] if value.get("root_cause") in allowed else ["invalid root_cause"]
+    errors: list[str] = []
+    root_cause = value.get("root_cause")
+    if root_cause not in allowed:
+        errors.append("invalid root_cause")
+
+    # Legacy analysis artifacts only carried root_cause.  Keep them readable,
+    # while making the new 2.0 contract strict for newly produced iterations.
+    schema_version = value.get("schema_version")
+    if schema_version is None:
+        return errors
+    if schema_version != "2.0":
+        errors.append("analysis.schema_version must be '2.0'")
+        return errors
+
+    if not isinstance(value.get("analysis"), str) or not value["analysis"].strip():
+        errors.append("analysis.analysis must be a non-empty string")
+    issues = value.get("specific_issues")
+    if (
+        not isinstance(issues, list)
+        or not issues
+        or any(not isinstance(item, str) or not item.strip() for item in issues)
+    ):
+        errors.append("analysis.specific_issues must be a non-empty string array")
+
+    clusters = value.get("failure_clusters")
+    if not isinstance(clusters, list) or not clusters:
+        errors.append("analysis.failure_clusters must be a non-empty array")
+    else:
+        cluster_ids: set[str] = set()
+        for index, cluster in enumerate(clusters):
+            prefix = f"analysis.failure_clusters[{index}]"
+            if not isinstance(cluster, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            cluster_id = cluster.get("id")
+            if not isinstance(cluster_id, str) or not cluster_id.strip():
+                errors.append(f"{prefix}.id must be a non-empty string")
+            elif cluster_id in cluster_ids:
+                errors.append(f"{prefix}.id is duplicated: {cluster_id}")
+            else:
+                cluster_ids.add(cluster_id)
+            if not isinstance(cluster.get("signature"), str) or not cluster["signature"].strip():
+                errors.append(f"{prefix}.signature must be a non-empty string")
+            case_ids = cluster.get("case_ids")
+            if (
+                not isinstance(case_ids, list)
+                or not case_ids
+                or any(not isinstance(case_id, (str, int)) for case_id in case_ids)
+            ):
+                errors.append(f"{prefix}.case_ids must be a non-empty string/int array")
+            if cluster.get("root_cause") not in allowed:
+                errors.append(f"{prefix}.root_cause is invalid")
+            evidence = cluster.get("evidence")
+            if not isinstance(evidence, list) or not evidence:
+                errors.append(f"{prefix}.evidence must be a non-empty array")
+            elif any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("source"), str)
+                or not item["source"].strip()
+                or not isinstance(item.get("detail"), str)
+                or not item["detail"].strip()
+                for item in evidence
+            ):
+                errors.append(
+                    f"{prefix}.evidence entries require non-empty source and detail"
+                )
+
+    findings = value.get("constraint_findings")
+    if not isinstance(findings, list):
+        errors.append("analysis.constraint_findings must be an array")
+        findings = []
+    else:
+        finding_ids: set[str] = set()
+        allowed_kinds = {
+            "missing", "incorrect", "too_broad", "too_narrow", "invalid_expression",
+        }
+        for index, finding in enumerate(findings):
+            prefix = f"analysis.constraint_findings[{index}]"
+            if not isinstance(finding, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            finding_id = finding.get("id")
+            if not isinstance(finding_id, str) or not finding_id.strip():
+                errors.append(f"{prefix}.id must be a non-empty string")
+            elif finding_id in finding_ids:
+                errors.append(f"{prefix}.id is duplicated: {finding_id}")
+            else:
+                finding_ids.add(finding_id)
+            if finding.get("kind") not in allowed_kinds:
+                errors.append(f"{prefix}.kind is invalid")
+            for field in ("fact", "expected_effect"):
+                if not isinstance(finding.get(field), str) or not finding[field].strip():
+                    errors.append(f"{prefix}.{field} must be a non-empty string")
+            for field in ("affected_params", "case_ids", "evidence"):
+                field_value = finding.get(field)
+                if not isinstance(field_value, list) or not field_value:
+                    errors.append(f"{prefix}.{field} must be a non-empty array")
+            affected_params = finding.get("affected_params")
+            if isinstance(affected_params, list) and any(
+                not isinstance(param, str) or not param.strip()
+                for param in affected_params
+            ):
+                errors.append(f"{prefix}.affected_params entries must be non-empty strings")
+            finding_cases = finding.get("case_ids")
+            if isinstance(finding_cases, list) and any(
+                not isinstance(case_id, (str, int)) for case_id in finding_cases
+            ):
+                errors.append(f"{prefix}.case_ids entries must be string/int")
+            finding_evidence = finding.get("evidence")
+            if isinstance(finding_evidence, list) and any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("source"), str)
+                or not item["source"].strip()
+                or not isinstance(item.get("detail"), str)
+                or not item["detail"].strip()
+                for item in finding_evidence
+            ):
+                errors.append(
+                    f"{prefix}.evidence entries require non-empty source and detail"
+                )
+            confidence = finding.get("confidence")
+            if (
+                not isinstance(confidence, (int, float))
+                or isinstance(confidence, bool)
+                or not 0 <= confidence <= 1
+            ):
+                errors.append(f"{prefix}.confidence must be a number in [0, 1]")
+
+    decision = value.get("supplement_decision")
+    if not isinstance(decision, dict):
+        errors.append("analysis.supplement_decision must be an object")
+    else:
+        has_additions = decision.get("has_explicit_additions")
+        if not isinstance(has_additions, bool):
+            errors.append(
+                "analysis.supplement_decision.has_explicit_additions must be bool"
+            )
+        source = decision.get("source")
+        if source not in {"source_confirmed", "diagnose_inferred", "human", "none"}:
+            errors.append("analysis.supplement_decision.source is invalid")
+        if not isinstance(decision.get("reason"), str) or not decision["reason"].strip():
+            errors.append("analysis.supplement_decision.reason must be non-empty")
+        if has_additions is True:
+            if root_cause != "constraint_extraction":
+                errors.append(
+                    "explicit constraint additions require root_cause=constraint_extraction"
+                )
+            if not findings:
+                errors.append("explicit constraint additions require constraint_findings")
+            if source == "none":
+                errors.append("explicit constraint additions require a concrete source")
+        elif findings:
+            errors.append(
+                "constraint_findings must be empty when has_explicit_additions=false"
+            )
+
+    prompt = value.get("prompt_optimization")
+    if not isinstance(prompt, dict):
+        errors.append("analysis.prompt_optimization must be an object")
+    else:
+        eligible = prompt.get("eligible")
+        if not isinstance(eligible, bool):
+            errors.append("analysis.prompt_optimization.eligible must be bool")
+        if not isinstance(prompt.get("reason"), str) or not prompt["reason"].strip():
+            errors.append("analysis.prompt_optimization.reason must be non-empty")
+        if (
+            eligible is True
+            and isinstance(decision, dict)
+            and decision.get("has_explicit_additions") is True
+        ):
+            errors.append(
+                "prompt optimization cannot be eligible when explicit additions exist"
+            )
+    return errors
+
+
+def validate_constraints_patch(value) -> list[str]:
+    if not isinstance(value, list):
+        return ["constraints_patch must be an array"]
+    errors: list[str] = []
+    for index, item in enumerate(value):
+        prefix = f"constraints_patch[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        op = item.get("op")
+        if op not in {"add_constraint", "replace_constraint"}:
+            errors.append(f"{prefix}.op is invalid")
+        if not isinstance(item.get("target_platform"), str) or not item["target_platform"].strip():
+            errors.append(f"{prefix}.target_platform must be non-empty")
+        if op == "replace_constraint" and (
+            not isinstance(item.get("match_expr"), str) or not item["match_expr"].strip()
+        ):
+            errors.append(f"{prefix}.match_expr is required for replace_constraint")
+        proposed = item.get("proposed")
+        if not isinstance(proposed, dict):
+            errors.append(f"{prefix}.proposed must be an object")
+        else:
+            if not isinstance(proposed.get("expr_type"), str) or not proposed["expr_type"].strip():
+                errors.append(f"{prefix}.proposed.expr_type must be non-empty")
+            expr = proposed.get("expr")
+            if not isinstance(expr, str) or not expr.strip():
+                errors.append(f"{prefix}.proposed.expr must be non-empty")
+            else:
+                try:
+                    ast.parse(expr, mode="eval")
+                except SyntaxError as exc:
+                    errors.append(f"{prefix}.proposed.expr syntax error: {exc}")
+            params = proposed.get("relation_params")
+            if (
+                not isinstance(params, list)
+                or not params
+                or any(not isinstance(param, str) or not param.strip() for param in params)
+            ):
+                errors.append(
+                    f"{prefix}.proposed.relation_params must be a non-empty string array"
+                )
+        if not isinstance(item.get("basis"), str) or not item["basis"].strip():
+            errors.append(f"{prefix}.basis must contain traceable evidence")
+        if "finding_ids" in item:
+            finding_ids = item.get("finding_ids")
+            if (
+                not isinstance(finding_ids, list)
+                or not finding_ids
+                or any(not isinstance(fid, str) or not fid.strip() for fid in finding_ids)
+            ):
+                errors.append(f"{prefix}.finding_ids must be a non-empty string array")
+            if (
+                not isinstance(item.get("expected_effect"), str)
+                or not item["expected_effect"].strip()
+            ):
+                errors.append(
+                    f"{prefix}.expected_effect is required with finding_ids"
+                )
+    return errors
+
+
+def validate_source_evidence(value) -> list[str]:
+    if not isinstance(value, dict):
+        return ["source_evidence must be an object"]
+    errors: list[str] = []
+    for field in ("log_match", "confirmed_additions", "missing_evidence"):
+        if not isinstance(value.get(field), list):
+            errors.append(f"source_evidence.{field} must be an array")
+    count = value.get("confirmed_additions_count")
+    additions = value.get("confirmed_additions")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        errors.append("source_evidence.confirmed_additions_count must be >= 0")
+    elif isinstance(additions, list) and count != len(additions):
+        errors.append(
+            "source_evidence.confirmed_additions_count must equal len(confirmed_additions)"
+        )
+    if isinstance(additions, list):
+        required = ("finding_id", "fact", "failed_case_id", "source_location", "error_string")
+        for index, addition in enumerate(additions):
+            prefix = f"source_evidence.confirmed_additions[{index}]"
+            if not isinstance(addition, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            for field in required:
+                if not isinstance(addition.get(field), str) or not addition[field].strip():
+                    errors.append(f"{prefix}.{field} must be a non-empty string")
+    return errors
 
 
 # CPU golden 推导 (atc-cpu-golden-derivation skill) 完成后, cases_executor.py
@@ -1530,11 +1792,13 @@ VALIDATORS = {
     "ttk_cases": validate_ttk_cases,
     "execution": validate_execution,
     "analysis": validate_analysis,
+    "constraints_patch": validate_constraints_patch,
     "executor": validate_executor,
     "supplementary_doc": validate_supplementary_doc,
     "uncertain_doc": validate_uncertain_doc,
     "conflict_doc": validate_conflict_doc,
     "source_raw": validate_source_raw,
+    "source_evidence": validate_source_evidence,
     "scene_scan": validate_scene_scan,
 }
 

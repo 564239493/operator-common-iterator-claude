@@ -12,7 +12,8 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
   独立 `constraint-checker` / `constraint-repairer` 语义检查修复循环；默认
   `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
 - 全部通过 → `SUCCESS`
-- 有失败 → `DIAGNOSE`；只有根因为 `constraint_extraction` 时才进入 `OPTIMIZE → EXTRACT` 循环
+- 有失败 → `DIAGNOSE`；根因为 `constraint_extraction` 时优先消费已确认补充，只有无补充且
+  能定位 Prompt 规则缺口时才进入 `OPTIMIZE → EXTRACT`
 - `generator_bug` / `executor_bug` → 立即止损
 - 达到 max-iterations → `MAX_ITERATIONS`
 - `constraint_extraction` 迭代到 `--human-checkpoint-round`（默认 3，0=禁用）轮仍失败时，下一轮
@@ -107,6 +108,8 @@ python scripts/validate_artifacts.py constraint_check runs/.../iter_001/constrai
 python scripts/validate_artifacts.py cases runs/.../iter_001/cases.json
 python scripts/validate_artifacts.py execution runs/.../iter_001/execution_result.json
 python scripts/validate_artifacts.py analysis runs/.../iter_001/analysis.json
+python scripts/validate_artifacts.py constraints_patch runs/.../iter_001/constraints_patch.json
+python scripts/validate_artifacts.py source_evidence runs/.../iter_001/source_evidence.json
 python scripts/validate_artifacts.py executor runs/.../iter_001/cases_executor.py
 # 前台直接运行：命令中包含 python 和 generate_cases.py
 python scripts/generate_cases.py --constraints .../constraints.json --output .../cases.json --count 10
@@ -167,7 +170,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 > EXTRACT 后可选触发约束补充（`--supplement-constraints` 非空时）：
 > `constraint-supplementer` 产 `constraints_patch.json`，
-> `scripts/apply_supplement_constraints.py` 确定性合并并重跑 normalize+validate，
+> `scripts/apply_supplement_constraints.py` 规范化去重、报告 noop、确定性合并并重跑 normalize+validate，
 > 失败阻断、不进 GENERATE。为独立子步骤而非新状态，空即跳过。
 >
 > SUPPLEMENT 后强制触发 EXTRACT 内部 CHECK/REPAIR：checker 每轮完整对照文档和明确
@@ -176,7 +179,8 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 - 全部通过：`SUCCESS`
 - 有失败：`DIAGNOSE`
-- `constraint_extraction`：`OPTIMIZE -> EXTRACT`，进入下一轮
+- `constraint_extraction`：明确补充已落库则直接进入下一轮 EXTRACT/SUPPLEMENT；否则仅在
+  `prompt_optimization.eligible=true` 时执行 `OPTIMIZE -> EXTRACT`
 - `constraint_extraction` 到 `human_checkpoint_round` 轮仍失败：人工补充检查点（补充/自主/停止）
 - `generator_bug`：`STOP_GENERATOR_BUG`
 - `executor_bug`：`STOP_EXECUTOR_BUG`
@@ -222,6 +226,9 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `extract_source_constraints.py` — 从源码快照提取确定性约束事实
 - `locate_operator_source.py` — 在 operators-src 树定位算子源码
 - `apply_supplement_constraints.py` — 补充约束 patch 确定性合并（重跑 normalize + validate）
+- `merge_supplement_additions.py` — 校验 failure-analyst 本轮增量并按 sha256 幂等落入 `supplementary-doc.md`
+- `update_supplement_state.py` — 持久化补充事实 revision/hash 与已消费 hash，支持会话恢复
+- `validate_supplement_effect.py` — 校验 findings 被 patch 覆盖且诊断 patch 不是全量 noop
 - `apply_conflict_resolution.py` — 人工冲突裁决的机读合并层（不替用户决定胜负）
 - `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
 - `show_registry.py` — 展示 Skills/Agents 注册表

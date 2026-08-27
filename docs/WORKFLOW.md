@@ -71,7 +71,10 @@ flowchart TD
     Q -->|全部通过| S["SUCCESS"]
     Q -->|用例失败| D["DIAGNOSE<br/>failure-analyst"]
     Q -->|产物不合法| B["BLOCKED"]
-    D -->|constraint_extraction| O["OPTIMIZE<br/>prompt-optimizer"]
+    D -->|constraint_extraction| SD{"明确补充事实?"}
+    SD -->|有且已落库| E
+    SD -->|无补充但有 Prompt 规则缺口| O["OPTIMIZE<br/>prompt-optimizer"]
+    SD -->|两者都无| HC
     O -->|下一轮| E
     D -->|constraint_extraction + N 轮失败| HC["HUMAN_CHECKPOINT<br/>人工补充/自主/停止"]
     HC -->|人工补充| E
@@ -163,12 +166,17 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 输入：`inputs/supplementary-doc.md`（source-analyst 产，主源）与/或
 `inputs/supplement_constraints.md`（`--supplement-constraints` 手写）+ 已提取
 `constraints.json`。两者都空则跳过。  
+调度前运行 `update_supplement_state.py` 刷新 run_state 的 revision/hash；合并及检查成功
+后以 `--consume` 记录已消费 hash。人工/诊断追加是否为新补充只认脚本的
+`changed=true`，不依赖对话上下文。
 执行者：constraint-supplementer（产出 `constraints_patch.json`）。  
 合并：`scripts/apply_supplement_constraints.py` 确定性合并 patch 进 `constraints.json`
-（标 `origin="supplement"`、剥离 patch 层字段），重跑 normalize + validate。  
+（标 `origin="supplement"`、剥离 patch 层字段、规范化去重并报告 noop），重跑 normalize + validate。
 完成条件：合并后 `constraints.json` 通过 normalize + validate。  
 失败策略：合并器或 revalidate 失败则阻断，不进 GENERATE；patch schema/精确匹配
 失败由 constraint-supplementer 自修正最多三次。
+诊断 findings 产生的 patch 在合并前额外运行 `validate_supplement_effect.py`：所有 finding
+必须被 patch 覆盖且 patch 不能全量 noop；constraint-checker 再验证失败 case 的预期效果。
 
 ### CONSTRAINT CHECK/REPAIR（每轮 EXTRACT 内部子循环）
 
@@ -237,13 +245,16 @@ ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生
 
 failure-analyst 使用新上下文，只读取落盘事实。当 `operator_src_snapshot` 非空时，
 先委派 source-analyst diagnose 域（error_string 模糊匹配失败日志，命中的 uncertain
-追加到 `supplementary-doc.md`，产 `source_evidence.json`），failure-analyst 读它下根因。
+逐条确认；只有确认成功者追加到 `supplementary-doc.md`，产 `source_evidence.json`），
+failure-analyst 读它下根因并按失败签名输出 clusters。
 
 constraint_extraction 根因走**两级补救**：
-1. 补充优先：`source_evidence.log_match` 非空或 failure-analyst 产了
-   `supplement_additions.md` → re-EXTRACT + re-SUPPLEMENT + re-GENERATE + re-EXECUTE，
+1. 补充优先：`source_evidence.confirmed_additions_count > 0`，或 failure-analyst 的
+   `supplement_additions.md` 已通过脚本合入且返回 `merged=true` → re-EXTRACT +
+   re-SUPPLEMENT + re-GENERATE + re-EXECUTE，
    **不走 prompt-optimizer**。
-2. 补充无可提取 → 才回退 prompt-optimizer 生成 prompt_vN+1。
+2. 补充无可提取且 `analysis.prompt_optimization.eligible=true` → 才回退
+   prompt-optimizer 生成 prompt_vN+1；无法定位规则缺口时转人工补充，不盲目优化。
 
 generator_bug / executor_bug 立即止损。这样避免执行环境故障反复“优化”提示词，
 也避免生成器代码 bug 被错误掩盖。TTK 的
