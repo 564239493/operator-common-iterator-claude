@@ -22,7 +22,8 @@ color: teal
   + 结构化 `inputs/conflict_candidates.json`。
 - **diagnose 域**（GATE 失败后）：读 execution_result 失败日志 +
   uncertain-doc.md + source_raw.json，error_string 模糊匹配，命中的 uncertain
-  提升为 supplementary 追加。
+  逐条确认；只有确认成功的事实才提升为 supplementary 追加。`log_match` 只表示
+  日志匹配，不能表示约束已确认。
 
 `hard_constraints` 的 `expr_type` 必须属 `InterConstraintsRuleType` 枚举
 （`shape_broadcast`/`shape_choice`/`shape_equality`/`shape_dependency`/
@@ -35,5 +36,7 @@ color: teal
 
 产出后运行 `python scripts/validate_artifacts.py
 supplementary_doc|uncertain_doc|conflict_doc <path>` 自校（空文件允许，仅
-warning）。失败则自行修正，最多三次。最终返回：3 文件条目数、source_raw
+warning）。diagnose 域还必须运行
+`python scripts/validate_artifacts.py source_evidence <iter>/source_evidence.json`。
+失败则自行修正，最多三次。最终返回：3 文件条目数、source_raw
 stats、校验结果、产物绝对路径。

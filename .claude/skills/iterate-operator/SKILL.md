@@ -163,10 +163,19 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
      `operator_category`、`operator_category_evidence`。分类不进 constraints.json、
      不依赖 constraint-extractor 自由文本。此步每轮 EXTRACT 后都执行（覆盖上轮分类）。
    - **SUPPLEMENT**：当 `supplementary-doc.md` 或 `supplement_constraints.md`
-     任一非空时，委派 `constraint-supplementer`（读两者 + `constraints.json`，产
-     `constraints_patch.json`），随后运行
+     任一非空时，先运行
+     `python scripts/update_supplement_state.py <run>/run_state.json --supplementary <inputs>/supplementary-doc.md --human <inputs>/supplement_constraints.md --iteration <N>`
+     刷新 revision/hash（旧 run 自动补字段），再委派 `constraint-supplementer`（读两者 + `constraints.json`，产
+     `constraints_patch.json`），先运行
+     `python scripts/validate_artifacts.py constraints_patch <iter>/constraints_patch.json`；
+     若该 patch 对应当前/上一轮 diagnosis 的结构化 findings，再运行
+     `python scripts/validate_supplement_effect.py <analysis.json> <iter>/constraints.json <iter>/constraints_patch.json`
+     确认 findings 全覆盖且 patch 非全量 noop。通过后运行
      `python scripts/apply_supplement_constraints.py <iter>/constraints.json <iter>/constraints_patch.json`
-     （内部重跑 normalize + validate，失败则阻断，不得进 `case-generator`）。两者都
+     （内部做规范化等价去重，add/replace 无实际变化时返回 `noop`，再重跑 normalize +
+     validate；失败则阻断，不得进 `case-generator`）。空 patch/noop 合法，但不得作为
+     本轮“补充已扩充”或问题已修复的证据。合并和检查成功后再次运行上述状态脚本并加
+     `--consume`，使 `last_consumed_supplement_hash` 与当前 hash 对齐。两者都
      空则跳过本步。每轮 EXTRACT 后都重新触发 source-analyst + 补充。
    - **conflict 异步提示**：若 `inputs/conflict-doc.md` 非空，主协调器输出结构化
      `requires_user_action` 提示（`code=CONFLICT_REQUIRES_REVIEW`，列出冲突条目），
@@ -278,9 +287,16 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
    warning 仍按非阻断处理。
 8. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
    diagnose 域（读 execution_result + uncertain-doc + source_raw，error_string
-   匹配，命中的 uncertain 追加到 `inputs/supplementary-doc.md`，产
+   匹配后逐条确认，只有确认成功的 uncertain 追加到 `inputs/supplementary-doc.md`，产
    `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence
    下根因）。`operator_src_snapshot` 为空时直接委派 `failure-analyst`。
+   failure-analyst 完成后先运行
+   `python scripts/validate_artifacts.py analysis <iter>/analysis.json`；失败时阻断路由并让
+   Agent 修正。若 `analysis.supplement_decision.source=diagnose_inferred` 且
+   `has_explicit_additions=true`，必须再运行
+   `python scripts/merge_supplement_additions.py <iter>/analysis.json <iter>/supplement_additions.md <inputs>/supplementary-doc.md`；
+   只有脚本返回 `merged=true` 才算本轮补充已落库。失败、空文件或 already_merged 都不算
+   新增补充。
    - **HUMAN_CHECKPOINT 门（人工补充检查点；分析完成后、自主分支决策前）**：当且仅当
      **全部**满足时触发——`analysis.json.root_cause == constraint_extraction`、
      `run_state.human_checkpoint_round > 0`、`current_iteration >= human_checkpoint_round`
@@ -294,18 +310,24 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
           **append** 到 `inputs/supplement_constraints.md`，带分节标题
           `## 人工补充（第 <N> 轮失败后，<ISO8601>）`（用 markdown 分节与初始
           `--supplement-constraints` 内容区分 provenance）；置
-          `run_state.human_checkpoint_resolved_iteration = current_iteration`；进下一轮
+          `run_state.human_checkpoint_resolved_iteration = current_iteration`，运行
+          `update_supplement_state.py` 刷新 hash；只有返回 `changed=true` 才视为新补充；进下一轮
           re-EXTRACT（下轮 SUPPLEMENT 步自动拾取该补充，无需新代码）。
         - **继续自主迭代**：置 `human_checkpoint_resolved_iteration = current_iteration`，
           落回下列自主分支。
         - **立即停止**：`run_state.state = STOPPED_BY_USER`，append history
           `{"state":"STOPPED_BY_USER","at":<ISO8601>}`，终止流程（不进下一轮）。
      3. `generator_bug`/`executor_bug` 根因**不进本门**（立即止损，见下）。
-   - constraint_extraction + 补充已扩充（`source_evidence.log_match` 非空，或
-     failure-analyst 产了 `supplement_additions.md`，或上一步人工补充已 append 进
-     `supplement_constraints.md`）：**不走 prompt-optimizer**，直接 re-EXTRACT +
+   - constraint_extraction + 补充已扩充（`source_evidence.confirmed_additions_count > 0`，
+     或诊断增量合入脚本返回 `merged=true` 并刷新 supplement hash，或上一步人工补充
+     append 后状态脚本返回 `changed=true`）：**不走 prompt-optimizer**，直接 re-EXTRACT +
      re-SUPPLEMENT + re-GENERATE + re-EXECUTE 进下一轮。
-   - constraint_extraction + 补充无可提取：委派 `prompt-optimizer`，将新 prompt 送入下一轮。
+   - constraint_extraction + 补充无可提取 +
+     `analysis.prompt_optimization.eligible=true`：委派 `prompt-optimizer`，将新 prompt
+     送入下一轮。
+   - constraint_extraction + 补充无可提取 +
+     `analysis.prompt_optimization.eligible=false`：不得盲目优化 Prompt；立即复用上述
+     HUMAN_CHECKPOINT 交互请求补充证据/继续/停止，不等待默认触发轮次。
    - generator_bug：状态设为 STOP_GENERATOR_BUG，停止。
    - executor_bug：状态设为 STOP_EXECUTOR_BUG，停止。
    - **轮次簿记（关键，原为缺口）**：凡分支决定"进下一轮"，主协调器须先把

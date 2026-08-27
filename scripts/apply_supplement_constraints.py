@@ -14,6 +14,8 @@ constraint-supplementer 的职责)。
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
 import json
 import shutil
 import subprocess
@@ -31,6 +33,35 @@ INTER_REQUIRED_FIELDS = ("expr_type", "expr", "relation_params")
 ALL_PLATFORMS_SENTINEL = "all"
 # 已废弃:旧 patch用 "common" 表示跨平台,会建出 common 桶;现改用 ALL_PLATFORMS_SENTINEL。
 DEPRECATED_COMMON = "common"
+
+
+def _canonical_expr(expr: str) -> str:
+    """Return a formatting-insensitive representation for an expression."""
+    text = str(expr).strip()
+    try:
+        return ast.dump(ast.parse(text, mode="eval"), include_attributes=False)
+    except (SyntaxError, ValueError, TypeError):
+        # The downstream validator remains authoritative for syntax.  Keeping a
+        # whitespace-normalized fallback makes duplicate detection deterministic
+        # without turning this merger into a business-expression parser.
+        return " ".join(text.split())
+
+
+def constraint_fingerprint(item: dict) -> str:
+    """Fingerprint the semantic identity used for add/no-op decisions.
+
+    Provenance fields are deliberately excluded: replaying the same confirmed
+    fact with a different basis must not duplicate an existing constraint.
+    """
+    payload = {
+        "expr_type": str(item.get("expr_type", "")).strip(),
+        "expr": _canonical_expr(str(item.get("expr", ""))),
+        "relation_params": sorted(
+            str(value).strip() for value in item.get("relation_params", [])
+        ),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _normalize_cip(value: Any) -> dict[str, list[dict]]:
@@ -95,9 +126,53 @@ def _build_entry(patch: dict, origin: str) -> dict:
                 f"patch 项 proposed 缺少必填字段 {field!r}: {patch!r}"
             )
         entry[field] = proposed[field]
-    entry["src_text"] = patch.get("basis", "") or ""
+    if not isinstance(entry["expr_type"], str) or not entry["expr_type"].strip():
+        raise ValueError(f"patch 项 proposed.expr_type 必须是非空字符串: {patch!r}")
+    if not isinstance(entry["expr"], str) or not entry["expr"].strip():
+        raise ValueError(f"patch 项 proposed.expr 必须是非空字符串: {patch!r}")
+    try:
+        ast.parse(entry["expr"], mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"patch 项 proposed.expr 语法错误: {exc}") from exc
+    relation_params = entry["relation_params"]
+    if (
+        not isinstance(relation_params, list)
+        or not relation_params
+        or any(not isinstance(value, str) or not value.strip() for value in relation_params)
+    ):
+        raise ValueError(
+            f"patch 项 proposed.relation_params 必须是非空字符串数组: {patch!r}"
+        )
+    basis = patch.get("basis")
+    if not isinstance(basis, str) or not basis.strip():
+        raise ValueError(f"patch 项 basis 必须包含可追溯依据: {patch!r}")
+    entry["src_text"] = basis.strip()
     entry["origin"] = origin
     return entry
+
+
+def _find_replace_index(bucket: list[dict], match_expr: str) -> int | None:
+    """Find a replace target by exact text, then canonical expression.
+
+    Canonical fallback tolerates harmless formatting changes.  Ambiguous
+    canonical matches are rejected instead of replacing an arbitrary item.
+    """
+    exact = [index for index, item in enumerate(bucket) if item.get("expr") == match_expr]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise ValueError(f"match_expr 精确匹配到多条约束: {match_expr!r}")
+    canonical = _canonical_expr(match_expr)
+    matches = [
+        index
+        for index, item in enumerate(bucket)
+        if _canonical_expr(str(item.get("expr", ""))) == canonical
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"match_expr 规范化后匹配到多条约束: {match_expr!r}")
+    return None
 
 
 def apply_patch(
@@ -124,11 +199,25 @@ def apply_patch(
 
         if op == "add_constraint":
             new_expr = ""
+            added = 0
+            skipped = 0
             for tgt in targets:
                 entry = _build_entry(patch, origin)
-                cip.setdefault(tgt, []).append(entry)
+                bucket = cip.setdefault(tgt, [])
+                fingerprint = constraint_fingerprint(entry)
+                if any(constraint_fingerprint(item) == fingerprint for item in bucket):
+                    skipped += 1
+                    new_expr = entry["expr"]
+                    continue
+                bucket.append(entry)
+                added += 1
                 new_expr = entry["expr"]
-            log.append(f"add@{scope}: {new_expr}")
+            if added:
+                log.append(
+                    f"add@{scope}: {new_expr} (added={added}, noop={skipped})"
+                )
+            else:
+                log.append(f"noop-add@{scope}: {new_expr} (already covered)")
         else:  # replace_constraint
             match_expr = patch.get("match_expr")
             if not match_expr:
@@ -136,22 +225,31 @@ def apply_patch(
                     f"patch[{idx}] op=replace_constraint 缺少 match_expr"
                 )
             new_expr = ""
+            replaced = 0
+            skipped = 0
             for tgt in targets:
                 bucket = cip.setdefault(tgt, [])
-                target_idx = None
-                for i, item in enumerate(bucket):
-                    if item.get("expr") == match_expr:
-                        target_idx = i
-                        break
+                target_idx = _find_replace_index(bucket, match_expr)
                 if target_idx is None:
                     raise ValueError(
                         f"patch[{idx}] op=replace_constraint 在平台 {tgt!r} "
                         f"未找到 expr==match_expr 的条目: {match_expr!r}"
                     )
                 entry = _build_entry(patch, origin)
+                if constraint_fingerprint(bucket[target_idx]) == constraint_fingerprint(entry):
+                    skipped += 1
+                    new_expr = entry["expr"]
+                    continue
                 bucket[target_idx] = entry
+                replaced += 1
                 new_expr = entry["expr"]
-            log.append(f"replace@{scope}: {match_expr} -> {new_expr}")
+            if replaced:
+                log.append(
+                    f"replace@{scope}: {match_expr} -> {new_expr} "
+                    f"(replaced={replaced}, noop={skipped})"
+                )
+            else:
+                log.append(f"noop-replace@{scope}: {new_expr} (already equivalent)")
 
     constraints["constraints_in_parameters"] = cip
     return constraints, log
@@ -243,7 +341,9 @@ def main() -> int:
                               "constraints": str(constraints_path)}, ensure_ascii=False))
             return 2
 
-    print(json.dumps({"ok": True, "applied": len(log), "ops": log,
+    applied = sum(not item.startswith("noop-") for item in log)
+    noops = len(log) - applied
+    print(json.dumps({"ok": True, "applied": applied, "noop": noops, "ops": log,
                       "constraints": str(constraints_path),
                       "patch": str(patch_path)}, ensure_ascii=False))
     return 0
