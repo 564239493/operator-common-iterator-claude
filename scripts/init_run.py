@@ -281,6 +281,15 @@ def main() -> int:
         ),
     )
     parser.add_argument("--max-iterations", type=int, default=5)
+    parser.add_argument(
+        "--constraint-check-rounds",
+        type=int,
+        default=3,
+        help=(
+            "每轮完整 EXTRACT 后执行的约束语义检查/修复最大轮数，默认 3。"
+            "每一轮先 check；发现问题且仍有额度时由独立 repair Agent 修复后复检。"
+        ),
+    )
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument(
         "--human-checkpoint-round",
@@ -445,8 +454,14 @@ def main() -> int:
             ensure_ascii=False,
         ))
         return 2
-    if args.max_iterations < 1 or args.case_count < 1:
-        raise SystemExit("max-iterations and case-count must be positive")
+    if (
+        args.max_iterations < 1
+        or args.constraint_check_rounds < 1
+        or args.case_count < 1
+    ):
+        raise SystemExit(
+            "max-iterations, constraint-check-rounds and case-count must be positive"
+        )
     if args.human_checkpoint_round < 0:
         raise SystemExit("human-checkpoint-round must be >= 0 (0 disables the checkpoint)")
 
@@ -560,11 +575,22 @@ def main() -> int:
         "prompt_update_proposals": [],
         "supplement_constraints_source": str(supplement_path) if supplement_path else "",
         "supplement_constraints": str(supplement_snapshot) if supplement_path else "",
+        "supplement_revision": 1 if supplement_path else 0,
+        "supplement_hash": _file_sha256(supplement_snapshot) if supplement_path else "",
+        "last_consumed_supplement_hash": "",
+        "supplement_updated_iteration": 0,
         "operator_src_source": operator_src_source,
         "operator_src_snapshot": operator_src_snapshot,
         "mode": args.mode,
         "server_config": str(server_config) if server_config else "",
         "max_iterations": args.max_iterations,
+        "constraint_check": {
+            "max_rounds": args.constraint_check_rounds,
+            "iteration": 0,
+            "current_round": 0,
+            "status": "pending",
+            "report": "",
+        },
         "case_count": args.case_count,
         "human_checkpoint_round": args.human_checkpoint_round,  # 0=禁用；>=1 时第 N 轮 constraint_extraction 失败触发人工补充检查点
         "human_checkpoint_resolved_iteration": 0,  # 已决断到的最大轮次；防上下文压缩后对同一轮重复询问
@@ -614,6 +640,7 @@ def main() -> int:
             "hs_scenario_mode": args.hs_scenario_mode,
             "run_scope": "constraints_only" if test_framework == "constraints" else "full",
             "server_config": str(server_config) if server_config else "",
+            "constraint_check_rounds": args.constraint_check_rounds,
         },
         ensure_ascii=False,
     ))

@@ -163,7 +163,9 @@ def main() -> int:
                               "constraints": str(constraints_path)}, ensure_ascii=False))
             return 2
 
-    print(json.dumps({"ok": True, "applied": len(apply_log),
+    applied = sum(not item.startswith("noop-") for item in apply_log)
+    noops = len(apply_log) - applied
+    print(json.dumps({"ok": True, "applied": applied, "noop": noops,
                       "ops": apply_log + log,
                       "constraints": str(constraints_path)}, ensure_ascii=False))
     return 0

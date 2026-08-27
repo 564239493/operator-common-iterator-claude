@@ -46,9 +46,33 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
 
 ```json
 {
+  "schema_version": "2.0",
   "root_cause": "constraint_extraction | generator_bug | executor_bug",
   "analysis": "根因摘要",
   "specific_issues": ["带 case id 或文档证据的问题"],
+  "failure_clusters": [{
+    "id": "FC-001",
+    "signature": "稳定的失败语义签名",
+    "case_ids": ["case_001"],
+    "root_cause": "constraint_extraction",
+    "evidence": [{"source": "execution_result", "detail": "具体错误"}]
+  }],
+  "constraint_findings": [{
+    "id": "CF-001",
+    "kind": "missing",
+    "fact": "可直接形式化的约束事实",
+    "affected_params": ["x"],
+    "case_ids": ["case_001"],
+    "evidence": [{"source": "operator_doc", "detail": "条款定位"}],
+    "confidence": 0.9,
+    "expected_effect": "case_001 应被新增约束拒绝"
+  }],
+  "supplement_decision": {
+    "has_explicit_additions": true,
+    "source": "diagnose_inferred",
+    "reason": "存在可追溯的新约束事实"
+  },
+  "prompt_optimization": {"eligible": false, "reason": "优先消费明确补充"},
   "modified_sections": [],
   "generator_issue": "",
   "executor_issue": ""
@@ -57,15 +81,22 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
 
 **源码证据与两级补救**（当 `run_state.operator_src_snapshot` 非空）：
 - 读 `<iter-dir>/source_evidence.json`（source-analyst diagnose 域产）。它已把
-  error_string 命中的 uncertain 关系追加到 `inputs/supplementary-doc.md`，并给出
+  error_string 命中且确认成功的 uncertain 关系追加到 `inputs/supplementary-doc.md`，并给出
   `suggested_root_cause`（仅供参考，最终根因仍由本 agent 下）。
 - root_cause=constraint_extraction 时两级补救：
-  1. `source_evidence.log_match` 非空（补充已扩充）→ analysis 标注
-     "补充已扩充，re-EXTRACT + re-SUPPLEMENT"，**不走 prompt-optimizer**。
-  2. `log_match` 为空 → 自己根据错误日志 + 原算子文档尽力推约束关系，写入
-     `<iter-dir>/supplement_additions.md`（标 `origin=diagnose_inferred`）；推不出
-     → analysis 标注回退 prompt-optimizer。
+  1. `source_evidence.confirmed_additions_count > 0`（补充已确认且已落库）→ analysis 标注
+     "补充已扩充，re-EXTRACT + re-SUPPLEMENT"，逐条映射成同 id 的
+     `constraint_findings`，置 decision source 为 `source_confirmed`，**不走 prompt-optimizer**；
+     已落库事实不再产 supplement_additions.md。
+  2. 没有 confirmed additions → 根据错误日志 + 原算子文档推约束关系；只有能写出
+     结构化 `constraint_findings` 时才产 `<iter-dir>/supplement_additions.md`
+     （标 `origin=diagnose_inferred`）。产出后必须由主协调器运行：
+     `python scripts/merge_supplement_additions.py <iter>/analysis.json <iter>/supplement_additions.md inputs/supplementary-doc.md`。
+     仅脚本返回 `merged=true` 才算补充已扩充。推不出明确约束时，仅当能定位当前
+     Prompt 的具体规则缺口才置 `prompt_optimization.eligible=true`；否则请求人工补充。
 - 读 `inputs/conflict-doc.md` + `inputs/conflict_resolution.json`：失败命中未裁决
   conflict → `specific_issues` 提示用户先裁决（冲突永远走人工通道）。
 
-证据不足时不得猜测；列出缺失证据并保守归入 executor_bug。
+证据不足时不得猜测，也不得仅因无法证明约束问题就归入 executor_bug。只有执行展开、
+调用、环境或异常栈有直接证据时才能判 executor_bug；否则保持三分类不变的前提下，
+在 `specific_issues` 列出缺失证据，置 supplement/prompt 两个决策均不可执行并请求人工补充。

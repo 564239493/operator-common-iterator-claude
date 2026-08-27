@@ -21,12 +21,13 @@ runs/<operator>-<timestamp>/
     selection.json                     # 可选：主协调器 Q1/Q2/Q3 答案汇总（值级），render_scene_directive.py 据此渲染 directive
   iter_001/
     constraints.json
+    constraint_check.json              # 本轮最终约束的语义检查/修复累计报告
     constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
     constraints.json.pre_conflict      # 可选：冲突合并前备份
     constraints_patch.json             # 可选：约束补充阶段产出的 add/replace patch
     source_raw.json                    # 可选：source-analyst 确定性提取的源码事实
-    source_evidence.json               # 可选：source-analyst diagnose 域产（log_match）
-    supplement_additions.md            # 可选：failure-analyst 推的补充增量
+    source_evidence.json               # 可选：source-analyst diagnose 域产（match 与 confirmed 分离）
+    supplement_additions.md            # 可选：failure-analyst 推的本轮增量，校验后合入 supplementary-doc
     generation_summary.json
     cases.json
     cases_ttk.csv
@@ -41,7 +42,9 @@ runs/<operator>-<timestamp>/
 
 必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`source_analysis_knowledge`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
-`server_config`、`max_iterations`、`case_count`、`human_checkpoint_round`、`human_checkpoint_resolved_iteration`、`operator_family`、`test_framework`、
+`server_config`、`max_iterations`、`constraint_check`、`case_count`、`human_checkpoint_round`、`human_checkpoint_resolved_iteration`、
+`supplement_revision`、`supplement_hash`、`last_consumed_supplement_hash`、
+`supplement_updated_iteration`、`operator_family`、`test_framework`、
 `hs_scenario_mode`、
 `run_scope`、`scene`、`current_iteration`、`state`、
 `history` 和时间戳。state 只能取
@@ -53,6 +56,10 @@ WORKFLOW.md 定义的状态（含 `STOPPED_BY_USER`：人工补充检查点"立�
 `supplement_constraints_source` 可指向项目外部的补充约束 Markdown（可选，未提供时为空串）；
 `supplement_constraints` 指向 run 内 `inputs/supplement_constraints.md` 快照。为空串时跳过
 约束补充阶段，回退纯文档驱动流程。
+`supplement_revision/hash` 对 `supplementary-doc.md` 与 `supplement_constraints.md` 的
+非空内容做持久化版本记录；`last_consumed_supplement_hash` 只在 SUPPLEMENT 合并及检查
+成功后更新。人工或诊断追加后必须运行 `update_supplement_state.py`，不能依赖会话记忆
+判断“刚刚 append”。
 
 `current_prompt_source` 指向项目内当前 family 的基线：ACLNN 默认基础提示词为
 `prompts/operator_constraints/base.md`（canonical 直接编辑，`v4` 为历史来源），
@@ -80,8 +87,12 @@ v1/v2 仅作为历史任务复现材料。
 同时冻结在 `prompt_assembly.json`，不得在 re-EXTRACT 中动态改变。
 
 `run_scope` 为 `full` 或 `constraints_only`。后者由尚未适配 TTK 的 torch_npu API 在
-auto 模式下使用：约束 normalize/validate 通过后可进入 SUCCESS，但 history 必须包含
+auto 模式下使用：约束 normalize/validate 且当前轮 constraint_check passed 后可进入 SUCCESS，但 history 必须包含
 `CONSTRAINTS_ONLY_SUCCESS`；不得生成 cases 或宣称执行/精度成功。
+
+`constraint_check={max_rounds, iteration, current_round, status, report}` 保存当前外层
+iteration 的 EXTRACT 内部检查进度。`max_rounds` 默认 3；每次 re-EXTRACT 的 iteration
+变化时重置其他字段并保留上限。同 iteration 恢复时不得重置已通过结果。
 
 `hs_scenario_mode` 为 `original` 或 `planned`，默认 `original`。它只影响
 torch_npu + TTK 的 GENERATE：`original` 使用原生生成器，`planned` 才启用
@@ -107,6 +118,40 @@ re-EXTRACT。`value=[]`（空）时不强制 `type`（tensor 参数无值域约�
 `type=enum` 允许 `null` 作为明确的离散候选。`expr` 中允许裸 `null`，校验和求解前
 会规范化为 Python `None`，但只能用于空值/存在性判断，不能参与数值大小比较。
 
+## constraint_check.json
+
+每个外层 iteration 在最终 constraints 完成 SUPPLEMENT/已裁决 conflict 合并后生成一个
+累计报告。只保留当前轮单文件，不创建逐 check 轮目录。最小结构：
+
+```json
+{
+  "schema_version": "1.0",
+  "iteration": 1,
+  "max_rounds": 3,
+  "current_round": 1,
+  "status": "needs_repair",
+  "constraints_file": "<constraints.json 绝对路径>",
+  "issues": [{
+    "id": "CR-001",
+    "found_round": 1,
+    "last_checked_round": 1,
+    "line": 86,
+    "constraint": "groupType.allowed_range_value",
+    "problem": "当前连续范围与文档有限枚举冲突。",
+    "suggestion": "改为 enum [0,1]。",
+    "status": "open"
+  }],
+  "summary": {"total": 1, "open": 1, "fixed": 0, "unfixed": 0}
+}
+```
+
+`status` 只能为 `passed|needs_repair|failed`，issue status 只能为
+`open|fixed|unfixed`。只有 constraint-checker 能确认 fixed；constraint-repairer 不修改
+报告。`passed` 不得含 active issue；`needs_repair` 要求尚未到上限；`failed` 要求已到
+上限且仍有 active issue。使用：
+
+`python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`
+
 ## constraints_patch.json
 
 约束补充阶段（条件触发，`inputs/supplementary-doc.md` 与/或
@@ -119,17 +164,24 @@ re-EXTRACT。`value=[]`（空）时不强制 `type`（tensor 参数无值域约�
   "target_platform": "<平台名 | all>",
   "match_expr": "<仅 replace 必填：被替换条目原 expr 精确文本>",
   "proposed": {"expr_type": "...", "expr": "...", "relation_params": ["..."]},
-  "basis": "<来自补充文件的依据>"
+  "basis": "<来自补充文件的可追溯依据>",
+  "finding_ids": ["CF-001"],
+  "expected_effect": "case_001 应被该约束拒绝"
 }
 ```
 
 `proposed` 只含 `expr_type`/`expr`/`relation_params` 三字段；`src_text`/`origin` 由
 `scripts/apply_supplement_constraints.py` 合并时填（`src_text=basis`、`origin="supplement"`），
-patch 层字段（`op`/`match_expr`/`proposed`/`basis`）不进 `constraints.json`
+patch 层字段（`op`/`match_expr`/`proposed`/`basis`/`finding_ids`/`expected_effect`）不进 `constraints.json`
 （`InterParamConstraint` 为 `extra:forbid`）。合并后重跑 `normalize_constraints` +
 `validate_artifacts constraints`，失败则阻断、不进 GENERATE。`target_platform="all"`
 的条目由合并器**展开写入 `constraints_in_parameters` 中每个平台桶**（不产生 `common`
 桶；`"common"` 已废弃，合并器拒绝并引导改用 `"all"`）。
+`add_constraint` 按规范化后的 `expr_type+expr+relation_params` 幂等去重；等价项返回
+`noop-add`。replace 先精确匹配 `match_expr`，再按表达式 AST 规范化匹配；等价替换返回
+`noop-replace`。空 patch/noop 合法，但不得作为约束已经提升的证据。patch 先通过
+`validate_artifacts.py constraints_patch`；诊断 finding 还须通过
+`validate_supplement_effect.py` 的覆盖和非全量 noop 门禁。
 
 ## conflict_candidates.json / conflict_resolution.json
 
@@ -211,7 +263,9 @@ constraint-extractor 据此按 `param_modes` 产 `allowed_range_value`，并按
 （每项 `macro`/`condition`/`error_string`/`source_location`）。浅快照，canndev legacy
 漏提标 `missing_evidence`。
 `source_evidence.json`（diagnose 域产，落 `<iter>/`）：含 `log_match`（失败日志↔
-error_string 模糊匹配命中）/`conflict_pending`（未裁决冲突提示）。
+error_string 模糊匹配命中）、`confirmed_additions`、`confirmed_additions_count`、
+`missing_evidence`、`conflict_pending`。`log_match` 只是线索；只有经过确认并已追加到
+`supplementary-doc.md` 的事实才能进入 `confirmed_additions`。两者允许一方非空、另一方为空。
 
 ## cases.json
 
@@ -280,10 +334,22 @@ root_cause 只能为 constraint_extraction、generator_bug、executor_bug、ttk_
 golden_derivation、execution_environment。每项
 specific_issues 应关联 case id、日志或文档证据。
 
+新产物使用 `schema_version="2.0"`，并包含按错误签名聚合的 `failure_clusters`、有明确
+证据的 `constraint_findings`、`supplement_decision` 和 `prompt_optimization`。
+`has_explicit_additions=true` 时 findings 必须非空且 root_cause 必须为
+constraint_extraction；此时 prompt optimization 不得 eligible。failure-analyst 当前仍只
+输出三大类 root cause。旧 run 缺少 schema_version 时保持兼容，只校验 root_cause。
+
+failure-analyst 推断的 `supplement_additions.md` 不是正式补充源；必须运行
+`scripts/merge_supplement_additions.py <analysis> <additions> <supplementary-doc>`，只有返回
+`merged=true` 才完成本轮增量落库。脚本按内容 sha256 幂等，空文件、finding 不匹配或
+重复合入不计为新增补充。
+
 ## quality_gate.json
 
 至少包含 status、checks、blocking_issues、next_state。blocking_issues 非空时
-status 必须为 blocked，主协调器不得越过门禁。
+status 必须为 blocked，主协调器不得越过门禁。门禁必须重新校验当前 iteration 的
+`constraint_check.json`，并确认 `status=passed` 且轮次与 run_state 一致。
 
 ## 目录批次产物
 
@@ -295,7 +361,7 @@ runs/batches/<batch-id>/
 
 `batch_state.json` 必须冻结 source_directory、glob、recursive、prompt、
 `prompt_explicit`、`prompt_sources`、operator_family、test_framework、max_iterations、
-case_count、mode、server_config、supplement_constraints（可选，整批共享）、
+case_count、constraint_check_rounds、mode、server_config、supplement_constraints（可选，整批共享）、
 continue_on_error 和有序 operators。`prompt` 只在用户显式指定原样 prompt 时非空；
 自动模式通过 `prompt_sources` 记录初始化时可用的各 family baseline，并让每个单算子
 `init_run` 自行选择/装配，防止混合目录把一个 family 的 prompt 传给另一个 family。

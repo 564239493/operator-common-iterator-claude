@@ -65,7 +65,8 @@ torch_npu 分支待对称实现后接入 `validate_torch_npu_knowledge`（见 to
 
 ## 重提取轮次与知识路由
 
-约束闭环根因为 `constraint_extraction` 时进入 `OPTIMIZE → EXTRACT` 循环。该循环的
+约束闭环根因为 `constraint_extraction`、没有已确认补充且能定位 Prompt 规则缺口时，
+才进入 `OPTIMIZE → EXTRACT` 循环。该循环的
 关键不变式：
 
 - **第 1 轮（EXTRACT）**：读 run 初始化冻结的 `prompt_v1.md`（含 `base + 命中知识`），

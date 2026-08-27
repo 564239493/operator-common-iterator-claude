@@ -134,7 +134,9 @@ python scripts/validate_artifacts.py source_raw <iter-dir>/source_raw.json
    `%ld`/`%zu`/`%s`/`%d` 当通配符）。命中的记入 `log_match`。
 3. 对每条 `log_match`，查该 uncertain 关系是否可确认：
    - 可确认 → 追加到 `inputs/supplementary-doc.md`（在条目末尾标注
-     `origin=diagnose_confirmed` + 命中的 failed_case_id + error_string）。
+     `origin=diagnose_confirmed` + 命中的 failed_case_id + error_string），并把包含
+     `finding_id`、`fact`、`failed_case_id`、`source_location`、`error_string` 的对象
+     记入 `confirmed_additions`。
    - 不可确认 → 留 uncertain-doc.md，记 `missing_evidence`。
 4. 读 `conflict-doc.md` + `inputs/conflict_resolution.json`：若失败命中
    **未裁决** conflict，在 `source_evidence.json` 标注提示用户先裁决（不自动
@@ -142,7 +144,11 @@ python scripts/validate_artifacts.py source_raw <iter-dir>/source_raw.json
 
 产物：`<iter-dir>/source_evidence.json`（含 `operator_name`、`aclnn_interfaces`、
 `platform_matrix`、`hard_constraints`、`error_string_catalog`、`log_match`、
-`conflict_pending`）。供 failure-analyst 引用，不替代其根因判定。
+`confirmed_additions`、`confirmed_additions_count`、`missing_evidence`、
+`conflict_pending`）。`confirmed_additions_count` 必须等于数组长度；允许 log_match
+非空但 confirmed_additions 为空。运行
+`python scripts/validate_artifacts.py source_evidence <iter-dir>/source_evidence.json`
+通过后供 failure-analyst 引用，不替代其根因判定。
 
 ## 根因矩阵（diagnose 域 `suggested_root_cause` 仅供参考，最终根因由 failure-analyst 下）
 

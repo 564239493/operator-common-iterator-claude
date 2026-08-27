@@ -255,6 +255,57 @@ def _materialized_group_list(
     return values
 
 
+def _derive_a8w4_bias(weight, scale, offset_present):
+    """A8W4 biasOptional[E,N] = sum_k(8 * weight[E,k,N] * scale[E,?,N]).
+
+    Per-channel (offset_present=True): scale shape [E,1,N], full sum.
+    Per-group (offset_present=False): scale shape [E,K/256,N], group-wise sum.
+    Returns a tensor on the same backend/dtype as ``weight``; None if shapes
+    are inconsistent so the caller can fall back gracefully.
+    """
+    if not isinstance(weight, _ARRAY_TYPES) or not isinstance(scale, _ARRAY_TYPES):
+        return None
+    if weight.ndim != 3 or scale.ndim != 3:
+        return None
+    E, K, N = (int(s) for s in weight.shape)
+    if scale.shape[0] != E or scale.shape[2] != N:
+        return None
+    if scale.shape[1] == 1 and offset_present:
+        scale_b = _expand_like(scale, (E, K, N), weight)
+    elif scale.shape[1] == K // 256 and not offset_present and K % 256 == 0:
+        scale_b = _expand_per_group(scale, 256, weight)
+    else:
+        return None
+    is_torch = isinstance(weight, torch.Tensor)
+    backend = torch if is_torch else np
+    w = weight.to(torch.float32) if is_torch else weight.astype(np.float32)
+    s = scale_b.to(torch.float32) if is_torch else scale_b.astype(np.float32)
+    bias = (8.0 * (w * s).sum(dim=1)) if is_torch else (8.0 * (w * s).sum(axis=1))
+    if is_torch:
+        return bias.to(weight.dtype)
+    return bias.astype(np.float32)
+
+
+def _expand_like(t, shape, ref):
+    if isinstance(ref, torch.Tensor):
+        return t.expand(shape)
+    return np.broadcast_to(t, shape)
+
+
+def _expand_per_group(scale, group_size, ref):
+    E, K, N = (int(s) for s in ref.shape)
+    num_groups = int(scale.shape[1])
+    if isinstance(ref, torch.Tensor):
+        out = torch.zeros(E, K, N, dtype=scale.dtype, device=scale.device)
+        for g in range(num_groups):
+            out[:, g * group_size:(g + 1) * group_size, :] = scale[:, g:g + 1, :]
+        return out
+    out = np.zeros((E, K, N), dtype=scale.dtype)
+    for g in range(num_groups):
+        out[:, g * group_size:(g + 1) * group_size, :] = scale[:, g:g + 1, :]
+    return out
+
+
 def grouped_matmul_v5_execution_input(
     x: Any,
     weight: Any,
@@ -333,6 +384,31 @@ def grouped_matmul_v5_execution_input(
             group_tensor.copy_(values)
     else:
         group_tensor[...] = values
+
+    # A8W4 biasOptional is a derived quantity (doc line 553 / source-analysis 3.8):
+    # bias[E,N] = sum_k(8 * weight[E,k,N] * scale[E,?,N]).
+    # Overwrite biasOptional in-place before the ACLNN call so the NPU's
+    # CheckA8W4AsymQuantParamsRelationship check accepts the input.
+    weight_tensor = _first_array(weight)
+    scale_tensor = _first_array(scaleOptional)
+    bias_tensor = _first_array(biasOptional)
+    is_a8w4 = (
+        weight_tensor is not None
+        and scale_tensor is not None
+        and bias_tensor is not None
+        and _logical_dtype(metadata, 0) == "int8"
+        and _logical_dtype(metadata, 1) == "int4"
+    )
+    if is_a8w4:
+        derived = _derive_a8w4_bias(
+            weight_tensor, scale_tensor, offset_tensor is not None
+        )
+        if derived is not None:
+            if isinstance(bias_tensor, torch.Tensor):
+                with torch.no_grad():
+                    bias_tensor.copy_(derived)
+            else:
+                bias_tensor[...] = derived
 
 
 def grouped_matmul_v5_execution_golden(

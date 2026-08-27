@@ -173,6 +173,7 @@ def run_options_for(batch: dict[str, Any]) -> dict[str, Any]:
         "test_framework": batch.get("test_framework", "auto"),
         "hs_scenario_mode": batch.get("hs_scenario_mode", "original"),
         "supplement_constraints": batch.get("supplement_constraints", ""),
+        "constraint_check_rounds": batch.get("constraint_check_rounds", 3),
     }
 
 

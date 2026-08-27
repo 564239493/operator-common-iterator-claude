@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -15,7 +15,9 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    `torch_npu` 是内部 family 名 `hs` 的显式 CLI 别名。
    auto 仅对已有 TTK adapter 的六个重点算子选择 `ttk`；其余 torch_npu API 选择
    `constraints`，只运行约束提取/补充/校验，不误入必然失败的用例生成。
-   max-iterations=5，case-count=10，mode=real，server-config=`servers.json`。
+   max-iterations=5，constraint-check-rounds=3，case-count=10，mode=real，
+   server-config=`servers.json`。`constraint-check-rounds` 是**每个外层迭代**完整
+   EXTRACT 后的语义 check 最大轮数，与 `max-iterations` 相互独立；check 通过提前结束。
    human-checkpoint-round=3（0=禁用）；迭代到该轮仍以 constraint_extraction 失败时，
    在下一轮开始前弹人工补充检查点（AskUserQuestion 三选一）。需 `max-iterations > 该值` 才有意义。
    `hs-scenario-mode=original`；只有用户显式传入
@@ -29,7 +31,7 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    `--prompt` 同用，也不得用于 torch_npu。
 2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
    `--supplement-constraints`、`--source-analysis-knowledge`、`--operator-family`、`--test-framework`、
-   `--hs-scenario-mode` 等参数，
+   `--hs-scenario-mode`、`--constraint-check-rounds` 等参数，
    `--batch-dir` 是目录批次内部参数不传）。该命令把外部文档只读复制到 run 的 `inputs/` 目录，
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。若传入 `--src`，把算子
    源码关键文件浅快照到 `inputs/src_snapshot/`，写入 `run_state.operator_src_snapshot`
@@ -161,21 +163,62 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
      `operator_category`、`operator_category_evidence`。分类不进 constraints.json、
      不依赖 constraint-extractor 自由文本。此步每轮 EXTRACT 后都执行（覆盖上轮分类）。
    - **SUPPLEMENT**：当 `supplementary-doc.md` 或 `supplement_constraints.md`
-     任一非空时，委派 `constraint-supplementer`（读两者 + `constraints.json`，产
-     `constraints_patch.json`），随后运行
+     任一非空时，先运行
+     `python scripts/update_supplement_state.py <run>/run_state.json --supplementary <inputs>/supplementary-doc.md --human <inputs>/supplement_constraints.md --iteration <N>`
+     刷新 revision/hash（旧 run 自动补字段），再委派 `constraint-supplementer`（读两者 + `constraints.json`，产
+     `constraints_patch.json`），先运行
+     `python scripts/validate_artifacts.py constraints_patch <iter>/constraints_patch.json`；
+     若该 patch 对应当前/上一轮 diagnosis 的结构化 findings，再运行
+     `python scripts/validate_supplement_effect.py <analysis.json> <iter>/constraints.json <iter>/constraints_patch.json`
+     确认 findings 全覆盖且 patch 非全量 noop。通过后运行
      `python scripts/apply_supplement_constraints.py <iter>/constraints.json <iter>/constraints_patch.json`
-     （内部重跑 normalize + validate，失败则阻断，不得进 `case-generator`）。两者都
+     （内部做规范化等价去重，add/replace 无实际变化时返回 `noop`，再重跑 normalize +
+     validate；失败则阻断，不得进 `case-generator`）。空 patch/noop 合法，但不得作为
+     本轮“补充已扩充”或问题已修复的证据。合并和检查成功后再次运行上述状态脚本并加
+     `--consume`，使 `last_consumed_supplement_hash` 与当前 hash 对齐。两者都
      空则跳过本步。每轮 EXTRACT 后都重新触发 source-analyst + 补充。
    - **conflict 异步提示**：若 `inputs/conflict-doc.md` 非空，主协调器输出结构化
      `requires_user_action` 提示（`code=CONFLICT_REQUIRES_REVIEW`，列出冲突条目），
-     **不阻塞**；full scope 继续进 `case-generator`，constraints-only 在记录提示后按
-     下一条终止。用户在任意时刻回
+     **不阻塞**；记录提示后继续进入本轮 CONSTRAINT CHECK/REPAIR，检查通过后 full
+     scope 才进 `case-generator`，constraints-only 才按后文终止。用户在任意时刻回
      `inputs/conflict_resolution.json`（`[{conflict_id, winner: "source"|"doc"}]`），
      下轮 re-supplement 前运行
      `python scripts/apply_conflict_resolution.py <iter>/constraints.json --candidates <inputs>/conflict_candidates.json --resolution <inputs>/conflict_resolution.json`
      把 source-wins 并入（replace patch + revalidate）。
+   - **CONSTRAINT CHECK/REPAIR（每轮 EXTRACT 内部子循环，强制）**：在本轮
+     SUPPLEMENT 和已有 conflict resolution 合并完成、最终 `constraints.json` 已通过
+     normalize/validate 后执行；不是顶层状态，但**首轮与所有 re-EXTRACT 轮都执行**。
+     每轮只维护 `<iter>/constraint_check.json`：
+     1. 旧 run 若缺少 `run_state.constraint_check`，先按 `max_rounds=3` 补齐。若
+        `run_state.constraint_check.iteration != current_iteration`，初始化该子状态为
+        `{iteration: current_iteration, current_round: 0, status: pending,
+        report: <iter>/constraint_check.json}`，保留配置的 `max_rounds`。同 iteration 恢复时
+        不重置；若 report 已校验通过且状态为 passed，直接越过，防中断后重复检查。
+        每次子状态回写同时更新 `run_state.updated_at`。
+     2. 将 check 轮次设为 `current_round + 1`，委派一个**全新上下文**的
+        `constraint-checker`。消息必须给绝对路径：run_state、算子文档快照、本轮最终
+        constraints、report，以及存在的 scene directive、supplementary-doc、
+        supplement_constraints、conflict_candidates、conflict_resolution。checker 只写 report、不改约束；
+        每轮完整扫描并复核旧 open/unfixed，只有 checker 可标 fixed。
+     3. 运行
+        `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`。
+        通过后把 report 的 `current_round/status` 回写子状态。报告 `passed` → 结束子循环；
+        `failed` → 置顶层 `state=BLOCKED`，history append
+        `{"state":"BLOCKED","code":"CONSTRAINT_CHECK_FAILED",...}`，列出未修复问题并终止，
+        禁止进入 constraints-only SUCCESS 或 GENERATE。
+     4. 报告 `needs_repair` → 委派一个与 checker **隔离的新上下文**
+        `constraint-repairer`，输入同一证据集 + constraints + report。repairer 只能 Edit
+        report 中 open/unfixed 对应约束，不得完整重提、不改 report 状态；修改后必须跑
+        validate_operator_rule → normalize → validate_artifacts constraints。成功后子状态记
+        `recheck_pending`，回到第 2 步由新的 checker 上下文做下一轮完整复检。
+     5. `max_rounds=3` 的语义是 check1 → repair → check2 → repair → check3；最后一次
+        repair 后必有 check，不接受未复检约束。任何下游阶段开始前都必须确认当前
+        iteration 的 report 有效且 `status=passed`。若 passed 后又因迟到的 conflict
+        resolution 或人工操作修改了 constraints，旧 passed 立即失效；将 current_round
+        重置为 0、status 改为 pending，并针对新版本重新执行完整 check 预算。
    - **constraints-only 终止**：若 `run_state.test_framework="constraints"`，在 EXTRACT
-     和可能的 SUPPLEMENT 完成后运行 constraints normalize/validate；通过则把
+     和可能的 SUPPLEMENT、CONSTRAINT CHECK/REPAIR 完成后运行 constraints
+     normalize/validate；只有当前 iteration 的 `constraint_check.json.status=passed` 才把
      `run_state.state` 更新为 `SUCCESS`，history 记录 `CONSTRAINTS_ONLY_SUCCESS`，并明确
      报告成功范围仅为约束提取。跳过 case-generator、executor、Golden 和执行质量门禁。
    - `case-generator`：读取 `run_state.hs_scenario_mode`，调用
@@ -244,9 +287,16 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
    warning 仍按非阻断处理。
 8. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
    diagnose 域（读 execution_result + uncertain-doc + source_raw，error_string
-   匹配，命中的 uncertain 追加到 `inputs/supplementary-doc.md`，产
+   匹配后逐条确认，只有确认成功的 uncertain 追加到 `inputs/supplementary-doc.md`，产
    `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence
    下根因）。`operator_src_snapshot` 为空时直接委派 `failure-analyst`。
+   failure-analyst 完成后先运行
+   `python scripts/validate_artifacts.py analysis <iter>/analysis.json`；失败时阻断路由并让
+   Agent 修正。若 `analysis.supplement_decision.source=diagnose_inferred` 且
+   `has_explicit_additions=true`，必须再运行
+   `python scripts/merge_supplement_additions.py <iter>/analysis.json <iter>/supplement_additions.md <inputs>/supplementary-doc.md`；
+   只有脚本返回 `merged=true` 才算本轮补充已落库。失败、空文件或 already_merged 都不算
+   新增补充。
    - **HUMAN_CHECKPOINT 门（人工补充检查点；分析完成后、自主分支决策前）**：当且仅当
      **全部**满足时触发——`analysis.json.root_cause == constraint_extraction`、
      `run_state.human_checkpoint_round > 0`、`current_iteration >= human_checkpoint_round`
@@ -260,18 +310,24 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
           **append** 到 `inputs/supplement_constraints.md`，带分节标题
           `## 人工补充（第 <N> 轮失败后，<ISO8601>）`（用 markdown 分节与初始
           `--supplement-constraints` 内容区分 provenance）；置
-          `run_state.human_checkpoint_resolved_iteration = current_iteration`；进下一轮
+          `run_state.human_checkpoint_resolved_iteration = current_iteration`，运行
+          `update_supplement_state.py` 刷新 hash；只有返回 `changed=true` 才视为新补充；进下一轮
           re-EXTRACT（下轮 SUPPLEMENT 步自动拾取该补充，无需新代码）。
         - **继续自主迭代**：置 `human_checkpoint_resolved_iteration = current_iteration`，
           落回下列自主分支。
         - **立即停止**：`run_state.state = STOPPED_BY_USER`，append history
           `{"state":"STOPPED_BY_USER","at":<ISO8601>}`，终止流程（不进下一轮）。
      3. `generator_bug`/`executor_bug` 根因**不进本门**（立即止损，见下）。
-   - constraint_extraction + 补充已扩充（`source_evidence.log_match` 非空，或
-     failure-analyst 产了 `supplement_additions.md`，或上一步人工补充已 append 进
-     `supplement_constraints.md`）：**不走 prompt-optimizer**，直接 re-EXTRACT +
+   - constraint_extraction + 补充已扩充（`source_evidence.confirmed_additions_count > 0`，
+     或诊断增量合入脚本返回 `merged=true` 并刷新 supplement hash，或上一步人工补充
+     append 后状态脚本返回 `changed=true`）：**不走 prompt-optimizer**，直接 re-EXTRACT +
      re-SUPPLEMENT + re-GENERATE + re-EXECUTE 进下一轮。
-   - constraint_extraction + 补充无可提取：委派 `prompt-optimizer`，将新 prompt 送入下一轮。
+   - constraint_extraction + 补充无可提取 +
+     `analysis.prompt_optimization.eligible=true`：委派 `prompt-optimizer`，将新 prompt
+     送入下一轮。
+   - constraint_extraction + 补充无可提取 +
+     `analysis.prompt_optimization.eligible=false`：不得盲目优化 Prompt；立即复用上述
+     HUMAN_CHECKPOINT 交互请求补充证据/继续/停止，不等待默认触发轮次。
    - generator_bug：状态设为 STOP_GENERATOR_BUG，停止。
    - executor_bug：状态设为 STOP_EXECUTOR_BUG，停止。
    - **轮次簿记（关键，原为缺口）**：凡分支决定"进下一轮"，主协调器须先把
@@ -309,7 +365,8 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
 - `constraints`：只产出并校验 `constraints.json`，不调用任何 case/executor 命令；
   SUCCESS 必须注明 `run_scope=constraints_only`，不能表述成用例或精度闭环成功。
 - EXTRACT 阶段与测试框架无关，任何 framework 都必须先产生非空且校验通过的
-  `constraints.json`。如果 state 仍为 PLAN 或文件不存在，说明未委派提取器，不能报告
-  “约束为空”。
+  `constraints.json`，并在每个 outer iteration 通过 `constraint_check.json` 语义门禁。
+  如果 state 仍为 PLAN 或文件不存在，说明未委派提取器，不能报告“约束为空”；如果
+  check 未 passed，不能进入 GENERATE/SUCCESS。
 
 不要在主协调器中亲自完成专职 Agent 的工作，不要并行运行存在数据依赖的阶段。

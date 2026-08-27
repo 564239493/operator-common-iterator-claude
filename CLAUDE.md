@@ -8,8 +8,12 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ## 核心流程
 
 状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE`
+- 每次 EXTRACT（含 re-EXTRACT）内部固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 →
+  独立 `constraint-checker` / `constraint-repairer` 语义检查修复循环；默认
+  `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
 - 全部通过 → `SUCCESS`
-- 有失败 → `DIAGNOSE`；只有根因为 `constraint_extraction` 时才进入 `OPTIMIZE → EXTRACT` 循环
+- 有失败 → `DIAGNOSE`；根因为 `constraint_extraction` 时优先消费已确认补充，只有无补充且
+  能定位 Prompt 规则缺口时才进入 `OPTIMIZE → EXTRACT`
 - `generator_bug` / `executor_bug` → 立即止损
 - 达到 max-iterations → `MAX_ITERATIONS`
 - `constraint_extraction` 迭代到 `--human-checkpoint-round`（默认 3，0=禁用）轮仍失败时，下一轮
@@ -58,6 +62,7 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ### 算子迭代
 ```text
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 3 --case-count 10
+/iterate-operator operator_docs/aclnnFoo.md --constraint-check-rounds 3  # 每个 EXTRACT 内最多 3 次语义 check
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 5 --human-checkpoint-round 3  # 第3轮仍失败弹人工补充检查点（0=禁用）
 /iterate-operator D:\operator_docs\aclnnFoo.md  # 支持项目外路径
 /iterate-operator operator_docs/aclnnFoo.md --scene auto  # EXTRACT 前扫描量化场景并征询（默认）；--scene all 取全场景不问；--scene off 跳过
@@ -99,9 +104,12 @@ python scripts/init_run.py --doc operator_docs/aclnnFoo.md --max-iterations 3
 # 源码分析约束知识默认关闭；仅 ACLNN 且按算子名精准命中后加载
 python scripts/init_run.py --doc operator_docs/aclnnGroupedMatmulV5.md --source-analysis-knowledge
 python scripts/validate_artifacts.py constraints runs/.../iter_001/constraints.json
+python scripts/validate_artifacts.py constraint_check runs/.../iter_001/constraint_check.json
 python scripts/validate_artifacts.py cases runs/.../iter_001/cases.json
 python scripts/validate_artifacts.py execution runs/.../iter_001/execution_result.json
 python scripts/validate_artifacts.py analysis runs/.../iter_001/analysis.json
+python scripts/validate_artifacts.py constraints_patch runs/.../iter_001/constraints_patch.json
+python scripts/validate_artifacts.py source_evidence runs/.../iter_001/source_evidence.json
 python scripts/validate_artifacts.py executor runs/.../iter_001/cases_executor.py
 # 前台直接运行：命令中包含 python 和 generate_cases.py
 python scripts/generate_cases.py --constraints .../constraints.json --output .../cases.json --count 10
@@ -143,6 +151,8 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 | 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
+| 约束语义检查（每轮 EXTRACT） | `constraint-checker` | `check-constraints` | `constraint_check.json` |
+| 约束精准修复（检查发现问题） | `constraint-repairer` | `repair-constraints` | 修改当前 `constraints.json` |
 | 用例生成 | `case-generator` | `generate-cases` | `cases.json` + `generation_summary.json` |
 | 用例执行 | `case-executor` | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
 | 根因诊断 | `failure-analyst` | `diagnose-failure` | `analysis.json` |
@@ -152,7 +162,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 ## 架构分层
 
 ### Claude Code 编排层（.claude/）
-- `.claude/agents/*.md` — 9 个专职 Agent 定义（角色、上下文、产物格式）
+- `.claude/agents/*.md` — 专职 Agent 定义（角色、上下文、产物格式）
 - `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
 - `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
@@ -160,12 +170,17 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 > EXTRACT 后可选触发约束补充（`--supplement-constraints` 非空时）：
 > `constraint-supplementer` 产 `constraints_patch.json`，
-> `scripts/apply_supplement_constraints.py` 确定性合并并重跑 normalize+validate，
+> `scripts/apply_supplement_constraints.py` 规范化去重、报告 noop、确定性合并并重跑 normalize+validate，
 > 失败阻断、不进 GENERATE。为独立子步骤而非新状态，空即跳过。
+>
+> SUPPLEMENT 后强制触发 EXTRACT 内部 CHECK/REPAIR：checker 每轮完整对照文档和明确
+> 补充证据，只写 `constraint_check.json`；repairer 使用隔离上下文仅修改报告中的
+> open/unfixed 问题，随后由新 checker 复检。当前 iteration 未 passed 不得进 GENERATE。
 
 - 全部通过：`SUCCESS`
 - 有失败：`DIAGNOSE`
-- `constraint_extraction`：`OPTIMIZE -> EXTRACT`，进入下一轮
+- `constraint_extraction`：明确补充已落库则直接进入下一轮 EXTRACT/SUPPLEMENT；否则仅在
+  `prompt_optimization.eligible=true` 时执行 `OPTIMIZE -> EXTRACT`
 - `constraint_extraction` 到 `human_checkpoint_round` 轮仍失败：人工补充检查点（补充/自主/停止）
 - `generator_bug`：`STOP_GENERATOR_BUG`
 - `executor_bug`：`STOP_EXECUTOR_BUG`
@@ -211,6 +226,9 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `extract_source_constraints.py` — 从源码快照提取确定性约束事实
 - `locate_operator_source.py` — 在 operators-src 树定位算子源码
 - `apply_supplement_constraints.py` — 补充约束 patch 确定性合并（重跑 normalize + validate）
+- `merge_supplement_additions.py` — 校验 failure-analyst 本轮增量并按 sha256 幂等落入 `supplementary-doc.md`
+- `update_supplement_state.py` — 持久化补充事实 revision/hash 与已消费 hash，支持会话恢复
+- `validate_supplement_effect.py` — 校验 findings 被 patch 覆盖且诊断 patch 不是全量 noop
 - `apply_conflict_resolution.py` — 人工冲突裁决的机读合并层（不替用户决定胜负）
 - `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
 - `show_registry.py` — 展示 Skills/Agents 注册表

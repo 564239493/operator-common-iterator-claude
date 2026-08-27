@@ -4,7 +4,8 @@ description: 从补充约束 Markdown 与已提取 constraints.json 产出结构
 
 # 约束补充规范
 
-输入必须包含：补充约束 Markdown、当前轮已提取的 `constraints.json`、当前轮目录。
+输入必须包含：补充约束 Markdown、当前轮已提取的 `constraints.json`、当前轮目录；
+当前轮存在 `analysis.json` 时一并读取其中的结构化 findings。
 
 补充约束 Markdown 有两个来源，**都读**（合并消费）：
 1. `inputs/supplementary-doc.md`（**主源**，source-analyst 从源码分析自动产出）。
@@ -12,8 +13,10 @@ description: 从补充约束 Markdown 与已提取 constraints.json 产出结构
 2. `inputs/supplement_constraints.md`（用户 `--supplement-constraints` 手写快照，
    可选）。仅当 `run_state.supplement_constraints` 非空时存在。
 
-两者都为空时跳过补充阶段。条目去重：若同一 `expr` 在两个文件都出现，以
-supplementary-doc.md（源码分析）为准。
+两者都为空时跳过补充阶段。只消费已经确认并落入上述文件的事实，禁止读取
+uncertain-doc.md 或未裁决 conflict。条目去重：若同一 `expr` 在两个文件都出现，以
+supplementary-doc.md（源码分析）为准；若当前 constraints 已有规范化后等价的
+`expr_type+expr+relation_params`，不得再次 add。
 
 先读取 `run_state.operator_family` 和 `run_state.current_prompt`。补充阶段必须沿用当前
 family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能读 torch_npu 快照和
@@ -88,7 +91,9 @@ family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能�
      "target_platform": "<平台名 | all>",
      "match_expr": "<仅 replace 必填：被替换条目原 expr 精确文本>",
      "proposed": {"expr_type": "...", "expr": "...", "relation_params": ["..."]},
-     "basis": "<来自补充文件的依据，如 '§2: 输入张量需可广播'>"
+     "basis": "<来自补充文件的依据，如 '§2: 输入张量需可广播'>",
+     "finding_ids": ["CF-001"],
+     "expected_effect": "case_001 应被该约束拒绝"
    }
    ```
    - `proposed` **只含** `expr_type`/`expr`/`relation_params` 三字段；
@@ -97,8 +102,12 @@ family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能�
    - `basis` 是补充文件依据：supplementary-doc.md 的 basis 来自源码分析
      （`source_location` + `error_string`）；supplement_constraints.md 的 basis
      来自手写说明。写入 patch 时取条目内给出的依据文本。
+   - `finding_ids`/`expected_effect` 是 patch 层审计字段，仅诊断补充项必填；合并器
+     会剥离，不进入 constraints.json。每个 `constraint_findings` 必须且只能由至少一个
+     patch 项覆盖，除非当前 constraints 已等价覆盖并明确记录 noop。
 5. 写入 `<iter-dir>/constraints_patch.json`。
-6. schema 自检（逐项核对或 Python 脚本）：
+6. 运行 `python scripts/validate_artifacts.py constraints_patch <iter-dir>/constraints_patch.json`
+   并完成以下自检：
    - `op ∈ {add_constraint, replace_constraint}`
    - `target_platform` 非空
    - `proposed` 含 `expr_type`/`expr`/`relation_params`
@@ -107,6 +116,12 @@ family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能�
      `target_platform="all"` 时须在**每个**平台桶中都能找到，否则合并器精确匹配
      失败阻断
    - `expr` 可被 `ast.parse` 解析
+   - `basis` 非空并带可追溯证据；诊断补充项的 finding_ids/expected_effect 非空
    - 引用 int 标量参数取值的 expr 必用 `<param>.range_value`，不得裸名（见 §2 int 标量规则）
-7. 自检不通过时修正，最多三次；仍失败则明确返回阻断原因。
-8. 返回：add/replace 计数、涉及平台、产物绝对路径。不修改 `constraints.json`。
+   - 将 finding 对应失败 case 代入 proposed.expr，预期应为 False；代入至少一个已通过
+     或文档明确合法的 case，预期应为 True。无法完成则阻断，不产出未经验证的 patch
+7. 存在诊断 findings 时，主协调器还会运行
+   `python scripts/validate_supplement_effect.py <analysis.json> <constraints.json> <constraints_patch.json>`；
+   finding 未覆盖、引用未知 finding 或 patch 全量 noop 都会阻断。
+8. 自检不通过时修正，最多三次；仍失败则明确返回阻断原因。
+9. 返回：add/replace/noop 计数、涉及平台、产物绝对路径。不修改 `constraints.json`。

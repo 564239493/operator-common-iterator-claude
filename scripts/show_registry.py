@@ -53,7 +53,8 @@ def main() -> int:
         print(f"  @{name:<22} skill={skills:<22} {clipped(meta.get('description'), 44)}")
 
     print("\nDispatch")
-    print("  PLAN -> constraint-extractor -> case-generator -> case-executor")
+    print("  PLAN -> constraint-extractor -> optional constraint-supplementer")
+    print("       -> constraint-checker <-> constraint-repairer -> case-generator -> case-executor")
     print("       -> quality-reviewer -> SUCCESS")
     print("       -> failure-analyst -> prompt-optimizer -> next iteration")
     print("       -> generator_bug | executor_bug -> STOP")

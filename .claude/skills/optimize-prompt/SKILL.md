@@ -5,8 +5,10 @@ description: 根据 constraint_extraction 失败生成 run-local 候选和分层
 # 提示词 / 知识优化规范
 
 先完整阅读 `docs/PROMPT_EVOLUTION.md`。只有 `analysis.json.root_cause` 严格等于
-`constraint_extraction`，且 `specific_issues` 有 case、日志或当前文档证据时才能执行。
-generator/executor bug、源码补充已足够、证据不足均不得用提示词规则掩盖。
+`constraint_extraction`、`analysis.json.supplement_decision.has_explicit_additions=false`、
+`analysis.json.prompt_optimization.eligible=true`，且 `specific_issues` 有 case、日志、
+当前文档证据以及可定位的 Prompt 规则缺口时才能执行。generator/executor bug、源码
+补充已足够、只有约束事实而没有规则缺口、证据不足均不得用提示词规则掩盖。
 
 ## 输入
 

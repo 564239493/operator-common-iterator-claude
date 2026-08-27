@@ -1,11 +1,16 @@
 ---
-description: 对单轮 constraints、cases、execution 和 analysis 产物执行独立质量门禁。
+description: 对单轮 constraints、constraint_check、cases、execution 和 analysis 产物执行独立质量门禁。
 ---
 
 # 质量门禁
 
 调用 `scripts/validate_artifacts.py` 分别校验已存在的阶段产物，再核对：
 
+- 当前 `<iter>/constraint_check.json` 存在并通过
+  `python scripts/validate_artifacts.py constraint_check <report>`；其 `iteration` 必须等于
+  `run_state.current_iteration`、`max_rounds` 必须等于
+  `run_state.constraint_check.max_rounds`、`status` 必须为 `passed`。缺失、失配或未通过
+  都是 blocking issue，不能用后续用例执行成功绕过；
 - constraints 中所有非空 expr 通过规范化后的 Python AST 校验；
 - `allowed_range_value.type=range` 不含 `null` 边界，`type=enum` 可包含 `null`；
 - 数值范围 expr 使用不等式而不是 `.range_value in [[min, max]]`；
@@ -38,7 +43,7 @@ TTK 路径下，以下检查降级为非阻断诊断（写入 `checks[].warnings
 
 但下列仍为 TTK 路径的**阻断**项（基础可运行性）：
 
-- 必需产物（`cases_ttk.csv` / `constraints.json`）不存在或不可读；
+- 必需产物（`cases_ttk.csv` / `constraints.json` / `constraint_check.json`）不存在或不可读；
 - 没有任何可执行用例；
 - CSV/JSON 缺少执行器定位 API 所需的基础字段；
 - 执行器自身报错，导致用例没有实际运行。

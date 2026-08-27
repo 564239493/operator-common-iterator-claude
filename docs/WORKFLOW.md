@@ -22,6 +22,7 @@
 | operator-doc | 必填；支持项目外路径 | 初始化时只读快照到 run/inputs |
 | prompt | 当前 family 数值版本最新的 vN prompt | 确定首轮提取规则；显式 `--prompt` 可固定原样快照 |
 | max-iterations | 5 | 防止无界循环 |
+| constraint-check-rounds | 3 | 每个外层迭代完整 EXTRACT 后，Checker/Repairer 语义检查修复的最大轮数；通过可提前结束 |
 | case-count | 10/平台 | 控制生成与执行规模 |
 | mode | real | 缺配置则停止提示；仅显式 `--mode mock` 使用 Mock |
 | server-config | servers.json | 真实执行机、平台和环境初始化配置 |
@@ -51,8 +52,12 @@ run；校验通过后将外部文档复制为项目内快照并创建 run_state�
 
 ```mermaid
 flowchart TD
-    P["PLAN<br/>冻结参数与运行目录"] --> E["EXTRACT<br/>constraint-extractor"]
-    E --> G["GENERATE<br/>统一 cases.json"]
+    P["PLAN<br/>冻结参数与运行目录"] --> E["EXTRACT<br/>完整提取 + SUPPLEMENT"]
+    E --> CC{"CONSTRAINT CHECK<br/>独立 Checker / Repairer"}
+    CC -->|通过| G["GENERATE<br/>统一 cases.json"]
+    CC -->|有问题且未到上限| CR["精准 REPAIR<br/>只改报告问题"]
+    CR --> CC
+    CC -->|达到 check 上限| B
     G --> A{"framework adapter"}
     A -->|ATK| X["EXECUTE<br/>ATK executor"]
     A -->|TTK| C["cases.json → cases_ttk.csv"]
@@ -66,7 +71,10 @@ flowchart TD
     Q -->|全部通过| S["SUCCESS"]
     Q -->|用例失败| D["DIAGNOSE<br/>failure-analyst"]
     Q -->|产物不合法| B["BLOCKED"]
-    D -->|constraint_extraction| O["OPTIMIZE<br/>prompt-optimizer"]
+    D -->|constraint_extraction| SD{"明确补充事实?"}
+    SD -->|有且已落库| E
+    SD -->|无补充但有 Prompt 规则缺口| O["OPTIMIZE<br/>prompt-optimizer"]
+    SD -->|两者都无| HC
     O -->|下一轮| E
     D -->|constraint_extraction + N 轮失败| HC["HUMAN_CHECKPOINT<br/>人工补充/自主/停止"]
     HC -->|人工补充| E
@@ -158,12 +166,38 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 输入：`inputs/supplementary-doc.md`（source-analyst 产，主源）与/或
 `inputs/supplement_constraints.md`（`--supplement-constraints` 手写）+ 已提取
 `constraints.json`。两者都空则跳过。  
+调度前运行 `update_supplement_state.py` 刷新 run_state 的 revision/hash；合并及检查成功
+后以 `--consume` 记录已消费 hash。人工/诊断追加是否为新补充只认脚本的
+`changed=true`，不依赖对话上下文。
 执行者：constraint-supplementer（产出 `constraints_patch.json`）。  
 合并：`scripts/apply_supplement_constraints.py` 确定性合并 patch 进 `constraints.json`
-（标 `origin="supplement"`、剥离 patch 层字段），重跑 normalize + validate。  
+（标 `origin="supplement"`、剥离 patch 层字段、规范化去重并报告 noop），重跑 normalize + validate。
 完成条件：合并后 `constraints.json` 通过 normalize + validate。  
 失败策略：合并器或 revalidate 失败则阻断，不进 GENERATE；patch schema/精确匹配
 失败由 constraint-supplementer 自修正最多三次。
+诊断 findings 产生的 patch 在合并前额外运行 `validate_supplement_effect.py`：所有 finding
+必须被 patch 覆盖且 patch 不能全量 noop；constraint-checker 再验证失败 case 的预期效果。
+
+### CONSTRAINT CHECK/REPAIR（每轮 EXTRACT 内部子循环）
+
+每一次完整 EXTRACT（包括后续 re-EXTRACT）在 SUPPLEMENT 和已裁决 conflict 合并完成后，
+都要对本轮最终 `constraints.json` 执行语义检查。该循环不新增顶层状态，仍属于 EXTRACT：
+
+1. `constraint-checker` 使用隔离上下文读取算子文档、当前最终 constraints、场景指令、
+   本轮补充证据和已有 `constraint_check.json`，完整检查整份约束；只写报告、不修改约束。
+2. 报告无 open/unfixed 问题则通过；有问题且未到 `constraint-check-rounds` 上限时，
+   `constraint-repairer` 使用另一个隔离上下文，只 Edit 报告指出的问题并重跑
+   validate_operator_rule + normalize + validate_artifacts constraints。
+3. 修复后必须由新的 checker 上下文完整复检；只有 checker 可把问题标记 fixed。
+4. 默认 3 轮表示 check1 → repair → check2 → repair → check3。达到上限仍失败则顶层
+   状态置 `BLOCKED`（code=`CONSTRAINT_CHECK_FAILED`），不得进入 GENERATE。
+   已 passed 后若同轮 constraints 又被迟到的 conflict resolution 或人工操作修改，必须
+   使旧 passed 失效、重置 check 轮次并检查新版本，不能沿用旧报告结论。
+
+每个 `iter_NNN` 只新增一个 `constraint_check.json`，累计保存问题位置、问题说明、修复
+建议及 open/fixed/unfixed 状态。报告必须通过
+`python scripts/validate_artifacts.py constraint_check <report>`。未裁决 conflict 保持现有
+异步人工通道，不由 checker 自动选边。
 
 ### conflict 异步裁决（非阻塞）
 
@@ -211,13 +245,16 @@ ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生
 
 failure-analyst 使用新上下文，只读取落盘事实。当 `operator_src_snapshot` 非空时，
 先委派 source-analyst diagnose 域（error_string 模糊匹配失败日志，命中的 uncertain
-追加到 `supplementary-doc.md`，产 `source_evidence.json`），failure-analyst 读它下根因。
+逐条确认；只有确认成功者追加到 `supplementary-doc.md`，产 `source_evidence.json`），
+failure-analyst 读它下根因并按失败签名输出 clusters。
 
 constraint_extraction 根因走**两级补救**：
-1. 补充优先：`source_evidence.log_match` 非空或 failure-analyst 产了
-   `supplement_additions.md` → re-EXTRACT + re-SUPPLEMENT + re-GENERATE + re-EXECUTE，
+1. 补充优先：`source_evidence.confirmed_additions_count > 0`，或 failure-analyst 的
+   `supplement_additions.md` 已通过脚本合入且返回 `merged=true` → re-EXTRACT +
+   re-SUPPLEMENT + re-GENERATE + re-EXECUTE，
    **不走 prompt-optimizer**。
-2. 补充无可提取 → 才回退 prompt-optimizer 生成 prompt_vN+1。
+2. 补充无可提取且 `analysis.prompt_optimization.eligible=true` → 才回退
+   prompt-optimizer 生成 prompt_vN+1；无法定位规则缺口时转人工补充，不盲目优化。
 
 generator_bug / executor_bug 立即止损。这样避免执行环境故障反复“优化”提示词，
 也避免生成器代码 bug 被错误掩盖。TTK 的
@@ -231,8 +268,8 @@ prompt-optimizer 也按 `run_state.operator_family` 隔离：ACLNN 的修复只�
 ### constraints-only
 
 对尚无 TTK adapter 的 torch_npu API，auto 选择 `test_framework=constraints`、
-`run_scope=constraints_only`。EXTRACT 和可选 SUPPLEMENT 通过 normalize/validate 后即以
-`CONSTRAINTS_ONLY_SUCCESS` 事件结束；不进入 GENERATE/EXECUTE，也不要求服务器配置。
+`run_scope=constraints_only`。EXTRACT、可选 SUPPLEMENT 和 CONSTRAINT CHECK/REPAIR 均
+通过后才以 `CONSTRAINTS_ONLY_SUCCESS` 事件结束；不进入 GENERATE/EXECUTE，也不要求服务器配置。
 该 SUCCESS 只表示约束文件有效，不能报告为用例或精度闭环成功。用户显式选择 `ttk`
 仍可用于开发新 adapter，但未注册算子会在生成阶段明确拒绝。
 
