@@ -74,7 +74,11 @@ HS/E2E 默认加载可用的自主推导或源码 Golden，但精度失败不得
 `--generate` 只产生 Linux NPU 节点命令；`--mode real` 从 `servers.json.ttk` 读取
 `remote_root/repo_path/python/env_init_script`，创建算子名_时间点目录，上传 CSV/plugin，
 HS 执行 E2E 并下载到 `ttk_artifacts/`；ACLNN 执行原生 ACLNN 模式并下载到
-`ttk_aclnn_artifacts/`。两者均不得调用 ATK golden 推导或上传 `/home/operator_atk`。
+`ttk_aclnn_artifacts/`。两条真实 TTK 路径执行结束后都必须同步本次 PLOG：
+`plog/raw/` 保存原始日志，`plog/error_summary.log` 保存远端 `grep -rn ERROR` 结果，
+`plog/manifest.json` 保存收集状态；并把同一元数据写入 `execution_result.plog`。PLOG 收集
+失败不得伪装成普通 case fail，但必须显式记录 collection_error。两者均不得调用 ATK
+golden 推导或上传 `/home/operator_atk`。
 
 `python scripts/execute_cases.py --test-framework ttk --mode real --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json --server-config servers.json --hs-scenario-mode <run_state.hs_scenario_mode>`
 
@@ -109,7 +113,8 @@ HS 执行 E2E 并下载到 `ttk_artifacts/`；ACLNN 执行原生 ACLNN 模式并
    （fusion 时校验 `fusion_phases` + `dir_check_passed` 全真，`comparison_result` 可选）。
 ## 通用纪律
 
-执行前只检查 cases 可读且至少包含一条可执行用例；执行后记录 execution_result。
+执行前只检查 cases 可读且至少包含一条可执行用例；真实 TTK 还要求 servers.json 的
+env 初始化命令在启动用例前清理旧 PLOG。执行后记录 execution_result。
 覆盖率、准确度和语义审计仅作可选诊断，不得阻止基础执行。不得把 SSH、凭据或环境
 故障误写成用例失败；engine 层故障单独写 `engine_error`。返回 passed/failed、执行模式、
 产物路径和引擎错误。

@@ -117,7 +117,9 @@ python3 -m ttk e2e -i cases_ttk.csv --backend npu
   "remote_root": "/home/operator_ttk/runs",
   "repo_path": "/home/operator_ttk/ops-test-kit",
   "python": "python3",
-  "env_init_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+  "env_init_script": "source /usr/local/Ascend/ascend-toolkit/set_env.sh && { test ! -d /root/ascend/log/debug || find /root/ascend/log/debug -mindepth 1 -delete; }",
+  "collect_plog": true,
+  "plog_dir": "/root/ascend/log/debug"
 }
 ```
 
@@ -131,7 +133,9 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
   --hs-scenario-mode <run_state.hs_scenario_mode>
 ```
 
-完成后同步到 `<iter>/ttk_artifacts/`：`results.csv`、`log/`、远端 stdout/stderr。
+完成后同步到 `<iter>/ttk_artifacts/`：`results.csv`、`log/`、远端 stdout/stderr，以及
+`plog/raw/`、`plog/error_summary.log`、`plog/manifest.json`。其中 ERROR 摘要来自本轮执行后
+对远端 PLOG 的 `grep -rn ERROR`；failure analysis 必须与 TTK 日志联合判读。
 
 ## 精度与 Golden 经验
 

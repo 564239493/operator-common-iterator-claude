@@ -27,6 +27,8 @@ Public re-exports
 
 from __future__ import annotations
 
+import importlib
+
 from agent.generators.common_model_definition import (
     InterConstraintsRuleType,
     InterParamConstraint,
@@ -34,15 +36,17 @@ from agent.generators.common_model_definition import (
     ParamAttributes,
     ValueWithSrcText,
 )
-from agent.generators.facade import (
-    DEFAULT_COUNT,
-    DEFAULT_SEED,
-    TestCaseGenerator,
-)
-from agent.generators.operator_handle_main import (
-    batch_operator_handel,
-    single_operator_handle,
-)
+
+
+def __getattr__(name: str):
+    """Load Torch-dependent generation code only when generation is requested."""
+    if name in {"DEFAULT_COUNT", "DEFAULT_SEED", "TestCaseGenerator"}:
+        facade = importlib.import_module(".facade", __name__)
+        return getattr(facade, name)
+    if name in {"batch_operator_handel", "single_operator_handle"}:
+        operator_handle_main = importlib.import_module(".operator_handle_main", __name__)
+        return getattr(operator_handle_main, name)
+    raise AttributeError(name)
 
 __all__ = [
     # Public facade

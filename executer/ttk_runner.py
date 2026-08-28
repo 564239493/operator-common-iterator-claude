@@ -16,6 +16,7 @@ from .ssh import (
     SSHEngineError, ServerEndpoint, connect, run, sftp_download_file,
     sftp_download_tree, upload_file,
 )
+from .plog import DEFAULT_PLOG_DIR, collect_plog_snapshot
 
 
 def _safe_name(value: str) -> str:
@@ -177,8 +178,10 @@ async def _run_remote(
     repo_path = str(ttk.get("repo_path") or "/home/operator_ttk/ops-test-kit").rstrip("/")
     python = str(ttk.get("python") or "python3")
     allow_internal_format = bool(ttk.get("allow_internal_format", True))
-    transfer_mode = str(ttk.get("transfer_mode") or "auto")
+    transfer_mode = str(ttk.get("transfer_mode") or server.get("transfer_mode") or "auto")
     env_init = str(ttk.get("env_init_script") or server.get("env_init_script") or "").strip()
+    collect_plog = ttk.get("collect_plog", True) is not False
+    plog_dir = str(ttk.get("plog_dir") or DEFAULT_PLOG_DIR).strip()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     remote_dir = f"{remote_root}/{_safe_name(operator_name)}_{stamp}"
     remote_cases = f"{remote_dir}/{cases_path.name}"
@@ -191,6 +194,11 @@ async def _run_remote(
     endpoint = ServerEndpoint.from_server_row(server)
     conn = None
     schema_probe: dict[str, Any] = {"status": "not_requested"}
+    execution_started = False
+    plog_info: dict[str, Any] = {
+        "status": "not_attempted",
+        "remote_plog_dir": plog_dir,
+    }
     try:
         conn = await connect(endpoint)
         op_name = _torch_npu_op_name(operator_name)
@@ -249,6 +257,7 @@ async def _run_remote(
                             "order differs from target torch.ops schema"
                         ),
                         "runtime_schema_probe": schema_probe,
+                        "plog": plog_info,
                         "duration": time.monotonic() - started,
                         "remote_output_dir": remote_dir,
                         "local_artifact_dir": str(artifact_dir),
@@ -289,7 +298,16 @@ async def _run_remote(
             ttk_cmd += f" --plugin {shlex.quote(plugin_path.name)}"
         parts.append(ttk_cmd)
         command = " && ".join(parts)
+        execution_started = True
         result = await run(conn, command, timeout=timeout)
+        plog_info = await collect_plog_snapshot(
+            conn,
+            remote_run_dir=remote_dir,
+            artifact_dir=artifact_dir,
+            plog_dir=plog_dir,
+            transfer_mode=transfer_mode,
+            enabled=collect_plog,
+        )
 
         local_results = artifact_dir / "results.csv"
         await sftp_download_file(conn, remote_results, local_results)
@@ -341,14 +359,25 @@ async def _run_remote(
             "golden_plugin": str(plugin_path) if plugin_path else None,
             "runtime_plugin": str(runtime_plugin_path) if runtime_plugin_path else None,
             "runtime_schema_probe": schema_probe,
+            "plog": plog_info,
         }
     except SSHEngineError as exc:
+        if conn is not None and execution_started and plog_info.get("status") == "not_attempted":
+            plog_info = await collect_plog_snapshot(
+                conn,
+                remote_run_dir=remote_dir,
+                artifact_dir=artifact_dir,
+                plog_dir=plog_dir,
+                transfer_mode=transfer_mode,
+                enabled=collect_plog,
+            )
         return {
             "status": "error", "mode": "ttk_e2e", "test_framework": "ttk",
             "passed": 0, "failed": 0, "total": 0, "records": [],
             "engine_error": str(exc), "duration": time.monotonic() - started,
             "remote_output_dir": remote_dir, "local_artifact_dir": str(artifact_dir),
             "runtime_schema_probe": schema_probe,
+            "plog": plog_info,
         }
     finally:
         if conn is not None:
