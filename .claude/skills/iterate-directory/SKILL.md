@@ -41,8 +41,8 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt pat
      传给另一 family；始终透传 `--hs-scenario-mode <hs_scenario_mode>`；若
      `supplement_constraints` 非空，一并透传 `--supplement-constraints <path>`；
      始终透传 claim 返回的
-     `--constraint-check-rounds <constraint_check_rounds>`，使每个算子每轮 EXTRACT 都执行
-     同样的 check/repair 门禁；
+     `--constraint-check-rounds <constraint_check_rounds>`，使每个算子的首轮 EXTRACT 与后续
+     UPDATE_CONSTRAINTS 新版本都执行同样的 check/repair 门禁；
      默认透传 `--scene all`、`--human-checkpoint-round 0`（批处理无头不能
      AskUserQuestion，取全场景不剪枝且禁用人工补充检查点）。
    - `action=resume`：若已有 `run_dir`，读取其 `run_state.json`，按

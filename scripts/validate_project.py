@@ -27,6 +27,7 @@ WINDOWS_ABSOLUTE_PATH = re.compile(
 REQUIRED_AGENTS = {
     "case-executor", "case-generator", "constraint-checker",
     "constraint-extractor", "constraint-repairer", "constraint-supplementer",
+    "constraint-updater",
     "failure-analyst", "prompt-optimizer", "quality-reviewer",
     "scene-scanner", "source-analyst",
 }
@@ -36,7 +37,7 @@ REQUIRED_SKILLS = {
     "execute-cases", "extract-constraints", "generate-cases",
     "iterate-directory", "iterate-operator", "optimize-prompt",
     "repair-constraints", "scan-scenes", "show-workforce",
-    "supplement-constraints", "validate-run",
+    "supplement-constraints", "update-constraints", "validate-run",
 }
 
 

@@ -741,6 +741,7 @@ def main() -> int:
                     ],
                     "engine_error": "",
                     "validation": validation,
+                    "input_artifacts": _artifact_fingerprints(iter_dir, cases_path),
                 }
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_text(
@@ -818,6 +819,7 @@ def main() -> int:
                 "precision_blocking": False,
                 "records": result.get("records", []),
                 "engine_error": result.get("engine_error") or "",
+                "input_artifacts": _artifact_fingerprints(iter_dir, cases_path),
             })
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(
@@ -1102,6 +1104,7 @@ def main() -> int:
 
         result = run_cases(effective_mode, cases, request=request)
 
+    result["input_artifacts"] = _artifact_fingerprints(cases_path.parent, cases_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"

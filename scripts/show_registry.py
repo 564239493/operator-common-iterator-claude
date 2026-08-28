@@ -56,8 +56,9 @@ def main() -> int:
     print("  PLAN -> constraint-extractor -> optional constraint-supplementer")
     print("       -> constraint-checker <-> constraint-repairer -> case-generator -> case-executor")
     print("       -> quality-reviewer -> SUCCESS")
-    print("       -> failure-analyst -> prompt-optimizer -> next iteration")
-    print("       -> generator_bug | executor_bug -> STOP")
+    print("       -> failure-analyst -> UPDATE_CONSTRAINTS -> constraint-updater")
+    print("       -> constraint-checker <-> constraint-repairer -> next generation")
+    print("       -> mixed failures -> REVIEW | generator_bug/executor_bug -> STOP")
     print(
         "\nLive views: /agents (instances) | /hooks (lifecycle) | "
         "/iterate-operator (run) | /iterate-directory (batch)"

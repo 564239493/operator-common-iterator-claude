@@ -32,12 +32,12 @@ OPCI（Operator Common Iterator）是 CANN 算子迭代测试的自动化编排�
 | **编排层** | 顶层运行时，调度 Agent、调用 MCP 工具、决策状态流转 | Claude Code CLI |
 | **确定性层** | 校验、用例生成、执行适配、调度留痕 | Python（MCP Server + scripts） |
 
-核心状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE`
+核心状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE → DIAGNOSE`
 
 - 全部通过 → `SUCCESS`
-- 有失败 → `DIAGNOSE`；根因为 `constraint_extraction` 时优先使用已确认补充，只有能定位
-  Prompt 规则缺口时才进入 `OPTIMIZE → EXTRACT`
-- `generator_bug` / `executor_bug` → 立即止损
+- 有失败 → `DIAGNOSE` 分析全部失败簇；全为约束问题且 findings 完整时进入
+  `UPDATE_CONSTRAINTS`，最小修改上一版约束后重新检查和生成，不重新完整提取
+- 全为 `generator_bug` / `executor_bug` → 立即止损；混合根因 → 人工复核
 - 达到 max-iterations → `MAX_ITERATIONS`
 
 ---
@@ -167,8 +167,8 @@ opci setup --target D:\my-operator-project
 
 | 操作 | 目标路径 | 说明 |
 |---|---|---|
-| 复制 Agent 定义 | `.claude/agents/*.md` | 6 个专职 Agent |
-| 复制 Skill 定义 | `.claude/skills/*/SKILL.md` | 10 个流程 Skill |
+| 复制 Agent 定义 | `.claude/agents/*.md` | 12 个专职 Agent |
+| 复制 Skill 定义 | `.claude/skills/*/SKILL.md` | 18 个流程 Skill |
 | 复制 Hooks | `.claude/hooks/*.py` | trace_hook.py + guard_project_writes.py |
 | 生成 settings.json | `.claude/settings.json` | 权限 + Hooks + sandbox 配置 |
 | 复制 .mcp.json | `.mcp.json` | MCP server 注册（Claude Code 自动发现） |
@@ -208,7 +208,15 @@ Copy-Item servers.example.json servers.json
         "Atlas A3 训练系列产品/Atlas A3 推理系列产品"
       ],
       "supports_npu": true,
-      "env_init_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+      "env_init_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh",
+      "ttk": {
+        "remote_root": "/home/operator_ttk/runs",
+        "repo_path": "/home/operator_ttk/ops-test-kit",
+        "python": "python3",
+        "env_init_script": "source /usr/local/Ascend/ascend-toolkit/set_env.sh && { test ! -d /root/ascend/log/debug || find /root/ascend/log/debug -mindepth 1 -delete; }",
+        "collect_plog": true,
+        "plog_dir": "/root/ascend/log/debug"
+      }
     }
   ]
 }
@@ -216,6 +224,10 @@ Copy-Item servers.example.json servers.json
 
 > **安全提示**：`servers.json` 含密码等敏感信息并已被 `.gitignore` 忽略。执行流程可读取
 > 该文件，但 Claude Code 禁止修改，任何 Agent、Hook、日志和答复都不得输出秘密字段值。
+
+TTK 的 env 初始化命令会在启动本轮用例前清空固定 PLOG 目录；`find -mindepth 1 -delete`
+同时覆盖普通和隐藏文件，目录不存在时不失败。执行结束后 runner 自动同步本轮 PLOG 和
+`grep -rn ERROR` 摘要。若 SSH 用户不是 root，需把 `plog_dir` 改为实际可读路径或配置权限。
 
 如果仅做**本地验证**（不执行真实用例），可以不创建 `servers.json`，使用 `mode=mock`。
 
@@ -275,11 +287,13 @@ EXECUTE → case-executor Agent → 执行用例（mock 或 real）→ validate
 GATE → quality-reviewer Agent → 质量门禁 → 决定下一步
 
 全通过 → SUCCESS
-有失败 → failure-analyst Agent 诊断根因
-  根因 = constraint_extraction + 明确补充已落库 → 下一轮 EXTRACT/SUPPLEMENT
-  根因 = constraint_extraction + 无补充 + Prompt 规则缺口明确 → prompt-optimizer → 下一轮
-  根因 = constraint_extraction + 两者都无 → 请求人工补充证据
-  根因 = generator_bug / executor_bug → 立即止损
+有失败 → failure-analyst Agent 分析全部失败簇并生成 overall_action
+  所有簇 = constraint_extraction 且 findings 完整
+    → 复制上一轮实际用例所用 constraints → constraint-updater 最小修改
+    → constraint-checker / repairer → GENERATE（不重新完整提取）
+  所有簇 = generator_bug / executor_bug → 对应立即止损
+  混合根因 → MIXED_FAILURE_REVIEW，默认阻断自动修改
+  约束证据不足 → 请求人工补充，补充后重新诊断
 ```
 
 ---
@@ -376,8 +390,8 @@ settings.json 使用默认询问模式；只预授权正常工作流所需的低
   .opci_project_root         # 项目根绝对路径标记
   .claude/
     settings.json            # 权限 + Hooks + sandbox
-    agents/*.md              # 6 个 Agent 定义
-    skills/*/SKILL.md        # 10 个 Skill 定义
+    agents/*.md              # 12 个 Agent 定义
+    skills/*/SKILL.md        # 18 个 Skill 定义
     hooks/*.py               # trace_hook + guard_project_writes
   prompts/                   # 约束提取提示词
     operator_constraints/      # ACLNN canonical base.md（直接编辑）

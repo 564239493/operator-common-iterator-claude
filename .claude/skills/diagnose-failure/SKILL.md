@@ -5,8 +5,20 @@ description: 基于落盘证据将失败分类为 constraint_extraction、genera
 # 失败诊断规范
 
 按顺序读取当前提示词、原始文档、constraints.json、cases.json、存在时的
-cases_expanded.json、execution_result.json。先检查 engine_error，再检查生成用例
-是否违反已提取约束，最后检查约束是否遗漏或误解文档。
+cases_expanded.json、execution_result.json。真实 TTK 执行还必须读取
+`execution_result.plog.manifest`、`execution_result.plog.error_summary`，需要上下文时再读
+`plog.raw_dir` 中对应原始日志。先检查 engine_error，再检查生成用例是否违反已提取约束，
+最后检查约束是否遗漏或误解文档。
+
+PLOG 分析规则：
+
+- `error_summary.log` 是远端对本次清理后 PLOG 执行 `grep -rn ERROR` 的完整结果；引用时保留
+  文件路径、行号、错误码和关键上下文。
+- 将 PLOG 时间/设备/算子错误与具体失败 case、TTK result 行、stdout/stderr 对齐；无法对齐的
+  历史或后台噪声不得作为 constraint finding。
+- 参数、shape、dtype、format、tiling 校验错误只有在与文档/constraints 对照后才能归因；
+  设备掉卡、内存损坏、通信/驱动/CANN 环境故障有直接 PLOG 证据时归 executor_bug。
+- `plog.status=missing|error` 不是算子根因，只是诊断证据缺口，必须写入 specific_issues。
 
 ACLNN 还必须读取 `prompt_preanalysis.json` 与 `prompt_assembly.json`：区分“模块未被
 路由”“模块已加载但适用性判断/规则不足”“提取器未执行已加载规则”三种原因。分析中
@@ -46,7 +58,7 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
 
 ```json
 {
-  "schema_version": "2.0",
+  "schema_version": "2.1",
   "root_cause": "constraint_extraction | generator_bug | executor_bug",
   "analysis": "根因摘要",
   "specific_issues": ["带 case id 或文档证据的问题"],
@@ -55,14 +67,17 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
     "signature": "稳定的失败语义签名",
     "case_ids": ["case_001"],
     "root_cause": "constraint_extraction",
-    "evidence": [{"source": "execution_result", "detail": "具体错误"}]
+    "evidence": [{"source": "execution_result", "detail": "具体错误"}],
+    "recommended_action": "UPDATE_CONSTRAINTS"
   }],
   "constraint_findings": [{
     "id": "CF-001",
     "kind": "missing",
     "fact": "可直接形式化的约束事实",
+    "suggested_change": "对现有约束执行的最小修改建议",
     "affected_params": ["x"],
     "case_ids": ["case_001"],
+    "cluster_ids": ["FC-001"],
     "evidence": [{"source": "operator_doc", "detail": "条款定位"}],
     "confidence": 0.9,
     "expected_effect": "case_001 应被新增约束拒绝"
@@ -73,6 +88,12 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
     "reason": "存在可追溯的新约束事实"
   },
   "prompt_optimization": {"eligible": false, "reason": "优先消费明确补充"},
+  "root_cause_summary": {
+    "constraint_extraction": {"clusters": 1, "cases": 1},
+    "generator_bug": {"clusters": 0, "cases": 0},
+    "executor_bug": {"clusters": 0, "cases": 0}
+  },
+  "overall_action": "UPDATE_CONSTRAINTS",
   "modified_sections": [],
   "generator_issue": "",
   "executor_issue": ""
@@ -85,15 +106,15 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
   `suggested_root_cause`（仅供参考，最终根因仍由本 agent 下）。
 - root_cause=constraint_extraction 时两级补救：
   1. `source_evidence.confirmed_additions_count > 0`（补充已确认且已落库）→ analysis 标注
-     "补充已扩充，re-EXTRACT + re-SUPPLEMENT"，逐条映射成同 id 的
-     `constraint_findings`，置 decision source 为 `source_confirmed`，**不走 prompt-optimizer**；
-     已落库事实不再产 supplement_additions.md。
+     "补充已扩充，直接 UPDATE_CONSTRAINTS"，逐条映射成同 id 的
+     `constraint_findings` 并关联 cluster，置 decision source 为 `source_confirmed`，
+     **不重新 EXTRACT**；
+     不重新生成补充文件；finding 直接交给 constraint-updater。
   2. 没有 confirmed additions → 根据错误日志 + 原算子文档推约束关系；只有能写出
-     结构化 `constraint_findings` 时才产 `<iter-dir>/supplement_additions.md`
-     （标 `origin=diagnose_inferred`）。产出后必须由主协调器运行：
-     `python scripts/merge_supplement_additions.py <iter>/analysis.json <iter>/supplement_additions.md inputs/supplementary-doc.md`。
-     仅脚本返回 `merged=true` 才算补充已扩充。推不出明确约束时，仅当能定位当前
-     Prompt 的具体规则缺口才置 `prompt_optimization.eligible=true`；否则请求人工补充。
+     结构化 `constraint_findings` 时才允许进入 UPDATE_CONSTRAINTS，不另产
+     `supplement_additions.md`。推不出明确约束时，仅当能定位当前
+     Prompt 的具体规则缺口可置 `prompt_optimization.eligible=true` 供离线沉淀，但当前任务
+     仍请求人工补充，不重新 EXTRACT。
 - 读 `inputs/conflict-doc.md` + `inputs/conflict_resolution.json`：失败命中未裁决
   conflict → `specific_issues` 提示用户先裁决（冲突永远走人工通道）。
 

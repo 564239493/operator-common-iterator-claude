@@ -16,8 +16,9 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    auto 仅对已有 TTK adapter 的六个重点算子选择 `ttk`；其余 torch_npu API 选择
    `constraints`，只运行约束提取/补充/校验，不误入必然失败的用例生成。
    max-iterations=5，constraint-check-rounds=3，case-count=10，mode=real，
-   server-config=`servers.json`。`constraint-check-rounds` 是**每个外层迭代**完整
-   EXTRACT 后的语义 check 最大轮数，与 `max-iterations` 相互独立；check 通过提前结束。
+   server-config=`servers.json`。`constraint-check-rounds` 是**每个新约束版本**的语义
+   check 最大轮数：首轮完整 EXTRACT 后执行，后续仅在 UPDATE_CONSTRAINTS 产生新版本后执行；
+   与 `max-iterations` 相互独立，check 通过提前结束。
    human-checkpoint-round=3（0=禁用）；迭代到该轮仍以 constraint_extraction 失败时，
    在下一轮开始前弹人工补充检查点（AskUserQuestion 三选一）。需 `max-iterations > 该值` 才有意义。
    `hs-scenario-mode=original`；只有用户显式传入
@@ -50,7 +51,8 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    **委派 constraint-extractor 之前**，主协调器必须先把 `run_state.json` 的 `state` 推进为
    `EXTRACT`（写 `"state": "EXTRACT"`，并 append history `{"state": "EXTRACT", "at": <ISO8601>}`）。
    extract-constraints 在写 `constraints.json` 前会校验 state 已是 `EXTRACT`，未推进会被拦截并
-   空跑一轮。re-EXTRACT（OPTIMIZE→EXTRACT）轮同理：委派提取器前先把 state 推进为 `EXTRACT`。
+   空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
+   最小修改上一轮约束，不再委派 constraint-extractor。
 
 **SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
 `scene-scanner`。委派消息必须显式传入当前 run 的绝对路径 `<run-dir>`、只读输入
@@ -145,11 +147,11 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
     `product_support` 随后驱动 `generate_cases.py` 逐平台
     生成——**设备选择经约束提取驱动生成，不直接改生成逻辑**。
 EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入
-constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 directive，
-屏蔽跨轮稳定。
+constraint-extractor；执行反馈轮不重写 prompt 或 directive，constraint-updater 继续读取
+同一场景指令，保持跨轮稳定。
 
-6. 每轮按顺序委派：
-   - **EXTRACT（fork-join）**：当 `run_state.operator_src_snapshot` 非空时，
+6. 初始化首轮按顺序委派：
+   - **EXTRACT（fork-join，仅初始化首轮）**：当 `run_state.operator_src_snapshot` 非空时，
      **并行**委派 `constraint-extractor`（产 `constraints.json`）与 `source-analyst`
      （extract 域：产 `<iter>/source_raw.json` + `inputs/supplementary-doc.md` +
      `inputs/uncertain-doc.md` + `inputs/conflict-doc.md` +
@@ -161,7 +163,8 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
      stdout JSON（`operator_category` + `evidence`），回写 `run_state.json` 的
      `execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
      `operator_category`、`operator_category_evidence`。分类不进 constraints.json、
-     不依赖 constraint-extractor 自由文本。此步每轮 EXTRACT 后都执行（覆盖上轮分类）。
+     不依赖 constraint-extractor 自由文本。此步仅在初始化 EXTRACT 后执行一次，后续约束更新
+     沿用已确定的分类与执行策略。
    - **SUPPLEMENT**：当 `supplementary-doc.md` 或 `supplement_constraints.md`
      任一非空时，先运行
      `python scripts/update_supplement_state.py <run>/run_state.json --supplementary <inputs>/supplementary-doc.md --human <inputs>/supplement_constraints.md --iteration <N>`
@@ -176,18 +179,20 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
      validate；失败则阻断，不得进 `case-generator`）。空 patch/noop 合法，但不得作为
      本轮“补充已扩充”或问题已修复的证据。合并和检查成功后再次运行上述状态脚本并加
      `--consume`，使 `last_consumed_supplement_hash` 与当前 hash 对齐。两者都
-     空则跳过本步。每轮 EXTRACT 后都重新触发 source-analyst + 补充。
+     空则跳过本步。该 SUPPLEMENT 属于初始化提取装配；执行反馈轮由 constraint-updater
+     直接消费 analysis findings，不再重跑 source-analyst extract 域或 supplementer。
    - **conflict 异步提示**：若 `inputs/conflict-doc.md` 非空，主协调器输出结构化
      `requires_user_action` 提示（`code=CONFLICT_REQUIRES_REVIEW`，列出冲突条目），
      **不阻塞**；记录提示后继续进入本轮 CONSTRAINT CHECK/REPAIR，检查通过后 full
      scope 才进 `case-generator`，constraints-only 才按后文终止。用户在任意时刻回
      `inputs/conflict_resolution.json`（`[{conflict_id, winner: "source"|"doc"}]`），
-     下轮 re-supplement 前运行
+     下一次约束更新前运行
      `python scripts/apply_conflict_resolution.py <iter>/constraints.json --candidates <inputs>/conflict_candidates.json --resolution <inputs>/conflict_resolution.json`
      把 source-wins 并入（replace patch + revalidate）。
-   - **CONSTRAINT CHECK/REPAIR（每轮 EXTRACT 内部子循环，强制）**：在本轮
+   - **CONSTRAINT CHECK/REPAIR（每个新约束版本的内部子循环，强制）**：初始化首轮在
      SUPPLEMENT 和已有 conflict resolution 合并完成、最终 `constraints.json` 已通过
-     normalize/validate 后执行；不是顶层状态，但**首轮与所有 re-EXTRACT 轮都执行**。
+     normalize/validate 后执行；执行反馈轮在 constraint-updater 完成版本化最小更新后执行。
+     它不是顶层状态，且不会触发完整重提取。
      每轮只维护 `<iter>/constraint_check.json`：
      1. 旧 run 若缺少 `run_state.constraint_check`，先按 `max_rounds=3` 补齐。若
         `run_state.constraint_check.iteration != current_iteration`，初始化该子状态为
@@ -286,53 +291,40 @@ constraint-extractor；轮 2+ `optimize-prompt` 重写 `prompt_vN` 不动 direct
    以 `HS_SEMANTIC_GATE_FAILED` 停在 GENERATE，不得进入 EXECUTE；其他部分语义
    warning 仍按非阻断处理。
 8. 若有用例失败：当 `operator_src_snapshot` 非空时，先委派 `source-analyst`
-   diagnose 域（读 execution_result + uncertain-doc + source_raw，error_string
+   diagnose 域（读 execution_result + 其 plog manifest/ERROR 摘要/必要原始 PLOG +
+   uncertain-doc + source_raw，error_string
    匹配后逐条确认，只有确认成功的 uncertain 追加到 `inputs/supplementary-doc.md`，产
-   `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence
-   下根因）。`operator_src_snapshot` 为空时直接委派 `failure-analyst`。
+   `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence 与同一
+   PLOG 证据下根因）。`operator_src_snapshot` 为空时直接委派 `failure-analyst`，但真实
+   TTK 执行仍必须传入 `execution_result.plog` 指向的全部诊断产物。
    failure-analyst 完成后先运行
    `python scripts/validate_artifacts.py analysis <iter>/analysis.json`；失败时阻断路由并让
-   Agent 修正。若 `analysis.supplement_decision.source=diagnose_inferred` 且
-   `has_explicit_additions=true`，必须再运行
-   `python scripts/merge_supplement_additions.py <iter>/analysis.json <iter>/supplement_additions.md <inputs>/supplementary-doc.md`；
-   只有脚本返回 `merged=true` 才算本轮补充已落库。失败、空文件或 already_merged 都不算
-   新增补充。
-   - **HUMAN_CHECKPOINT 门（人工补充检查点；分析完成后、自主分支决策前）**：当且仅当
-     **全部**满足时触发——`analysis.json.root_cause == constraint_extraction`、
-     `run_state.human_checkpoint_round > 0`、`current_iteration >= human_checkpoint_round`
-     且 `current_iteration < max_iterations`（还有下一轮可用补充）、
-     `human_checkpoint_resolved_iteration < current_iteration`（本轮尚未决断，防上下文压缩
-     后对同一轮重复询问）。触发后：
-     1. 读当前轮 `<iter>/analysis.json`（`root_cause`/`analysis` 摘要/`specific_issues`
-        带 case id 与文档证据）+ 当前 `constraints.json` 摘要 + 已尝试轮次，结构化展示给用户。
-     2. `AskUserQuestion` 三选一（首次触发与后续每轮重复询问用同一 prompt）：
-        - **提供人工补充**：随后在主会话以文本请用户输入自由补充（思路/约束/线索）；收到后
-          **append** 到 `inputs/supplement_constraints.md`，带分节标题
-          `## 人工补充（第 <N> 轮失败后，<ISO8601>）`（用 markdown 分节与初始
-          `--supplement-constraints` 内容区分 provenance）；置
-          `run_state.human_checkpoint_resolved_iteration = current_iteration`，运行
-          `update_supplement_state.py` 刷新 hash；只有返回 `changed=true` 才视为新补充；进下一轮
-          re-EXTRACT（下轮 SUPPLEMENT 步自动拾取该补充，无需新代码）。
-        - **继续自主迭代**：置 `human_checkpoint_resolved_iteration = current_iteration`，
-          落回下列自主分支。
-        - **立即停止**：`run_state.state = STOPPED_BY_USER`，append history
-          `{"state":"STOPPED_BY_USER","at":<ISO8601>}`，终止流程（不进下一轮）。
-     3. `generator_bug`/`executor_bug` 根因**不进本门**（立即止损，见下）。
-   - constraint_extraction + 补充已扩充（`source_evidence.confirmed_additions_count > 0`，
-     或诊断增量合入脚本返回 `merged=true` 并刷新 supplement hash，或上一步人工补充
-     append 后状态脚本返回 `changed=true`）：**不走 prompt-optimizer**，直接 re-EXTRACT +
-     re-SUPPLEMENT + re-GENERATE + re-EXECUTE 进下一轮。
-   - constraint_extraction + 补充无可提取 +
-     `analysis.prompt_optimization.eligible=true`：委派 `prompt-optimizer`，将新 prompt
-     送入下一轮。
-   - constraint_extraction + 补充无可提取 +
-     `analysis.prompt_optimization.eligible=false`：不得盲目优化 Prompt；立即复用上述
-     HUMAN_CHECKPOINT 交互请求补充证据/继续/停止，不等待默认触发轮次。
-   - generator_bug：状态设为 STOP_GENERATOR_BUG，停止。
-   - executor_bug：状态设为 STOP_EXECUTOR_BUG，停止。
-   - **轮次簿记（关键，原为缺口）**：凡分支决定"进下一轮"，主协调器须先把
-     `run_state.current_iteration += 1` 并 append history `{"state":"ITER_<N>","at":<ISO8601>}`，
-     随即检查 `current_iteration > max_iterations` → 置 `MAX_ITERATIONS` 终止（不再 re-EXTRACT）。
+   Agent 修正。schema 2.1 的 `constraint_findings` 是执行反馈轮唯一问题清单，直接交给
+   constraint-updater；不再生成或合并 `supplement_additions.md`。
+   主协调器禁止只看顶层 `root_cause`，必须按已校验的 `overall_action` 路由：
+   - **UPDATE_CONSTRAINTS**：所有失败簇均为 constraint_extraction 且 findings 覆盖完整。
+     1. 先检查当前轮 `< max_iterations`，然后把 `current_iteration += 1`，状态置
+        `UPDATE_CONSTRAINTS`，history append 同名状态；不得进入 EXTRACT/SUPPLEMENT，
+        不调用 prompt-optimizer。
+     2. 用上一轮 `execution_result.input_artifacts.constraints` 的 path/sha256 核对实际生成
+        用例所用约束；缺少或哈希不一致时阻断，不能复制一个已被修改的文件。
+     3. 运行
+        `python scripts/constraint_update_state.py prepare --source <prev>/constraints.json --target <next>/constraints.json --analysis <prev>/analysis.json --execution-result <prev>/execution_result.json`
+        创建新轮版本和 `.pre_update`，禁止原地修改上一轮。
+     4. 委派 `constraint-updater`，读取上一轮全部失败簇/findings/用例/执行证据，对新轮
+        constraints 做最小 Edit，并完成 finalize 与 `constraint_update` 校验。
+     5. 重置 `run_state.constraint_check` 到新 iteration，复用上文 CHECK/REPAIR 子循环；
+        checker 必须验证所有 finding 的 expected_effect。passed 后直接 GENERATE → EXECUTE，
+        不重新完整提取。
+   - **MIXED_FAILURE_REVIEW**：展示每个 cluster、case、根因、建议动作和可用 findings；
+     默认阻断自动更新/生成。用户可先处理 generator/executor 问题，或明确批准只应用约束
+     findings；批准后仍须走上述版本化 UPDATE_CONSTRAINTS 和 CHECK/REPAIR，不能跳过。
+   - **NEEDS_HUMAN_EVIDENCE**：立即进入 HUMAN_CHECKPOINT，请用户补充事实/停止；收到
+     补充后 append 到 `supplement_constraints.md`，重新运行 failure-analyst 形成可校验
+     findings，再决定 UPDATE_CONSTRAINTS，仍不 re-EXTRACT。
+   - **STOP_GENERATOR_BUG**：状态设为 STOP_GENERATOR_BUG，停止。
+   - **STOP_EXECUTOR_BUG**：状态设为 STOP_EXECUTOR_BUG，停止。
+   `prompt_optimization` 只允许在任务成功后形成知识沉淀提案，不参与当前任务在线路由。
 9. 达到上限（`current_iteration > max_iterations`）后状态设为 `MAX_ITERATIONS`。
 10. **（终态前）分层沉淀询问**：若存在 `prompt_update_proposal.json`，先按
    `docs/PROMPT_EVOLUTION.md` 核验试验结果，再逐条展示目标 canonical 文件、摘要、
