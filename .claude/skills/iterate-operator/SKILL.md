@@ -313,6 +313,19 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         创建新轮版本和 `.pre_update`，禁止原地修改上一轮。
      4. 委派 `constraint-updater`，读取上一轮全部失败簇/findings/用例/执行证据，对新轮
         constraints 做最小 Edit，并完成 finalize 与 `constraint_update` 校验。
+     4a. **回归校验**：constraint-updater 完成回归校验后，若返回 exit code 3，主协调器读取 `<next>/regression_check.json`。
+         - 若 `limit_reached=true`（updater 自修正 3 次后仍有回归）：主协调器必须暂停流程，
+           用 `AskUserQuestion` 弹框让用户选择：
+           - **选项 1**：接受当前回归，先运行 finalize
+             （`python scripts/constraint_update_state.py finalize --report <next>/constraint_update.json`
+             + `python scripts/validate_artifacts.py constraint_update <next>/constraint_update.json`），
+             然后继续进入 CHECK/REPAIR（用户确认回归可接受）
+           - **选项 2**：回滚到 `<next>/constraints.json.pre_update` 版本，终止本轮更新
+             （执行 `cp <next>/constraints.json.pre_update <next>/constraints.json`，
+             `state=BLOCKED`，`code=CONSTRAINT_REGRESSION_USER_ABORT`）
+           - **选项 3**：用户手动修改约束后继续（主协调器等待用户提供修改后的 constraints.json，
+             收到后重新运行 `validate_constraint_regression.py --attempt 1`，通过后运行 finalize，再进入 CHECK/REPAIR）
+         - 若 `limit_reached=false` 且 `ok=true`：无回归，继续。
      5. 重置 `run_state.constraint_check` 到新 iteration，复用上文 CHECK/REPAIR 子循环；
         checker 必须验证所有 finding 的 expected_effect。passed 后直接 GENERATE → EXECUTE，
         不重新完整提取。
