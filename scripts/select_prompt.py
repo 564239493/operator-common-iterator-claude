@@ -9,9 +9,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from scripts.route_aclnn_knowledge import DEFAULT_KNOWLEDGE, render_bundle, route
+    from scripts.build_knowledge_skills import (
+        render_required_list,
+        required_list_entries,
+        skill_name,
+    )
+    from scripts.route_aclnn_knowledge import DEFAULT_KNOWLEDGE, route
 except ModuleNotFoundError:
-    from route_aclnn_knowledge import DEFAULT_KNOWLEDGE, render_bundle, route
+    from build_knowledge_skills import (
+        render_required_list,
+        required_list_entries,
+        skill_name,
+    )
+    from route_aclnn_knowledge import DEFAULT_KNOWLEDGE, route
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,11 +58,12 @@ def assemble(
         source_analysis_knowledge=source_analysis_knowledge,
     )
     base = base_path.read_text(encoding="utf-8").rstrip()
-    bundle = render_bundle(result, knowledge_path).rstrip()
-    snapshot = "\n".join([
-        base, "", "---", "", "<!-- assembled-knowledge-begin -->",
-        bundle, "<!-- assembled-knowledge-end -->", "",
-    ])
+    entries = required_list_entries(result, knowledge_path, family="aclnn")
+    load_list = render_required_list("aclnn", entries).rstrip()
+    # 知识模块正文不再拼接进冻结快照：正文以 .claude/skills/aclnn-* 生成物
+    # 形式按需加载（Skill 工具），快照只冻结核心层 + 必载清单。可复现性由
+    # prompt_assembly.json 的模块 sha256 全集冻结保证（单 run 内 canonical 不变）。
+    snapshot = "\n".join([base, "", "---", "", load_list, ""])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(snapshot, encoding="utf-8")
     if preanalysis_path is not None:
@@ -94,12 +105,16 @@ def assemble(
             },
             "applicability": result["applicability"],
             "assembly": {
-                "order": ["base_prompt", "knowledge_modules"],
+                "order": ["base_prompt", "required_knowledge_list"],
                 "module_ids": result["resolved_modules"],
+                "skill_names": {
+                    module_id: skill_name("aclnn", module_id)
+                    for module_id in result["resolved_modules"]
+                },
                 "knowledge_components": components,
                 "output_path": str(output_path),
                 "output_sha256": _sha256(output_path),
-                "boundary_markers": ["assembled-knowledge-begin", "assembled-knowledge-end"],
+                "boundary_markers": ["required-knowledge-begin", "required-knowledge-end"],
             },
         }
         _write_json(record_path.resolve(), record)

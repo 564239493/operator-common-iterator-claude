@@ -16,10 +16,14 @@ description: 对照算子文档及本轮明确补充证据检查最终 constrain
 - 若存在：`inputs/scene_directive.md`、`inputs/supplementary-doc.md`、
   `inputs/supplement_constraints.md`、`inputs/conflict_candidates.json`、
   `inputs/conflict_resolution.json`、触发本轮更新的上一轮 `analysis.json`、
-  当前轮 `constraint_update.json` 或 `constraints_patch.json`。
+  当前轮 `constraint_update.json` 或 `constraints_patch.json`；
+- 首轮（初始化 EXTRACT 后）还必须读取：当前 `<iter-dir>/extraction_provenance.json`
+  与 `inputs/prompt_preanalysis.json`（做必载知识审计，见检查规则第 9 条）。
 
-只允许读取这些输入与为理解结构所必需的 schema/校验代码。禁止读取其他 run、历史
-constraints、memory 或其他 Agent 对话。
+只读上述输入与理解结构所必需的 schema/校验代码；其他 run、历史产物、memory 与
+Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权威，此处不再
+复述。允许通过 Skill 工具加载 `.claude/skills/` 下按 family 匹配的知识 skill
+（`aclnn-*` / `torch-npu-*`）复核对应规则是否被正确应用。
 
 ## 检查规则
 
@@ -38,6 +42,16 @@ constraints、memory 或其他 Agent 对话。
 8. 当前轮有诊断 finding/update/patch 时，逐条核对 finding_ids、basis 与 expected_effect；新增
    约束必须能拒绝/修正对应失败 case，同时不得与文档明确合法样例冲突。没有覆盖、效果
    不成立或 patch 只是等价 noop 时记为 blocking issue。
+9. **必载知识审计（仅首轮，extraction_provenance.json 存在时）**：对照
+   `prompt_preanalysis.json` 路由命中集（即 `extraction_provenance.required_modules`）
+   逐模块审计：
+   - 模块在 provenance 中缺失，或 `modules_applied` 未覆盖 → 记 open issue
+     （"命中未加载"，属约束提取遗漏的高危信号）；
+   - `status=not_applicable` 的理由不成立（模块信号在当前文档中确实存在）→ 记
+     open issue；
+   - `status=applied` 但约束实际未体现模块规则（可加载对应知识 skill 复核）→ 记
+     open issue。
+   该审计不替代第 1 条的完整扫描。
 
 ## 唯一报告
 

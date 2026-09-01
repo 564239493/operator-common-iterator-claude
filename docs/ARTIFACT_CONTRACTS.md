@@ -21,6 +21,7 @@ runs/<operator>-<timestamp>/
     selection.json                     # 可选：主协调器 Q1/Q2/Q3 答案汇总（值级），render_scene_directive.py 据此渲染 directive
   iter_001/
     constraints.json
+    extraction_provenance.json         # 必载知识清单逐模块 applied/not_applicable 记录（首轮 EXTRACT 产，checker 审计用）
     constraint_check.json              # 本轮最终约束的语义检查/修复累计报告
     constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
     constraints.json.pre_conflict      # 可选：冲突合并前备份
@@ -126,6 +127,28 @@ operator_name、product_support、parameters 和 constraints_in_parameters。每
 无界；单边或开区间写入 `constraints_in_parameters`，使用不等式表达。
 `type=enum` 允许 `null` 作为明确的离散候选。`expr` 中允许裸 `null`，校验和求解前
 会规范化为 Python `None`，但只能用于空值/存在性判断，不能参与数值大小比较。
+
+## extraction_provenance.json
+
+首轮 EXTRACT 与 `constraints.json` 同时产出，记录必载知识清单（确定性路由命中集）
+的逐模块执行情况，供 constraint-checker 审计"命中未应用"（check-constraints skill
+第 9 条）。最小结构：
+
+```json
+{
+  "schema_version": "1.0",
+  "operator_family": "aclnn",
+  "required_modules": ["official_basics", "..."],
+  "modules_applied": [
+    {"module_id": "official_basics", "skill": "aclnn-official-basics", "status": "applied", "reason": ""},
+    {"module_id": "nz_matmul", "skill": "aclnn-nz-matmul", "status": "not_applicable", "reason": "文档无 NZ/FRACTAL_NZ 信号"}
+  ],
+  "extra_modules_loaded": []
+}
+```
+
+`required_modules` 必须与 `prompt_v1.md` 必载清单一一对应；`not_applicable` 必须给理由。
+反馈轮（UPDATE_CONSTRAINTS）不重新提取、不重写本文件。
 
 ## constraint_check.json
 

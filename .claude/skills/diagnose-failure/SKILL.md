@@ -27,6 +27,12 @@ ACLNN 还必须读取 `prompt_preanalysis.json` 与 `prompt_assembly.json`：区
 先读取 `run_state.operator_family`，诊断规则与当前 family 快照保持隔离。不得用 ACLNN
 prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项知识。
 
+**知识 skill 按需加载**：诊断中涉及量化（`aclnn-quantization`）、NZ/格式
+（`aclnn-nz-matmul`、`aclnn-format-cast`）、广播（`aclnn-broadcast`）、dtype
+（`aclnn-platform-dtype`）等信号时，先 Skill 加载对应 `aclnn-*` / `torch-npu-*`
+知识 skill 再下结论——skill 载有该类约束的正确表达规则，是判断“约束错提/遗漏 vs
+生成器 bug”的依据；不加载不得凭直觉归类。
+
 在归类 `generator_bug` 前，必须先完成约束语义与表达式检查：
 
 - 将参数功能描述和取值说明合并阅读，检查是否漏掉当前文档和当前 family prompt 允许
@@ -42,6 +48,16 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
 - 只要约束遗漏、语义误解或表达式不合法足以解释失败，主根因应归为
   `constraint_extraction`；生成器没有友好报错可记录在 `generator_issue`，但不能
   因此覆盖上游主因。
+
+**implication 真值核验**：把“constraints 中已经存在某条关系”当作 generator_bug
+证据前，必须先检查表达式实际真值方向：
+
+1. 明确前提 A 与结论 B，把 `A -> B` 化为 `(not A) or B`；
+2. 代入至少一个失败 case，确认表达式对该 case 求值确实为 False；
+3. 与同门控参数的其他 presence 关系联合检查目标场景是否 UNSAT。
+
+若失败 case 对现有表达式求值为 True，或目标场景 UNSAT，说明失败根因是
+constraint_extraction/补充表达错误，不得归为生成器忽略约束。
 
 还必须核对生成阶段和执行阶段的数据边界：
 
@@ -99,6 +115,29 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
   "executor_issue": ""
 }
 ```
+
+**字段语义**：
+
+- `failure_clusters` 三类根因的推荐动作固定映射：`constraint_extraction` →
+  `UPDATE_CONSTRAINTS`；`generator_bug` → `STOP_GENERATOR_BUG`；`executor_bug` →
+  `STOP_EXECUTOR_BUG`。
+- `constraint_findings` 只放证据充分、可最小修改直接形式化的事实；日志匹配、推测、
+  空文件内容不得进入。
+- `supplement_decision.has_explicit_additions=true` 必须有可追溯的新约束事实支撑；
+  日志匹配、推测或空文件不构成 explicit addition。
+- `prompt_optimization.eligible=true` 仅当能定位当前 Prompt 的具体规则缺口（见
+  下文源码证据与两级补救）。
+
+**聚合规则（必须机械执行）**：
+
+- 全部 cluster 为 `constraint_extraction` 且 findings 完整覆盖 → `UPDATE_CONSTRAINTS`；
+- 全部为 `generator_bug` → `STOP_GENERATOR_BUG`；
+- 全部为 `executor_bug` → `STOP_EXECUTOR_BUG`；
+- 两类及以上根因混合 → `MIXED_FAILURE_REVIEW`；
+- 全部为 `constraint_extraction` 但 findings 缺失 → `NEEDS_HUMAN_EVIDENCE`。
+
+混合根因时顶层兼容字段 `root_cause` 按 `executor_bug > generator_bug >
+constraint_extraction` 取主因，但不得以它替代 `overall_action` 的机械聚合结果。
 
 **源码证据与两级补救**（当 `run_state.operator_src_snapshot` 非空）：
 - 读 `<iter-dir>/source_evidence.json`（source-analyst diagnose 域产）。它已把

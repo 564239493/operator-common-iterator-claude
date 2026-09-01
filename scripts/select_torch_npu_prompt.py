@@ -16,17 +16,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
+    from scripts.build_knowledge_skills import (
+        render_required_list,
+        required_list_entries,
+        skill_name,
+    )
     from scripts.route_torch_npu_knowledge import (
         DEFAULT_KNOWLEDGE,
         extract_operator_name,
-        render_bundle,
         route,
     )
 except ModuleNotFoundError:  # pragma: no cover - alternate package path
+    from build_knowledge_skills import (
+        render_required_list,
+        required_list_entries,
+        skill_name,
+    )
     from route_torch_npu_knowledge import (
         DEFAULT_KNOWLEDGE,
         extract_operator_name,
-        render_bundle,
         route,
     )
 
@@ -78,11 +86,11 @@ def assemble(
     knowledge_path = knowledge_path.resolve()
     result = route(doc_path, knowledge_path)
     base = base_path.read_text(encoding="utf-8").rstrip()
-    bundle = render_bundle(result, knowledge_path).rstrip()
-    snapshot = "\n".join([
-        base, "", "---", "", "<!-- assembled-knowledge-begin -->",
-        bundle, "<!-- assembled-knowledge-end -->", "",
-    ])
+    entries = required_list_entries(result, knowledge_path, family="torch_npu")
+    load_list = render_required_list("torch_npu", entries).rstrip()
+    # 与 ACLNN 同构：知识正文以 .claude/skills/torch-npu-* 生成物按需加载，
+    # 快照只冻结核心层 + 必载清单；可复现性由 assembly record 的 sha256 全集保证。
+    snapshot = "\n".join([base, "", "---", "", load_list, ""])
     validate_prompt_contract(snapshot)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(snapshot, encoding="utf-8")
@@ -124,12 +132,16 @@ def assemble(
             },
             "applicability": result["applicability"],
             "assembly": {
-                "order": ["base_prompt", "knowledge_modules"],
+                "order": ["base_prompt", "required_knowledge_list"],
                 "module_ids": result["resolved_modules"],
+                "skill_names": {
+                    module_id: skill_name("torch_npu", module_id)
+                    for module_id in result["resolved_modules"]
+                },
                 "knowledge_components": components,
                 "output_path": str(output_path),
                 "output_sha256": _sha256(output_path),
-                "boundary_markers": ["assembled-knowledge-begin", "assembled-knowledge-end"],
+                "boundary_markers": ["required-knowledge-begin", "required-knowledge-end"],
             },
         }
         _write_json(record_path.resolve(), record)

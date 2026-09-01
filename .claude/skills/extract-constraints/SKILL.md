@@ -9,29 +9,51 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 并按其 `device_types` 收窄 `product_support`（详见
 下文「设备→`product_support` 规则」）。
 
-> 当前提示词是 family 隔离的完整快照（见 `run_state.current_prompt_modules`）：ACLNN
+> 当前提示词是 family 隔离的冻结快照（见 `run_state.current_prompt_modules`）：ACLNN
 > 由 `scripts/select_prompt.py` 经预分析、知识路由、适用性判断后冻结，torch_npu 由
-> `scripts/select_torch_npu_prompt.py` 装配。只按快照中实际存在的章节工作；不得从另一
+> `scripts/select_torch_npu_prompt.py` 装配。快照 = base 核心层 + **必载知识清单**；
+> 知识模块正文不在快照内，以其 `.claude/skills/` 下生成的知识 skill
+> （`aclnn-*` / `torch-npu-*`）按需加载。只按快照中实际存在的章节工作；不得从另一
 > family 的 canonical prompt/模块补规则。
 
-## 输入隔离（强制）
-
-约束事实只能来自调度消息明确指定的以下输入：
+## 输入
 
 - 当前任务的 `run_state.json`；
-- 当前任务 `inputs/` 下的算子文档和提示词快照；
-- 当前项目的约束数据结构、规范化脚本和校验脚本（只用于理解结构及执行校验）。
+- 当前任务 `inputs/` 下的算子文档与提示词快照、当前轮目录；
+- 为理解数据结构与执行校验所必需的 schema/规范化/校验脚本（只读）。
 
-严禁将以下内容作为读取、搜索、复制或改写来源：
+完整隔离禁令（其他 run、memory、历史构建脚本、历史 constraints 复制等）与知识
+skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再复述。
 
-- 当前任务以外的 `runs/**`，尤其是历史 `constraints.json`、supplement 和迭代产物；
-- `.claude/projects/**/memory/**`、用户级 memory、历史会话记录或其他 Agent 的记忆文件；
-- `scripts/_build*constraints.py`、`agent/**/_build*constraints.py` 等历史算子构建脚本；
-- 其他算子的约束文件，即使算子名称、参数或版本看起来相似。
+## 必载知识协议（强制）
 
-不得复制或局部修补历史 `constraints.json` 作为本轮提取结果。每个参数卡片和跨参数
-关系都必须根据本轮文档与本轮提示词重新生成并审查。若当前输入不足以确定约束，应
-保留为空或按提示词标注不确定性，不得从历史产物补齐。
+读取冻结快照 `prompt_v1.md` 末尾的「本次必载知识清单」（`<!-- required-knowledge-begin -->`
+机读边界内），**逐条用 Skill 工具加载并应用**，不得静默跳过：
+
+- 认为某模块对本算子不适用的，必须在 provenance 中记 `not_applicable` 并给出理由
+  （该理由会被 constraint-checker 独立复核）；
+- 清单只保证"不少于"：文档出现清单之外的信号时，也应按 skill description 自主
+  加载对应知识 skill（如文档含广播/量化/NZ 信号但清单未列，仍应加载）；
+- skill 正文末尾标注依赖模块时，依赖也必须加载。
+
+写完 `constraints.json` 后、运行校验前，写 `<iter-dir>/extraction_provenance.json`：
+
+```json
+{
+  "schema_version": "1.0",
+  "operator_family": "<aclnn|hs>",
+  "required_modules": ["<必载清单全部 module_id>"],
+  "modules_applied": [
+    {"module_id": "...", "skill": "aclnn-...", "status": "applied", "reason": ""},
+    {"module_id": "...", "skill": "aclnn-...", "status": "not_applicable", "reason": "<必须给出理由>"}
+  ],
+  "extra_modules_loaded": ["<清单外自主加载的 skill 名>"]
+}
+```
+
+`required_modules` 必须与必载清单一一对应、无遗漏；`modules_applied` 覆盖全部
+`required_modules`。constraint-checker 会对照 `prompt_preanalysis.json` 的命中集
+审计"命中未应用"。
 
 **场景屏蔽规则**（仅当 `inputs/scene_directive.md` 存在时执行；不存在则按全场景
 提取，行为不变）：优先读取 directive 末尾机读块作为权威锚点（prose 段仅供人读）。
@@ -62,6 +84,8 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 场景只做"屏蔽"，不臆造文档未声明的限制；结果仍须满足 `OperatorRule` 与
 `validate_artifacts.py constraints` 校验。
 
+0. **必载知识加载**：先按「必载知识协议」逐条 Skill 加载必载清单并应用，再开始
+   逐节阅读；知识规则与文档冲突时以文档为准，冲突本身写入 provenance 的 reason。
 1. 逐节阅读文档，区分明确约束、示例和说明性文字。
 2. **模式判定**：先读取 `run_state.json.operator_family`。
    - `aclnn` 且 `run_state.prompt_assembly_record` 非空时，先执行
@@ -93,7 +117,8 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
      - `type.value=="aclDataType"` 时按 ACLNN 快照处理 dtype 与 enum；
        `type.value=="aclIntArray"` 时按 ACLNN 快照处理元素 dtype，不能把关联 Tensor
        dtype 误写给数组。
-6. 写入 `<iter-dir>/constraints.json`。
+6. 写入 `<iter-dir>/constraints.json` 与 `<iter-dir>/extraction_provenance.json`
+   （格式见「必载知识协议」）。
 7. 执行：
    `python scripts/validate_operator_rule.py <iter-dir>/constraints.json`
 8. 执行：
@@ -117,6 +142,12 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
     （直接交集，无"通用"展开），`inputs`/
     `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。自检不通过则回到步骤 1
     重提，不放过半屏蔽的 constraints.json。
+
+## 维度委派提取
+
+提取约束时可以根据最终输出件中的 inputs&outputs 参数属性, constraints_in_parameters 参数关系表达式, 剩余其他参数的 
+这3部分维度 派发不同子Agent提取，避免注意力稀释，提高约束准确度
+
 
 开始写文件前必须确认调度已将 run state 更新为 `EXTRACT`。成功后回报非空
 `constraints.json` 的绝对路径；不得只返回聊天中的摘要。

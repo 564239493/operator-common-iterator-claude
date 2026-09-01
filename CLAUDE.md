@@ -148,7 +148,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
 |---|---|---|---|
 | 场景扫描（条件，EXTRACT 前） | `scene-scanner` | `scan-scenes` | `<run-dir>/inputs/scene_scan.json` |
-| 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` |
+| 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` + `extraction_provenance.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
 | 失败后约束增量更新 | `constraint-updater` | `update-constraints` | 新版 `constraints.json` + `constraint_update.json` |
@@ -163,8 +163,8 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 ## 架构分层
 
 ### Claude Code 编排层（.claude/）
-- `.claude/agents/*.md` — 专职 Agent 定义（角色、上下文、产物格式）
-- `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
+- `.claude/agents/*.md` — 专职 Agent 定义（WHO：角色身份、输入隔离安全边界、返回契约；流程细节一律在各阶段 SKILL.md，不重复抄写）
+- `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（HOW：可执行规则、输入清单、校验命令；`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
 - `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
 - `.claude/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
@@ -214,8 +214,9 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
 - `render_scene_directive.py` — 校验三级场景选择、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
 - `check_scene_conflicts.py` — Q3 组装 selection.json 后、渲染 directive 前做特性参数取值冲突识别（advisory、exit 0；判据 `scene_scan.params[].value_conflicts`；产 `inputs/scene_conflicts.json`，render_scene_directive 据此标注 `known_conflicts`）
-- `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 `base + 命中知识` → 冻结 `prompt_v1.md`+`prompt_preanalysis.json`+`prompt_assembly.json`
+- `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 → 冻结 `prompt_v1.md`（base 核心层 + **必载知识清单**，模块正文不进快照）+`prompt_preanalysis.json`+`prompt_assembly.json`
 - `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
+- `build_knowledge_skills.py` — 把两 family manifest 知识模块生成 `.claude/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 注册 skill（生成物禁止手改；canonical 变更后必须重跑，`--check` 只校验同步）
 - `route_aclnn_knowledge.py` / `route_torch_npu_knowledge.py` — manifest 驱动知识路由（正向 trigger + `reject_on` 负向否决 + `depends_on` 依赖闭包）
 - `validate_aclnn_knowledge.py` / `validate_torch_npu_knowledge.py` — 知识完整性预校验（manifest 字段、默认集、依赖闭包、跨 family 隔离、`reject_on` 合法性）
 - `validate_prompt_assembly.py` — 校验冻结装配记录的全部 sha256 与模块顺序标记
@@ -242,10 +243,16 @@ ACLNN 与 torch_npu 现同构：`prompts/<family>_constraints/base.md` 为 **can
 为历史来源（provenance only），一次性机械拆分已完成、不再作为生成源（原迁移工具
 `build_*_prompt_base.py` 已退场归档于 `archive/builders/`，仅留审计、不再 gate）。
 再由 manifest 驱动的知识路由在 run
-初始化（PLAN）阶段装配 `base + 命中知识模块`，并冻结为 `prompt_v1.md` +
-`prompt_preanalysis.json` + `prompt_assembly.json`（含 sha256）。两 family 知识根
+初始化（PLAN）阶段装配 `base 核心层 + 必载知识清单`，并冻结为 `prompt_v1.md` +
+`prompt_preanalysis.json` + `prompt_assembly.json`（含模块 sha256 全集）。知识模块
+正文不进快照，由 `build_knowledge_skills.py` 生成为 `.claude/skills/` 下注册 skill
+（`aclnn-*` / `torch-npu-*`，生成物禁止手改）：extractor 按必载清单逐一 Skill 加载
+并写 `extraction_provenance.json`，checker 对照路由命中集审计"命中未应用"；其余
+Agent（failure-analyst / constraint-updater / repairer / supplementer）按 description
+信号自然触发加载。两 family 知识根
 相互隔离（`knowledge/aclnn` / `knowledge/torch_npu`，由各自 validator 禁跨 family
-引用）；extractor 只读冻结快照，不重走路由。v1-v4（torch v1-v3）仅作历史来源。
+引用；validator 同时做 skill 同步校验，canonical 漂移即拦截）；
+extractor 只读冻结快照，不重走路由。v1-v4（torch v1-v3）仅作历史来源。
 迭代优化只在 run 内写候选、变更说明和 `prompt_update_proposal.json`，按
 base/common/feature/exact-operator/torch_npu/no-update 选择最小目的地。任务终态由
 主协调器展示证据、适用范围和试验结果并逐条询问用户；只有明确批准后才能修改

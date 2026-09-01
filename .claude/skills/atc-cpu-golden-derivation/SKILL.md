@@ -16,7 +16,7 @@ Use this skill when:
 
 ## Skip These Operators (Do NOT Process)
 
-If the operator is **`aclnnSwinAttentionScoreQuant`**, **`aclnnSwinTransformerLnQkvQuant`**, **`aclnnBatchMatMulWeightNz`**, **`aclnnNpuFormatCast`**, **`aclnnReflectionPad1dBackward`**, **`aclnnCalculateMatmulWeightSize`**, **`aclnnCalculateMatmulWeightSizeV2`**, or **`aclnnAlltoAllMatmul`**, **stop immediately** — do not read docs, do not modify any files, and do not derive CPU golden code. `generator.py` emits a complete operator-specific `.tpl` for these operators. There is no `# TODO: CPU_GOLDEN` block to replace. Run executor validation on the generated file and continue to real execution only when it passes.
+If the operator is **`aclnnSwinAttentionScoreQuant`**, **`aclnnGroupedMatmulV5`**, **`aclnnSwinTransformerLnQkvQuant`**, **`aclnnBatchMatMulWeightNz`**, **`aclnnNpuFormatCast`**, **`aclnnReflectionPad1dBackward`**, **`aclnnCalculateMatmulWeightSize`**, **`aclnnCalculateMatmulWeightSizeV2`**, or **`aclnnAlltoAllMatmul`**, **stop immediately** — do not read docs, do not modify any files, and do not derive CPU golden code. `generator.py` emits a complete operator-specific `.tpl` for these operators. There is no `# TODO: CPU_GOLDEN` block to replace. Run executor validation on the generated file and continue to real execution only when it passes.
 
 ## Step 0: Read the ACLNN Operator Documentation (MUST DO FIRST)
 
