@@ -1,24 +1,26 @@
 ---
 name: scan-scenner
-description: 当需要从算子文档中提取设备类型、场景、特性参数以及其取值范围时使用。适用于CANN算子文档的分级特征他扫描提取，不适用于：算子约束规则抽取，算子执行错误分析。
+description: 当需要从算子文档中提取设备类型、场景、特性参数以及其取值范围时使用。适用于CANN算子文档的分级特征扫描提取，不适用于：算子约束规则抽取，算子执行错误分析。
 ---
 
 ## M1 领域知识
 > 职责：提供模型易判错的领域边界
-- **特性参数 ≠ 普通可选参数**：存在公共参数，即一个参数可能属于多个特性，判定方法遵循M3第4步，并且禁止私自修改参数名称，必须与原文保持一致.
+- **特性参数 ≠ 普通可选参数**：存在公共参数，即一个参数可能属于多个特性，判定方法遵循M3第五步，并且禁止私自修改参数名称，必须与原文保持一致.
 - **分级特征是三层**：设备类型 → 场景 → 特性, 扫描必须自顶向下,禁止跳层.
 - **示例值不是支持值**：代码块样例仅为演示，仅正文明确声明支持的取值可提取.
 - **约束按设备类型分组**：同一参数在不同设备下取值可能不同，禁止跨设备合并.
 
 ## M2 工具定义
 > 职责：定义输出schema，以及schema中每个字段的含义，禁止随意变更输出schema；
-- **输出schema**
+- **输入**：算子文档
+- **输出schema**：
 
 ```json
 {
   "operator": "string(算子名称)",
   "has_scenarios": "bool()",
   "device_types": ["string(支持的设备名称列表，必须严格按照文档中的设备名称填写，禁止修改)"],
+  "confidence": "float(提取结果置信度，取值必须在0~1之间，1是绝对可信，0是完全不可信)",
   "devices": [
     {
       "device": "string(单个设备名称)",
@@ -50,71 +52,52 @@ description: 当需要从算子文档中提取设备类型、场景、特性参�
 > 职责: 定义提取步骤，明确每个步骤用到的提取规则.md；
 > 纪律：禁止跳步，提取规则文件缺失时，报错并终止流程，讲报错信息在调度消息中反馈给用户决策，禁止凭记忆继续提取
 
-- **第一步：加载规则(必须执行)**
+- **第一步：加载规则文件(必须执行)**
 1. `references/leveled_feature_definition.md`
 2. `references/extract_device_type.md`
 3. `references/extract_scanes.md`
 4. `references/extract_feature_params.md`
 
 - **第二步：分级特征扫描**
-1. 基于`leveled_feature_definition.md`中定义的判定规则，确定算子是否需要进行设备、场景、特性参数三级提取的场景，如果需要，则执行下一步，否则在结果json中`has_scenarios`字段记录结果，并终止场景扫描流程；
-2. 将判定结果通过调度消息反馈给用户；
+1. 基于`leveled_feature_definition.md`中定义的判定规则，确定算子是否需要进行设备、场景、特性参数三级提取的场景;
+2. 如果没有命中任何一个层级的提取特征，则在结果json中`has_scenarios`字段记录结果，输出结果json文件，并终止场景扫描流程，将判定结果通过调度消息反馈给用户
+3. 如果命中提取特征，则执行下一步。
 
 - **第三步：提取设备类型**
 1. 基于`extract_device_type.md`中定义的提取规则，提取算子支持设备信息；
-2. 支持设备信息写入结果json的`device_types`字段；
+2. 支持设备信息写入结果json的`device_types`字段。
 
 - **第四步：提取场景**
 1. 针对`device_types`中的每一个device，基于`extract_scanes.md`中定义的提取规则，提取该设备下的支持的场景信息；
-2. 基于输出schema中`devices`字段下每个元素的定义，填充对应的字段值；
+2. 基于输出schema中`devices`字段下每个元素的定义，填充对应的字段值。
 
 - **第五步：提取特性参数**
 1. 获取算子所有的合法参数；
 2. 遍历算子的每一个参数，基于`extract_feature_params.md`中定义的`特性参数判定规则`，判定该算子参数是否为特性参数，如果是，则根据schema中的`feature_params`字段模板构建输出结果，如果不是特性参数，则在`unsupported_feature_params`记录判定依据；
 3. 如果算子参数是特性参数，则根据`extract_feature_params.md`中定义的`特性参数取值范围提取规则`提取参数的可取值范围，并在`feature_params`字段记录结果；
-4. 
-输入必须包含：算子文档快照（`<run-dir>/inputs/<doc>.md`，只读）、工作提示词
-（`prompts/scan_scenes.md`，含 op-scene 规则段）、当前 run 的绝对路径 `<run-dir>`（只写
-`<run-dir>/inputs/scene_scan.json`，不碰其他文件）。不得将相对路径 `inputs/scene_scan.json`
-按仓库 cwd 解析；调度消息未提供 `<run-dir>` 时必须阻断并报告。
+4. 根据`extract_feature_params.md`中定义的`参数约束特征提取规则`提取该场景下算子参数的约束描述，并在`feature_params`字段记录结果，约束描述必须与原文保持一致。
 
-> 与 constraint-extractor 职责严格区分：你只提取文档中**有测试需求的场景**并按
-> 设备→模板→特性三级分层，**不**提取参数 dtype/format/shape、不写
-> `constraints_in_parameters`、不下 presence 依赖。constraint-extractor 后续会按你给
-> 的场景清单与 directive 做屏蔽式提取。
+-- **第六步：提取结果文件生成**
+将完整的提取结果写入json文件。
 
-1. Read `prompts/scan_scenes.md`，按其 **op-scene 规则段**（设备类型划分表、特性参数
-   筛选规则、输出格式、提取要求）逐节提取文档全部场景；按**设备类型 → 量化模板 →
-   特性参数**三级组织；一模板一条；过滤 ACLNN_ERR_*/校验场景。
-   - 量化模板 = 编码量化方式的具体模板（可细分到位宽/dtype，如 `全量化-A8W8`/
-     `K-C量化（A4W4）`/`全量化-GQA`）；**分类词不作为模板**（"量化模式"等上级分类名
-     不提取为与模板平级的条目，其说明拆入其下各真实模板）。
-   - 特性参数**只提取枚举/分档类可选项**（如 `sparseMode` 0/1/2/3/4、分多档范围需
-     用户择一的参数）；**单个取值范围不算选择**（如 `blockSize` 16~1024 不提取）、
-     只能取唯一值的固定条件（"仅支持 X"/"必传"）归入 `definition`，不作为特性参数。
-     **埋藏型特性按 ≥2 取值提取**：数据格式（ND/NZ）、转置（bool true/false）、TensorList
-     单/多在模板支持 ≥2 取值时按枚举可选项提取为 `feature_params`（bool 用 `[true,false]`、
-     TensorList 用 `["单","多"]`、format 用文档原文 token 如 `["ND","NZ"]`），仅单值时仍归 `definition`。
-   - 按"特性名"分组（布局（inputLayout）/Mask/PagedAttention/DequantChecker（反量化）/
-     转置…），关联参数取值牵动其他选择型参数时作为该条目的 `related`。
-2. **不设"通用"组**：设备类型来自文档"产品支持情况"表，**逐字照抄 `<term>…</term>` 原文、不得简写/合并**（如 `Atlas A2 训练系列产品/Atlas A2 推理系列产品` 不得改成 `Atlas A2 训练/推理系列`，否则后续 √ 行交集落空）；无设备标注的内容合并到每个
-   具体设备组下（不单独成"通用"组）。场景/模板同属多设备 → 在每个相关设备组下都列出。
-   **"与 X 相同"的设备直接内联复制 X 的 `templates`**（不写 `same_as` 引用字段，各设备
-   `templates` 自洽，下游无需引用解析）。
-3. **含多参数的 bullet 拆成独立 `params[]` 条目**：文档原文
-   `x: 取值：…；weight: 取值：…` → 两条 params，各带 `name`/`values`/`description`；
-   复杂取值的逐值注记（如 `0 KEEP_DOTO（…）`）只保留值 token 在 `values`，注记并入
-   `description`/`constraint`。
-4. 文档无任何场景/模板 → `has_scenarios=false`，`device_types`/`devices` 留空；**不**凭
-   算子名或参数名臆造场景。
-5. 若未提取到量化模板但文档含量化参数信号 → `scan_notes` 写一条
-   `{"kind":"quant_signal_no_template","message":…}` warning，不补造、不置
-   `has_scenarios`。宁可放过少数算子剪枝，也不臆造场景。
-6. 输出 `<run-dir>/inputs/scene_scan.json`（schema 与字段语义见
-   `prompts/scan_scenes.md` §4）；只写 JSON，不在文件外夹带解释。
-7. 执行：`python scripts/validate_artifacts.py scene_scan <run-dir>/inputs/scene_scan.json`
-8. 校验不通过时依据错误修正，最多三次；仍失败则明确返回阻断原因（不静默放过）。
+-- **第七步：验证**
+1. 验证同一设备，同一场景下，同一参数是否出现既出现在`unferture_params`中，也出现在`ferture_params`中，即同一个参数只能属于一种类型；
+2. 使用脚本校验输出产物，执行命令：`python scripts/validate_artifacts.py scene_scan <run-dir>/inputs/scene_scan.json`；
+3. 校验未通过，则根据报错信息修正输出结果，即重新执行第三步、第四步、第五步中的其中一步或所有步骤。
+4. 根据验证结果填写输出schema中的`confidence`值。
 
-不臆造：文档未明列的量化场景不进 `devices[].templates`；纯算子名推断（如见
-`AscendAntiQuant` 算子名就臆断有伪量化）**不**算 `description`/`definition` 依据，
-必须找到正文/表格原文。模板命名与 `values` 取值 token 须保留文档原文用词，不改写语义。
+# M4 安全红线
+> 职责：绝对禁止项
+
+- 禁止提取文档未声明的内容，禁止使用训练常识不全文档缺失的参数取值；
+- 禁止跳过第一步，规则文件缺失后必须终止，禁止静默跳过；
+- 算子文档和规则文件冲突时，以规则文件为准；规则未覆盖的新情况时，`confidence`的值不得超过0.2，禁止现场发明规则
+- 禁止在输出中伪造`confidence`，必须客观公正的评价输出质量，给出合理的置信度。
+
+# M5 与人交互
+> 职责：异常场景与人交互的策略
+
+- **文档无法解析 / 不含分级特征**：如实将异常信息报告给用户，输出已有结果，显示列出未完成步骤；
+- **用户要求的字段不在schema定义中**：说明schema定义，超出的附加内容保存的位置以及字段名称，并显示知会用户；
+- **规则文件缺失或损坏**：如实将异常信息报告给用户，并列出缺失清单，禁止凭经验完成提取任务；
+- **`confidence`置信度过低**：`confidence`值低于0.5时，主动建议人工审核，禁止静默输出。
