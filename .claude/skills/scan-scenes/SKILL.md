@@ -1,9 +1,66 @@
 ---
-description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 <run-dir>/inputs/scene_scan.json 供 scene-scanner 使用。
+name: scan-scene
+description: 当需要从算子文档中提取设备类型、场景、特性参数以及其取值范围时使用。适用于CANN算子文档的分级特征他扫描提取，不适用于：算子约束规则抽取，算子执行错误分析。
 ---
 
-# 场景扫描规范
+## M1 领域知识
+> 职责：提供模型易判错的领域边界
+- **特性参数 ≠ 普通可选参数**：存在公共参数，即一个参数可能属于多个特性，判定方法遵循M3第4步，并且禁止私自修改参数名称，必须与原文保持一致.
+- **分级特征是三层**：设备类型 → 场景 → 特性, 扫描必须自顶向下,禁止跳层.
+- **示例值不是支持值**：代码块样例仅为演示，仅正文明确声明支持的取值可提取.
+- **约束按设备类型分组**：同一参数在不同设备下取值可能不同，禁止跨设备合并.
 
+## M2 工具定义
+> 职责：定义输出schema，以及schema中每个字段的含义，禁止随意变更输出schema；
+- **输出schema**
+
+```json
+{
+  "operator": "string(算子名称)",
+  "device_types": ["string(支持的设备名称列表，必须严格按照文档中的设备名称填写，禁止修改)"],
+  "devices": [
+    {
+      "device": "string(单个设备名称)",
+      "scenes": [
+        {
+          "template": "string(场景名称)",
+          "unferture_params": "string(非特性参数的描述)",
+          "unsupported_feature_params": ["string(当前设备下不支持参数列表，禁止修改参数名称，必须与原文保持一致)"],
+          "feature_params": [
+            {
+              "feature": "string(特性名称)",
+              "params": [
+                { "name": "string(特性参数名称)",
+                  "values": ["Any(特性参数可取值列表)"],
+                  "description": "string(文档中关于此特性参数取值的原始描述)",
+                  "constraint": "string(该特性的原始描述)"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "scan_notes": [{"kind":"quant_signal_no_template(当该算子不涉及场景划分时，需要填此字段，此字段只能填'quant_signal_no_template')","message":"string(判定不涉及场景的依据描述)"}]
+}
+```
+
+## M3 操作流程
+> 职责: 定义提取步骤，明确每个步骤用到的提取规则.md；
+> 纪律：禁止跳步，提取规则文件缺失时，报错并终止流程，讲报错信息在调度消息中反馈给用户决策，禁止凭记忆继续提取
+
+- **第一步：加载规则(必须执行)**
+1. `references/leveled_feature_definition.md`
+2. `references/extract_device_type.md`
+3. `references/extract_scanes.md`
+4. `references/extract_feature_params.md`
+
+- **第二步：分级特征扫描**
+1. 基于`leveled_feature_definition.md`中定义的判定规则，确定算子是否需要进行设备、场景、特性参数三级提取的场景，如果需要，则执行下一步，否则在结果json中`scan_notes`字段记录结果，并终止场景扫描流程；
+2. 将`scan_notes`字段记录结果通过调度消息反馈给用户；
+
+- **第三步：提取设备类型**
+1. 基于`extract_device_type.md`
 输入必须包含：算子文档快照（`<run-dir>/inputs/<doc>.md`，只读）、工作提示词
 （`prompts/scan_scenes.md`，含 op-scene 规则段）、当前 run 的绝对路径 `<run-dir>`（只写
 `<run-dir>/inputs/scene_scan.json`，不碰其他文件）。不得将相对路径 `inputs/scene_scan.json`
