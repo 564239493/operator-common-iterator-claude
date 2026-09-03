@@ -4,7 +4,7 @@ description: 扫描算子文档, 按设备类型→量化模板→特性参数�
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: inherit
 skills:
-  - scan-scenes
+  - scan-scenner
 color: yellow
 ---
 

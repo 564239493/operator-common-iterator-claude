@@ -1,5 +1,5 @@
 ---
-name: scan-scene
+name: scan-scenner
 description: 当需要从算子文档中提取设备类型、场景、特性参数以及其取值范围时使用。适用于CANN算子文档的分级特征他扫描提取，不适用于：算子约束规则抽取，算子执行错误分析。
 ---
 
@@ -17,6 +17,7 @@ description: 当需要从算子文档中提取设备类型、场景、特性参�
 ```json
 {
   "operator": "string(算子名称)",
+  "has_scenarios": "bool()",
   "device_types": ["string(支持的设备名称列表，必须严格按照文档中的设备名称填写，禁止修改)"],
   "devices": [
     {
@@ -56,12 +57,22 @@ description: 当需要从算子文档中提取设备类型、场景、特性参�
 4. `references/extract_feature_params.md`
 
 - **第二步：分级特征扫描**
-1. 基于`leveled_feature_definition.md`中定义的判定规则，确定算子是否需要进行设备、场景、特性参数三级提取的场景，如果需要，则执行下一步，否则在结果json中`scan_notes`字段记录结果，并终止场景扫描流程；
-2. 将`scan_notes`字段记录结果通过调度消息反馈给用户；
+1. 基于`leveled_feature_definition.md`中定义的判定规则，确定算子是否需要进行设备、场景、特性参数三级提取的场景，如果需要，则执行下一步，否则在结果json中`has_scenarios`字段记录结果，并终止场景扫描流程；
+2. 将判定结果通过调度消息反馈给用户；
 
 - **第三步：提取设备类型**
 1. 基于`extract_device_type.md`中定义的提取规则，提取算子支持设备信息；
-2. 
+2. 支持设备信息写入结果json的`device_types`字段；
+
+- **第四步：提取场景**
+1. 针对`device_types`中的每一个device，基于`extract_scanes.md`中定义的提取规则，提取该设备下的支持的场景信息；
+2. 基于输出schema中`devices`字段下每个元素的定义，填充对应的字段值；
+
+- **第五步：提取特性参数**
+1. 获取算子所有的合法参数；
+2. 遍历算子的每一个参数，基于`extract_feature_params.md`中定义的`特性参数判定规则`，判定该算子参数是否为特性参数，如果是，则根据schema中的`feature_params`字段模板构建输出结果，如果不是特性参数，则在`unsupported_feature_params`记录判定依据；
+3. 如果算子参数是特性参数，则根据`extract_feature_params.md`中定义的`特性参数取值范围提取规则`提取参数的可取值范围，并在`feature_params`字段记录结果；
+4. 
 输入必须包含：算子文档快照（`<run-dir>/inputs/<doc>.md`，只读）、工作提示词
 （`prompts/scan_scenes.md`，含 op-scene 规则段）、当前 run 的绝对路径 `<run-dir>`（只写
 `<run-dir>/inputs/scene_scan.json`，不碰其他文件）。不得将相对路径 `inputs/scene_scan.json`
