@@ -60,7 +60,8 @@ description: 当需要从算子文档中提取设备类型、场景、特性参�
 2. 将`scan_notes`字段记录结果通过调度消息反馈给用户；
 
 - **第三步：提取设备类型**
-1. 基于`extract_device_type.md`
+1. 基于`extract_device_type.md`中定义的提取规则，提取算子支持设备信息；
+2. 
 输入必须包含：算子文档快照（`<run-dir>/inputs/<doc>.md`，只读）、工作提示词
 （`prompts/scan_scenes.md`，含 op-scene 规则段）、当前 run 的绝对路径 `<run-dir>`（只写
 `<run-dir>/inputs/scene_scan.json`，不碰其他文件）。不得将相对路径 `inputs/scene_scan.json`
