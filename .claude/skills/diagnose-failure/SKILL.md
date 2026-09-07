@@ -5,7 +5,9 @@ description: 基于落盘证据将失败分类为 constraint_extraction、genera
 # 失败诊断规范
 
 按顺序读取当前提示词、原始文档、constraints.json、cases.json、存在时的
-cases_expanded.json、execution_result.json。真实 TTK 执行还必须读取
+cases_expanded.json、execution_result.json；当前 iteration 存在
+`relation_examples.json`（aclnn CHECK 阶段 Z3 正反例报告）时也必须读取。真实 TTK
+执行还必须读取
 `execution_result.plog.manifest`、`execution_result.plog.error_summary`，需要上下文时再读
 `plog.raw_dir` 中对应原始日志。先检查 engine_error，再检查生成用例是否违反已提取约束，
 最后检查约束是否遗漏或误解文档。
@@ -57,7 +59,10 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
 3. 与同门控参数的其他 presence 关系联合检查目标场景是否 UNSAT。
 
 若失败 case 对现有表达式求值为 True，或目标场景 UNSAT，说明失败根因是
-constraint_extraction/补充表达错误，不得归为生成器忽略约束。
+constraint_extraction/补充表达错误，不得归为生成器忽略约束。存在
+`relation_examples.json` 时可引用其正反例替代部分手工求值：对照
+`violate_example` 判断失败 case 的取值组合是否本应被该约束拒绝——expr 行为与
+文档一致而用例仍违反时，generator_bug 的证据更充分。
 
 还必须核对生成阶段和执行阶段的数据边界：
 

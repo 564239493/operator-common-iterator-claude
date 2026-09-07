@@ -9,7 +9,8 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 
 状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE → DIAGNOSE`
 - 初始化 EXTRACT 固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 → 独立
-  `constraint-checker` / `constraint-repairer` 语义检查修复循环；默认
+  `constraint-checker` / `constraint-repairer` 语义检查修复循环（aclnn 时
+  checker 每轮先自跑 `verify_relation_exprs.py` 做 Z3 正反例取证）；默认
   `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
 - 全部通过 → `SUCCESS`
 - 有失败 → `DIAGNOSE` 分析全部失败簇；所有簇均为约束问题且 findings 完整时，复制上一版
@@ -152,7 +153,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
 | 失败后约束增量更新 | `constraint-updater` | `update-constraints` | 新版 `constraints.json` + `constraint_update.json` |
-| 约束语义检查（每个新版本） | `constraint-checker` | `check-constraints` | `constraint_check.json` |
+| 约束语义检查（每个新版本） | `constraint-checker` | `check-constraints` | `constraint_check.json` + `relation_examples.json`（脚本产，仅 aclnn） |
 | 约束精准修复（检查发现问题） | `constraint-repairer` | `repair-constraints` | 修改当前 `constraints.json` |
 | 用例生成 | `case-generator` | `generate-cases` | `cases.json` + `generation_summary.json` |
 | 用例执行 | `case-executor` | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
@@ -209,6 +210,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `generate_cases.py` — 调 facade 生成用例
 - `execute_cases.py` — 调 executer 执行用例
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）
+- `verify_relation_exprs.py` — Z3 正反例验证：`constraints_in_parameters` 逐条采 satisfy/violate 实例 + 整桶矛盾检测，产 `relation_examples.json`（CHECK 阶段 checker 步骤 0 自跑，仅 aclnn；语法错误 exit 2，其余 advisory）
 - `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
@@ -268,6 +270,7 @@ runs/<operator>-<timestamp>/
   inputs/                  # 只读快照（算子文档 + prompt）
   iter_001/                # 第一轮产物
     constraints.json       # 必须满足 OperatorRule
+    relation_examples.json # Z3 正反例取证（仅 aclnn，checker 步骤 0 产，每轮覆盖）
     generation_summary.json
     cases.json             # 紧凑表示；执行阶段展开为 cases_expanded.json
     cases_executor.py      # ATK 执行脚本（含 CPU golden）
