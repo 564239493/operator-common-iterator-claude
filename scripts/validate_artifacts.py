@@ -1118,6 +1118,41 @@ def validate_ttk_cases(path: str) -> list[str]:
     return errors
 
 
+def _validate_plog_metadata(value) -> list[str]:
+    if not isinstance(value, dict):
+        return ["execution.plog must be an object"]
+    errors: list[str] = []
+    status = value.get("status")
+    allowed = {"collected", "missing", "error", "disabled", "not_attempted", "not_applicable"}
+    if status not in allowed:
+        errors.append("execution.plog.status is invalid")
+    remote_dir = value.get("remote_plog_dir")
+    if not isinstance(remote_dir, str) or not remote_dir.startswith("/"):
+        errors.append("execution.plog.remote_plog_dir must be an absolute remote path")
+    for field in ("file_count", "error_count"):
+        count = value.get(field)
+        if status in {"collected", "missing", "error", "disabled"} and (
+            not isinstance(count, int) or isinstance(count, bool) or count < 0
+        ):
+            errors.append(f"execution.plog.{field} must be a non-negative integer")
+    if status == "collected":
+        for field, kind in (
+            ("local_dir", "dir"), ("raw_dir", "dir"),
+            ("error_summary", "file"), ("manifest", "file"),
+        ):
+            path_text = value.get(field)
+            if not isinstance(path_text, str) or not path_text.strip():
+                errors.append(f"execution.plog.{field} must be non-empty")
+                continue
+            path = Path(path_text)
+            exists = path.is_dir() if kind == "dir" else path.is_file()
+            if not exists:
+                errors.append(f"execution.plog.{field} does not exist: {path_text}")
+    if status in {"missing", "error"} and not str(value.get("collection_error") or "").strip():
+        errors.append("execution.plog.collection_error must explain collection failure")
+    return errors
+
+
 def validate_execution(value) -> list[str]:
     if not isinstance(value, dict):
         return ["execution result must be an object"]
@@ -1129,6 +1164,22 @@ def validate_execution(value) -> list[str]:
         errors.append("passed + failed must equal total")
     if not isinstance(value.get("records", []), list):
         errors.append("records must be an array")
+    mode = value.get("mode")
+    requires_plog = (
+        mode in {"ttk_e2e", "ttk_aclnn_npu"}
+        and value.get("status") != "generate"
+    )
+    if requires_plog and "plog" not in value:
+        errors.append("real TTK execution must include PLOG collection metadata")
+    elif "plog" in value:
+        errors.extend(_validate_plog_metadata(value.get("plog")))
+        if (
+            isinstance(value.get("plog"), dict)
+            and value["plog"].get("status") == "not_attempted"
+            and isinstance(total, int)
+            and total > 0
+        ):
+            errors.append("execution.plog cannot be not_attempted after executed cases")
     # fusion 策略扩展：从产物顶层取 execution_strategy（不读 run_state，产物自包含）。
     # fusion 时 fusion_phases 必填且路径门禁 dir_check_passed 全真；
     # comparison_result 仅记录性，不做必填或阈值校验（精度不入成败）。
@@ -1182,14 +1233,18 @@ def validate_analysis(value) -> list[str]:
     if root_cause not in allowed:
         errors.append("invalid root_cause")
 
-    # Legacy analysis artifacts only carried root_cause.  Keep them readable,
-    # while making the new 2.0 contract strict for newly produced iterations.
+    # Legacy analysis artifacts only carried root_cause.  2.0 keeps the first
+    # structured contract; 2.1 adds per-cluster routing and aggregate action.
     schema_version = value.get("schema_version")
     if schema_version is None:
         return errors
-    if schema_version != "2.0":
-        errors.append("analysis.schema_version must be '2.0'")
+    if schema_version not in {"2.0", "2.1"}:
+        errors.append("analysis.schema_version must be '2.0' or '2.1'")
         return errors
+    if schema_version == "2.1" and root_cause not in {
+        "constraint_extraction", "generator_bug", "executor_bug",
+    }:
+        errors.append("analysis.root_cause must use the current three classes")
 
     if not isinstance(value.get("analysis"), str) or not value["analysis"].strip():
         errors.append("analysis.analysis must be a non-empty string")
@@ -1229,6 +1284,19 @@ def validate_analysis(value) -> list[str]:
                 errors.append(f"{prefix}.case_ids must be a non-empty string/int array")
             if cluster.get("root_cause") not in allowed:
                 errors.append(f"{prefix}.root_cause is invalid")
+            if schema_version == "2.1":
+                action_by_cause = {
+                    "constraint_extraction": "UPDATE_CONSTRAINTS",
+                    "generator_bug": "STOP_GENERATOR_BUG",
+                    "executor_bug": "STOP_EXECUTOR_BUG",
+                }
+                cause = cluster.get("root_cause")
+                if cause not in action_by_cause:
+                    errors.append(f"{prefix}.root_cause must use the current three classes")
+                elif cluster.get("recommended_action") != action_by_cause[cause]:
+                    errors.append(
+                        f"{prefix}.recommended_action must be {action_by_cause[cause]}"
+                    )
             evidence = cluster.get("evidence")
             if not isinstance(evidence, list) or not evidence:
                 errors.append(f"{prefix}.evidence must be a non-empty array")
@@ -1270,10 +1338,23 @@ def validate_analysis(value) -> list[str]:
             for field in ("fact", "expected_effect"):
                 if not isinstance(finding.get(field), str) or not finding[field].strip():
                     errors.append(f"{prefix}.{field} must be a non-empty string")
+            if schema_version == "2.1" and (
+                not isinstance(finding.get("suggested_change"), str)
+                or not finding["suggested_change"].strip()
+            ):
+                errors.append(f"{prefix}.suggested_change must be a non-empty string")
             for field in ("affected_params", "case_ids", "evidence"):
                 field_value = finding.get(field)
                 if not isinstance(field_value, list) or not field_value:
                     errors.append(f"{prefix}.{field} must be a non-empty array")
+            if schema_version == "2.1":
+                cluster_refs = finding.get("cluster_ids")
+                if (
+                    not isinstance(cluster_refs, list)
+                    or not cluster_refs
+                    or any(not isinstance(cid, str) or not cid.strip() for cid in cluster_refs)
+                ):
+                    errors.append(f"{prefix}.cluster_ids must be a non-empty string array")
             affected_params = finding.get("affected_params")
             if isinstance(affected_params, list) and any(
                 not isinstance(param, str) or not param.strip()
@@ -1320,15 +1401,24 @@ def validate_analysis(value) -> list[str]:
         if not isinstance(decision.get("reason"), str) or not decision["reason"].strip():
             errors.append("analysis.supplement_decision.reason must be non-empty")
         if has_additions is True:
-            if root_cause != "constraint_extraction":
+            cluster_causes = {
+                item.get("root_cause")
+                for item in clusters
+                if isinstance(item, dict)
+            } if isinstance(clusters, list) else set()
+            if schema_version == "2.0" and root_cause != "constraint_extraction":
                 errors.append(
                     "explicit constraint additions require root_cause=constraint_extraction"
+                )
+            if schema_version == "2.1" and "constraint_extraction" not in cluster_causes:
+                errors.append(
+                    "explicit constraint additions require a constraint_extraction cluster"
                 )
             if not findings:
                 errors.append("explicit constraint additions require constraint_findings")
             if source == "none":
                 errors.append("explicit constraint additions require a concrete source")
-        elif findings:
+        elif schema_version == "2.0" and findings:
             errors.append(
                 "constraint_findings must be empty when has_explicit_additions=false"
             )
@@ -1349,6 +1439,80 @@ def validate_analysis(value) -> list[str]:
         ):
             errors.append(
                 "prompt optimization cannot be eligible when explicit additions exist"
+            )
+    if schema_version == "2.1" and isinstance(clusters, list) and clusters:
+        valid_clusters = [item for item in clusters if isinstance(item, dict)]
+        known_ids = {
+            str(item.get("id")) for item in valid_clusters if str(item.get("id", "")).strip()
+        }
+        cause_stats = {
+            cause: {
+                "clusters": sum(item.get("root_cause") == cause for item in valid_clusters),
+                "cases": sum(
+                    len(item.get("case_ids", []))
+                    for item in valid_clusters
+                    if item.get("root_cause") == cause and isinstance(item.get("case_ids"), list)
+                ),
+            }
+            for cause in ("constraint_extraction", "generator_bug", "executor_bug")
+        }
+        if value.get("root_cause_summary") != cause_stats:
+            errors.append("analysis.root_cause_summary does not match failure_clusters")
+        for index, finding in enumerate(findings):
+            if not isinstance(finding, dict):
+                continue
+            raw_refs = finding.get("cluster_ids", [])
+            safe_refs = {
+                ref for ref in raw_refs if isinstance(ref, str)
+            } if isinstance(raw_refs, list) else set()
+            unknown_refs = sorted(safe_refs - known_ids)
+            if unknown_refs:
+                errors.append(
+                    f"analysis.constraint_findings[{index}].cluster_ids reference unknown clusters: "
+                    + ", ".join(unknown_refs)
+                )
+        causes = {item.get("root_cause") for item in valid_clusters}
+        expected_root = (
+            "executor_bug" if "executor_bug" in causes
+            else "generator_bug" if "generator_bug" in causes
+            else "constraint_extraction"
+        )
+        if root_cause != expected_root:
+            errors.append(
+                f"analysis.root_cause must be {expected_root} as the compatibility summary"
+            )
+        constraint_cluster_ids = {
+            item.get("id")
+            for item in valid_clusters
+            if item.get("root_cause") == "constraint_extraction"
+        }
+        covered_constraint_clusters = {
+            cid
+            for finding in findings
+            if isinstance(finding, dict)
+            for cid in (
+                finding.get("cluster_ids", [])
+                if isinstance(finding.get("cluster_ids"), list) else []
+            )
+            if isinstance(cid, str)
+        } & constraint_cluster_ids
+        if len(causes) > 1:
+            expected_action = "MIXED_FAILURE_REVIEW"
+        elif causes == {"generator_bug"}:
+            expected_action = "STOP_GENERATOR_BUG"
+        elif causes == {"executor_bug"}:
+            expected_action = "STOP_EXECUTOR_BUG"
+        elif (
+            causes == {"constraint_extraction"}
+            and constraint_cluster_ids
+            and covered_constraint_clusters == constraint_cluster_ids
+        ):
+            expected_action = "UPDATE_CONSTRAINTS"
+        else:
+            expected_action = "NEEDS_HUMAN_EVIDENCE"
+        if value.get("overall_action") != expected_action:
+            errors.append(
+                f"analysis.overall_action must be {expected_action} for current clusters/findings"
             )
     return errors
 
@@ -1411,6 +1575,147 @@ def validate_constraints_patch(value) -> list[str]:
                 errors.append(
                     f"{prefix}.expected_effect is required with finding_ids"
                 )
+    return errors
+
+
+def validate_constraint_update(value) -> list[str]:
+    if not isinstance(value, dict):
+        return ["constraint_update must be an object"]
+    errors: list[str] = []
+    if value.get("schema_version") != "1.0":
+        errors.append("constraint_update.schema_version must be '1.0'")
+    status = value.get("status")
+    if status not in {"pending", "updated"}:
+        errors.append("constraint_update.status must be pending or updated")
+    for field in (
+        "source_constraints", "target_constraints", "pre_update_constraints", "analysis_file",
+        "execution_result",
+    ):
+        path_text = value.get(field)
+        if not isinstance(path_text, str) or not path_text.strip():
+            errors.append(f"constraint_update.{field} must be non-empty")
+        elif not Path(path_text).is_file():
+            errors.append(f"constraint_update.{field} does not exist: {path_text}")
+    for field in ("base_sha256", "result_sha256"):
+        digest = value.get(field)
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest.lower())
+        ):
+            errors.append(f"constraint_update.{field} must be a sha256 hex string")
+    finding_ids = value.get("finding_ids")
+    if (
+        not isinstance(finding_ids, list)
+        or not finding_ids
+        or any(not isinstance(fid, str) or not fid.strip() for fid in finding_ids)
+    ):
+        errors.append("constraint_update.finding_ids must be a non-empty string array")
+        finding_ids = []
+    elif len(set(finding_ids)) != len(finding_ids):
+        errors.append("constraint_update.finding_ids must not contain duplicates")
+    analysis_path = value.get("analysis_file")
+    if isinstance(analysis_path, str) and Path(analysis_path).is_file():
+        try:
+            analysis_value = load(analysis_path)
+            analysis_errors = validate_analysis(analysis_value)
+            if analysis_errors:
+                errors.append("constraint_update.analysis_file is invalid")
+            elif analysis_value.get("overall_action") != "UPDATE_CONSTRAINTS":
+                errors.append("constraint_update analysis does not allow UPDATE_CONSTRAINTS")
+            else:
+                expected_findings = {
+                    item.get("id")
+                    for item in analysis_value.get("constraint_findings", [])
+                    if isinstance(item, dict)
+                }
+                if set(finding_ids) != expected_findings:
+                    errors.append("constraint_update.finding_ids do not match analysis")
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append("constraint_update.analysis_file cannot be parsed")
+    changes = value.get("changes")
+    if not isinstance(changes, list):
+        errors.append("constraint_update.changes must be an array")
+        changes = []
+    allowed_ops = {
+        "set_parameter_field", "add_relation", "replace_relation",
+        "remove_relation", "update_product_support",
+    }
+    covered: set[str] = set()
+    change_ids: set[str] = set()
+    for index, change in enumerate(changes):
+        prefix = f"constraint_update.changes[{index}]"
+        if not isinstance(change, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        if not isinstance(change.get("id"), str) or not change["id"].strip():
+            errors.append(f"{prefix}.id must be non-empty")
+        elif change["id"] in change_ids:
+            errors.append(f"{prefix}.id is duplicated: {change['id']}")
+        else:
+            change_ids.add(change["id"])
+        if change.get("op") not in allowed_ops:
+            errors.append(f"{prefix}.op is invalid")
+        for field in ("target", "basis", "expected_effect"):
+            if not isinstance(change.get(field), str) or not change[field].strip():
+                errors.append(f"{prefix}.{field} must be non-empty")
+        refs = change.get("finding_ids")
+        if (
+            not isinstance(refs, list)
+            or not refs
+            or any(not isinstance(fid, str) or not fid.strip() for fid in refs)
+        ):
+            errors.append(f"{prefix}.finding_ids must be a non-empty string array")
+        else:
+            covered.update(ref for ref in refs if isinstance(ref, str))
+        if "before" not in change or "after" not in change:
+            errors.append(f"{prefix} must contain before and after")
+        elif change.get("before") == change.get("after"):
+            errors.append(f"{prefix} must change the target value")
+    if status == "updated":
+        if not changes:
+            errors.append("updated constraint_update requires changes")
+        missing = sorted(set(finding_ids) - covered)
+        unknown = sorted(covered - set(finding_ids))
+        if missing:
+            errors.append("constraint_update findings not covered: " + ", ".join(missing))
+        if unknown:
+            errors.append("constraint_update references unknown findings: " + ", ".join(unknown))
+        if value.get("base_sha256") == value.get("result_sha256"):
+            errors.append("updated constraint_update must change constraints sha256")
+        target_text = value.get("target_constraints")
+        if isinstance(target_text, str) and Path(target_text).is_file():
+            actual = hashlib.sha256(Path(target_text).read_bytes()).hexdigest()
+            if actual != value.get("result_sha256"):
+                errors.append("constraint_update.result_sha256 does not match target file")
+    for field in ("source_constraints", "pre_update_constraints"):
+        path_text = value.get(field)
+        if isinstance(path_text, str) and Path(path_text).is_file():
+            actual = hashlib.sha256(Path(path_text).read_bytes()).hexdigest()
+            if actual != value.get("base_sha256"):
+                errors.append(f"constraint_update.{field} no longer matches base_sha256")
+    execution_path = value.get("execution_result")
+    source_path = value.get("source_constraints")
+    if (
+        isinstance(execution_path, str)
+        and Path(execution_path).is_file()
+        and isinstance(source_path, str)
+    ):
+        try:
+            execution_value = load(execution_path)
+            execution_errors = validate_execution(execution_value)
+            if execution_errors:
+                errors.append("constraint_update.execution_result is invalid")
+            else:
+                consumed = execution_value.get("input_artifacts", {}).get("constraints", {})
+                if (
+                    not isinstance(consumed, dict)
+                    or Path(str(consumed.get("path", ""))).resolve() != Path(source_path).resolve()
+                    or consumed.get("sha256") != value.get("base_sha256")
+                ):
+                    errors.append("constraint_update baseline does not match execution fingerprint")
+        except (OSError, ValueError, json.JSONDecodeError):
+            errors.append("constraint_update.execution_result cannot be parsed")
     return errors
 
 
@@ -1793,6 +2098,7 @@ VALIDATORS = {
     "execution": validate_execution,
     "analysis": validate_analysis,
     "constraints_patch": validate_constraints_patch,
+    "constraint_update": validate_constraint_update,
     "executor": validate_executor,
     "supplementary_doc": validate_supplementary_doc,
     "uncertain_doc": validate_uncertain_doc,

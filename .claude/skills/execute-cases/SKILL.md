@@ -106,7 +106,16 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
 
 远端目录由 `servers.json.ttk.remote_root` 控制，单次目录名为算子名_时间点；结果与日志
 HS/E2E 结果下载到 `<iter>/ttk_artifacts/`；ACLNN 结果下载到
-`<iter>/ttk_aclnn_artifacts/`。不得自动回退 ATK 或 mock；只有 run_state 明确为
+`<iter>/ttk_aclnn_artifacts/`。两者执行后都自动将 `ttk.plog_dir`（默认
+`/root/ascend/log/debug`）打包同步到各自 artifact 目录的 `plog/raw/`，同时产出
+`plog/error_summary.log`（远端 `grep -rn ERROR`）和 `plog/manifest.json`，路径与状态写入
+`execution_result.plog`。执行前清理由 `ttk.env_init_script` 的完整命令完成；推荐：
+
+```text
+source /usr/local/Ascend/ascend-toolkit/set_env.sh && { test ! -d /root/ascend/log/debug || find /root/ascend/log/debug -mindepth 1 -delete; }
+```
+
+该写法固定目标目录、覆盖隐藏文件且目录不存在时不失败。不得自动回退 ATK 或 mock；只有 run_state 明确为
 `mode=mock` 时才执行 TTK mock。
 ## fusion 模式（通算融合算子，`run_state.execution_strategy=="fusion"`）
 

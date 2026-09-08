@@ -27,15 +27,23 @@ runs/<operator>-<timestamp>/
     constraints_patch.json             # 可选：约束补充阶段产出的 add/replace patch
     source_raw.json                    # 可选：source-analyst 确定性提取的源码事实
     source_evidence.json               # 可选：source-analyst diagnose 域产（match 与 confirmed 分离）
-    supplement_additions.md            # 可选：failure-analyst 推的本轮增量，校验后合入 supplementary-doc
+    supplement_additions.md            # 仅旧 schema 2.0 run 兼容；2.1 不再生成
     generation_summary.json
     cases.json
     cases_ttk.csv
     execution_result.json
+    ttk_artifacts/plog/                 # TTK E2E：本次执行 PLOG
+      manifest.json
+      error_summary.log                 # 远端 grep -rn ERROR 完整输出
+      raw/                              # 解包后的原始 PLOG
+    ttk_aclnn_artifacts/plog/           # TTK ACLNN：结构同上
     quality_gate.json
     analysis.json
-    prompt_v2.md
-    prompt_changes_v2.md
+  iter_002/                           # 执行反馈轮示例
+    constraints.json                  # 从上一轮实际用例所用版本复制后最小修改
+    constraints.json.pre_update       # updater 修改前的不可变基线
+    constraint_update.json            # finding/change/hash 审计
+    constraint_check.json
 ```
 
 ## run_state.json
@@ -48,7 +56,8 @@ runs/<operator>-<timestamp>/
 `hs_scenario_mode`、
 `run_scope`、`scene`、`current_iteration`、`state`、
 `history` 和时间戳。state 只能取
-WORKFLOW.md 定义的状态（含 `STOPPED_BY_USER`：人工补充检查点"立即停止"终态）。
+WORKFLOW.md 定义的状态（含 `UPDATE_CONSTRAINTS`、`MIXED_FAILURE_REVIEW`、
+`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 与 `STOPPED_BY_USER`）。
 
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
 目录内的快照，后续 Agent 只使用快照。
@@ -84,15 +93,15 @@ v1/v2 仅作为历史任务复现材料。
 `source_analysis_knowledge` 默认为 `false`。仅在 ACLNN 初始化显式传入
 `--source-analysis-knowledge` 时为 `true`；此时仍须通过模块自身的
 `operator_name_eq` 精准命中才会进入 `current_prompt_modules`。开关状态与命中/拒绝证据
-同时冻结在 `prompt_assembly.json`，不得在 re-EXTRACT 中动态改变。
+同时冻结在 `prompt_assembly.json`。执行反馈轮不重新提取，也不得动态改变该装配记录。
 
 `run_scope` 为 `full` 或 `constraints_only`。后者由尚未适配 TTK 的 torch_npu API 在
 auto 模式下使用：约束 normalize/validate 且当前轮 constraint_check passed 后可进入 SUCCESS，但 history 必须包含
 `CONSTRAINTS_ONLY_SUCCESS`；不得生成 cases 或宣称执行/精度成功。
 
-`constraint_check={max_rounds, iteration, current_round, status, report}` 保存当前外层
-iteration 的 EXTRACT 内部检查进度。`max_rounds` 默认 3；每次 re-EXTRACT 的 iteration
-变化时重置其他字段并保留上限。同 iteration 恢复时不得重置已通过结果。
+`constraint_check={max_rounds, iteration, current_round, status, report}` 保存当前约束版本
+的内部检查进度。`max_rounds` 默认 3；首轮 EXTRACT 或 UPDATE_CONSTRAINTS 创建新
+iteration 时重置其他字段并保留上限。同 iteration 恢复时不得重置已通过结果。
 
 `hs_scenario_mode` 为 `original` 或 `planned`，默认 `original`。它只影响
 torch_npu + TTK 的 GENERATE：`original` 使用原生生成器，`planned` 才启用
@@ -110,8 +119,8 @@ operator_name、product_support、parameters 和 constraints_in_parameters。每
 
 `allowed_range_value.value` 非空时，`type` 必须显式标注为 `enum`（离散枚举，如
 格式码/bool/字符串候选）或 `range`（数值区间）；缺失或非法值由
-`scripts/validate_artifacts.py` 的 `validate_constraints` 兜底报错，GATE 拦回
-re-EXTRACT。`value=[]`（空）时不强制 `type`（tensor 参数无值域约束常留空）。
+`scripts/validate_artifacts.py` 的 `validate_constraints` 兜底报错并阻断流程。
+`value=[]`（空）时不强制 `type`（tensor 参数无值域约束常留空）。
 
 `allowed_range_value.type=range` 的区间端点必须为实际数值，不允许用 `null` 表示
 无界；单边或开区间写入 `constraints_in_parameters`，使用不等式表达。
@@ -120,8 +129,9 @@ re-EXTRACT。`value=[]`（空）时不强制 `type`（tensor 参数无值域约�
 
 ## constraint_check.json
 
-每个外层 iteration 在最终 constraints 完成 SUPPLEMENT/已裁决 conflict 合并后生成一个
-累计报告。只保留当前轮单文件，不创建逐 check 轮目录。最小结构：
+每个新约束版本生成一个累计报告：首轮在 SUPPLEMENT/已裁决 conflict 合并后生成，
+后续在 constraint-updater 完成最小更新后生成。只保留当前轮单文件，不创建逐 check
+轮目录。最小结构：
 
 ```json
 {
@@ -151,6 +161,45 @@ re-EXTRACT。`value=[]`（空）时不强制 `type`（tensor 参数无值域约�
 上限且仍有 active issue。使用：
 
 `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`
+
+## constraint_update.json
+
+仅用于执行反馈轮。`constraint_update_state.py prepare` 先验证上一轮 analysis 的
+`overall_action=UPDATE_CONSTRAINTS`，把上一轮实际生成用例所用的 constraints 复制到新
+iteration，同时写 `.pre_update` 与 pending 报告；`constraint-updater` 修改目标文件并填写
+changes，最后由 `finalize` 校验。核心结构：
+
+```json
+{
+  "schema_version": "1.0",
+  "status": "updated",
+  "source_constraints": "<上一轮 constraints 绝对路径>",
+  "target_constraints": "<新一轮 constraints 绝对路径>",
+  "pre_update_constraints": "<新一轮 constraints.json.pre_update>",
+  "analysis_file": "<上一轮 analysis.json>",
+  "execution_result": "<上一轮 execution_result.json>",
+  "base_sha256": "...",
+  "result_sha256": "...",
+  "finding_ids": ["CF-001"],
+  "changes": [{
+    "id": "CU-001",
+    "finding_ids": ["CF-001"],
+    "op": "set_parameter_field",
+    "target": "parameters.axis.allowed_range_value",
+    "before": {"type": "range", "value": [0, 7]},
+    "after": {"type": "enum", "value": [0, 1]},
+    "basis": "失败证据与算子文档共同表明 axis 仅支持 0/1",
+    "expected_effect": "case_007 在生成阶段被拒绝"
+  }]
+}
+```
+
+允许的 op 为 `set_parameter_field|add_relation|replace_relation|remove_relation|update_product_support`。
+所有 findings 必须至少被一项 change 覆盖，不得引用未知 finding；`before` 与 `after` 必须
+不同，结果 hash 必须区别于基线。该报告只证明“发生了可追踪修改”，不能替代后续独立
+constraint-checker 的语义结论。使用：
+
+`python scripts/validate_artifacts.py constraint_update <iter>/constraint_update.json`
 
 ## constraints_patch.json
 
@@ -253,8 +302,8 @@ constraint-extractor 据此按 `param_modes` 产 `allowed_range_value`，并按
 `selection_policy` 保留未显式选择参数的文档约束，保留通用约束
 （shape/dtype/format 等），并按 `device_types` 收窄 `product_support`（直接与文档
 "产品支持情况" √ 行取交集，无"通用"展开）；该列表
-随后驱动 `generate_cases.py` 逐平台生成）。轮 2+ `optimize-prompt` 重写 `prompt_vN`
-不动本文件，屏蔽跨轮稳定。
+随后驱动 `generate_cases.py` 逐平台生成）。执行反馈轮不改 prompt 或本文件，
+constraint-updater 必须继续遵守同一 directive，保持跨轮稳定。
 
 ## source_raw.json / source_evidence.json
 
@@ -322,28 +371,56 @@ fail-closed，不得产出可执行成功结论。
   "failed": 0,
   "total": 0,
   "records": [],
-  "engine_error": ""
+  "engine_error": "",
+  "input_artifacts": {
+    "constraints": {"path": "<绝对路径>", "sha256": "...", "size": 0, "mtime_ns": 0}
+  }
 }
 ```
 
-必须满足 passed + failed = total。engine_error 非空时不能宣称业务成功。
+必须满足 passed + failed = total。engine_error 非空时不能宣称业务成功。所有实际执行模式
+都必须在 `input_artifacts` 冻结 constraints/cases/generation_summary 的路径与 sha256；后续
+UPDATE_CONSTRAINTS 只允许复制这里记录且哈希仍一致的 constraints，防止基于错误版本修改。
+
+真实 TTK E2E/ACLNN NPU 执行还必须包含 `plog`：
+
+```json
+{
+  "status": "collected | missing | error | disabled | not_attempted",
+  "remote_plog_dir": "/root/ascend/log/debug",
+  "local_dir": "<artifact>/plog",
+  "raw_dir": "<artifact>/plog/raw",
+  "error_summary": "<artifact>/plog/error_summary.log",
+  "manifest": "<artifact>/plog/manifest.json",
+  "file_count": 12,
+  "error_count": 3,
+  "collection_error": ""
+}
+```
+
+`collected` 时四个本地路径必须存在。`missing|error` 必须给出 collection_error，但不能把
+收集失败伪装成算子 case fail。PLOG 在远端打包前执行 `grep -rn ERROR`，完整摘要与原始
+日志一起同步；failure-analyst 必须同时使用 TTK 日志和 PLOG，不能只看其一。
 
 ## analysis.json
 
-root_cause 只能为 constraint_extraction、generator_bug、executor_bug、ttk_adapter、
-golden_derivation、execution_environment。每项
-specific_issues 应关联 case id、日志或文档证据。
+failure-analyst 保持三大类根因：`constraint_extraction`、`generator_bug`、
+`executor_bug`。每项 specific_issues 应关联 case id、日志或文档证据。
 
-新产物使用 `schema_version="2.0"`，并包含按错误签名聚合的 `failure_clusters`、有明确
-证据的 `constraint_findings`、`supplement_decision` 和 `prompt_optimization`。
-`has_explicit_additions=true` 时 findings 必须非空且 root_cause 必须为
-constraint_extraction；此时 prompt optimization 不得 eligible。failure-analyst 当前仍只
-输出三大类 root cause。旧 run 缺少 schema_version 时保持兼容，只校验 root_cause。
+新产物使用 `schema_version="2.1"`，并包含按错误签名聚合的全部 `failure_clusters`、
+每簇 `recommended_action`、有明确证据且包含 `suggested_change` 的 `constraint_findings`、
+`root_cause_summary` 与唯一 `overall_action`。finding 必须用 `cluster_ids` 关联其覆盖的约束簇。
+顶层 `root_cause` 只保留给旧消费者，不参与自动路由。
 
-failure-analyst 推断的 `supplement_additions.md` 不是正式补充源；必须运行
-`scripts/merge_supplement_additions.py <analysis> <additions> <supplementary-doc>`，只有返回
-`merged=true` 才完成本轮增量落库。脚本按内容 sha256 幂等，空文件、finding 不匹配或
-重复合入不计为新增补充。
+`overall_action` 聚合规则固定：全部约束簇且 findings 覆盖完整 → `UPDATE_CONSTRAINTS`；
+全部 generator/executor → `STOP_GENERATOR_BUG`/`STOP_EXECUTOR_BUG`；两类及以上根因 →
+`MIXED_FAILURE_REVIEW`；全部约束簇但 findings 不完整 → `NEEDS_HUMAN_EVIDENCE`。
+validator 必须从 clusters 重算 summary 和 action，禁止 Agent 自报 action 绕过混合根因门禁。
+旧 run 的 schema 2.0 和无 schema 产物保持只读兼容，但不能获得 2.1 的自动更新路由资格。
+
+schema 2.1 不再生成 `supplement_additions.md`；问题、修复建议在 analysis findings 中记录，
+实际修改与状态在下一轮 `constraint_update.json` 中记录。`merge_supplement_additions.py`
+仅保留用于读取/迁移旧 schema 2.0 run。
 
 ## quality_gate.json
 

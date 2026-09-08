@@ -20,10 +20,11 @@ color: teal
   expr_type 归类与文档对照，产 `inputs/supplementary-doc.md`（constraint-
   supplementer 可读）、`inputs/uncertain-doc.md`、`inputs/conflict-doc.md`
   + 结构化 `inputs/conflict_candidates.json`。
-- **diagnose 域**（GATE 失败后）：读 execution_result 失败日志 +
+- **diagnose 域**（GATE 失败后）：读 execution_result 失败日志、其 `plog` 元数据指向的
+  ERROR 摘要/必要原始 PLOG +
   uncertain-doc.md + source_raw.json，error_string 模糊匹配，命中的 uncertain
   逐条确认；只有确认成功的事实才提升为 supplementary 追加。`log_match` 只表示
-  日志匹配，不能表示约束已确认。
+  日志匹配，不能表示约束已确认。PLOG 命中必须把文件和行号写入 source_evidence。
 
 `hard_constraints` 的 `expr_type` 必须属 `InterConstraintsRuleType` 枚举
 （`shape_broadcast`/`shape_choice`/`shape_equality`/`shape_dependency`/

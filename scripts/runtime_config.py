@@ -139,6 +139,16 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
                 for key in ("remote_root", "repo_path", "python"):
                     if not str(ttk.get(key) or "").strip():
                         errors.append(f"servers[{index}].ttk.{key} 不能为空")
+                collect_plog = ttk.get("collect_plog")
+                if collect_plog is not None and not isinstance(collect_plog, bool):
+                    errors.append(f"servers[{index}].ttk.collect_plog 必须是 bool")
+                plog_dir = ttk.get("plog_dir")
+                if plog_dir is not None and (
+                    not isinstance(plog_dir, str) or not plog_dir.startswith("/")
+                ):
+                    errors.append(
+                        f"servers[{index}].ttk.plog_dir 必须是非空绝对路径"
+                    )
         # Optional: validate fusion config (supports_fusion + fusion_devices)
         supports_fusion = server.get("supports_fusion")
         if supports_fusion is not None and not isinstance(supports_fusion, bool):

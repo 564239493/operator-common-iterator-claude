@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 from executer.ssh import (
     ServerEndpoint, SSHEngineError, connect, run, sftp_download_file, upload_file,
 )
+from executer.plog import DEFAULT_PLOG_DIR, collect_plog_snapshot
 
 
 def _safe_name(value: str) -> str:
@@ -122,6 +123,9 @@ async def _run_aclnn(
     python = str(ttk.get("python") or "python3")
     env_init = str(ttk.get("env_init_script") or server.get("env_init_script", "")).strip()
     plat = str(ttk.get("plat") or "Ascend910B1")
+    collect_plog = ttk.get("collect_plog", True) is not False
+    plog_dir = str(ttk.get("plog_dir") or DEFAULT_PLOG_DIR).strip()
+    transfer_mode = str(ttk.get("transfer_mode") or server.get("transfer_mode") or "auto")
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     op_name = csv_path.stem
@@ -164,6 +168,11 @@ async def _run_aclnn(
     )
     endpoint = ServerEndpoint.from_server_row(server)
     conn = None
+    execution_started = False
+    plog_info: dict[str, Any] = {
+        "status": "not_applicable" if mode != "npu" else "not_attempted",
+        "remote_plog_dir": plog_dir,
+    }
 
     try:
         conn = await connect(endpoint)
@@ -176,7 +185,17 @@ async def _run_aclnn(
                 raise SSHEngineError(f"golden plugin not found: {plugin_path}")
             await upload_file(conn, plugin_path, remote_plugin)
 
+        execution_started = mode == "npu"
         result = await run(conn, command, timeout=timeout)
+        if execution_started:
+            plog_info = await collect_plog_snapshot(
+                conn,
+                remote_run_dir=remote_dir,
+                artifact_dir=artifact_dir,
+                plog_dir=plog_dir,
+                transfer_mode=transfer_mode,
+                enabled=collect_plog,
+            )
         duration = time.monotonic() - started
 
         (artifact_dir / "remote_stdout.log").write_text(result.stdout, encoding="utf-8")
@@ -247,8 +266,18 @@ async def _run_aclnn(
                 "TTK ACLNN command failed" if not passed else
                 f"TTK ACLNN NPU output missing for {npu_fail}/{npu_total} cases"
             ),
+            "plog": plog_info,
         }
     except SSHEngineError as exc:
+        if conn is not None and execution_started and plog_info.get("status") == "not_attempted":
+            plog_info = await collect_plog_snapshot(
+                conn,
+                remote_run_dir=remote_dir,
+                artifact_dir=artifact_dir,
+                plog_dir=plog_dir,
+                transfer_mode=transfer_mode,
+                enabled=collect_plog,
+            )
         return {
             "status": "error", "mode": f"ttk_aclnn_{mode}",
             "test_framework": "ttk", "ttk_mode": "aclnn",
@@ -259,6 +288,7 @@ async def _run_aclnn(
             "remote_dir": remote_dir, "remote_command": command,
             "golden_plugin": str(plugin_path) if plugin_path is not None else None,
             "local_artifact_dir": str(artifact_dir),
+            "plog": plog_info,
         }
     finally:
         if conn is not None:

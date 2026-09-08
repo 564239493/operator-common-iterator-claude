@@ -11,7 +11,8 @@
 2. **角色隔离**：提取、生成、执行、诊断、优化由不同 Agent 独立完成。
 3. **文件交接**：Agent 之间只认已校验的落盘产物。
 4. **调度可见**：委派文本、CLI Agent 面板、Hooks 和 JSONL 四层观测。
-5. **失败可分流**：只有约束提取问题进入提示词迭代，代码或环境问题立即止损。
+5. **失败按簇分流**：分析全部失败簇；只有全部属于约束问题时才自动增量更新约束，
+   生成器/执行器问题立即止损，混合根因默认转人工复核。
 
 ## 2. 规划阶段
 
@@ -22,7 +23,7 @@
 | operator-doc | 必填；支持项目外路径 | 初始化时只读快照到 run/inputs |
 | prompt | 当前 family 数值版本最新的 vN prompt | 确定首轮提取规则；显式 `--prompt` 可固定原样快照 |
 | max-iterations | 5 | 防止无界循环 |
-| constraint-check-rounds | 3 | 每个外层迭代完整 EXTRACT 后，Checker/Repairer 语义检查修复的最大轮数；通过可提前结束 |
+| constraint-check-rounds | 3 | 每个新约束版本（首轮 EXTRACT 或后续 UPDATE_CONSTRAINTS）Checker/Repairer 语义检查修复的最大轮数；通过可提前结束 |
 | case-count | 10/平台 | 控制生成与执行规模 |
 | mode | real | 缺配置则停止提示；仅显式 `--mode mock` 使用 Mock |
 | server-config | servers.json | 真实执行机、平台和环境初始化配置 |
@@ -46,13 +47,13 @@ run；校验通过后将外部文档复制为项目内快照并创建 run_state�
 
 `source_analysis` 类模块额外受 `--source-analysis-knowledge` 门控；默认不装配，
 显式开启后也只加载当前算子精确命中的模块。开关、命中证据与模块哈希一起写入
-`prompt_assembly.json` 并冻结，后续 re-EXTRACT 不重新路由。
+`prompt_assembly.json` 并冻结。执行反馈轮不重新完整提取，因此也不重新路由提示词知识。
 
 ## 3. 执行状态机
 
 ```mermaid
 flowchart TD
-    P["PLAN<br/>冻结参数与运行目录"] --> E["EXTRACT<br/>完整提取 + SUPPLEMENT"]
+    P["PLAN<br/>冻结参数与运行目录"] --> E["INITIAL EXTRACT<br/>完整提取 + SUPPLEMENT"]
     E --> CC{"CONSTRAINT CHECK<br/>独立 Checker / Repairer"}
     CC -->|通过| G["GENERATE<br/>统一 cases.json"]
     CC -->|有问题且未到上限| CR["精准 REPAIR<br/>只改报告问题"]
@@ -71,27 +72,24 @@ flowchart TD
     Q -->|全部通过| S["SUCCESS"]
     Q -->|用例失败| D["DIAGNOSE<br/>failure-analyst"]
     Q -->|产物不合法| B["BLOCKED"]
-    D -->|constraint_extraction| SD{"明确补充事实?"}
-    SD -->|有且已落库| E
-    SD -->|无补充但有 Prompt 规则缺口| O["OPTIMIZE<br/>prompt-optimizer"]
-    SD -->|两者都无| HC
-    O -->|下一轮| E
-    D -->|constraint_extraction + N 轮失败| HC["HUMAN_CHECKPOINT<br/>人工补充/自主/停止"]
-    HC -->|人工补充| E
-    HC -->|自主迭代| O
+    D -->|所有簇均为约束问题且 findings 完整| U["UPDATE_CONSTRAINTS<br/>复制上一版 + 最小修改"]
+    U --> CC
+    D -->|混合根因| MR["MIXED_FAILURE_REVIEW<br/>默认阻断自动更新"]
+    D -->|约束证据不足| HC["HUMAN_CHECKPOINT<br/>补充事实/停止"]
+    HC -->|补充后重新诊断| D
     HC -->|立即停止| SU["STOPPED_BY_USER"]
-    D -->|generator_bug| GB["STOP_GENERATOR_BUG"]
-    D -->|executor_bug| EB["STOP_EXECUTOR_BUG"]
-    E -->|超过轮次上限| M["MAX_ITERATIONS"]
+    D -->|全部为 generator_bug| GB["STOP_GENERATOR_BUG"]
+    D -->|全部为 executor_bug| EB["STOP_EXECUTOR_BUG"]
+    U -->|超过轮次上限| M["MAX_ITERATIONS"]
 ```
 
-### CLASSIFY（每轮 EXTRACT barrier 后，非独立状态）
+### CLASSIFY（初始化 EXTRACT barrier 后，非独立状态）
 
 主协调器跑 `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，
 读 stdout JSON（`operator_category` + `evidence`），回写 `run_state.json` 的
 `execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
 `operator_category`、`operator_category_evidence`。分类不进 constraints.json、
-不依赖 constraint-extractor 自由文本。此步每轮 EXTRACT 后都执行（覆盖上轮分类）。
+不依赖 constraint-extractor 自由文本。此步初始化时执行一次，后续约束更新沿用分类结果。
 
 ### 融合（fusion）执行路径（`run_state.execution_strategy=="fusion"` 时）
 
@@ -178,10 +176,11 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 诊断 findings 产生的 patch 在合并前额外运行 `validate_supplement_effect.py`：所有 finding
 必须被 patch 覆盖且 patch 不能全量 noop；constraint-checker 再验证失败 case 的预期效果。
 
-### CONSTRAINT CHECK/REPAIR（每轮 EXTRACT 内部子循环）
+### CONSTRAINT CHECK/REPAIR（每个新约束版本的内部子循环）
 
-每一次完整 EXTRACT（包括后续 re-EXTRACT）在 SUPPLEMENT 和已裁决 conflict 合并完成后，
-都要对本轮最终 `constraints.json` 执行语义检查。该循环不新增顶层状态，仍属于 EXTRACT：
+初始化完整 EXTRACT 在 SUPPLEMENT 和已裁决 conflict 合并完成后，对最终
+`constraints.json` 执行语义检查；后续 UPDATE_CONSTRAINTS 产生新版本后也执行同一检查。
+该循环不新增顶层状态，分别从属于 EXTRACT 或 UPDATE_CONSTRAINTS：
 
 1. `constraint-checker` 使用隔离上下文读取算子文档、当前最终 constraints、场景指令、
    本轮补充证据和已有 `constraint_check.json`，完整检查整份约束；只写报告、不修改约束。
@@ -203,7 +202,7 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 
 source-analyst 产 `conflict-doc.md` 后，若非空，主协调器输出 `requires_user_action`
 提示（`code=CONFLICT_REQUIRES_REVIEW`），**不阻塞**主流程，继续 GENERATE。用户在
-任意时刻回 `inputs/conflict_resolution.json`，下轮 re-supplement 前由
+任意时刻回 `inputs/conflict_resolution.json`，下一次约束更新前由
 `scripts/apply_conflict_resolution.py` 把 source-wins 转 replace patch 并入
 （`origin="conflict_resolution"` + revalidate）。冲突永远走人工通道，不自动消费。
 
@@ -228,7 +227,9 @@ ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生
 输入：已校验 cases.json。  
 执行者：case-executor。  
 动作：ATK 默认走 SSH/ATK；TTK 根据 CSV `api_name` 自动执行 `ttk aclnn` 或
-`ttk e2e`，远程能力未配置时明确阻断。
+`ttk e2e`，远程能力未配置时明确阻断。真实 TTK 执行前由服务器 env 初始化命令清理旧
+PLOG；执行后无论用例成功或失败，都从 `/root/ascend/log/debug` 同步原始 PLOG，生成
+`grep -rn ERROR` 摘要并写入 `execution_result.plog`。
 完成条件：execution_result.json 统计自洽。  
 失败策略：服务器配置缺失时先提示用户且不执行；其他引擎故障单独写 engine_error，
 避免污染用例通过率，禁止自动降级 Mock。
@@ -241,29 +242,36 @@ ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生
 输出：quality_gate.json 和唯一 next_state。  
 门禁 Agent 不修复其他 Agent 的产物，避免职责串味。
 
-### DIAGNOSE / OPTIMIZE
+### DIAGNOSE / UPDATE_CONSTRAINTS
 
 failure-analyst 使用新上下文，只读取落盘事实。当 `operator_src_snapshot` 非空时，
 先委派 source-analyst diagnose 域（error_string 模糊匹配失败日志，命中的 uncertain
 逐条确认；只有确认成功者追加到 `supplementary-doc.md`，产 `source_evidence.json`），
-failure-analyst 读它下根因并按失败签名输出 clusters。
+failure-analyst 读它下根因并按失败签名输出全部 `failure_clusters`、每簇
+`recommended_action`、可执行 `constraint_findings`、汇总 `root_cause_summary` 和唯一
+`overall_action`。顶层 `root_cause` 仅用于旧消费者兼容，调度器禁止用它覆盖其他失败簇。
+真实 TTK 失败必须同时读取 TTK 执行日志和 `execution_result.plog` 指向的 ERROR 摘要/
+必要原始日志；PLOG 错误码只有与失败 case、约束和文档交叉验证后才能作为根因证据。
 
-constraint_extraction 根因走**两级补救**：
-1. 补充优先：`source_evidence.confirmed_additions_count > 0`，或 failure-analyst 的
-   `supplement_additions.md` 已通过脚本合入且返回 `merged=true` → re-EXTRACT +
-   re-SUPPLEMENT + re-GENERATE + re-EXECUTE，
-   **不走 prompt-optimizer**。
-2. 补充无可提取且 `analysis.prompt_optimization.eligible=true` → 才回退
-   prompt-optimizer 生成 prompt_vN+1；无法定位规则缺口时转人工补充，不盲目优化。
+路由规则：
 
-generator_bug / executor_bug 立即止损。这样避免执行环境故障反复“优化”提示词，
-也避免生成器代码 bug 被错误掩盖。TTK 的
+1. 全部失败簇均为 `constraint_extraction`，且 findings 覆盖所有簇 →
+   `UPDATE_CONSTRAINTS`。新 iteration 复制上一轮实际生成用例所用的 constraints，保留
+   `.pre_update`，由独立 `constraint-updater` 仅处理 findings 并记录
+   `constraint_update.json`；随后 CHECK/REPAIR → GENERATE → EXECUTE，禁止重走
+   EXTRACT、SUPPLEMENT 或 prompt-optimizer。
+2. 全部为 `generator_bug` / `executor_bug` → 分别停止到对应状态。
+3. 同时存在两类及以上根因 → `MIXED_FAILURE_REVIEW`，展示全部簇并默认阻断自动修改；
+   只有用户明确批准，才能版本化应用其中约束 findings，仍须 CHECK/REPAIR。
+4. 全部是约束问题但证据不足以形成 finding → `NEEDS_HUMAN_EVIDENCE`；补充事实后重新
+   failure analysis，不重新完整提取。
+
+这样避免执行环境故障反复修改约束，也避免生成器代码 bug 被错误掩盖。TTK 的
 UNSUPPORTED/GOLDEN_FAILURE 归入 golden_derivation；CSV映射错误归入 ttk_adapter；
 SSH/CANN/TBE/NPU环境归入 execution_environment。
 
-prompt-optimizer 也按 `run_state.operator_family` 隔离：ACLNN 的修复只能定位到 ACLNN
-基线/模块；torch_npu 的修复只能定位到 torch_npu 基线/知识模块。run 内下一轮仍使用
-完整 `prompt_vN+1.md` 覆盖快照，不在优化阶段交叉装配另一 family。
+prompt-optimizer 保留为任务结束后的离线知识沉淀能力：可基于多轮证据提出 canonical
+prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不产生新的完整提取轮。
 
 ### constraints-only
 

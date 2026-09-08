@@ -7,18 +7,18 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 
 ## 核心流程
 
-状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE`
-- 每次 EXTRACT（含 re-EXTRACT）内部固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 →
-  独立 `constraint-checker` / `constraint-repairer` 语义检查修复循环；默认
+状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE → DIAGNOSE`
+- 初始化 EXTRACT 固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 → 独立
+  `constraint-checker` / `constraint-repairer` 语义检查修复循环；默认
   `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
 - 全部通过 → `SUCCESS`
-- 有失败 → `DIAGNOSE`；根因为 `constraint_extraction` 时优先消费已确认补充，只有无补充且
-  能定位 Prompt 规则缺口时才进入 `OPTIMIZE → EXTRACT`
-- `generator_bug` / `executor_bug` → 立即止损
+- 有失败 → `DIAGNOSE` 分析全部失败簇；所有簇均为约束问题且 findings 完整时，复制上一版
+  constraints 到新 iteration，由独立 `constraint-updater` 最小修改，再 CHECK/REPAIR → GENERATE，
+  不重新完整提取、不重跑 supplementer
+- 全部为 `generator_bug` / `executor_bug` → 立即止损；混合根因 → `MIXED_FAILURE_REVIEW`
 - 达到 max-iterations → `MAX_ITERATIONS`
-- `constraint_extraction` 迭代到 `--human-checkpoint-round`（默认 3，0=禁用）轮仍失败时，下一轮
-  开始前弹人工补充检查点（AskUserQuestion 三选一：人工补充 / 自主迭代 / 立即停止）；
-  人工补充 append 进 `inputs/supplement_constraints.md` 复用 SUPPLEMENT 管线；"立即停止" → `STOPPED_BY_USER`
+- 约束簇证据不足时进入 `NEEDS_HUMAN_EVIDENCE`；人工补充后重新运行 failure analysis，
+  形成可校验 findings 后再更新约束
 
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
@@ -62,7 +62,7 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ### 算子迭代
 ```text
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 3 --case-count 10
-/iterate-operator operator_docs/aclnnFoo.md --constraint-check-rounds 3  # 每个 EXTRACT 内最多 3 次语义 check
+/iterate-operator operator_docs/aclnnFoo.md --constraint-check-rounds 3  # 每个新约束版本最多 3 次语义 check
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 5 --human-checkpoint-round 3  # 第3轮仍失败弹人工补充检查点（0=禁用）
 /iterate-operator D:\operator_docs\aclnnFoo.md  # 支持项目外路径
 /iterate-operator operator_docs/aclnnFoo.md --scene auto  # EXTRACT 前扫描量化场景并征询（默认）；--scene all 取全场景不问；--scene off 跳过
@@ -151,12 +151,13 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 | 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
-| 约束语义检查（每轮 EXTRACT） | `constraint-checker` | `check-constraints` | `constraint_check.json` |
+| 失败后约束增量更新 | `constraint-updater` | `update-constraints` | 新版 `constraints.json` + `constraint_update.json` |
+| 约束语义检查（每个新版本） | `constraint-checker` | `check-constraints` | `constraint_check.json` |
 | 约束精准修复（检查发现问题） | `constraint-repairer` | `repair-constraints` | 修改当前 `constraints.json` |
 | 用例生成 | `case-generator` | `generate-cases` | `cases.json` + `generation_summary.json` |
 | 用例执行 | `case-executor` | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
 | 根因诊断 | `failure-analyst` | `diagnose-failure` | `analysis.json` |
-| 提示词优化 | `prompt-optimizer` | `optimize-prompt` | `prompt_vN.md` |
+| 提示词优化（仅离线沉淀） | `prompt-optimizer` | `optimize-prompt` | `prompt_update_proposal.json` |
 | 质量门禁 | `quality-reviewer` | `validate-run` | `quality_gate.json` |
 
 ## 架构分层
@@ -173,19 +174,19 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 > `scripts/apply_supplement_constraints.py` 规范化去重、报告 noop、确定性合并并重跑 normalize+validate，
 > 失败阻断、不进 GENERATE。为独立子步骤而非新状态，空即跳过。
 >
-> SUPPLEMENT 后强制触发 EXTRACT 内部 CHECK/REPAIR：checker 每轮完整对照文档和明确
+> SUPPLEMENT 后强制触发首轮约束版本的 CHECK/REPAIR：checker 每轮完整对照文档和明确
 > 补充证据，只写 `constraint_check.json`；repairer 使用隔离上下文仅修改报告中的
 > open/unfixed 问题，随后由新 checker 复检。当前 iteration 未 passed 不得进 GENERATE。
 
 - 全部通过：`SUCCESS`
 - 有失败：`DIAGNOSE`
-- `constraint_extraction`：明确补充已落库则直接进入下一轮 EXTRACT/SUPPLEMENT；否则仅在
-  `prompt_optimization.eligible=true` 时执行 `OPTIMIZE -> EXTRACT`
-- `constraint_extraction` 到 `human_checkpoint_round` 轮仍失败：人工补充检查点（补充/自主/停止）
-- `generator_bug`：`STOP_GENERATOR_BUG`
-- `executor_bug`：`STOP_EXECUTOR_BUG`
+- 所有失败簇均为 `constraint_extraction` 且 findings 完整：`UPDATE_CONSTRAINTS`，版本化
+  最小修改后 CHECK/REPAIR → GENERATE，不重新 EXTRACT/SUPPLEMENT
+- 混合根因：`MIXED_FAILURE_REVIEW`；约束证据不足：`NEEDS_HUMAN_EVIDENCE`
+- 所有簇均为 `generator_bug`：`STOP_GENERATOR_BUG`
+- 所有簇均为 `executor_bug`：`STOP_EXECUTOR_BUG`
 - 达到最大轮数：`MAX_ITERATIONS`
-- 检查点"立即停止"：`STOPPED_BY_USER`
+- 人工选择立即停止：`STOPPED_BY_USER`
 
 ### Python 确定性层
 
@@ -226,9 +227,10 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `extract_source_constraints.py` — 从源码快照提取确定性约束事实
 - `locate_operator_source.py` — 在 operators-src 树定位算子源码
 - `apply_supplement_constraints.py` — 补充约束 patch 确定性合并（重跑 normalize + validate）
-- `merge_supplement_additions.py` — 校验 failure-analyst 本轮增量并按 sha256 幂等落入 `supplementary-doc.md`
+- `merge_supplement_additions.py` — 旧 schema 2.0 run 的增量迁移兼容；2.1 在线更新不再调用
 - `update_supplement_state.py` — 持久化补充事实 revision/hash 与已消费 hash，支持会话恢复
 - `validate_supplement_effect.py` — 校验 findings 被 patch 覆盖且诊断 patch 不是全量 noop
+- `constraint_update_state.py` — 从上一轮冻结约束准备新版本，并校验增量更新覆盖全部 findings 且不是 noop
 - `apply_conflict_resolution.py` — 人工冲突裁决的机读合并层（不替用户决定胜负）
 - `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
 - `show_registry.py` — 展示 Skills/Agents 注册表
@@ -264,8 +266,11 @@ runs/<operator>-<timestamp>/
     cases_executor.py      # ATK 执行脚本（含 CPU golden）
     execution_result.json  # passed+failed=total
     quality_gate.json      # next_state 决定流程走向
-    analysis.json          # root_cause ∈ {constraint_extraction, generator_bug, executor_bug}
-    prompt_v2.md           # 仅 constraint_extraction 根因时产出
+    analysis.json          # 全部 failure_clusters + root_cause_summary + overall_action
+  iter_002/
+    constraints.json       # 从上一轮实际用例所用版本复制后最小修改
+    constraints.json.pre_update
+    constraint_update.json # finding → change → expected_effect 审计
 ```
 
 批次目录：`runs/batches/<batch-id>/batch_state.json`
@@ -306,7 +311,10 @@ runs/<operator>-<timestamp>/
 - `cases.json` 是紧凑表示；带 `length` 的列表类输入在执行阶段展开为 `cases_expanded.json`
 - 诊断用例格式问题必须同时检查 `cases.json` 和 `cases_expanded.json`
 - `execution_result.json` 的 `engine_error` 非空时不能宣称业务成功
-- `analysis.json` 的 `root_cause` 只能为 `constraint_extraction`、`generator_bug`、`executor_bug`
+- 真实 TTK 执行必须产出 `execution_result.plog`；failure analysis 同时读取 TTK 日志、
+  `plog/error_summary.log` 和必要原始 PLOG，不得仅靠 TTK stdout/stderr 下根因
+- `analysis.json` 的顶层 `root_cause` 只用于兼容；调度必须使用全部 `failure_clusters` 聚合并经
+  校验的 `overall_action`，禁止把混合失败压缩成单一根因后自动修改约束
 - `quality_gate.json` 的 `blocking_issues` 非空时 status 必须为 blocked，主协调器不得越过门禁
 - 质量门禁 Agent 不修复其他 Agent 的产物，避免职责串味
 

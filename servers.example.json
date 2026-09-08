@@ -26,7 +26,9 @@
         "repo_path": "/home/operator_ttk/ops-test-kit",
         "python": "python3",
         "allow_internal_format": true,
-        "env_init_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+        "env_init_script": "source /usr/local/Ascend/ascend-toolkit/set_env.sh && { test ! -d /root/ascend/log/debug || find /root/ascend/log/debug -mindepth 1 -delete; }",
+        "collect_plog": true,
+        "plog_dir": "/root/ascend/log/debug"
       }
     }
   ],
@@ -52,6 +54,8 @@
     "ttk.repo_path": "远程 ops-test-kit 仓库路径",
     "ttk.python": "远程 Python 命令",
     "ttk.allow_internal_format": "是否允许内部格式用例",
-    "ttk.env_init_script": "TTK 环境初始化脚本"
+    "ttk.env_init_script": "TTK 环境初始化脚本路径或完整命令；示例在加载 CANN 环境后用 find -mindepth 1 -delete 清理旧 PLOG（包含隐藏文件）",
+    "ttk.collect_plog": "真实 TTK 执行后是否同步 PLOG，默认 true",
+    "ttk.plog_dir": "远端 PLOG 目录，默认 /root/ascend/log/debug"
   }
 }

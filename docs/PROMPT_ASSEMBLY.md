@@ -63,18 +63,15 @@ python scripts/init_run.py --doc operator_docs/aclnnGroupedMatmulV5.md \
 
 torch_npu 分支待对称实现后接入 `validate_torch_npu_knowledge`（见 torch 装配契约节）。
 
-## 重提取轮次与知识路由
+## 在线约束更新与知识路由
 
-约束闭环根因为 `constraint_extraction`、没有已确认补充且能定位 Prompt 规则缺口时，
-才进入 `OPTIMIZE → EXTRACT` 循环。该循环的
-关键不变式：
-
-- **第 1 轮（EXTRACT）**：读 run 初始化冻结的 `prompt_v1.md`（含 `base + 命中知识`），
-  路由只在 run 初始化（PLAN）阶段跑一次。
-- **第 2+ 轮（re-EXTRACT）**：读上一轮 `optimize-prompt` 产的 `prompt_vN.md`，**不重走
-  知识路由**。知识模块的命中集合（`prompt_assembly.json` 的 `module_ids`）保持首轮冻结
-  值，提取器只消费当轮提示词文本。
-- **知识库 canonical 变更不在迭代内生效**：`optimize-prompt` 的沉淀提案写到
+- **初始化 EXTRACT**：读取 run 初始化冻结的 `prompt_v1.md`（含 `base + 命中知识`）；
+  路由只在 run 初始化（PLAN）阶段执行一次。
+- **执行反馈轮**：不再调用 constraint-extractor，也不生成或消费 `prompt_vN+1.md`。
+  failure-analyst 将全部失败簇聚合为 `overall_action`；仅当全部是约束问题且 findings
+  完整时，constraint-updater 基于上一版约束做版本化最小修改。
+- **知识库 canonical 变更不在当前 run 生效**：prompt-optimizer 只在任务结束后形成离线
+  沉淀提案，写到
   `prompt_update_proposals.json` / `prompt_update_decisions.json`，仅由主协调器在任务终态
   展示证据并经用户逐条批准后才提升到 `knowledge/aclnn/`。提升后必须重跑
   `validate_aclnn_knowledge` + 路由 + 组装冻结校验（`init_run` + `validate_prompt_assembly.py --record`），

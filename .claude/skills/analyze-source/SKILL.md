@@ -125,13 +125,15 @@ python scripts/validate_artifacts.py source_raw <iter-dir>/source_raw.json
 
 触发：GATE 判有用例失败，主协调器在委派 `failure-analyst` **之前**委派本域。
 输入：`operator_src_snapshot`、`source_raw.json`、`inputs/uncertain-doc.md`、
-`execution_result.json`。
+`execution_result.json`，以及真实 TTK 执行时 `execution_result.plog` 指向的 manifest、
+ERROR 摘要和必要原始 PLOG。
 
 流程：
 1. 第一步确定性提取（如 source_raw.json 已存在可复用）。
-2. 把 `execution_result.json` 中失败 case 的日志/错误信息，与 uncertain-doc.md
+2. 把 `execution_result.json` 中失败 case 的日志/错误信息及本次 PLOG ERROR 摘要，与 uncertain-doc.md
    的 `error_string` + raw_checks 的 error_string 做**模糊匹配**（把
-   `%ld`/`%zu`/`%s`/`%d` 当通配符）。命中的记入 `log_match`。
+   `%ld`/`%zu`/`%s`/`%d` 当通配符）。命中的记入 `log_match`，PLOG 命中同时保留
+   原始文件路径和 grep 行号。
 3. 对每条 `log_match`，查该 uncertain 关系是否可确认：
    - 可确认 → 追加到 `inputs/supplementary-doc.md`（在条目末尾标注
      `origin=diagnose_confirmed` + 命中的 failed_case_id + error_string），并把包含
