@@ -19,8 +19,10 @@ color: blue
 `product_support`——与文档"产品支持情况"表 √ 行取交集（设备类型已来自产品支持情况、为具体设备名，无"通用"通配符，直接取交集）。
 详见 `extract-constraints` skill 的「场景屏蔽规则」「设备→`product_support` 规则」
 与第 12 条自检。
-只写调度消息指定的当前轮目录。输出 `constraints.json` 后运行产物校验；失败则
-自行修正，最多三次。最终返回：关键约束摘要、校验结果、产物绝对路径。
+只写调度消息指定的当前轮目录。每条 `constraints_in_parameters` 条目必须带全局唯一
+`id`（`C-<NNN>` 顺序编号，规则见 extract-constraints skill 第 6 条）。输出
+`constraints.json` 后运行产物校验；失败则自行修正，最多三次。最终返回：关键约束
+摘要、校验结果、产物绝对路径。
 
 输入边界是强制安全约束：只读取调度消息指定的当前任务 `run_state.json`、当前任务
 `inputs/` 文档/提示词，以及为理解数据结构和运行校验所必需的 schema/校验代码。

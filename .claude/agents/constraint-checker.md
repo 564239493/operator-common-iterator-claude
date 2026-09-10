@@ -28,7 +28,8 @@ run 或历史 Agent 记忆。
 修正、代表性合法 case 未被错误排除。预期效果不成立时记录 blocking issue。
 
 每个错误必须记录实际 `constraints.json` 行号、具体约束、错误说明、可执行修复建议和
-状态。只有你可以把问题标为 fixed；repairer 的聊天结论不构成已修复证据。输出后运行：
+状态。约束条目 `id` 缺失、重复、格式错误或编号不连续也记入报告（修复建议给出正确
+编号）。只有你可以把问题标为 fixed；repairer 的聊天结论不构成已修复证据。输出后运行：
 
 `python scripts/validate_artifacts.py constraint_check <iter-dir>/constraint_check.json`
 

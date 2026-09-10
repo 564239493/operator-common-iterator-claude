@@ -264,9 +264,11 @@ runs/<operator>-<timestamp>/
     generation_summary.json
     cases.json             # 紧凑表示；执行阶段展开为 cases_expanded.json
     cases_executor.py      # ATK 执行脚本（含 CPU golden）
-    execution_result.json  # passed+failed=total
+    execution_result.json  # passed+failed=total；真实 TTK/ATK 执行含 plog 采集元信息
+    execution_logs/        # ATK 执行产物（atk.log、report/ 与 plog/{error_summary.log, raw/}）
     quality_gate.json      # next_state 决定流程走向
     analysis.json          # 全部 failure_clusters + root_cause_summary + overall_action
+                           # + plog_error_info / atk_or_ttk_error_info 报错日志原文
   iter_002/
     constraints.json       # 从上一轮实际用例所用版本复制后最小修改
     constraints.json.pre_update
@@ -311,8 +313,11 @@ runs/<operator>-<timestamp>/
 - `cases.json` 是紧凑表示；带 `length` 的列表类输入在执行阶段展开为 `cases_expanded.json`
 - 诊断用例格式问题必须同时检查 `cases.json` 和 `cases_expanded.json`
 - `execution_result.json` 的 `engine_error` 非空时不能宣称业务成功
-- 真实 TTK 执行必须产出 `execution_result.plog`；failure analysis 同时读取 TTK 日志、
-  `plog/error_summary.log` 和必要原始 PLOG，不得仅靠 TTK stdout/stderr 下根因
+- 真实 TTK/ATK 执行必须产出 `execution_result.plog`；failure analysis 同时读取 TTK/ATK
+  日志、`plog/error_summary.log` 和必要原始 PLOG，不得仅靠 TTK/ATK stdout/stderr 下根因
+- `analysis.json` 的 `param_failure_locations` 每条错误原因必须同时摘录
+  `atk_or_ttk_error_info`（执行层报错原文，必填）与 `plog_error_info`（PLOG 对齐报错
+  原文），标注来源并保留原文，禁止改写；无可对齐 PLOG 日志时后者才允许置空或省略
 - `analysis.json` 的顶层 `root_cause` 只用于兼容；调度必须使用全部 `failure_clusters` 聚合并经
   校验的 `overall_action`，禁止把混合失败压缩成单一根因后自动修改约束
 - `quality_gate.json` 的 `blocking_issues` 非空时 status 必须为 blocked，主协调器不得越过门禁

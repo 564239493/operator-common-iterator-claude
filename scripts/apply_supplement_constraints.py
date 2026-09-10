@@ -3,8 +3,9 @@
 
 把 constraint-supplementer 产出的 constraints_patch.json(op=add/replace +
 proposed + match_expr + basis)确定性合并进 constraints.json:剥离 patch 层
-字段,只保留 InterParamConstraint 五字段(expr_type/expr/relation_params/
-src_text/origin),标 origin="supplement"。合并后重跑 normalize_constraints.py
+字段,保留 InterParamConstraint 字段(expr_type/expr/relation_params/
+src_text/origin),新增条目由本脚本分配唯一 `id`（C-<NNN>，replace 保留原 id），
+标 origin="supplement"。合并后重跑 normalize_constraints.py
 + validate_artifacts.py constraints,任一失败退出非 0,主协调器据此阻断、
 不进 GENERATE。
 
@@ -17,6 +18,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -113,8 +115,8 @@ def _build_entry(patch: dict, origin: str) -> dict:
     """从 patch.proposed 构造 InterParamConstraint 条目,填 src_text/origin。
 
     只取三必填字段,src_text 取自 patch.basis,origin 由本脚本指定;
-    patch 的 op/match_expr/proposed/basis 等套壳字段一律不进 constraints.json
-    (InterParamConstraint 为 extra:forbid)。
+    patch 的 op/match_expr/proposed/basis 等套壳字段一律不进 constraints.json。
+    条目 `id` 由 apply_patch 分配:add 用 _next_constraint_id,replace 保留原 id。
     """
     proposed = patch.get("proposed")
     if not isinstance(proposed, dict):
@@ -149,6 +151,17 @@ def _build_entry(patch: dict, origin: str) -> dict:
     entry["src_text"] = basis.strip()
     entry["origin"] = origin
     return entry
+
+
+def _next_constraint_id(cip: dict[str, list[dict]]) -> str:
+    """返回现有约束最大编号 +1 的 id（C-<NNN>，三位补零）。"""
+    max_num = 0
+    for items in cip.values():
+        for item in items:
+            match = re.fullmatch(r"C-(\d+)", str(item.get("id") or ""))
+            if match:
+                max_num = max(max_num, int(match.group(1)))
+    return f"C-{max_num + 1:03d}"
 
 
 def _find_replace_index(bucket: list[dict], match_expr: str) -> int | None:
@@ -209,6 +222,7 @@ def apply_patch(
                     skipped += 1
                     new_expr = entry["expr"]
                     continue
+                entry["id"] = _next_constraint_id(cip)
                 bucket.append(entry)
                 added += 1
                 new_expr = entry["expr"]
@@ -236,6 +250,7 @@ def apply_patch(
                         f"未找到 expr==match_expr 的条目: {match_expr!r}"
                     )
                 entry = _build_entry(patch, origin)
+                entry["id"] = bucket[target_idx].get("id")
                 if constraint_fingerprint(bucket[target_idx]) == constraint_fingerprint(entry):
                     skipped += 1
                     new_expr = entry["expr"]

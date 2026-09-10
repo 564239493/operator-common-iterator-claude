@@ -29,7 +29,8 @@ constraints、memory 或其他 Agent 对话。
    未裁决的 `conflict-doc.md` 仍按现有异步人工通道处理，不自动选边，也不因此制造
    blocking issue；只有 `conflict_resolution.json` 中已裁决结果可作为检查依据。
 3. 至少检查：参数存在性、dtype、format、shape/dimensions、值域、平台、确定性标记、
-   跨参数关系，以及遗漏、错提和无依据新增。
+   跨参数关系、约束条目 `id`（每条存在、全局唯一、`C-<NNN>` 格式、编号连续），
+   以及遗漏、错提和无依据新增。
 4. `validate_artifacts.py constraints` 通过只说明结构/确定性规则合法，不能替代本检查。
 5. 使用 Read 显示的实际行号记录错误；`line` 必须指向当前约束中最直接的错误行。
 6. 第 2 轮起逐条复核原有 open/unfixed：已正确则 fixed，仍错误则 unfixed 并更新
