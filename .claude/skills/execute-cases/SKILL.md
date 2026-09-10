@@ -62,6 +62,18 @@ real 不再自动生成 executor；iter_dir 缺 generate 产物时会短路报�
 python scripts/validate_artifacts.py execution <iter>/execution_result.json
 ```
 
+真实 ATK 执行结束后 runner 自动同步本次 PLOG（`servers.json` 的
+`atk.collect_plog`/`atk.plog_dir`，缺省回落 `ttk.*` / `/root/ascend/log/debug`）：
+`<artifact>/plog/raw/` 保存原始日志、`plog/error_summary.log` 保存远端
+`grep -rn ERROR` 结果、`plog/manifest.json` 保存收集状态，路径与状态写入
+`execution_result.plog`（与 TTK 链一致）。执行前必须在服务器 `env_init` /
+`env_init_script` 中清理 plog 目录（与 TTK 相同写法），否则 error_summary.log 会混入
+该机历史 run 噪声、无法与本轮 case 对齐：
+
+```text
+source /usr/local/Ascend/ascend-toolkit/set_env.sh && { test ! -d /root/ascend/log/debug || find /root/ascend/log/debug -mindepth 1 -delete; }
+```
+
 真实执行是默认行为。配置缺失时停止并提示用户补充，禁止回退 Mock。只有用户明确传入
 `--mode mock` 时，才运行 Mock 用例：
 
@@ -109,7 +121,9 @@ HS/E2E 结果下载到 `<iter>/ttk_artifacts/`；ACLNN 结果下载到
 `<iter>/ttk_aclnn_artifacts/`。两者执行后都自动将 `ttk.plog_dir`（默认
 `/root/ascend/log/debug`）打包同步到各自 artifact 目录的 `plog/raw/`，同时产出
 `plog/error_summary.log`（远端 `grep -rn ERROR`）和 `plog/manifest.json`，路径与状态写入
-`execution_result.plog`。执行前清理由 `ttk.env_init_script` 的完整命令完成；推荐：
+`execution_result.plog`。执行前必须在 `ttk.env_init_script` 中完成 plog 目录清理
+（与 ATK 链同一要求），否则 error_summary.log 会混入该机历史 run 噪声、无法与本轮
+case 对齐：
 
 ```text
 source /usr/local/Ascend/ascend-toolkit/set_env.sh && { test ! -d /root/ascend/log/debug || find /root/ascend/log/debug -mindepth 1 -delete; }

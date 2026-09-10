@@ -93,7 +93,10 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
      - `type.value=="aclDataType"` 时按 ACLNN 快照处理 dtype 与 enum；
        `type.value=="aclIntArray"` 时按 ACLNN 快照处理元素 dtype，不能把关联 Tensor
        dtype 误写给数组。
-6. 写入 `<iter-dir>/constraints.json`。
+6. 写入 `<iter-dir>/constraints.json`。`constraints_in_parameters` 每平台列表中的
+   每条约束条目必须带 `id` 字段：全局唯一、格式 `C-<NNN>`，按条目在文件中的出现
+   顺序从 1 连续编号（跨平台连续，不因平台切换重置）；编号后条目顺序调整不得改变
+   已分配的 `id`。
 7. 执行：
    `python scripts/validate_operator_rule.py <iter-dir>/constraints.json`
 8. 执行：

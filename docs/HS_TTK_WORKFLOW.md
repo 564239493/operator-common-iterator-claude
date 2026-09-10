@@ -137,6 +137,18 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
 `plog/raw/`、`plog/error_summary.log`、`plog/manifest.json`。其中 ERROR 摘要来自本轮执行后
 对远端 PLOG 的 `grep -rn ERROR`；failure analysis 必须与 TTK 日志联合判读。
 
+执行前必须在 `ttk.env_init_script` 中清理 plog 目录（上面示例配置已含
+`find -mindepth 1 -delete`，与 ATK 链同一要求）：`/root/ascend/log/debug` 是设备侧
+累积目录，不清理会让 error_summary.log 混入历史 run 噪声，无法与本轮失败 case 对齐。
+
+诊断落盘口径与 ATK 链一致：analysis.json `param_failure_locations` 每条错误原因必须
+同时摘录 `atk_or_ttk_error_info`（TTK 执行层报错原文：`engine_error` 与
+`remote_stdout.log`/`remote_stderr.log`、results.csv 失败原因列，标注 case id 与来源）
+与 `plog_error_info`（`plog/error_summary.log` 中与该 case 对齐的原文行，需要上下文时
+附 `plog/raw/` 段落）；有可对齐 PLOG 时两字段并存、禁止只填其一，仅当无可对齐 PLOG
+（未采集、status=missing|error、case 未触达 NPU）时 `plog_error_info` 允许置空或省略，
+不得以历史噪声充数。
+
 ## 精度与 Golden 经验
 
 - `precision_tolerances` 是 `(rtol, ptol)`；`atol` 写在 `absolute_precision`。

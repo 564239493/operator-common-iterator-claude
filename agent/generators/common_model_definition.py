@@ -53,6 +53,7 @@ class ParamAttributes(BaseModel):
 
 class InterParamConstraint(BaseModel):
     """参数约束条目"""
+    id: str | None = Field(default=None, description="约束条目唯一标识（格式 C-<NNN>，全局唯一）")
     expr_type: str = Field(..., description="约束表达式类型")
     expr: str = Field(..., description="约束表达式")
     relation_params: List[str] = Field(..., description="涉及的参数列表")
