@@ -118,7 +118,13 @@ operator_name、product_support、parameters 和 constraints_in_parameters。每
 `supplement`（约束补充阶段合并）。每条 `constraints_in_parameters` 约束条目带全局唯一
 `id`（格式 `C-<NNN>`，按文件出现顺序连续编号：extractor 产出；supplement 合并时
 `apply_supplement_constraints.py` 给新增条目分配新 id、replace 保留原 id），供
-analysis.json 的 `param_failure_locations.target_id` 关联。约束补充阶段产出的
+analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条目还必须带
+`src_txt_line`（整数数组，1-based、升序）：该约束 `src_text` 引用条款在算子文档快照
+（`inputs/` 下快照）中的具体行号，多条款列全部行；补充来源条目（`origin != "doc"`）
+对应补充文档行号，经 patch 的 `proposed.src_txt_line` 透传。extractor 落盘前逐条核对
+行号与原文一致；checker 复核行号与 `src_text` 的对应关系；updater/repairer 保留原值、
+新增条目必填、来源条款变化时更新。旧产物允许缺省（空数组），新提取必填。
+约束补充阶段产出的
 `constraints_patch.json` 经
 `scripts/apply_supplement_constraints.py` 确定性合并后追加/替换条目并标 `origin="supplement"`。
 

@@ -309,6 +309,12 @@ runs/<operator>-<timestamp>/
 ## 重要约定
 
 - `constraints.json` 的 `allowed_range_value.type=range` 不允许 null 端点；开区间写 `constraints_in_parameters` 不等式
+- `constraints_in_parameters` 每条约束必须带 `src_txt_line`（1-based 升序行号数组，指向
+  算子文档快照中 `src_text` 引用条款的具体行；补充来源对应补充文档）；extractor 落盘前
+  逐条核对、checker 复核、updater/repairer 保留或补全
+- 反馈轮约束必须在上一轮 constraints.json 基础上按 id 原位修改：同 id 条目可直接修正，
+  新增约束分配新 id，禁止重新提取/整份重写；每轮 UPDATE/REPAIR 后必须跑
+  `scripts/diff_constraints_by_id.py` 门禁（exit 2 = 换 id 违规）
 - `type=enum` 允许 null 作为离散候选；`expr` 中裸 null 规范化为 Python `None`
 - `cases.json` 是紧凑表示；带 `length` 的列表类输入在执行阶段展开为 `cases_expanded.json`
 - 诊断用例格式问题必须同时检查 `cases.json` 和 `cases_expanded.json`

@@ -20,7 +20,9 @@ color: blue
 详见 `extract-constraints` skill 的「场景屏蔽规则」「设备→`product_support` 规则」
 与第 12 条自检。
 只写调度消息指定的当前轮目录。每条 `constraints_in_parameters` 条目必须带全局唯一
-`id`（`C-<NNN>` 顺序编号，规则见 extract-constraints skill 第 6 条）。输出
+`id`（`C-<NNN>` 顺序编号，规则见 extract-constraints skill 第 6 条）和 `src_txt_line`
+（1-based 升序行号数组，指向算子文档快照中 `src_text` 引用条款的具体行，落盘前逐条
+核对行号与原文一致，规则同见 skill 第 6 条）。输出
 `constraints.json` 后运行产物校验；失败则自行修正，最多三次。最终返回：关键约束
 摘要、校验结果、产物绝对路径。
 

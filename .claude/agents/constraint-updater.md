@@ -23,6 +23,9 @@ product_support 或跨参数关系执行满足证据的最小 Edit。禁止把�
 `update_product_support`。无法安全修改时停止并说明，不得伪造 change。
 
 修改完成后依次运行 constraints 的 operator-rule/normalize/artifact 校验，再运行
+`python scripts/diff_constraints_by_id.py <prev-iter>/constraints.json <iter>/constraints.json`：
+exit 2 表示同一份约束内容换了 id（重新提取/整份重写的特征），必须改回在上轮文件上按
+id 原位最小修改；exit 0 时 modified/added/removed 必须能逐条对应到本次 changes。通过后运行
 `python scripts/constraint_update_state.py finalize --report <iter>/constraint_update.json`。
 全量 noop、finding 未覆盖或确定性校验失败都必须阻断。是否语义修复成功由独立
 constraint-checker 复检，你不能自行宣称问题已修复。

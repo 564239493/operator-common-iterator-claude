@@ -925,6 +925,48 @@ def _validate_constraint_ids(value) -> list[str]:
     return errors
 
 
+def _validate_src_txt_lines(value) -> list[str]:
+    """constraints_in_parameters 条目的 src_txt_line 溯源行号校验。
+
+    字段可选（旧产物兼容缺省空数组）；存在时必须是 >=1 的整数非空数组
+    （1-based 算子文档快照/补充文档行号，与 src_text 条款对应，规则要求升序）。
+    """
+    errors: list[str] = []
+    constraints = value.get("constraints_in_parameters")
+    groups: list[tuple[str, Any]] = []
+    if isinstance(constraints, dict):
+        groups = list(constraints.items())
+    elif isinstance(constraints, list):
+        groups = [("", constraints)]
+    for platform, relations in groups:
+        if not isinstance(relations, list):
+            continue
+        for index, constraint in enumerate(relations):
+            if not isinstance(constraint, dict):
+                continue
+            prefix = (
+                f"constraints_in_parameters[{platform}][{index}]"
+                if platform
+                else f"constraints_in_parameters[{index}]"
+            )
+            raw = constraint.get("src_txt_line")
+            if raw is None:
+                continue
+            if (
+                not isinstance(raw, list)
+                or not raw
+                or any(
+                    isinstance(line, bool) or not isinstance(line, int) or line < 1
+                    for line in raw
+                )
+            ):
+                errors.append(
+                    f"{prefix}.src_txt_line must be a non-empty array of 1-based "
+                    "line numbers (ints >= 1) referencing the doc snapshot"
+                )
+    return errors
+
+
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
@@ -950,6 +992,7 @@ def validate_constraints(value) -> list[str]:
             + _validate_scatter_pa_kv_cache_constraints(value)
             + _validate_grouped_matmul_v5_constraints(value)
             + _validate_constraint_ids(value)
+            + _validate_src_txt_lines(value)
         )
         if str(value.get("operator_name", "")).startswith(("torch_npu.", "torch.npu.")):
             from agent.hs.constraint_validation import validate_hs_constraints

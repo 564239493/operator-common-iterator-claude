@@ -31,6 +31,9 @@ constraints、memory 或其他 Agent 对话。
 3. 至少检查：参数存在性、dtype、format、shape/dimensions、值域、平台、确定性标记、
    跨参数关系、约束条目 `id`（每条存在、全局唯一、`C-<NNN>` 格式、编号连续），
    以及遗漏、错提和无依据新增。
+   同时核对每条 `constraints_in_parameters` 条目的 `src_txt_line`：字段存在、升序非空、
+   且行号处的文档快照原文与该条目 `src_text` 摘录一致；缺失、行号错位或摘录与原文
+   不符都记为 issue（`src_txt_line` 缺失/错位按普通 issue 报告，由 repairer 补正）。
 4. `validate_artifacts.py constraints` 通过只说明结构/确定性规则合法，不能替代本检查。
 5. 使用 Read 显示的实际行号记录错误；`line` 必须指向当前约束中最直接的错误行。
 6. 第 2 轮起逐条复核原有 open/unfixed：已正确则 fixed，仍错误则 unfixed 并更新
