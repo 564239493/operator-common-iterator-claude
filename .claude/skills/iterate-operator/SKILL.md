@@ -48,8 +48,10 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
    不要求服务器配置。
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
 5. `init_run.py` 成功后 state 为 `PLAN`；主协调器必须继续推进到 EXTRACT，不能仅创建 run 后结束。
-   **委派 constraint-extractor 之前**，主协调器必须先把 `run_state.json` 的 `state` 推进为
-   `EXTRACT`（写 `"state": "EXTRACT"`，并 append history `{"state": "EXTRACT", "at": <ISO8601>}`）。
+   **委派 constraint-extractor 之前**，主协调器必须先运行
+   `python scripts/run_state.py set-state --run-dir <run-dir> --to EXTRACT`
+   （脚本负责写 `"state": "EXTRACT"` 并 append history `{"state": "EXTRACT", "at": <ISO8601>}`；
+   run_state.json 一律经 `scripts/run_state.py` 写入，禁止手动 Edit）。
    extract-constraints 在写 `constraints.json` 前会校验 state 已是 `EXTRACT`，未推进会被拦截并
    空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
    最小修改上一轮约束，不再委派 constraint-extractor。
@@ -160,8 +162,9 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
      `constraint-extractor`，退回纯文档驱动。
    - **CLASSIFY（EXTRACT barrier 后）**：主协调器跑
      `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，读
-     stdout JSON（`operator_category` + `evidence`），回写 `run_state.json` 的
-     `execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
+     stdout JSON（`operator_category` + `evidence`），运行
+     `python scripts/run_state.py set-fields --run-dir <run-dir> --set execution_strategy=<fusion|default> --set operator_category=<operator_category> --set operator_category_evidence=<evidence JSON>`
+     回写 `execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
      `operator_category`、`operator_category_evidence`。分类不进 constraints.json、
      不依赖 constraint-extractor 自由文本。此步仅在初始化 EXTRACT 后执行一次，后续约束更新
      沿用已确定的分类与执行策略。
@@ -195,11 +198,12 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
      它不是顶层状态，且不会触发完整重提取。
      每轮只维护 `<iter>/constraint_check.json`：
      1. 旧 run 若缺少 `run_state.constraint_check`，先按 `max_rounds=3` 补齐。若
-        `run_state.constraint_check.iteration != current_iteration`，初始化该子状态为
-        `{iteration: current_iteration, current_round: 0, status: pending,
+        `run_state.constraint_check.iteration != current_iteration`，运行
+        `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --reset`
+        初始化该子状态为 `{iteration: current_iteration, current_round: 0, status: pending,
         report: <iter>/constraint_check.json}`，保留配置的 `max_rounds`。同 iteration 恢复时
         不重置；若 report 已校验通过且状态为 passed，直接越过，防中断后重复检查。
-        每次子状态回写同时更新 `run_state.updated_at`。
+        每次子状态回写同时更新 `run_state.updated_at`（由 set-constraint-check 自动完成）。
      2. 将 check 轮次设为 `current_round + 1`，委派一个**全新上下文**的
         `constraint-checker`。消息必须给绝对路径：run_state、算子文档快照、本轮最终
         constraints、report，以及存在的 scene directive、supplementary-doc、
@@ -207,24 +211,29 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         每轮完整扫描并复核旧 open/unfixed，只有 checker 可标 fixed。
      3. 运行
         `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`。
-        通过后把 report 的 `current_round/status` 回写子状态。报告 `passed` → 结束子循环；
-        `failed` → 置顶层 `state=BLOCKED`，history append
-        `{"state":"BLOCKED","code":"CONSTRAINT_CHECK_FAILED",...}`，列出未修复问题并终止，
+        通过后运行
+        `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --current-round <N> --status <status>`
+        把 report 的 `current_round/status` 回写子状态。报告 `passed` → 结束子循环；
+        `failed` → 运行
+        `python scripts/run_state.py set-state --run-dir <run-dir> --to BLOCKED --code CONSTRAINT_CHECK_FAILED`，
+        列出未修复问题并终止，
         禁止进入 constraints-only SUCCESS 或 GENERATE。
      4. 报告 `needs_repair` → 委派一个与 checker **隔离的新上下文**
         `constraint-repairer`，输入同一证据集 + constraints + report。repairer 只能 Edit
         report 中 open/unfixed 对应约束，不得完整重提、不改 report 状态；修改后必须跑
-        validate_operator_rule → normalize → validate_artifacts constraints。成功后子状态记
-        `recheck_pending`，回到第 2 步由新的 checker 上下文做下一轮完整复检。
+        validate_operator_rule → normalize → validate_artifacts constraints。成功后运行
+        `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --status recheck_pending`，
+        回到第 2 步由新的 checker 上下文做下一轮完整复检。
      5. `max_rounds=3` 的语义是 check1 → repair → check2 → repair → check3；最后一次
         repair 后必有 check，不接受未复检约束。任何下游阶段开始前都必须确认当前
         iteration 的 report 有效且 `status=passed`。若 passed 后又因迟到的 conflict
-        resolution 或人工操作修改了 constraints，旧 passed 立即失效；将 current_round
-        重置为 0、status 改为 pending，并针对新版本重新执行完整 check 预算。
+        resolution 或人工操作修改了 constraints，旧 passed 立即失效；运行
+        `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --current-round 0 --status pending`，
+        并针对新版本重新执行完整 check 预算。
    - **constraints-only 终止**：若 `run_state.test_framework="constraints"`，在 EXTRACT
      和可能的 SUPPLEMENT、CONSTRAINT CHECK/REPAIR 完成后运行 constraints
-     normalize/validate；只有当前 iteration 的 `constraint_check.json.status=passed` 才把
-     `run_state.state` 更新为 `SUCCESS`，history 记录 `CONSTRAINTS_ONLY_SUCCESS`，并明确
+     normalize/validate；只有当前 iteration 的 `constraint_check.json.status=passed` 才运行
+     `python scripts/run_state.py set-state --run-dir <run-dir> --to SUCCESS --event CONSTRAINTS_ONLY_SUCCESS`，并明确
      报告成功范围仅为约束提取。跳过 case-generator、executor、Golden 和执行质量门禁。
    - `case-generator`：读取 `run_state.hs_scenario_mode`，调用
      `generate_cases.py` 时原样透传 `--hs-scenario-mode`；旧 run 缺少该字段时使用
@@ -285,8 +294,8 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
       `engine_error` 终止流程。
    - `quality-reviewer`
-7. 若基础产物可读、至少生成一条用例且执行器已完成运行，更新 run_state 为 SUCCESS
-   并结束。Golden 覆盖率和准确度 warning 当前不作为门禁。HS+TTK 所选执行平台
+7. 若基础产物可读、至少生成一条用例且执行器已完成运行，运行
+   `python scripts/run_state.py set-state --run-dir <run-dir> --to SUCCESS` 并结束。Golden 覆盖率和准确度 warning 当前不作为门禁。HS+TTK 所选执行平台
    `semantically_clean_count=0`，或 `planned` 模式缺失计划内必需场景时，生成器必须
    以 `HS_SEMANTIC_GATE_FAILED` 停在 GENERATE，不得进入 EXECUTE；其他部分语义
    warning 仍按非阻断处理。
@@ -303,9 +312,10 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
    constraint-updater；不再生成或合并 `supplement_additions.md`。
    主协调器禁止只看顶层 `root_cause`，必须按已校验的 `overall_action` 路由：
    - **UPDATE_CONSTRAINTS**：所有失败簇均为 constraint_extraction 且 findings 覆盖完整。
-     1. 先检查当前轮 `< max_iterations`，然后把 `current_iteration += 1`，状态置
-        `UPDATE_CONSTRAINTS`，history append 同名状态；不得进入 EXTRACT/SUPPLEMENT，
-        不调用 prompt-optimizer。
+     1. 先检查当前轮 `< max_iterations`，然后运行
+        `python scripts/run_state.py set-state --run-dir <run-dir> --to UPDATE_CONSTRAINTS --bump-iteration`
+        （脚本完成 `current_iteration += 1`、置状态并 append history 同名状态）；不得进入
+        EXTRACT/SUPPLEMENT，不调用 prompt-optimizer。
      2. 用上一轮 `execution_result.input_artifacts.constraints` 的 path/sha256 核对实际生成
         用例所用约束；缺少或哈希不一致时阻断，不能复制一个已被修改的文件。
      3. 运行
@@ -321,24 +331,30 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
              + `python scripts/validate_artifacts.py constraint_update <next>/constraint_update.json`），
              然后继续进入 CHECK/REPAIR（用户确认回归可接受）
            - **选项 2**：回滚到 `<next>/constraints.json.pre_update` 版本，终止本轮更新
-             （执行 `cp <next>/constraints.json.pre_update <next>/constraints.json`，
-             `state=BLOCKED`，`code=CONSTRAINT_REGRESSION_USER_ABORT`）
+             （执行 `cp <next>/constraints.json.pre_update <next>/constraints.json`，再运行
+             `python scripts/run_state.py set-state --run-dir <run-dir> --to BLOCKED --code CONSTRAINT_REGRESSION_USER_ABORT`）
            - **选项 3**：用户手动修改约束后继续（主协调器等待用户提供修改后的 constraints.json，
              收到后重新运行 `validate_constraint_regression.py --attempt 1`，通过后运行 finalize，再进入 CHECK/REPAIR）
          - 若 `limit_reached=false` 且 `ok=true`：无回归，继续。
-     5. 重置 `run_state.constraint_check` 到新 iteration，复用上文 CHECK/REPAIR 子循环；
+     5. 运行 `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --reset`
+        重置 `run_state.constraint_check` 到新 iteration，复用上文 CHECK/REPAIR 子循环；
         checker 必须验证所有 finding 的 expected_effect。passed 后直接 GENERATE → EXECUTE，
         不重新完整提取。
-   - **MIXED_FAILURE_REVIEW**：展示每个 cluster、case、根因、建议动作和可用 findings；
+   - **MIXED_FAILURE_REVIEW**：运行
+     `python scripts/run_state.py set-state --run-dir <run-dir> --to MIXED_FAILURE_REVIEW`，
+     展示每个 cluster、case、根因、建议动作和可用 findings；
      默认阻断自动更新/生成。用户可先处理 generator/executor 问题，或明确批准只应用约束
      findings；批准后仍须走上述版本化 UPDATE_CONSTRAINTS 和 CHECK/REPAIR，不能跳过。
    - **NEEDS_HUMAN_EVIDENCE**：立即进入 HUMAN_CHECKPOINT，请用户补充事实/停止；收到
      补充后 append 到 `supplement_constraints.md`，重新运行 failure-analyst 形成可校验
      findings，再决定 UPDATE_CONSTRAINTS，仍不 re-EXTRACT。
-   - **STOP_GENERATOR_BUG**：状态设为 STOP_GENERATOR_BUG，停止。
-   - **STOP_EXECUTOR_BUG**：状态设为 STOP_EXECUTOR_BUG，停止。
+   - **STOP_GENERATOR_BUG**：运行
+     `python scripts/run_state.py set-state --run-dir <run-dir> --to STOP_GENERATOR_BUG`，停止。
+   - **STOP_EXECUTOR_BUG**：运行
+     `python scripts/run_state.py set-state --run-dir <run-dir> --to STOP_EXECUTOR_BUG`，停止。
    `prompt_optimization` 只允许在任务成功后形成知识沉淀提案，不参与当前任务在线路由。
-9. 达到上限（`current_iteration > max_iterations`）后状态设为 `MAX_ITERATIONS`。
+9. 达到上限（`current_iteration > max_iterations`）后运行
+   `python scripts/run_state.py set-state --run-dir <run-dir> --to MAX_ITERATIONS`。
 10. **（终态前）分层沉淀询问**：若存在 `prompt_update_proposal.json`，先按
    `docs/PROMPT_EVOLUTION.md` 核验试验结果，再逐条展示目标 canonical 文件、摘要、
    失败/文档证据、适用范围与候选 diff，向用户询问“应用 / 暂缓 / 拒绝”。

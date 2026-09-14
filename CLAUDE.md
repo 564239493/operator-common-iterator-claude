@@ -204,6 +204,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 **scripts/** — 确定性 CLI 工具，不调用 LLM：
 - `init_run.py` — 创建 run 目录 + `run_state.json`；校验文档和 servers.json
+- `run_state.py` — `run_state.json` 唯一写入器：主协调器 CLI 子命令（set-state / set-fields / set-constraint-check）+ 供脚本 import 的落盘库函数
 - `init_batch.py` — 初始化批次目录
 - `batch_state.py` — 批次状态迁移
 - `generate_cases.py` — 调 facade 生成用例

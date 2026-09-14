@@ -19,6 +19,7 @@ from runtime_config import (
     resolve_input_path,
     validate_server_config,
 )
+from run_state import write_initial
 from select_prompt import assemble as assemble_aclnn_prompt
 from select_torch_npu_prompt import (
     assemble as assemble_torch_npu_prompt,
@@ -608,9 +609,7 @@ def main() -> int:
         "created_at": now,
         "updated_at": now,
     }
-    (run_dir / "run_state.json").write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    write_initial(run_dir, state)
     print(json.dumps(
         {
             "ok": True,

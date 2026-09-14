@@ -66,7 +66,8 @@ stub 副本头（这三类留开关，默认关以保持快照干净）。
 ## 第三步：衔接下游
 
 若供 `source-analyst` 用：
-1. 把 `<out>` 绝对路径回填 `run_state.operator_src_snapshot`。
+1. 运行 `python scripts/run_state.py set-fields --run-dir <run-dir> --set operator_src_snapshot=<out>`
+   （`<out>` 为快照绝对路径）回填 `run_state.operator_src_snapshot`。
 2. 重跑 `python scripts/extract_source_constraints.py --snapshot <out> --out
    <iter-dir>/source_raw.json` —— 闭包扩大后 `raw_checks` 应增多（对照
    `closure_report` 的 layer 命中）。
