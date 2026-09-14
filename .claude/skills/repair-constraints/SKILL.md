@@ -19,6 +19,8 @@ description: 根据 constraint_check.json 对当前 constraints.json 做最小�
 - 修复一个数组元素时避免改写、重排无关数组元素；
 - 修复条目必须保留原 `id`；修复中新增的约束条目必须分配新 `id`
   （当前最大编号 +1，全局唯一）。
+- `src_txt_line`（文档快照行号数组）为溯源字段：修复保留原条目时原样保留，新增条目
+  必须带该字段（从 `inputs/` 快照核实），来源条款不变时保持原值。
 
 ## 修复和校验
 
@@ -27,6 +29,11 @@ description: 根据 constraint_check.json 对当前 constraints.json 做最小�
 3. 运行 `python scripts/validate_operator_rule.py <constraints>`。
 4. 运行 `python scripts/normalize_constraints.py <constraints>`。
 5. 运行 `python scripts/validate_artifacts.py constraints <constraints>`。
-6. 结构失败只修正本次改动，最多三次；无法安全修复时停止并保留 issue 未关闭。
+6. 运行 `python scripts/diff_constraints_by_id.py <baseline> <constraints>`：exit 2
+   （同一份约束内容换 id / 重新编号）= 违反原位修改约定，必须改回按 id 原位修复。
+   `<baseline>` 用本迭代 `constraints.json.pre_update`（反馈轮）或上一轮
+   constraints.json（首轮 CHECK/REPAIR）。`modified` 条目应限于本次修复的 issue 对应
+   id，新增条目必须为新分配 id。
+7. 结构失败只修正本次改动，最多三次；无法安全修复时停止并保留 issue 未关闭。
 7. 返回尝试的 issue id；随后必须由新的 constraint-checker 上下文执行下一轮完整复检。
 

@@ -28,7 +28,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 VALID_OPS = {"add_constraint", "replace_constraint"}
-# InterParamConstraint 必填三字段;src_text/origin 由本脚本填,不取自 patch
+# InterParamConstraint 必填三字段;src_text/origin 由本脚本填,不取自 patch;
+# src_txt_line 为可选溯源行号数组,proposed 携带时透传
 INTER_REQUIRED_FIELDS = ("expr_type", "expr", "relation_params")
 # patch 层"展开到所有平台"的哨兵值:合并器据此把条目写入 cip 中每个平台桶,
 # 不产生 common 桶(跨平台约束直接落各平台,不依赖生成器侧 common 合并)。
@@ -150,6 +151,20 @@ def _build_entry(patch: dict, origin: str) -> dict:
         raise ValueError(f"patch 项 basis 必须包含可追溯依据: {patch!r}")
     entry["src_text"] = basis.strip()
     entry["origin"] = origin
+    src_lines = proposed.get("src_txt_line")
+    if src_lines is not None:
+        if (
+            not isinstance(src_lines, list)
+            or not src_lines
+            or any(
+                isinstance(line, bool) or not isinstance(line, int) or line < 1
+                for line in src_lines
+            )
+        ):
+            raise ValueError(
+                f"patch 项 proposed.src_txt_line 必须是 >=1 的整数非空数组: {patch!r}"
+            )
+        entry["src_txt_line"] = src_lines
     return entry
 
 
