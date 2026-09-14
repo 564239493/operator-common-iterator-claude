@@ -203,7 +203,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         初始化该子状态为 `{iteration: current_iteration, current_round: 0, status: pending,
         report: <iter>/constraint_check.json}`，保留配置的 `max_rounds`。同 iteration 恢复时
         不重置；若 report 已校验通过且状态为 passed，直接越过，防中断后重复检查。
-        每次子状态回写同时更新 `run_state.updated_at`（由 set-constraint-check 自动完成）。
+        每次子状态回写同时更新 `run_state.updated_at`。
      2. 将 check 轮次设为 `current_round + 1`，委派一个**全新上下文**的
         `constraint-checker`。消息必须给绝对路径：run_state、算子文档快照、本轮最终
         constraints、report，以及存在的 scene directive、supplementary-doc、

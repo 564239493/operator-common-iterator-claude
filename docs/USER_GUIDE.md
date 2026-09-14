@@ -326,7 +326,6 @@ settings.json 使用默认询问模式；只预授权正常工作流所需的低
 | 工具名 | 功能 | 关键参数 |
 |---|---|---|
 | `init_run` | 创建 run 目录和初始状态 | `doc`, `max_iterations`, `case_count`, `mode` |
-| `run_state.py`（脚本，非 MCP） | 更新 run_state.json 唯一写入器 | `--run-dir`，子命令 `set-state`/`set-fields`/`set-constraint-check` |
 | `read_operator_prompt` | 读取当前提示词 | `run_dir` |
 | `write_operator_prompt` | 写入优化后的提示词 | `run_dir`, `iter_dir`, `content`, `version` |
 | `find_latest_operator_prompt` | 查找最新版本提示词 | — |

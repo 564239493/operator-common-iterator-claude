@@ -3,22 +3,20 @@
 
 所有对 run_state.json 的落盘都必须经过本模块：
 
-- 既有脚本（init_run.py / render_scene_directive.py /
-  update_supplement_state.py）import 库函数 ``write_initial`` /
-  ``save_run_state`` 完成落盘；
+- init_run.py / render_scene_directive.py / update_supplement_state.py
+  import 库函数 ``write_initial`` / ``save_run_state`` 完成落盘；
 - 主协调器在各触发节点调用 CLI 子命令（set-state / set-fields /
-  set-constraint-check），不再手动 Edit 该文件。
+  set-constraint-check），不手动 Edit 该文件。
 
-设计约束（与手工写入时代逐点等价）：
+行为契约：
 
-- 写入时机与内容由调用方决定，本脚本只做机械写入，不含任何业务判断；
-- 序列化固定为 ``json.dumps(..., ensure_ascii=False, indent=2)``；
-  库函数按调用方现状显式决定尾换行（init_run / render 无、
-  update_supplement_state 有），CLI 写回时保持文件原有的尾换行状态；
-- ``updated_at`` 仅在 set-constraint-check 刷新（对应 SKILL 中
-  constraint_check 子状态回写的要求）；set-state / set-fields 不刷新；
-- 唯一附加行为是合法性校验（状态名 / check 状态枚举 / 字段名），
-  非法输入 exit 2 且不落盘。
+- 写入时机与内容由调用方决定，本脚本只做机械写入，不含业务判断；
+- 序列化固定为 ``json.dumps(..., ensure_ascii=False, indent=2)``；库函数
+  按调用方约定显式决定尾换行（init_run / render_scene_directive 无、
+  update_supplement_state 有），CLI 写回时保持文件原有尾换行状态；
+- ``updated_at`` 仅在 set-constraint-check 刷新（constraint_check 子状态
+  回写要求）；set-state / set-fields 不刷新；
+- 合法性校验（状态名 / check 状态枚举 / 字段名）失败时 exit 2 且不落盘。
 """
 from __future__ import annotations
 
@@ -78,8 +76,8 @@ KNOWN_TOP_LEVEL_KEYS = frozenset({
 })
 
 # set-fields 不允许直写的键：state/history 有专用命令语义（set-state 负责
-# append history），created_at/updated_at 是时间戳簿记（刷新点与现状一致，
-# 不由调用方随意改）。
+# append history），created_at/updated_at 是时间戳簿记（刷新点由各命令的
+# 契约决定，不经 set-fields 直写）。
 PROTECTED_KEYS = frozenset({"state", "history", "created_at", "updated_at"})
 
 # constraint_check 子对象的合法子键。
@@ -109,7 +107,7 @@ def write_initial(run_dir: Path, state: dict) -> None:
 
 
 def save_run_state(path: Path, state: dict, trailing_newline: bool) -> None:
-    """唯一 write_text 出口：尾换行按调用方现状显式传入。"""
+    """唯一 write_text 出口：尾换行由调用方显式指定。"""
     if not isinstance(state, dict):
         raise ValueError("run_state payload must be a dict")
     _validate_state_value(state)
@@ -140,7 +138,7 @@ def _has_trailing_newline(path: Path) -> bool:
 
 
 def _save_cli(path: Path, state: dict) -> None:
-    """CLI 写回保持文件现有尾换行状态（与手工 Edit 时代一致，不增不删）。"""
+    """CLI 写回保持文件现有尾换行状态（不增不删）。"""
     trailing = _has_trailing_newline(path)
     save_run_state(path, state, trailing_newline=trailing)
 

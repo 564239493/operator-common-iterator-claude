@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Equivalence + validation tests for scripts/run_state.py (single writer).
+"""Unit + integration tests for scripts/run_state.py (run_state.json 唯一写入器).
 
-等价性断言以"改造前主协调器手动 Edit 的应写结果"为基准：每条 CLI 命令后
-比对整个 run_state.json，除命令声明的字段外一律不变（含 updated_at 是否
-刷新、尾换行是否保持）。
+断言基准：每条 CLI 命令 / 库函数写出的 run_state.json 与命令契约声明的
+字段完全一致——声明的字段按预期变化，未声明字段一律不变（含 updated_at
+是否刷新、尾换行是否保持）。
 """
 from __future__ import annotations
 
@@ -96,8 +96,8 @@ class TestLibrary(RunStateCliTestBase):
         raw = self.raw_bytes()
         self.assertFalse(raw.endswith(b"\n"))  # 与 init_run.py 历史落盘一致
         self.assertEqual(json.loads(raw), initial_state())
-        # 字节级等价：与 init_run.py 改造前的序列化表达式完全一致
-        # （write_text 默认换行翻译：\n → os.linesep，新旧代码同此行为）
+        # 字节级断言：与 json.dumps(..., ensure_ascii=False, indent=2)
+        # 的 write_text 落盘结果一致（含换行翻译 \n → os.linesep）
         expected = json.dumps(
             initial_state(), ensure_ascii=False, indent=2
         ).encode("utf-8").replace(b"\n", os.linesep.encode())
@@ -118,8 +118,8 @@ class TestLibrary(RunStateCliTestBase):
 
 
 class TestSetState(RunStateCliTestBase):
-    def test_b1_advance_extract(self) -> None:
-        """B1：state=EXTRACT + history append {"state","at"}；其余字段不动。"""
+    def test_advance_to_extract(self) -> None:
+        """推进 EXTRACT：写 state 并 append history {"state","at"}；其余字段不动。"""
         self.write_state(initial_state())
         code, payload = run_cli("set-state", "--run-dir", str(self.run_dir), "--to", "EXTRACT")
         self.assertEqual(code, 0)
@@ -130,7 +130,7 @@ class TestSetState(RunStateCliTestBase):
         entry = state["history"][-1]
         self.assertEqual(set(entry), {"state", "at"})
         self.assertEqual(entry["state"], "EXTRACT")
-        # updated_at 不刷（现状：SKILL 对 B1 无要求）
+        # set-state 不刷新 updated_at
         self.assertEqual(state["updated_at"], "2026-09-09T00:00:00+00:00")
         # 其他字段全不变
         expected = initial_state()
@@ -138,7 +138,7 @@ class TestSetState(RunStateCliTestBase):
         expected["history"] = expected["history"] + [entry]
         self.assertEqual(state, expected)
 
-    def test_b5_blocked_with_code(self) -> None:
+    def test_blocked_with_code(self) -> None:
         self.write_state(initial_state())
         code, _ = run_cli(
             "set-state", "--run-dir", str(self.run_dir),
@@ -149,7 +149,7 @@ class TestSetState(RunStateCliTestBase):
         self.assertEqual(set(entry), {"state", "code", "at"})
         self.assertEqual(entry["code"], "CONSTRAINT_CHECK_FAILED")
 
-    def test_b8_success_with_event(self) -> None:
+    def test_success_with_event(self) -> None:
         self.write_state(initial_state())
         code, _ = run_cli(
             "set-state", "--run-dir", str(self.run_dir),
@@ -162,7 +162,7 @@ class TestSetState(RunStateCliTestBase):
         self.assertEqual(set(entry), {"state", "event", "at"})
         self.assertEqual(entry["event"], "CONSTRAINTS_ONLY_SUCCESS")
 
-    def test_b10_bump_iteration(self) -> None:
+    def test_update_constraints_bumps_iteration(self) -> None:
         self.write_state(initial_state())
         code, payload = run_cli(
             "set-state", "--run-dir", str(self.run_dir),
@@ -197,8 +197,8 @@ class TestSetState(RunStateCliTestBase):
 
 
 class TestSetFields(RunStateCliTestBase):
-    def test_b2_classify_backfill(self) -> None:
-        """B2：CLASSIFY 一次回写 3 个字段；updated_at/其他字段不动。"""
+    def test_classify_backfill_fields(self) -> None:
+        """分类回写：一次写 3 个字段；updated_at 与其他字段不动。"""
         self.write_state(initial_state())
         evidence = '[{"rule":"R1","quote":"..."}]'
         code, payload = run_cli(
@@ -215,8 +215,8 @@ class TestSetFields(RunStateCliTestBase):
         self.assertEqual(state["updated_at"], "2026-09-09T00:00:00+00:00")
         self.assertEqual(len(state["history"]), 1)
 
-    def test_c1_path_value_raw_string_fallback(self) -> None:
-        """C1：Windows 反斜杠绝对路径按原始字符串写入（JSON 解析失败的回退）。"""
+    def test_windows_path_value_raw_string_fallback(self) -> None:
+        """Windows 反斜杠绝对路径按原始字符串写入（JSON 解析失败的回退）。"""
         self.write_state(initial_state())
         code, _ = run_cli(
             "set-fields", "--run-dir", str(self.run_dir),
@@ -251,8 +251,8 @@ class TestSetFields(RunStateCliTestBase):
 
 
 class TestSetConstraintCheck(RunStateCliTestBase):
-    def test_b3_reset_preserves_max_rounds(self) -> None:
-        """B3/B12：--reset 保留 max_rounds、重置其余、report 按当前轮生成、刷 updated_at。"""
+    def test_reset_preserves_max_rounds(self) -> None:
+        """--reset：保留 max_rounds、重置其余字段、report 指向当前轮、刷新 updated_at。"""
         state = initial_state()
         state["constraint_check"]["max_rounds"] = 5
         state["constraint_check"]["status"] = "passed"
@@ -272,7 +272,7 @@ class TestSetConstraintCheck(RunStateCliTestBase):
         self.assertNotEqual(after["updated_at"], "2026-09-09T00:00:00+00:00")
         self.assertEqual(payload["constraint_check"]["max_rounds"], 5)
 
-    def test_b3_reset_old_run_missing_check_defaults_max_rounds_3(self) -> None:
+    def test_reset_defaults_max_rounds_3_when_missing(self) -> None:
         state = initial_state()
         del state["constraint_check"]
         self.write_state(state)
@@ -282,7 +282,7 @@ class TestSetConstraintCheck(RunStateCliTestBase):
         self.assertEqual(code, 0)
         self.assertEqual(self.read_state()["constraint_check"]["max_rounds"], 3)
 
-    def test_b4_round_status_backfill(self) -> None:
+    def test_round_status_backfill(self) -> None:
         self.write_state(initial_state())
         code, _ = run_cli(
             "set-constraint-check", "--run-dir", str(self.run_dir),
@@ -296,7 +296,7 @@ class TestSetConstraintCheck(RunStateCliTestBase):
         self.assertEqual(check["iteration"], 0)
         self.assertEqual(check["report"], "")
 
-    def test_b6_recheck_pending(self) -> None:
+    def test_recheck_pending(self) -> None:
         self.write_state(initial_state())
         code, _ = run_cli(
             "set-constraint-check", "--run-dir", str(self.run_dir),
@@ -307,7 +307,7 @@ class TestSetConstraintCheck(RunStateCliTestBase):
             self.read_state()["constraint_check"]["status"], "recheck_pending"
         )
 
-    def test_b7_passed_invalidation_reset(self) -> None:
+    def test_passed_invalidation_reset(self) -> None:
         state = initial_state()
         state["constraint_check"]["current_round"] = 2
         state["constraint_check"]["status"] = "passed"
@@ -354,9 +354,9 @@ class TestSetConstraintCheck(RunStateCliTestBase):
 
 
 class TestDelegatedScripts(unittest.TestCase):
-    """A2/A3 落盘委托后的集成等价性：字段、stdout、尾换行与改造前一致。"""
+    """落盘委托脚本集成测试（render_scene_directive / update_supplement_state）：字段、stdout、尾换行格式。"""
 
-    def test_a3_update_supplement_state(self) -> None:
+    def test_update_supplement_state_delegation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             path = run_dir / "run_state.json"
@@ -375,7 +375,7 @@ class TestDelegatedScripts(unittest.TestCase):
             self.assertEqual(after["supplement_hash"], payload["supplement_hash"])
             self.assertEqual(after["supplement_updated_iteration"], 1)
             self.assertEqual(after["last_consumed_supplement_hash"], "")
-            # A3 现状：落盘带尾换行
+            # update_supplement_state 落盘带尾换行
             self.assertTrue(path.read_bytes().endswith(b"\n"))
             # --consume 对齐已消费 hash
             code, payload = run_script(
@@ -389,7 +389,7 @@ class TestDelegatedScripts(unittest.TestCase):
                 after["last_consumed_supplement_hash"], after["supplement_hash"]
             )
 
-    def test_a2_render_scene_directive_scope_off(self) -> None:
+    def test_render_scene_directive_scope_off_delegation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             inputs = run_dir / "inputs"
@@ -413,7 +413,7 @@ class TestDelegatedScripts(unittest.TestCase):
             self.assertEqual(after["scene"]["scope"], "off")
             self.assertEqual(after["scene"]["scan"], str(scan))
             self.assertNotEqual(after["updated_at"], "2026-09-09T00:00:00+00:00")
-            # A2 现状：落盘无尾换行
+            # render_scene_directive 落盘无尾换行
             self.assertFalse(path.read_bytes().endswith(b"\n"))
 
 
