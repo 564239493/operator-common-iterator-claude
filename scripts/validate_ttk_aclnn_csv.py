@@ -19,6 +19,9 @@ VALID_DTYPES = {
     "bfloat16", "bf16", "int4", "int8", "int16", "int32", "int64",
     "uint8", "uint16", "uint32", "uint64",
     "bool", "complex64", "complex128",
+    # CANN 新量化 dtype（ATK/ACLNN 文档 dtype 名小写透传）
+    "hifloat8", "float8_e4m3fn", "float8_e5m2", "float8_e8m0",
+    "float4_e2m1", "float4_e1m2", "float6_e3m2", "float6_e2m3",
     "None",  # absent optional
 }
 
