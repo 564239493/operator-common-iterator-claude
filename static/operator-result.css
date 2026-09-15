@@ -1,0 +1,949 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --bg: #f4f6f9;
+    --panel-bg: #ffffff;
+    --border: #e2e8f0;
+    --text: #1e293b;
+    --text-secondary: #64748b;
+    --text-muted: #94a3b8;
+    --accent: #3b82f6;
+    --green: #10b981;
+    --red: #ef4444;
+    --orange: #f59e0b;
+    --code-bg: #f8fafc;
+    --code: #475569;
+}
+
+html, body {
+    height: 100%;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+}
+
+#app {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ===== 顶栏 ===== */
+.topbar {
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    flex-wrap: wrap;
+    min-height: 56px;
+}
+
+.topbar-title {
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+/* ===== 副信息栏 ===== */
+.info-bar {
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 80px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.info-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.info-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-width: 0;
+    margin-left: auto;
+}
+
+.divider-v {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+    flex-shrink: 0;
+}
+
+.stat-item {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.stat-num {
+    font-weight: 700;
+    font-size: 14px;
+    line-height: 1.2;
+}
+
+.stat-pass .stat-num {
+    color: var(--green);
+}
+
+.stat-fail .stat-num {
+    color: var(--red);
+}
+
+.stat-warn .stat-num {
+    color: var(--orange);
+}
+
+.stat-running .stat-num {
+    color: var(--accent);
+}
+
+.stat-total .stat-num {
+    color: var(--text);
+}
+
+.stat-succ .stat-num {
+    color: var(--green);
+}
+
+.stat-bad .stat-num {
+    color: var(--red);
+}
+
+.field-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+/* 响应式: 小屏适配 (时间线间距固定 56px, 超出时水平滚动) */
+@media (max-width: 1600px) {
+    .info-left .el-select {
+        width: 240px !important;
+    }
+
+    .info-right .el-select {
+        width: 240px !important;
+    }
+}
+
+@media (max-width: 1400px) {
+    .info-left .el-select {
+        width: 200px !important;
+    }
+
+    .info-right .el-select {
+        width: 200px !important;
+    }
+}
+
+@media (max-width: 1100px) {
+    .info-bar {
+        gap: 10px;
+    }
+
+    .info-left .el-select {
+        width: 160px !important;
+    }
+
+    .info-right .el-select {
+        width: 160px !important;
+    }
+
+    .timeline-node {
+        min-width: 44px;
+    }
+
+    .node-label {
+        font-size: 11px;
+    }
+}
+
+@media (max-width: 900px) {
+    .info-left .el-select {
+        width: 130px !important;
+    }
+
+    .info-right .el-select {
+        width: 130px !important;
+    }
+
+    .node-time {
+        display: none;
+    }
+
+    .stat-item {
+        font-size: 11px;
+    }
+}
+
+@media (max-width: 700px) {
+    .info-left .el-select {
+        width: 110px !important;
+    }
+
+    .info-right .el-select {
+        width: 110px !important;
+    }
+
+    .field-label {
+        font-size: 12px;
+    }
+
+    .field-label {
+        font-size: 12px;
+    }
+}
+
+/* ===== 主体: 页面滚动, 表格显示完整 ===== */
+.main {
+    flex: 1;
+    min-height: 0;
+    margin: 16px;
+    margin-bottom: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+}
+
+/* el-collapse 面板: 自然高度, 表格显示完整 */
+.panels {
+    display: flex;
+    flex-direction: column;
+}
+
+.panels .el-collapse {
+    display: flex;
+    flex-direction: column;
+    border-top: none;
+}
+
+.panels .el-collapse-item {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 12px;
+    border-radius: 8px;
+}
+
+.panels .el-collapse-item:last-child {
+    margin-bottom: 0;
+}
+
+.panels .el-collapse-item__header {
+    padding: 8px 16px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+    border-radius: 8px 8px 0 0;
+}
+
+.panels .el-collapse-item.is-active .el-collapse-item__header {
+    border-radius: 0;
+}
+
+.panels .el-collapse-item__header:hover {
+    background: #fafbfc;
+}
+
+.panels .el-collapse-item__arrow {
+    margin-left: auto;
+}
+
+.panels .el-collapse-item__wrap {
+    background: var(--panel-bg);
+}
+
+/* 展开态: 让 wrap 高度跟随内容自适应, 避免表格行变化(筛选)时被固定高度裁剪 */
+.panels .el-collapse-item.is-active .el-collapse-item__wrap {
+    height: auto !important;
+}
+
+.panels .el-collapse-item__content {
+    padding: 0;
+    flex: 1;
+    min-height: 0;
+    height: auto !important;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 约束面板: 自然高度, 滚动交给 .main; 避免中间层固定高度裁剪 */
+.panels [data-panel="rel"] .el-collapse-item__content {
+    overflow: visible !important;
+}
+
+.panels [data-panel="rel"] .constraint-area {
+    padding-bottom: 0;
+}
+
+.title-row {
+    display: flex;
+    align-items: center;
+    justify-content: left;
+    gap: 12px;
+    width: 100%;
+}
+
+.card-title {
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.card-title .icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+}
+
+.icon-constraint {
+    background: #ede9fe;
+}
+
+.icon-input {
+    background: #dbeafe;
+}
+
+.icon-output {
+    background: #ccfbf1;
+}
+
+.card-count {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* 表格: 显示完整内容, 无内部滚动 */
+.table-pad {
+    padding: 10px;
+}
+
+.op-table {
+    width: 100%;
+}
+
+.op-table .el-table__header th {
+    background: #fafbfc !important;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.op-table .cell {
+    font-size: 13px;
+}
+
+/* 等宽字体字段 */
+.mono {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+}
+
+.param-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* 表达式代码块 */
+.expr-block {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    font-size: 13px;
+    color: var(--code);
+    background: var(--code-bg);
+    padding: 8px 12px;
+    border-radius: 6px;
+    word-break: break-all;
+    line-height: 1.5;
+    border: 1px solid #f1f5f9;
+}
+
+.src-block {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    font-size: 13px;
+    color: var(--text);
+    word-break: break-all;
+    line-height: 1.5;
+}
+
+/* 运行态转圈 */
+.spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    vertical-align: -1.5px;
+    margin-right: 5px;
+    animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* 约束面板: 表格 + 行内编辑 */
+.constraint-area {
+    padding: 4px 12px 12px;
+}
+
+.constraint-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 4px 0 10px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.constraint-toolbar .toolbar-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* 表格内文本 */
+.c-expr-text {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    font-size: 13px;
+    color: var(--code);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+}
+
+.c-src-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+}
+
+.c-src-link {
+    cursor: pointer;
+    color: var(--accent);
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+}
+
+.c-src-link:hover {
+    color: #2563eb;
+    text-decoration-style: solid;
+}
+
+/* 原文定位弹框 */
+.doc-viewer {
+    max-height: 65vh;
+    overflow-y: auto;
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fafbfc;
+}
+
+.doc-line {
+    display: flex;
+    gap: 12px;
+    padding: 1px 8px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.doc-line-no {
+    min-width: 36px;
+    text-align: right;
+    color: var(--text-muted);
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.doc-line-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+}
+
+.doc-line-hit {
+    background: #fff8e1;
+    border-left: 3px solid var(--orange);
+}
+
+.doc-line-hit .doc-line-no {
+    color: var(--orange);
+    font-weight: 600;
+}
+
+.doc-line-text mark {
+    background: #ffe082;
+    color: inherit;
+    padding: 0 1px;
+    border-radius: 2px;
+}
+
+.c-type-tag {
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: #ede9fe;
+    color: #7c3aed;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.c-param-chip {
+    font-size: 11px;
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--code-bg);
+    color: var(--text-secondary);
+    border: 1px solid #f1f5f9;
+}
+
+.c-params {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+/* 编辑态单元格 */
+.c-cell-edit .el-textarea__inner {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    font-size: 13px;
+}
+
+.c-tag-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+
+.c-tag-add {
+    width: 120px;
+    font-size: 12px;
+}
+
+/* el-tag 状态色 */
+.state-tag {
+    font-weight: 600;
+}
+
+/* ===== 轮次对比: 表格上方数量差异统计 ===== */
+.diff-stats {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.diff-stats-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-right: 4px;
+}
+
+.diff-stat-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 14px;
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+.diff-stat-chip b {
+    font-weight: 700;
+}
+
+.diff-stat-chip .arrow {
+    color: var(--text-muted);
+    margin: 0 2px;
+}
+
+.diff-stat-chip.clickable {
+    cursor: pointer;
+    transition: all .15s;
+}
+
+.diff-stat-chip.clickable:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .12);
+}
+
+.diff-stat-chip.clickable.active {
+    outline: 2px solid currentColor;
+    outline-offset: -1px;
+}
+
+.diff-stat-chip.active.added {
+    background: #dcfce7;
+}
+
+.diff-stat-chip.active.removed {
+    background: #fee2e2;
+}
+
+.diff-stat-chip.active.modified {
+    background: #fef3c7;
+}
+
+.diff-reset-btn {
+    margin-left: 4px;
+    font-size: 12px;
+    padding: 3px 12px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--panel-bg);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all .15s;
+}
+
+.diff-reset-btn:hover {
+    border-color: var(--accent, #409eff);
+    color: var(--accent, #409eff);
+}
+
+.diff-stat-chip.added {
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+    color: #15803d;
+}
+
+.diff-stat-chip.removed {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: #b91c1c;
+}
+
+.diff-stat-chip.modified {
+    background: #fffbeb;
+    border-color: #fde68a;
+    color: #b45309;
+}
+
+.diff-stat-chip.none {
+    color: var(--text-muted);
+}
+
+/* ===== 轮次对比(内嵌约束表) ===== */
+.diff-line-tag {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-family: -apple-system, sans-serif;
+    white-space: nowrap;
+}
+
+.diff-line-tag.prev {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.diff-line-tag.cur {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+/* 修改: 上一轮 vs 当前轮 对比块 */
+.expr-diff {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.expr-diff-block {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.expr-diff-block.prev {
+    border-color: #fecaca;
+    background: #fef7f7;
+}
+
+.expr-diff-block.cur {
+    border-color: #bbf7d0;
+    background: #f7fdf9;
+}
+
+.expr-diff-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-bottom: 1px dashed var(--border);
+}
+
+.expr-diff-block.prev .expr-diff-head {
+    background: #fee2e2;
+}
+
+.expr-diff-block.cur .expr-diff-head {
+    background: #d1fae5;
+}
+
+.expr-diff-body {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.expr-diff-block.prev .expr-diff-body {
+    color: #991b1b;
+    text-decoration: line-through;
+    text-decoration-color: rgba(153, 27, 27, .5);
+}
+
+.expr-diff-block.cur .expr-diff-body {
+    color: var(--code);
+}
+
+.expr-diff-arrow {
+    align-self: center;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1;
+    margin: -1px 0;
+}
+
+.expr-diff-fields {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.expr-diff-field {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0 5px;
+    font-family: "JetBrains Mono", Consolas, monospace;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+/* 约束表内 diff 标记 */
+.op-table ins {
+    background: #d1fae5;
+    color: #065f46;
+    text-decoration: none;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+.op-table del {
+    background: #fee2e2;
+    color: #991b1b;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+/* 时间线: 单独一行, 位于 constraint-toolbar 上方 */
+.timeline-bar {
+    margin: 0 16px;
+    padding: 4px 0;
+    margin-top: 12px;
+}
+
+/* 横向执行历史 timeline: 水平滚动 */
+.history-wrap {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.timeline-scroll {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #c1c8d4 #f1f5f9;
+}
+
+.timeline-scroll::-webkit-scrollbar {
+    height: 6px;
+}
+
+.timeline-scroll::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 3px;
+}
+
+.timeline-scroll::-webkit-scrollbar-thumb {
+    background: #c1c8d4;
+    border-radius: 3px;
+}
+
+.timeline-scroll::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+.op-timeline-h {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 56px;
+    padding: 4px 16px;
+    white-space: nowrap;
+    min-width: 100%;
+}
+
+.timeline-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+    min-width: 60px;
+}
+
+.node-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 1px var(--border);
+    z-index: 1;
+}
+
+.timeline-node.success .node-dot {
+    background: var(--green);
+}
+
+.timeline-node.danger .node-dot {
+    background: var(--red);
+}
+
+.timeline-node.primary .node-dot {
+    background: var(--accent);
+}
+
+.timeline-node.info .node-dot {
+    background: var(--text-muted);
+}
+
+.timeline-node.running .node-dot {
+    background: var(--accent);
+    animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        box-shadow: 0 0 0 1px var(--accent);
+    }
+    50% {
+        box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.3);
+    }
+}
+
+.node-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+    margin-top: 4px;
+    white-space: nowrap;
+}
+
+.timeline-node.running .node-label {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.node-time {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    white-space: nowrap;
+}
+
+.node-line {
+    position: absolute;
+    top: 5px;
+    left: calc(50% + 5px);
+    width: calc(100% + 46px);
+    height: 2px;
+    background: var(--border);
+    z-index: 0;
+}
+
+.timeline-node:last-child .node-line {
+    display: none;
+}
+
+.history-empty {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
