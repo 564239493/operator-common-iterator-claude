@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import ComparisonResult, ExecutionResult, FusionPhase
+from .plog import DEFAULT_PLOG_DIR, collect_plog_snapshot
 from .report_parser import parse_fusion_comparison, parse_xlsx_report
 from .ssh import (
     CommandResult,
@@ -132,6 +133,26 @@ def _resolve_transfer_mode(server_info: dict[str, Any]) -> str:
         )
         return "auto"
     return raw
+
+
+def _resolve_plog_config(server_info: dict[str, Any]) -> tuple[bool, str]:
+    """Resolve PLOG collection config for the ATK chain.
+
+    Mirrors ``executer/ttk_runner.py`` so both chains behave consistently:
+    ``atk.collect_plog`` / ``atk.plog_dir`` win when present, otherwise fall
+    back to the machine-level ``ttk.*`` values (PLOG lives under a device-side
+    directory shared by both frameworks), otherwise the plog defaults.
+    """
+    atk_cfg = server_info.get("atk") or {}
+    ttk_cfg = server_info.get("ttk") or {}
+    if "collect_plog" in atk_cfg:
+        collect_plog = atk_cfg.get("collect_plog", True) is not False
+    else:
+        collect_plog = ttk_cfg.get("collect_plog", True) is not False
+    plog_dir = str(
+        atk_cfg.get("plog_dir") or ttk_cfg.get("plog_dir") or DEFAULT_PLOG_DIR
+    ).strip()
+    return collect_plog, plog_dir
 
 # ── Local generator assets (mirrored from operator-common-iterator) ───────
 
@@ -810,6 +831,18 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
     result = ExecutionResult()
     overall_start = time.monotonic()
 
+    # PLOG 采集配置前置解析：所有退出路径都携带 plog 元信息
+    # (validate_execution 对 mode=real 要求 plog 字段)。
+    server_cfg = req.server_info if isinstance(req.server_info, dict) else {}
+    supports_npu = _server_supports_npu(server_cfg)
+    collect_plog, plog_dir = _resolve_plog_config(server_cfg)
+    plog_info: dict[str, Any] = {
+        "status": "not_applicable" if not supports_npu else "not_attempted",
+        "remote_plog_dir": plog_dir,
+    }
+    result.plog = plog_info
+    execution_started = False
+
     # --- execution audit log ------------------------------------------------
     log_dir = req.iter_dir or _resolve_cache_dir(req, operator_name)
     log_handler = _setup_execution_log(log_dir)
@@ -985,6 +1018,7 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
         timed_out = False
         cmd_result: CommandResult | None = None
         try:
+            execution_started = True
             cmd_result = await run(conn, cmd, timeout=req.atk_timeout)
         except SSHEngineError as exc:
             if "超时" in str(exc):
@@ -1004,6 +1038,16 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
                     "execute_cases: remote atk command failed for %s",
                     operator_name,
                 )
+                if execution_started:
+                    plog_info = await collect_plog_snapshot(
+                        conn,
+                        remote_run_dir=remote.output_root,
+                        artifact_dir=cache_dir,
+                        plog_dir=plog_dir,
+                        transfer_mode=transfer_mode,
+                        enabled=collect_plog and supports_npu,
+                    )
+                    result.plog = plog_info
                 result.status = "error"
                 result.error_message = str(exc)
                 result.duration = time.monotonic() - overall_start
@@ -1096,6 +1140,18 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
                 f"({remote.output_root})"
             )
 
+        # ── 6.5 PLOG 快照（与 TTK 链一致，真实执行后必采一次） ───────
+        if plog_info.get("status") == "not_attempted":
+            plog_info = await collect_plog_snapshot(
+                conn,
+                remote_run_dir=output_dir or remote.output_root,
+                artifact_dir=cache_dir,
+                plog_dir=plog_dir,
+                transfer_mode=transfer_mode,
+                enabled=collect_plog and supports_npu,
+            )
+            result.plog = plog_info
+
         # ── 7. Final classification ────────────────────────────────────
         if (
             result.status == "failed"
@@ -1154,6 +1210,16 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
     result = ExecutionResult()
     result.execution_strategy = "fusion"
     overall_start = time.monotonic()
+
+    # PLOG 采集配置前置解析：任何 _bail 路径也携带 plog 元信息。
+    server_cfg = req.server_info if isinstance(req.server_info, dict) else {}
+    supports_npu = _server_supports_npu(server_cfg)
+    collect_plog, plog_dir = _resolve_plog_config(server_cfg)
+    plog_info: dict[str, Any] = {
+        "status": "not_applicable" if not supports_npu else "not_attempted",
+        "remote_plog_dir": plog_dir,
+    }
+    result.plog = plog_info
 
     log_dir = req.iter_dir or _resolve_cache_dir(req, operator_name)
     log_handler = _setup_execution_log(log_dir)
@@ -1521,6 +1587,18 @@ async def _execute_fusion(req: RunRequest) -> ExecutionResult:
                     exc,
                 )
                 comparison = None
+
+        # ── PLOG 快照（与 TTK 链一致，NPU phase 执行后必采一次） ───────
+        if plog_info.get("status") == "not_attempted":
+            plog_info = await collect_plog_snapshot(
+                conn,
+                remote_run_dir=out_t2 or out_t1 or remote.output_root,
+                artifact_dir=cache_dir,
+                plog_dir=plog_dir,
+                transfer_mode=transfer_mode,
+                enabled=collect_plog and supports_npu,
+            )
+            result.plog = plog_info
     finally:
         try:
             conn.close()

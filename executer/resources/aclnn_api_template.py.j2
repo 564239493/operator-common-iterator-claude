@@ -102,26 +102,40 @@ def _prepare_grouped_matmul_v5_group_list(
 
 def _prepare_grouped_matmul_v5_weight(
         tensor, group_type, weight_transposed):
-    """Materialise documented cases layout into the ACLNN tensor layout."""
+    """Materialise documented cases layout into the ACLNN tensor layout.
+
+    The ACLNN tensor must always carry the mathematical layout (2-D (K,N),
+    3-D (g,K,N)); the transposed flag is carried by a non-contiguous
+    transposed view over the (N,K)/(g,N,K) cases storage, per the Atlas A2
+    platform constraints (doc lines 595-597: the weight storage last dim is
+    the N axis when not transposed and the K axis when transposed, and
+    transposed tensors must be non-contiguous).  Confirmed by the NPU check
+    SplitM* reporting 161002 when Weight dim0/dim1 (logical) != x dim1 (K).
+    """
     if not isinstance(tensor, torch.Tensor) or tensor.dim() < 2:
         return tensor
 
-    if group_type == 0 and tensor.dim() == 3 and tensor.dtype == torch.int8:
+    if group_type == 0 and tensor.dim() == 3:
         if weight_transposed:
-            # Cases store [E,N,K]; ACLNN consumes the mathematical [E,K,N].
+            # cases [E,N,K] -> mathematical [E,K,N], non-contiguous view.
             return tensor.transpose(-1, -2)
-        # A8W8 non-transposed cases already store contiguous [E,K,N].
+        # cases already store contiguous [E,K,N].
         return tensor.contiguous()
 
-    # groupType=-1 stores 2-D cases as [N,K] when not transposed and [K,N]
-    # when transposed.  ACLNN consumes mathematical [K,N] in both branches,
-    # with a non-contiguous view carrying the transposed-layout signal.
-    # A16W8 uses int8 weight and follows the same documented 2-D convention.
-    if (group_type == -1 and tensor.dim() == 2
-            and tensor.dtype in (torch.float32, torch.int8)):
+    # Documented 2-D cases convention: cases store (K,N) when
+    # weight_transposed is False and (N,K) when True.  ACLNN consumes the
+    # mathematical (K,N) in both branches: False stays a contiguous (K,N)
+    # tensor; True becomes a non-contiguous transposed view of the (N,K)
+    # storage.  A16W8 uses int8 weight and follows the same convention.
+    # groupType=-1 and the groupType=0 2-D multi-weight rows share it.
+    if (group_type in (-1, 0) and tensor.dim() == 2
+            and tensor.dtype in (
+                torch.float32, torch.float16, torch.bfloat16, torch.int8)):
         if weight_transposed:
-            return tensor.transpose(-1, -2).contiguous().transpose(-1, -2)
-        return tensor.transpose(-1, -2).contiguous()
+            # cases (N,K) -> mathematical (K,N), non-contiguous transposed view.
+            return tensor.transpose(-1, -2)
+        # cases already store contiguous (K,N).
+        return tensor.contiguous()
 
     return tensor
 
@@ -137,8 +151,9 @@ def _grouped_matmul_v5_weight_for_matmul(
         return tensor
 
     if group_type in (-1, 0) and tensor.dim() == 2:
-        # False: cases [N,K] -> [K,N].  True: cases already [K,N].
-        return tensor if weight_transposed else tensor.transpose(-1, -2)
+        # Documented 2-D cases convention: False stores (K,N) (last dim N);
+        # True stores (N,K) (last dim K) -> transpose to mathematical (K,N).
+        return tensor.transpose(-1, -2) if weight_transposed else tensor
 
     if group_type == 0 and tensor.dim() == 3:
         # False: cases [E,K,N].  True: cases [E,N,K] -> [E,K,N].

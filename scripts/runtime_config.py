@@ -149,6 +149,22 @@ def validate_server_config(value: str | Path) -> tuple[Path, list[str]]:
                     errors.append(
                         f"servers[{index}].ttk.plog_dir 必须是非空绝对路径"
                     )
+        # Optional: validate atk plog config (ATK 链与 TTK 链保持一致的 PLOG 采集)
+        atk = server.get("atk")
+        if atk is not None:
+            if not isinstance(atk, dict):
+                errors.append(f"servers[{index}].atk 必须是 object")
+            else:
+                atk_collect_plog = atk.get("collect_plog")
+                if atk_collect_plog is not None and not isinstance(atk_collect_plog, bool):
+                    errors.append(f"servers[{index}].atk.collect_plog 必须是 bool")
+                atk_plog_dir = atk.get("plog_dir")
+                if atk_plog_dir is not None and (
+                    not isinstance(atk_plog_dir, str) or not atk_plog_dir.startswith("/")
+                ):
+                    errors.append(
+                        f"servers[{index}].atk.plog_dir 必须是非空绝对路径"
+                    )
         # Optional: validate fusion config (supports_fusion + fusion_devices)
         supports_fusion = server.get("supports_fusion")
         if supports_fusion is not None and not isinstance(supports_fusion, bool):

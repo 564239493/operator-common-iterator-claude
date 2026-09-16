@@ -113,9 +113,10 @@ patch——patch 表达必须符合 skill 中的规则。
      "expected_effect": "case_001 应被该约束拒绝"
    }
    ```
-   - `proposed` **只含** `expr_type`/`expr`/`relation_params` 三字段；
+   - `proposed` **只含** `expr_type`/`expr`/`relation_params` 三必填字段，外加可选
+     `src_txt_line`（1-based 升序行号数组，指向补充文档中该约束依据的具体行）；
      `src_text`/`origin` 由合并器填（`src_text=basis`、`origin="supplement"`），
-     **不要**塞进 `proposed`（`InterParamConstraint` 为 `extra:forbid`）。
+     其余字段**不要**塞进 `proposed`（`InterParamConstraint` 为 `extra:forbid`）。
    - `basis` 是补充文件依据：supplementary-doc.md 的 basis 来自源码分析
      （`source_location` + `error_string`）；supplement_constraints.md 的 basis
      来自手写说明。写入 patch 时取条目内给出的依据文本。

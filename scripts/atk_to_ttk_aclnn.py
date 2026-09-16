@@ -42,6 +42,15 @@ DTYPE_MAP = {
     "uint8": "uint8",
     "uint64": "uint64",
     "bool": "bool",
+    # CANN 新量化 dtype（原样小写名透传，与本地校验器白名单一致）
+    "hifloat8": "hifloat8",
+    "float8_e4m3fn": "float8_e4m3fn",
+    "float8_e5m2": "float8_e5m2",
+    "float8_e8m0": "float8_e8m0",
+    "float4_e2m1": "float4_e2m1",
+    "float4_e1m2": "float4_e1m2",
+    "float6_e3m2": "float6_e3m2",
+    "float6_e2m3": "float6_e2m3",
 }
 
 # ---------------------------------------------------------------------------
@@ -96,8 +105,8 @@ def _split_c_parameters(raw: str) -> list[str]:
 
 def _signature_from_constraints(
     constraints: dict[str, Any] | None,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Return ordered tensor metadata and ordered non-tensor attributes."""
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Return ordered tensor metadata and ordered non-tensor attributes with type info."""
     if not constraints:
         legacy = [
             {
@@ -106,7 +115,8 @@ def _signature_from_constraints(
             }
             for entry in _SIGNATURE
         ]
-        return legacy, sorted(_ATTR_NAMES)
+        # Legacy path: no type info available, use empty string
+        return legacy, [{"name": n, "type": ""} for n in sorted(_ATTR_NAMES)]
 
     function_signature = str(constraints.get("function_signature") or "")
     match = re.search(r"GetWorkspaceSize\s*\((.*?)\)\s*;?", function_signature, re.S)
@@ -144,7 +154,7 @@ def _signature_from_constraints(
         return optional is True
 
     tensors: list[dict[str, Any]] = []
-    attrs: list[str] = []
+    attrs: list[dict[str, str]] = []
     ignored = {"workspace", "workspaceSize", "executor", "stream"}
     for declaration in _split_c_parameters(match.group(1)):
         declaration = declaration.split("=", 1)[0].strip()
@@ -166,7 +176,7 @@ def _signature_from_constraints(
                 "optional": is_optional(name),
             })
         else:
-            attrs.append(name)
+            attrs.append({"name": name, "type": type_text.strip()})
 
     if not tensors:
         raise ValueError("TTK_ACLNN_SIGNATURE_EMPTY: no aclTensor/aclTensorList parameters")
@@ -176,6 +186,38 @@ def _signature_from_constraints(
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+def _get_attr_default(c_type: str) -> Any:
+    """根据 C 签名的类型文本返回 attr 参数的默认值。
+
+    当 cases.json 缺少某个参数时，根据类型设置合适的默认值：
+    - 数组类型 (aclIntArray*/aclFloatArray*/aclBoolArray*) → []
+    - 布尔类型 (bool/attr_bool/_Bool) → False
+    - 浮点类型 (double/float) → 0.0
+    - 整数类型 (int8_t/int32_t/int64_t/uint8_t/...) → 0
+    - 字符串类型 (const char*/aclString*/...) → None
+    - 其他类型 → None
+    """
+    rt = c_type.strip()
+    # 数组类型 → 空列表
+    if "aclIntArray" in rt or "aclFloatArray" in rt or "aclBoolArray" in rt:
+        return []
+    # 布尔类型
+    if rt in ("bool", "attr_bool", "_Bool"):
+        return False
+    # 浮点类型
+    if rt in ("double", "float", "float32", "float64"):
+        return 0.0
+    # 整数类型
+    if rt in ("int", "int8_t", "int16_t", "int32_t", "int64_t",
+              "uint8_t", "uint16_t", "uint32_t", "uint64_t", "long", "size_t"):
+        return 0
+    # 字符串类型
+    if rt in ("str", "string", "const char*", "char*", "aclString*", "const aclString*"):
+        return None
+    # 其他类型（如 aclDataType, aclFormat 等）→ None
+    return None
+
+
 def _clamp_to_dtype(dtype: str, value: Any) -> Any:
     """Clamp integer values to dtype bounds (defence in depth)."""
     bounds = {
@@ -202,6 +244,34 @@ def _resolve_range_value(item: dict[str, Any]) -> Any:
     return value
 
 
+def _expand_attr_range_values(item: dict[str, Any]) -> Any:
+    """复刻 generator.py 对带 ``length`` 的 ``attrs`` 输入的展开语义。
+
+    generator.py 的 ``_expand_attrs_input`` 把 ``type=="attrs"`` 且带 ``length``
+    的输入展开为 ``length`` 个条目。对 TTK 的 ``attributes`` dict（一个参数名
+    对应一个值），展开结果折叠为一个 ``length`` 元素数组：
+    - ``length`` 为 None/0 → ``[]``（空数组）
+    - ``range_values`` 为 list 且 ``len == length`` → 按位取值（``rv[i]``）
+    - ``range_values`` 为 list 且 ``len != length`` → 复制 ``length`` 份，每份
+      保持原 ``range_values``
+    - ``range_values`` 为标量 → 复制 ``length`` 份标量
+    """
+    rv = item.get("range_values")
+    length = item.get("length")
+    if length is None or int(length) == 0:
+        return []
+    length = int(length)
+    if isinstance(rv, list):
+        rv_list = rv
+    elif rv is not None:
+        rv_list = [rv]
+    else:
+        rv_list = []
+    if len(rv_list) == length:
+        return list(rv_list)
+    return [deepcopy(rv_list) for _ in range(length)]
+
+
 def _tensor_data_range(item: dict[str, Any] | None) -> tuple[Any, Any]:
     """Preserve a safe scalar/range domain in the TTK ACLNN CSV."""
     if not item or item.get("shape") is None:
@@ -218,6 +288,16 @@ def _tensor_data_range(item: dict[str, Any] | None) -> tuple[Any, Any]:
         fixed = _clamp_to_dtype(dtype, value)
         return (fixed, fixed)
     return (None, None)
+
+
+def _merge_sub_ranges(group: list[dict[str, Any]]) -> tuple[Any, Any]:
+    """Merge per-sub-tensor data ranges into one (lo, hi) TensorList range."""
+    ranges = [_tensor_data_range(sub) for sub in group]
+    los = [r[0] for r in ranges if r[0] is not None]
+    his = [r[1] for r in ranges if r[1] is not None]
+    if not los and not his:
+        return (None, None)
+    return (min(los), max(his))
 
 
 def materialize_scatter_pa_kv_cache_cases(
@@ -359,12 +439,31 @@ def _tensor_list_element_count(item: dict[str, Any]) -> int:
     return 1
 
 
-def _format_attrs(case: dict[str, Any], attr_names: set[str]) -> dict[str, Any]:
-    """Extract non-tensor attributes from ATK case inputs."""
+def _format_attrs(case: dict[str, Any], attr_specs: list[dict[str, str]]) -> dict[str, Any]:
+    """Extract non-tensor attributes from ATK case inputs.
+
+    attr_specs: list of {"name": str, "type": str} from signature parsing.
+    Missing attrs get type-appropriate defaults via _get_attr_default.
+    """
     attrs: dict[str, Any] = {}
+    # Build lookup: name -> c_type
+    attr_type_map = {spec["name"]: spec.get("type", "") for spec in attr_specs}
+    attr_name_set = set(attr_type_map.keys())
+
     for item in case.get("inputs", []):
+        if isinstance(item, list):
+            # Expanded attr-array group: [{name, range_values, ...}, ...]
+            if not item:
+                continue
+            name = item[0].get("name", "")
+            if name not in attr_name_set:
+                continue
+            attrs[name] = [sub.get("range_values") for sub in item]
+            continue
+        if not isinstance(item, dict):
+            continue
         name = item.get("name", "")
-        if name not in attr_names:
+        if name not in attr_name_set:
             continue
         value = item.get("range_values")
         length = item.get("length") or 0
@@ -378,27 +477,36 @@ def _format_attrs(case: dict[str, Any], attr_names: set[str]) -> dict[str, Any]:
                 }.get(name)
             if value is None:
                 continue
-        # tuningConfigOptional is aclIntArray* — TTK AcLArray needs a list
-        if name == "tuningConfigOptional":
-            if isinstance(value, list) and len(value) == 2 and isinstance(value[0], (int, float)):
-                # Range pair [lo, hi] with explicit length
-                if length == 3:
-                    value = [value[0], value[1], -1]
-                else:
-                    value = list(value)
-            elif not isinstance(value, list):
-                value = [value]
+        # attrs 类型参数 (aclIntArray*/aclFloatArray*/aclBoolArray* 等)
+        # 必须传数组，不能是单独数值。带 length 的 attrs 按 generator.py 的
+        # 展开语义生成 length 元素数组（_expand_attr_range_values）。
+        if item.get("type") == "attrs":
+            # tuningConfigOptional 保留既有特殊处理：
+            # range pair [lo, hi] + length=3 → [lo, hi, -1]
+            if name == "tuningConfigOptional":
+                if isinstance(value, list) and len(value) == 2 and isinstance(value[0], (int, float)):
+                    # Range pair [lo, hi] with explicit length
+                    if length == 3:
+                        value = [value[0], value[1], -1]
+                    else:
+                        value = list(value)
+                elif not isinstance(value, list):
+                    value = [value]
+            else:
+                value = _expand_attr_range_values(item)
+        else:
+            # 标量 attr（int/double/bool 等）：range_values 为 [lo, hi] 时解析为
+            # 具体单值（确定性取下界），避免把取值范围当数组序列化进 CSV，导致
+            # TTK phase1 参数构造器 c_type(val) 因 list 报 "must be real number,
+            # not list"。数组型 attr 已在上方 "attrs" 分支处理，不受影响。
+            value = _resolve_range_value(item)
         attrs[name] = value
-    # 签名声明但 case 缺失的可选属性(如 tuningConfigOptional 这类
-    # aclIntArray 可选参数,case 里不提供即为 nullptr)补 None 占位,
-    # 使属性计数恒等于签名属性数,避免 TTK "configured N vs M" 计数报错。
-    # 与张量侧第 426-432 行的 absent 占位对称;此处绕开上面的
-    # tuningConfigOptional 列表包装分支(那分支只对 case 里存在的项生效,
-    # 缺失项直接 None 才对应 C 侧 nullptr 语义)。ScatterPaKvCache 等已
-    # 在上方补默认值的算子不受影响(其属性本就齐全,不进此分支)。
-    for name in attr_names:
+
+    # 签名声明但 case 缺失的参数，根据 C 类型设置合适的默认值
+    # (int→0, float→0.0, bool→False, array→[], string→None, etc.)
+    for name, c_type in attr_type_map.items():
         if name not in attrs:
-            attrs[name] = None
+            attrs[name] = _get_attr_default(c_type)
     return attrs
 
 
@@ -409,16 +517,22 @@ def convert_case(
     case: dict[str, Any],
     case_index: int,
     signature: list[dict[str, Any]] | None = None,
-    attr_names: list[str] | None = None,
+    attr_specs: list[dict[str, str]] | None = None,
 ) -> dict[str, str]:
     """Convert one ATK compact case to a TTK ACLNN CSV row dict."""
     api_name = case.get("name") or case.get(
         "aclnn_name", "aclnnGroupedMatmulV5",
     )
-    # index ATK inputs by name
-    by_name: dict[str, dict[str, Any]] = {}
+    # index ATK inputs by name; expanded (executor) cases wrap tensors/attrs
+    # slots in list-groups ``[{sub0}, {sub1}, ...]`` instead of flat dicts.
+    by_name: dict[str, Any] = {}
     for item in case.get("inputs", []):
-        name = item.get("name", "")
+        if isinstance(item, dict):
+            name = item.get("name", "")
+        elif isinstance(item, list) and item:
+            name = item[0].get("name", "")
+        else:
+            name = ""
         if name:
             by_name[name] = item
 
@@ -429,12 +543,37 @@ def convert_case(
     output_indexes: list[int] = []
 
     signature = signature or _SIGNATURE
-    attr_name_set = set(attr_names) if attr_names is not None else _ATTR_NAMES
+    # Convert attr_specs to the format expected by _format_attrs
+    if attr_specs is None:
+        attr_specs = [{"name": n, "type": ""} for n in sorted(_ATTR_NAMES)]
     for idx, sig in enumerate(signature):
         name = sig["name"]
         is_tensor_list = sig["tensor_list"]
         is_output = sig["output"]
         item = by_name.get(name)
+
+        # Expanded (executor) form: a list-group of sub-tensor dicts for a
+        # TensorList slot that generator.py already unfolded from ``length``.
+        if isinstance(item, list):
+            if not is_tensor_list:
+                # 非 TensorList 槽位不应出现 list 组；防御性渲染为缺席槽
+                shapes_parts.append("None")
+                dtypes_parts.append("None")
+                formats_parts.append("None")
+                data_ranges.append((None, None))
+                continue
+            sub_shapes = [deepcopy(sub.get("shape")) for sub in item]
+            shapes_parts.append(_format_tensor_list_shapes(sub_shapes))
+            dtypes_parts.append(
+                repr(tuple(_format_dtype(sub.get("dtype")) for sub in item))
+            )
+            formats_parts.append(
+                repr(tuple(_format_tensor_format(sub.get("format")) for sub in item))
+            )
+            data_ranges.append(_merge_sub_ranges(item))
+            if is_output:
+                output_indexes.append(idx)
+            continue
 
         if item is None or item.get("type") not in ("tensor", "tensors"):
             # absent optional tensor
@@ -487,12 +626,13 @@ def convert_case(
     tensor_dtypes = f"({','.join(dtypes_parts)})"
     tensor_formats = f"({','.join(formats_parts)})"
 
-    attrs = _format_attrs(case, attr_name_set)
+    attrs = _format_attrs(case, attr_specs)
     # A8W4 with offset=null is interpreted by CANN as count mode regardless
     # of the incoming attribute.  Keep this compatibility rule narrowly bound
     # to the logical INT8 x + INT4 weight signature: A8W8 must preserve an
     # explicit groupListType=2 so its [groupIdx, groupSize] pairs reach the
     # companion input plugin unchanged.
+    attr_name_set = {spec["name"] for spec in attr_specs}
     if (
         api_name == "aclnnGroupedMatmulV5"
         and str((by_name.get("x") or {}).get("dtype") or "").lower() == "int8"
@@ -530,11 +670,20 @@ def convert_case(
 def audit_case(
     case: dict[str, Any], signature: list[dict[str, Any]] | None = None,
     converted_row: dict[str, str] | None = None,
-    attr_names: list[str] | None = None,
+    attr_specs: list[dict[str, str]] | None = None,
 ) -> list[str]:
     """Basic sanity checks."""
     issues: list[str] = []
-    by_name = {item.get("name"): item for item in case.get("inputs", [])}
+    by_name = {}
+    for item in case.get("inputs", []):
+        if isinstance(item, dict):
+            name = item.get("name")
+        elif isinstance(item, list) and item:
+            name = item[0].get("name")
+        else:
+            name = None
+        if name:
+            by_name[name] = item
     signature = signature or _SIGNATURE
     # Every non-optional entry is checked more precisely by upstream constraint
     # validation.  Here ensure every signature tensor has a generated slot; an
@@ -555,8 +704,9 @@ def audit_case(
             except (SyntaxError, TypeError, ValueError):
                 issues.append("converted attributes is not a valid dict")
             else:
+                attr_names = [spec["name"] for spec in (attr_specs or [])]
                 missing_attrs = [
-                    name for name in (attr_names or [])
+                    name for name in attr_names
                     if name not in converted_attrs
                 ]
                 if missing_attrs:
@@ -574,6 +724,14 @@ def audit_case(
             expected_formats: list[Any] = []
             for entry in signature:
                 item = by_name.get(entry["name"])
+                if isinstance(item, list):
+                    if entry["tensor_list"]:
+                        expected_formats.append(
+                            tuple(_format_tensor_format(sub.get("format")) for sub in item)
+                        )
+                    else:
+                        expected_formats.append(None)
+                    continue
                 if item is None or item.get("type") not in ("tensor", "tensors"):
                     expected_formats.append(None)
                     continue
@@ -622,11 +780,11 @@ def convert_file(
     cases = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(cases, list) or not cases:
         raise ValueError("TTK_ACLNN_CASES_REQUIRED: source must be a non-empty JSON array")
-    signature, attr_names = _signature_from_constraints(constraints)
+    signature, attr_specs = _signature_from_constraints(constraints)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     rows = [
-        convert_case(case, i, signature=signature, attr_names=attr_names)
+        convert_case(case, i, signature=signature, attr_specs=attr_specs)
         for i, case in enumerate(cases)
     ]
     with destination.open("w", encoding="utf-8", newline="") as handle:
@@ -634,15 +792,23 @@ def convert_file(
         writer.writeheader()
         writer.writerows(rows)
 
+    attr_names = [spec["name"] for spec in attr_specs]
     audit = []
     for i, (case, row) in enumerate(zip(cases, rows)):
-        null_attrs = [
-            item.get("name") for item in case.get("inputs", [])
-            if item.get("name") in attr_names and item.get("range_values") is None
-        ]
+        null_attrs = []
+        for item in case.get("inputs", []):
+            if isinstance(item, dict):
+                if item.get("name") in attr_names and item.get("range_values") is None:
+                    null_attrs.append(item.get("name"))
+            elif isinstance(item, list) and item:
+                name = item[0].get("name")
+                if name in attr_names and all(
+                    sub.get("range_values") is None for sub in item
+                ):
+                    null_attrs.append(name)
         audit.append({
             "id": case.get("id", i),
-            "issues": audit_case(case, signature, row, attr_names),
+            "issues": audit_case(case, signature, row, attr_specs),
             "materialized_default_attributes": null_attrs,
         })
     return {

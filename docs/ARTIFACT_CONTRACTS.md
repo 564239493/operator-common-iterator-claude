@@ -39,6 +39,7 @@ runs/<operator>-<timestamp>/
       error_summary.log                 # 远端 grep -rn ERROR 完整输出
       raw/                              # 解包后的原始 PLOG
     ttk_aclnn_artifacts/plog/           # TTK ACLNN：结构同上
+    execution_logs/plog/                # ATK：本次执行 PLOG（结构同上）
     quality_gate.json
     analysis.json
   iter_002/                           # 执行反馈轮示例
@@ -117,7 +118,17 @@ TND/BSND/paged-attention 场景拆分和投影。case-generator 必须从 run_st
 operator_name、product_support、parameters 和 constraints_in_parameters。每个约束
 应来自已冻结的有效事实源，不用聊天内容补充。每条约束带 `origin` 字段：`doc`（文档提取）、
 `source_analysis`（显式启用且精准命中的锁定源码分析知识）或
-`supplement`（约束补充阶段合并）。约束补充阶段产出的 `constraints_patch.json` 经
+`supplement`（约束补充阶段合并）。每条 `constraints_in_parameters` 约束条目带全局唯一
+`id`（格式 `C-<NNN>`，按文件出现顺序连续编号：extractor 产出；supplement 合并时
+`apply_supplement_constraints.py` 给新增条目分配新 id、replace 保留原 id），供
+analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条目还必须带
+`src_txt_line`（整数数组，1-based、升序）：该约束 `src_text` 引用条款在算子文档快照
+（`inputs/` 下快照）中的具体行号，多条款列全部行；补充来源条目（`origin != "doc"`）
+对应补充文档行号，经 patch 的 `proposed.src_txt_line` 透传。extractor 落盘前逐条核对
+行号与原文一致；checker 复核行号与 `src_text` 的对应关系；updater/repairer 保留原值、
+新增条目必填、来源条款变化时更新。旧产物允许缺省（空数组），新提取必填。
+约束补充阶段产出的
+`constraints_patch.json` 经
 `scripts/apply_supplement_constraints.py` 确定性合并后追加/替换条目并标 `origin="supplement"`。
 
 `allowed_range_value.value` 非空时，`type` 必须显式标注为 `enum`（离散枚举，如
@@ -441,7 +452,7 @@ fail-closed，不得产出可执行成功结论。
 都必须在 `input_artifacts` 冻结 constraints/cases/generation_summary 的路径与 sha256；后续
 UPDATE_CONSTRAINTS 只允许复制这里记录且哈希仍一致的 constraints，防止基于错误版本修改。
 
-真实 TTK E2E/ACLNN NPU 执行还必须包含 `plog`：
+真实 TTK E2E/ACLNN NPU 与 ATK（mode=real）执行还必须包含 `plog`：
 
 ```json
 {
@@ -459,7 +470,9 @@ UPDATE_CONSTRAINTS 只允许复制这里记录且哈希仍一致的 constraints�
 
 `collected` 时四个本地路径必须存在。`missing|error` 必须给出 collection_error，但不能把
 收集失败伪装成算子 case fail。PLOG 在远端打包前执行 `grep -rn ERROR`，完整摘要与原始
-日志一起同步；failure-analyst 必须同时使用 TTK 日志和 PLOG，不能只看其一。
+日志一起同步；failure-analyst 必须同时使用 TTK/ATK 日志和 PLOG，不能只看其一。
+ATK 链的 PLOG 采集配置与 TTK 链一致：`servers.json` 的 `atk.collect_plog`（默认 true）/
+`atk.plog_dir`（缺省回落 `ttk.*` / `/root/ascend/log/debug`）。
 
 ## analysis.json
 
@@ -480,6 +493,34 @@ validator 必须从 clusters 重算 summary 和 action，禁止 Agent 自报 act
 schema 2.1 不再生成 `supplement_additions.md`；问题、修复建议在 analysis findings 中记录，
 实际修改与状态在下一轮 `constraint_update.json` 中记录。`merge_supplement_additions.py`
 仅保留用于读取/迁移旧 schema 2.0 run。
+`param_failure_locations`（schema 2.0 起 failure-analyst 必产）为参数级失败定位，
+说明"哪个输入/输出参数的参数定义提取错"或"哪条参数内约束没提取对"。每项含 `id`、
+`param_name`、`io`（input/output）、`scope`（param_definition /
+constraints_in_parameters）、`target`（param_definition 时写 constraints.json 中该参数
+属性名；constraints_in_parameters 时写约束表达式索引和/或 `src_text` 摘录）、
+`issue_kind`（与 findings 的 kind 同枚举）、可选 `finding_id`（关联同 id 的
+constraint_findings）、可选 `target_id`（`C-<NNN>` 字符串数组，存放与本条定位关联的
+constraints_in_parameters 条目 id，`target` 描述内不嵌 id；非 missing 且
+`scope=constraints_in_parameters` 时必填（问题约束自身 id、可为多条）；missing 可填
+缺口参考的相邻现有约束 id；param_definition 省略）、`case_ids`、`evidence`。
+root_cause=constraint_extraction 时
+必须定位到参数级（证据不足允许空数组并在 specific_issues 说明）；generator_bug/
+executor_bug 时必须为空数组。校验器对旧产物兼容：字段缺省不报错，存在时校验结构。
+
+`param_failure_locations` 每条还必须**同时**携带两个报错来源原文字段（schema 2.1 校验
+强制，旧产物兼容缺省）：`atk_or_ttk_error_info` 必填非空，摘执行层报错原文（ATK：
+`records[].failure_reason` 与 `engine_error`；TTK：`engine_error` 与 remote_stdout/stderr、
+results.csv 报错列）；`plog_error_info` 摘 `plog/error_summary.log`（及需要上下文时
+`plog/raw/` 原始文件）中与该 case 对齐的原文行。两者都是原文，禁止改写、翻译或归纳，
+每段前标注来源（case id + 字段/文件名:行号）；有可对齐 PLOG 时两字段必须并存，仅当
+无可对齐 PLOG 日志（未采集、status=missing|error、case 未触达 NPU 无设备侧报错）时
+`plog_error_info` 允许置空或省略，不得以历史噪声充数；超长截断须带
+`... [truncated N chars]` 标记。
+
+failure-analyst 推断的 `supplement_additions.md` 不是正式补充源；必须运行
+`scripts/merge_supplement_additions.py <analysis> <additions> <supplementary-doc>`，只有返回
+`merged=true` 才完成本轮增量落库。脚本按内容 sha256 幂等，空文件、finding 不匹配或
+重复合入不计为新增补充。
 
 ## quality_gate.json
 

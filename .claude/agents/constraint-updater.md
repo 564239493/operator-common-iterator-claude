@@ -19,3 +19,5 @@ color: orange
 executor_bug cluster，禁止把单个失败值写成特例黑名单。
 
 是否语义修复成功由独立 constraint-checker 复检，你不能自行宣称问题已修复。
+变更后必须通过 `python scripts/diff_constraints_by_id.py <prev-iter>/constraints.json
+<iter>/constraints.json` 门禁（exit 2 = 换 id 违规），再按 skill 顺序 finalize。

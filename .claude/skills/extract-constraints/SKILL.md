@@ -123,7 +123,15 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
        `type.value=="aclIntArray"` 时按 ACLNN 快照处理元素 dtype，不能把关联 Tensor
        dtype 误写给数组。
 6. 写入 `<iter-dir>/constraints.json` 与 `<iter-dir>/extraction_provenance.json`
-   （格式见「必载知识协议」）。
+   （provenance 格式见「必载知识协议」）。`constraints_in_parameters` 每平台列表中的
+   每条约束条目必须带 `id` 字段：全局唯一、格式 `C-<NNN>`，按条目在文件中的出现
+   顺序从 1 连续编号（跨平台连续，不因平台切换重置）；编号后条目顺序调整不得改变
+   已分配的 `id`。
+   每条约束条目还必须带 `src_txt_line` 字段（整数数组，1-based、升序）：写该约束
+   `src_text` 引用条款在**算子文档快照**（`inputs/` 下快照，非项目外原文）中的具体
+   行号；约束来自多行/多条款时列出全部行号。落盘前逐条用 Read/Grep 核对：行号处的
+   文档原文必须与 `src_text` 摘录一致，禁止凭记忆估算行号。补充来源条目
+   （`origin != "doc"`）对应补充文档中的行号。
 7. 执行：
    `python scripts/validate_operator_rule.py <iter-dir>/constraints.json`
 8. 执行：

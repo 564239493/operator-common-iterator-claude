@@ -878,6 +878,95 @@ def _validate_dynamic_allowed_ranges(value) -> list[str]:
     return errors
 
 
+CONSTRAINT_ID_RE = re.compile(r"^C-\d+$")
+
+
+def _validate_constraint_ids(value) -> list[str]:
+    """校验 constraints_in_parameters 条目 id：存在时必须为 C-<NNN> 且全局唯一。
+
+    缺失 id 不报错（旧产物兼容），由 extractor/checker 规则保证新流程每条必带。
+    """
+    errors: list[str] = []
+    cip = value.get("constraints_in_parameters")
+    if isinstance(cip, dict):
+        buckets = list(cip.values())
+    elif isinstance(cip, list):
+        buckets = [cip]
+    else:
+        return errors
+    seen: dict[str, int] = {}
+    count = 0
+    for bucket in buckets:
+        if not isinstance(bucket, list):
+            continue
+        for entry in bucket:
+            if not isinstance(entry, dict):
+                continue
+            count += 1
+            constraint_id = entry.get("id")
+            if constraint_id is None:
+                continue
+            if (
+                not isinstance(constraint_id, str)
+                or not CONSTRAINT_ID_RE.fullmatch(constraint_id.strip())
+            ):
+                errors.append(
+                    f"constraints_in_parameters 条目 #{count} 的 id 非法: "
+                    f"{constraint_id!r}（应为 C-<NNN>）"
+                )
+                continue
+            if constraint_id in seen:
+                errors.append(
+                    f"constraints_in_parameters 条目 #{count} 的 id 重复: "
+                    f"{constraint_id}（首次出现在条目 #{seen[constraint_id]}）"
+                )
+            else:
+                seen[constraint_id] = count
+    return errors
+
+
+def _validate_src_txt_lines(value) -> list[str]:
+    """constraints_in_parameters 条目的 src_txt_line 溯源行号校验。
+
+    字段可选（旧产物兼容缺省空数组）；存在时必须是 >=1 的整数非空数组
+    （1-based 算子文档快照/补充文档行号，与 src_text 条款对应，规则要求升序）。
+    """
+    errors: list[str] = []
+    constraints = value.get("constraints_in_parameters")
+    groups: list[tuple[str, Any]] = []
+    if isinstance(constraints, dict):
+        groups = list(constraints.items())
+    elif isinstance(constraints, list):
+        groups = [("", constraints)]
+    for platform, relations in groups:
+        if not isinstance(relations, list):
+            continue
+        for index, constraint in enumerate(relations):
+            if not isinstance(constraint, dict):
+                continue
+            prefix = (
+                f"constraints_in_parameters[{platform}][{index}]"
+                if platform
+                else f"constraints_in_parameters[{index}]"
+            )
+            raw = constraint.get("src_txt_line")
+            if raw is None:
+                continue
+            if (
+                not isinstance(raw, list)
+                or not raw
+                or any(
+                    isinstance(line, bool) or not isinstance(line, int) or line < 1
+                    for line in raw
+                )
+            ):
+                errors.append(
+                    f"{prefix}.src_txt_line must be a non-empty array of 1-based "
+                    "line numbers (ints >= 1) referencing the doc snapshot"
+                )
+    return errors
+
+
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
@@ -902,6 +991,8 @@ def validate_constraints(value) -> list[str]:
             + _validate_dynamic_allowed_ranges(value)
             + _validate_scatter_pa_kv_cache_constraints(value)
             + _validate_grouped_matmul_v5_constraints(value)
+            + _validate_constraint_ids(value)
+            + _validate_src_txt_lines(value)
         )
         if str(value.get("operator_name", "")).startswith(("torch_npu.", "torch.npu.")):
             from agent.hs.constraint_validation import validate_hs_constraints
@@ -1166,11 +1257,11 @@ def validate_execution(value) -> list[str]:
         errors.append("records must be an array")
     mode = value.get("mode")
     requires_plog = (
-        mode in {"ttk_e2e", "ttk_aclnn_npu"}
+        mode in {"ttk_e2e", "ttk_aclnn_npu", "real"}
         and value.get("status") != "generate"
     )
     if requires_plog and "plog" not in value:
-        errors.append("real TTK execution must include PLOG collection metadata")
+        errors.append("real TTK/ATK execution must include PLOG collection metadata")
     elif "plog" in value:
         errors.extend(_validate_plog_metadata(value.get("plog")))
         if (
@@ -1312,15 +1403,15 @@ def validate_analysis(value) -> list[str]:
                     f"{prefix}.evidence entries require non-empty source and detail"
                 )
 
+    allowed_kinds = {
+        "missing", "incorrect", "too_broad", "too_narrow", "invalid_expression",
+    }
     findings = value.get("constraint_findings")
     if not isinstance(findings, list):
         errors.append("analysis.constraint_findings must be an array")
         findings = []
     else:
         finding_ids: set[str] = set()
-        allowed_kinds = {
-            "missing", "incorrect", "too_broad", "too_narrow", "invalid_expression",
-        }
         for index, finding in enumerate(findings):
             prefix = f"analysis.constraint_findings[{index}]"
             if not isinstance(finding, dict):
@@ -1385,6 +1476,88 @@ def validate_analysis(value) -> list[str]:
                 or not 0 <= confidence <= 1
             ):
                 errors.append(f"{prefix}.confidence must be a number in [0, 1]")
+
+    locations = value.get("param_failure_locations")
+    if locations is not None:
+        # 兼容旧产物：字段缺省不报错；存在时校验结构。
+        if not isinstance(locations, list):
+            errors.append("analysis.param_failure_locations must be an array")
+        else:
+            location_ids: set[str] = set()
+            for index, loc in enumerate(locations):
+                prefix = f"analysis.param_failure_locations[{index}]"
+                if not isinstance(loc, dict):
+                    errors.append(f"{prefix} must be an object")
+                    continue
+                loc_id = loc.get("id")
+                if not isinstance(loc_id, str) or not loc_id.strip():
+                    errors.append(f"{prefix}.id must be a non-empty string")
+                elif loc_id in location_ids:
+                    errors.append(f"{prefix}.id is duplicated: {loc_id}")
+                else:
+                    location_ids.add(loc_id)
+                if not isinstance(loc.get("param_name"), str) or not loc["param_name"].strip():
+                    errors.append(f"{prefix}.param_name must be a non-empty string")
+                if loc.get("io") not in {"input", "output"}:
+                    errors.append(f"{prefix}.io must be 'input' or 'output'")
+                if loc.get("scope") not in {"param_definition", "constraints_in_parameters"}:
+                    errors.append(f"{prefix}.scope is invalid")
+                if not isinstance(loc.get("target"), str) or not loc["target"].strip():
+                    errors.append(f"{prefix}.target must be a non-empty string")
+                if loc.get("issue_kind") not in allowed_kinds:
+                    errors.append(f"{prefix}.issue_kind is invalid")
+                target_ids = loc.get("target_id")
+                if target_ids is not None and (
+                    not isinstance(target_ids, list)
+                    or any(
+                        not isinstance(tid, str)
+                        or not re.fullmatch(r"C-\d+", tid.strip())
+                        for tid in target_ids
+                    )
+                ):
+                    errors.append(
+                        f"{prefix}.target_id must be an array of 'C-<NNN>' strings"
+                    )
+                finding_id = loc.get("finding_id")
+                if finding_id is not None and (
+                    not isinstance(finding_id, str) or not finding_id.strip()
+                ):
+                    errors.append(f"{prefix}.finding_id must be a non-empty string")
+                # 报错来源原文（逐条强制）：每条参数级定位必须同时给出执行层报错
+                # 原文与 PLOG 对齐报错原文；仅当无可对齐 PLOG 日志（未采集、status
+                # 为 missing/error、或该 case 未触达 NPU）时 plog_error_info 允许
+                # 缺省或置空。schema 2.1 强制；旧产物兼容缺省。
+                atk_ttk_error = loc.get("atk_or_ttk_error_info")
+                if schema_version == "2.1" and (
+                    not isinstance(atk_ttk_error, str) or not atk_ttk_error.strip()
+                ):
+                    errors.append(
+                        f"{prefix}.atk_or_ttk_error_info must be a non-empty string "
+                        "(execution-layer error excerpt with source marker)"
+                    )
+                plog_error = loc.get("plog_error_info")
+                if plog_error is not None and not isinstance(plog_error, str):
+                    errors.append(
+                        f"{prefix}.plog_error_info must be a string "
+                        "(may be empty when no aligned PLOG log exists)"
+                    )
+                loc_cases = loc.get("case_ids")
+                if not isinstance(loc_cases, list) or not loc_cases or any(
+                    not isinstance(case_id, (str, int)) for case_id in loc_cases
+                ):
+                    errors.append(f"{prefix}.case_ids must be a non-empty string/int array")
+                loc_evidence = loc.get("evidence")
+                if not isinstance(loc_evidence, list) or not loc_evidence or any(
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("source"), str)
+                    or not item["source"].strip()
+                    or not isinstance(item.get("detail"), str)
+                    or not item["detail"].strip()
+                    for item in loc_evidence
+                ):
+                    errors.append(
+                        f"{prefix}.evidence entries require non-empty source and detail"
+                    )
 
     decision = value.get("supplement_decision")
     if not isinstance(decision, dict):

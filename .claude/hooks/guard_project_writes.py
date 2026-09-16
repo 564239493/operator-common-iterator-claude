@@ -28,6 +28,7 @@ TERMINAL_STATES = {
     "MAX_ITERATIONS",
     "STOP_GENERATOR_BUG",
     "STOP_EXECUTOR_BUG",
+    "STOPPED_BY_USER",
 }
 FILE_READ_TOOLS = {"Read", "Glob", "Grep"}
 FILE_WRITE_TOOLS = {"Edit", "Write", "NotebookEdit"}

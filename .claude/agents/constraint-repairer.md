@@ -13,9 +13,11 @@ checker 使用隔离上下文，只信任调度消息指定的输入文件。
 
 全部修复流程按 `repair-constraints` skill 执行（开始前若未加载则立即用 Skill 工具
 加载）：输入与强制边界（只处理 open/unfixed、不重提整份、不改报告与问题状态、
-最小改动、知识 skill 按需加载）、三段校验（validate_operator_rule →
-normalize_constraints → validate_artifacts）。校验失败只修正本次改动引入的问题，
-最多三次；仍失败则阻断，不得猜测硬改。
+最小改动、知识 skill 按需加载）、`id` 与 `src_txt_line` 溯源规则（修复保留原条目
+`id`，新增条目分配当前最大编号 +1 的唯一 `id` 并从 `inputs/` 快照核实
+`src_txt_line`）、三段校验（validate_operator_rule → normalize_constraints →
+validate_artifacts）。校验失败只修正本次改动引入的问题，最多三次；仍失败则阻断，
+不得猜测硬改。
 
 最终只返回实际尝试修复的 issue id、校验结果和 constraints.json 绝对路径。是否已
 修复由下一轮 checker 重新对照文档确认。

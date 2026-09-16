@@ -160,6 +160,13 @@ class ExecutionResult(BaseModel):
         default_factory=list,
         description="fusion 4 步流程每步留痕; default 为空.",
     )
+    plog: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "真实 NPU 执行后的 PLOG 采集元信息 (executer/plog.py "
+            "collect_plog_snapshot 返回值); CPU-only / mock / generate 为 None。"
+        ),
+    )
     _generate_artifacts: dict[str, Path] | None = None
     _generate_atk_command: str | None = None
     _generate_remote_paths: dict[str, str] | None = None
@@ -237,6 +244,8 @@ class ExecutionResult(BaseModel):
             payload["generate_atk_command"] = self._generate_atk_command or ""
             payload["generate_remote_paths"] = self._generate_remote_paths or {}
         payload["execution_strategy"] = self.execution_strategy
+        if self.plog is not None:
+            payload["plog"] = self.plog
         if self.execution_strategy == "fusion":
             payload["comparison_result"] = (
                 self.comparison_result.model_dump() if self.comparison_result else None
