@@ -7,21 +7,7 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
 
 参数：`$ARGUMENTS`
 
-先读 `docs/WORKFLOW.md`、`docs/ARTIFACT_CONTRACTS.md` 与 `docs/FLOW_DEFINITION.md`，然后严格执行：
-
-> **状态迁移铁律（最高优先级，与本文其余步骤冲突时以 `docs/FLOW_DEFINITION.md` 为准）**：
-> 所有状态迁移（`run_state.py set-state`）与 check 子状态回写（`set-constraint-check`），
-> 其触发时机、目标状态与附加参数（`--code` / `--event` / `--bump-iteration` / `--reset`）
-> 一律按 `docs/FLOW_DEFINITION.md` 执行，**不得自行判断**：
-> 1. 每次迁移前：读 `run_state.json` 确认当前状态 → 在该文档 §2 迁移规则总表定位该状态行 →
->    按行内「判断成功的依据」核对**已过校验的产物**：满足 → 按 §3 命令对照执行迁移；
->    不满足 → 按该行「失败后 →」处理；
-> 2. 规则未覆盖的情况（产物缺失、校验失败、多条件同时成立、当前状态不在表中）→ **不迁移**，
->    停下向用户报告，禁止自行选择目标状态或迁移时机；
-> 3. 该文档 §4 禁止事项逐条生效；等待态（MIXED_FAILURE_REVIEW / HUMAN_CHECKPOINT）
->    用户沉默 = 原地不动，沉默不构成批准或停止；
-> 4. CLASSIFY / SUPPLEMENT / SCENE 的字段回写（`set-fields` 与专用脚本）不属于状态迁移，
->    仍按本文各阶段既有协议执行。
+先读 `docs/WORKFLOW.md` 与 `docs/ARTIFACT_CONTRACTS.md`，然后严格执行：
 
 1. 解析参数。算子文档支持绝对路径、项目相对路径和包含 `..` 的外部相对路径。
    `operator-family=auto`、`test-framework=auto`；未传 `--prompt` 时由
