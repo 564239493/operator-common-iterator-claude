@@ -22,6 +22,10 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
+状态迁移唯一依据：`docs/FLOW_DEFINITION.md`。主协调器只允许在该文档 §2 迁移规则总表
+当前状态行的条件满足时，按其 §3 命令对照执行 `run_state.py` 迁移；规则未覆盖的情况
+一律停下报告用户，不得自行判断迁移时机与目标状态。
+
 > EXTRACT 前可选触发场景扫描（`--scene auto` 默认；`all`/`off` 可选）：
 > `scene-scanner` 读文档按**设备类型 → 量化模板 → 特性参数**三级提取（**不设"通用"组**，
 > 无设备标注内容合并到每个具体设备组下；特性参数只提取枚举/分档可选项），产
@@ -204,6 +208,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 **scripts/** — 确定性 CLI 工具，不调用 LLM：
 - `init_run.py` — 创建 run 目录 + `run_state.json`；校验文档和 servers.json
+- `run_state.py` — `run_state.json` 唯一写入器：主协调器 CLI 子命令（set-state / set-fields / set-constraint-check）+ 供脚本 import 的落盘库函数
 - `init_batch.py` — 初始化批次目录
 - `batch_state.py` — 批次状态迁移
 - `generate_cases.py` — 调 facade 生成用例

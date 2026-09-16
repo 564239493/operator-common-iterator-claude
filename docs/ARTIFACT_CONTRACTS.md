@@ -60,6 +60,16 @@ runs/<operator>-<timestamp>/
 WORKFLOW.md 定义的状态（含 `UPDATE_CONSTRAINTS`、`MIXED_FAILURE_REVIEW`、
 `STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 与 `STOPPED_BY_USER`）。
 
+`run_state.json` 由 `scripts/run_state.py` 统一写入：主协调器在状态迁移、分类回写与
+constraint_check 子状态维护节点分别调用其 `set-state` / `set-fields` /
+`set-constraint-check` 子命令；`init_run.py`、`render_scene_directive.py`、
+`update_supplement_state.py` 的落盘委托其库函数。任何角色不得手动 Edit 该文件。
+`history` 条目格式为 `{"state": <状态名>, "at": <ISO8601>}`，终态失败可附 `"code"`
+（如 `CONSTRAINT_CHECK_FAILED`），constraints-only 成功附
+`"event": "CONSTRAINTS_ONLY_SUCCESS"`。`updated_at` 刷新点：
+`set-constraint-check` 与 scene/supplement 脚本落盘时刷新，`set-state` /
+`set-fields` 不刷新。
+
 `operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
 目录内的快照，后续 Agent 只使用快照。
 

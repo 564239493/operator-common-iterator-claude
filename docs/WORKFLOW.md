@@ -86,9 +86,10 @@ flowchart TD
 ### CLASSIFY（初始化 EXTRACT barrier 后，非独立状态）
 
 主协调器跑 `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，
-读 stdout JSON（`operator_category` + `evidence`），回写 `run_state.json` 的
-`execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
-`operator_category`、`operator_category_evidence`。分类不进 constraints.json、
+读 stdout JSON（`operator_category` + `evidence`），运行
+`python scripts/run_state.py set-fields --run-dir <run-dir> --set execution_strategy=<fusion|default> --set operator_category=<operator_category> --set operator_category_evidence=<evidence JSON>`
+回写 `run_state.json` 的 `execution_strategy`（`fusion_comm_compute` → `fusion`，否则
+`default`）、`operator_category`、`operator_category_evidence`。分类不进 constraints.json、
 不依赖 constraint-extractor 自由文本。此步初始化时执行一次，后续约束更新沿用分类结果。
 
 ### 融合（fusion）执行路径（`run_state.execution_strategy=="fusion"` 时）
@@ -291,7 +292,8 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 
 ## 6. 循环与终止
 
-每次状态迁移都更新 `run_state.json`。循环只在以下条件同时成立时发生：
+每次状态迁移都更新 `run_state.json`（一律经 `python scripts/run_state.py` 子命令写入，
+禁止手动 Edit）。循环只在以下条件同时成立时发生：
 
 - 根因严格等于 constraint_extraction；
 - 新提示词已生成并通过基本检查；

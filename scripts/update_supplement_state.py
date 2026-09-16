@@ -8,6 +8,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from run_state import save_run_state
+
 
 def combined_hash(paths: list[Path]) -> str:
     contents: list[tuple[str, bytes]] = []
@@ -56,9 +58,7 @@ def update_state(
     else:
         state.setdefault("last_consumed_supplement_hash", "")
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    run_state_path.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    save_run_state(run_state_path, state, trailing_newline=True)
     return {
         "changed": changed,
         "consumed": consume,
