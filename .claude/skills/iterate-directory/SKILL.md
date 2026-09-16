@@ -7,8 +7,8 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt pat
 
 参数：`$ARGUMENTS`
 
-先完整读取 `iterate-operator` Skill、`docs/WORKFLOW.md` 和
-`docs/ARTIFACT_CONTRACTS.md`，然后严格执行：
+先完整读取 `iterate-operator` Skill、`docs/WORKFLOW.md`、
+`docs/ARTIFACT_CONTRACTS.md` 和 `docs/FLOW_DEFINITION.md`，然后严格执行：
 
 1. 解析参数。默认 glob=`*.md`、不递归；未传 `--prompt` 时保持逐文档 family 自动
    选择：ACLNN 使用 `operator_constraints/base.md` + `knowledge/aclnn`，torch_npu 使用
@@ -52,7 +52,8 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--prompt pat
    run 创建后关联批次，并在算子到达终态后更新批次。
 6. 单算子返回后再次执行 claim。默认策略下，`BLOCKED`、`MAX_ITERATIONS`、
    `STOP_GENERATOR_BUG` 和 `STOP_EXECUTOR_BUG` 只记入失败并继续下一个；
-   `--fail-fast` 下批次进入 STOPPED 后结束。
+   `--fail-fast` 下批次进入 STOPPED 后结束。终态语义与成功/失败判定一律以
+   `docs/FLOW_DEFINITION.md` 为准，不得自行认定终态。
 7. 所有文档处理完毕后，报告总数、成功数、失败数，以及每个失败算子的终态和 run
    目录。不得把“已执行完毕”表述为“全部成功”。
 

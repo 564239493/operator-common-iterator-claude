@@ -32,6 +32,11 @@ real 模式额外追加 CPU golden 推导门禁：对 `iter_dir/cases_executor.p
 `generator_bug`。约束语义或表达式有误时，next_state 应进入 DIAGNOSE，由
 failure-analyst 判定是否为 `constraint_extraction`。
 
+`next_state` 的取值必须与 `docs/FLOW_DEFINITION.md` §2 迁移规则总表的 GATE 行一致
+（blocking 空 且 failed=0 且 check passed → SUCCESS；有 failed 用例且产物合法 →
+DIAGNOSE；blocking 非空 → BLOCKED；TTK 仅完成 command preparation → EXECUTE 等待）。
+与该文档不一致时，以该文档为准，不得按本 Agent 的自由判断给出 next_state。
+
 ## TTK 例外（`test_framework == "ttk"`）
 
 TTK 路径下，以下检查降级为非阻断诊断（写入 `checks[].warnings`，不使 status=blocked、
