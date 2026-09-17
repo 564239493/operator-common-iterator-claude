@@ -160,6 +160,27 @@ def cmd_set_state(args: argparse.Namespace) -> int:
         raise ValueError(f"unknown state: {args.to!r}")
     path = _state_path(args)
     state = _load(path)
+    current = state.get("state")
+    if current != args.to and not getattr(args, "force", False):
+        # flow 边校验（软依赖）：flow_control 缺失/损坏时自动跳过，行为向后兼容。
+        # 名字级后继表裁决"边"是否合法；"条件"是否满足由 flow_control advance 裁决。
+        try:
+            from flow_control import successors
+        except Exception:
+            successors = None
+        if successors is not None:
+            allowed = successors(str(current))
+            if allowed is not None and args.to not in allowed:
+                print(json.dumps({
+                    "ok": False,
+                    "code": "FLOW_GUARD_REJECTED",
+                    "error": (
+                        f"transition {current!r} -> {args.to!r} not allowed "
+                        "by flow edge table (use scripts/flow_control.py advance, "
+                        "or --force to override)"),
+                    "allowed": sorted(allowed),
+                }, ensure_ascii=False))
+                return 2
     state["state"] = args.to
     entry: dict[str, Any] = {"state": args.to}
     if args.code:
@@ -310,6 +331,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_state.add_argument(
         "--bump-iteration", action="store_true",
         help="同时 current_iteration += 1（UPDATE_CONSTRAINTS 路由用）",
+    )
+    p_state.add_argument(
+        "--force", action="store_true",
+        help="跳过 flow 边校验（人工恢复逃生口；阶段迁移应走 flow_control advance）",
     )
     p_state.set_defaults(func=cmd_set_state)
 
