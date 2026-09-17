@@ -25,7 +25,7 @@ return torch.ones([1024, 1, 16], dtype=torch.float16)
 
 ## Skip These Operators (Do NOT Process)
 
-If the operator is **`aclnnSwinAttentionScoreQuant`**, **`aclnnSwinTransformerLnQkvQuant`**, **`aclnnBatchMatMulWeightNz`**, **`aclnnNpuFormatCast`**, **`aclnnReflectionPad1dBackward`**, **`aclnnCalculateMatmulWeightSize`**, **`aclnnCalculateMatmulWeightSizeV2`**, or **`aclnnAlltoAllMatmul`**, **stop immediately** — do not read docs, do not modify any files, do not derive CPU golden code. These operators use completely pre-defined test scripts that are output verbatim by `generator.py` via special `.tpl` templates. There is no `# TODO: CPU_GOLDEN` marker and no dummy computation to replace. The skill flow ends here for these operators.
+If the operator is **`aclnnSwinAttentionScoreQuant`**, **`aclnnGroupedMatmulV5`**, **`aclnnSwinTransformerLnQkvQuant`**, **`aclnnBatchMatMulWeightNz`**, **`aclnnNpuFormatCast`**, **`aclnnReflectionPad1dBackward`**, **`aclnnCalculateMatmulWeightSize`**, **`aclnnCalculateMatmulWeightSizeV2`**, or **`aclnnAlltoAllMatmul`**, **stop immediately** — do not read docs, do not modify any files, do not derive CPU golden code. These operators use completely pre-defined test scripts that are output verbatim by `generator.py` via special `.tpl` templates. There is no `# TODO: CPU_GOLDEN` marker and no dummy computation to replace. The skill flow ends here for these operators.
 
 ## Non-Skip Operators: Derive a Real CPU Golden
 
@@ -1448,34 +1448,38 @@ return result
 
 ## GroupedMatmulV5 weight 方向与 ND 转置布局处理
 
-**适用范围：** `aclnnGroupedMatmulV5` 的二维 ND weight。FP32 规则由运行
-`aclnnGroupedMatmulV5-20260813-075223-209105` 的 executor 修复及硬件重跑验证；A16W8
-的二维 INT8 weight 使用相同的 cases 布局契约，已纳入模板和非方阵单元测试，仍须通过
-A2 小样确认 NPU stride 物化。NZ 物理排布、其他 dtype 和 `x_transposed=True` 需要分别
-验证，不能直接套用本节实现。
+**适用范围：** `aclnnGroupedMatmulV5` 的二维 ND weight。本节约定以算子文档行 595-597
+（weight 不转置时最后一维为 N 轴、转置时为 K 轴，转置张量须非连续）为准，NPU 侧由
+SplitM* 161002 校验（Weight 逻辑 dim0/dim1 != x dim1(K) 即拒）实证。20260813-075223
+旧 run 的 (N,K)-False 约定源自其约束层把 2D 转置分支写反，已被 20260909 run
+（aclnnGroupedMatmulV5-20260909-181759-339169）iter_001 FC-004 证伪、iter_002/iter_003
+两轮 real-run 验证替代。NZ 物理排布和 `x_transposed=True` 的 NPU 非连续呈现仍属未验证
+面，不能直接套用本节实现。
 
 ### cases 层与 ACLNN 调用层不是同一表示
 
-生成的 `cases.json` 使用 shape 顺序表达 weight 的逻辑转置状态：
+生成的 `cases.json` 按**算子文档**约定用 shape 顺序表达 weight 的逻辑转置状态：
 
-- `weight_transposed=False`：weight shape 为 `(N,K)`；
-- `weight_transposed=True`：weight shape 为 `(K,N)`。
+- `weight_transposed=False`：weight shape 为 `(K,N)`（最后一维是 N 轴）；
+- `weight_transposed=True`：weight shape 为 `(N,K)`（最后一维是 K 轴）。
 
-ACLNN 调用侧在已验证场景中始终按 `(K,N)` 校验矩阵乘方向，同时通过 Tensor 的连续性/
-stride 区分 ND weight 是否为转置布局。因此 executor 必须执行如下归一化：
+ACLNN 调用侧始终按数学 `(K,N)` 校验矩阵乘方向，同时通过 Tensor 的连续性/stride 区分
+ND weight 是否为转置布局（非连续转置 view 由 NPU 物化）。因此 executor 必须执行如下
+归一化：
 
 ```python
 if weight_transposed:
-    # cases 已是 (K,N)：保持 shape 和数值，构造转置产生的非连续 view
-    weight_for_npu = weight.transpose(-1, -2).contiguous().transpose(-1, -2)
+    # cases 是 (N,K)：转置为数学 (K,N)，保留非连续转置 view（stride 信号）
+    weight_for_npu = weight.transpose(-1, -2)
 else:
-    # cases 是 (N,K)：转换为 ACLNN 需要的连续 (K,N)
-    weight_for_npu = weight.transpose(-1, -2).contiguous()
+    # cases 已是 (K,N)：保持连续
+    weight_for_npu = weight.contiguous()
 ```
 
-不能在 `weight_transposed=False` 时把 `(N,K)` 原样传入；硬件会报 `X dim 1` 与
-`weight dim 0` 不相等。也不能把两个分支都转成连续 `(K,N)`，否则虽然数学结果可能正确，
-却丢失了 `weight_transposed=True` 要求的非连续转置布局。
+不能在 `weight_transposed=False` 时再转置 `(K,N)`，也不能把 `True` 分支物化成连续
+`(K,N)`——后者虽然数学结果可能正确，却丢失了 `weight_transposed=True` 要求的非连续
+转置布局。模板 helper `_prepare_grouped_matmul_v5_weight` 已按本约定实现（2-D gate 覆盖
+groupType -1/0 与 fp32/fp16/bf16/int8；3-D 去 dtype 限定）。
 
 ### CPU golden 只处理数学方向
 
@@ -1486,11 +1490,11 @@ CPU golden 不应复用 NPU 的 stride 物化逻辑。它只需要把两种 case
 weight_transposed = bool(_get_param("weight_transposed", False))
 
 if weight_transposed:
-    # cases 已经是 (K,N)
-    weight_for_matmul = weight
-else:
     # cases 是 (N,K)
     weight_for_matmul = weight.transpose(-1, -2)
+else:
+    # cases 已是 (K,N)
+    weight_for_matmul = weight
 
 result = torch.matmul(x, weight_for_matmul)
 ```
@@ -1500,6 +1504,25 @@ result = torch.matmul(x, weight_for_matmul)
 CPU golden 内重新发明一个对 2-D/3-D 共用的 `_orient_weight`：二维与三维的 False/True
 方向正好不同，统一分支会在非方阵上暴露错误。`groupType=2` 的二维 weight 已是
 `(K,N)`，也不得套用 False 分支转置。
+
+### groupListType 与 groupType 组合（NPU 硬约束）
+
+`groupListType=2（sparse）` 仅支持 `groupType=0（split-M）`：NPU
+`CheckCommonParam`（aclnn_grouped_matmul.cpp:2998）对 `groupType=2 + groupListType=2`
+直接 161002（"sparse groupListType requires groupType == 0(split-M)"，20260910 run
+iter_003 case 5/7 实证）。算子文档自相矛盾：950 章节行 317 与知识 grouped_matmul_v5
+§K.1 明确该限制，A2 章节行 628 却在 gt=2 行列出 glType=2 子句——约束层以 `==0` 为准，
+A2 矛盾留档。同轮对照：glType=2 的 groupType=0 用例（非量化）全部通过。
+
+### groupList 内容确定性物化契约
+
+groupList 的 cases 层内容是随机占位，不得直通 NPU/CPU。executor 必须按
+`_build_grouped_matmul_v5_group_list` 语义确定性重建（type0=cumsum、type1=sizes、
+type2=[index,size] 非零组前置），M=各 x_i 第一维（多 x 为 Σ；均匀展开下与约束
+C-055/C-056 的乘积式一致）。NPU 侧覆盖 gt=0 单单/单多/多多 × type 0/1/2；文档行 627
+多|多|单行 groupList 可选——缺省透传 nullptr，单单（行 625）/单多（行 626）缺省必须
+报错。CPU golden 与 NPU 消费同一物化内容。参考实现：20260910 run iter_003
+`_grouped_matmul_v5_materialise_group_list`。
 
 ### A16W8 perchannel 反量化顺序
 
@@ -1528,10 +1551,10 @@ weight_for_matmul = _grouped_matmul_v5_dequant_perchannel(
 
 - [ ] executor 不再无条件转置 `x[0]`
 - [ ] executor 读取 `weight_transposed`，而不是由 shape 猜测
-- [ ] false：cases `(N,K)` → NPU 连续 `(K,N)`
-- [ ] true：cases `(K,N)` → NPU shape 不变、非连续转置 view
+- [ ] false：cases `(K,N)` → NPU 连续 `(K,N)` 直传
+- [ ] true：cases `(N,K)` → NPU 数学 `(K,N)`、非连续转置 view
 - [ ] kwargs 与 positional args 路径互斥，避免重复转换
-- [ ] CPU golden：false 使用 `weight.T`，true 直接使用 weight
+- [ ] CPU golden：true 使用 `weight.T`，false 直接使用 weight
 - [ ] A16W8：先恢复数学 weight，再广播 `[N]`/`[E,N]` 反量化参数
 - [ ] A16W8：反量化顺序为 `(weight + offset) * scale`
 - [ ] 回归 shape 使用 `K != N`，不得只用方阵
@@ -1558,8 +1581,9 @@ else:
     weight_for_npu = weight.contiguous()
 ```
 
-此前 `groupType=-1 + 2-D FP32` 场景的 false `(N,K) -> (K,N)` 规则必须单独保留，不能
-无条件套到本场景。CPU golden 只恢复数学 `[E,K,N]`：
+旧 2-D 规则（false `(N,K) -> (K,N)`）已按文档约定更正为 false `(K,N)` 直传（见上一节
+GroupedMatmulV5 weight 方向小节）；3-D 与 2-D 的 False/True 方向不同，仍不得互相套用。
+CPU golden 只恢复数学 `[E,K,N]`：
 
 ```python
 weight_for_matmul = (

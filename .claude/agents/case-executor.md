@@ -52,6 +52,13 @@ dummy executor。
      --server-config servers.json --run-id <run-id>`
    real 已不再自动生成 executor；它复用步骤 1 产出、步骤 2 改写后的文件。上传后执行
    `python scripts/validate_artifacts.py execution <iter>/execution_result.json`。
+   执行结束后 runner 自动同步本次 PLOG（`servers.json` 的 `atk.collect_plog`/
+   `atk.plog_dir`，缺省回落 `ttk.*`）：`plog/raw/` 原始日志、
+   `plog/error_summary.log`（远端 `grep -rn ERROR`）、`plog/manifest.json`，路径与
+   状态写入 `execution_result.plog`（与 TTK 链一致）。服务器 `env_init` 必须在执行前
+   清理 plog 目录（同 TTK 的 `find -mindepth 1 -delete` 写法），防止历史噪声混入
+   error_summary.log。PLOG 收集失败不得伪装成普通 case fail，但必须显式记录
+   collection_error。
 
 ## mock 模式
 
@@ -76,7 +83,9 @@ HS/E2E 默认加载可用的自主推导或源码 Golden，但精度失败不得
 HS 执行 E2E 并下载到 `ttk_artifacts/`；ACLNN 执行原生 ACLNN 模式并下载到
 `ttk_aclnn_artifacts/`。两条真实 TTK 路径执行结束后都必须同步本次 PLOG：
 `plog/raw/` 保存原始日志，`plog/error_summary.log` 保存远端 `grep -rn ERROR` 结果，
-`plog/manifest.json` 保存收集状态；并把同一元数据写入 `execution_result.plog`。PLOG 收集
+`plog/manifest.json` 保存收集状态；并把同一元数据写入 `execution_result.plog`。执行前
+必须在 `ttk.env_init_script` 中清理 plog 目录（`find -mindepth 1 -delete` 写法，与 ATK
+链同一要求），防止历史噪声混入 error_summary.log。PLOG 收集
 失败不得伪装成普通 case fail，但必须显式记录 collection_error。两者均不得调用 ATK
 golden 推导或上传 `/home/operator_atk`。
 

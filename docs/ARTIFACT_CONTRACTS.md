@@ -21,8 +21,10 @@ runs/<operator>-<timestamp>/
     selection.json                     # 可选：主协调器 Q1/Q2/Q3 答案汇总（值级），render_scene_directive.py 据此渲染 directive
   iter_001/
     constraints.json
+    extraction_provenance.json         # 必载知识清单逐模块 applied/not_applicable 记录（首轮 EXTRACT 产，checker 审计用）
     constraint_check.json              # 本轮最终约束的语义检查/修复累计报告
-    constraints.json.pre_supplement    # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
+    relation_examples.json             # Z3 正反例取证（仅 aclnn；checker 步骤 0 自跑脚本产，每轮覆盖）
+    constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
     constraints.json.pre_conflict      # 可选：冲突合并前备份
     constraints_patch.json             # 可选：约束补充阶段产出的 add/replace patch
     source_raw.json                    # 可选：source-analyst 确定性提取的源码事实
@@ -37,6 +39,7 @@ runs/<operator>-<timestamp>/
       error_summary.log                 # 远端 grep -rn ERROR 完整输出
       raw/                              # 解包后的原始 PLOG
     ttk_aclnn_artifacts/plog/           # TTK ACLNN：结构同上
+    execution_logs/plog/                # ATK：本次执行 PLOG（结构同上）
     quality_gate.json
     analysis.json
   iter_002/                           # 执行反馈轮示例
@@ -44,6 +47,7 @@ runs/<operator>-<timestamp>/
     constraints.json.pre_update       # updater 修改前的不可变基线
     constraint_update.json            # finding/change/hash 审计
     constraint_check.json
+    relation_examples.json            # Z3 正反例取证（仅 aclnn，每轮覆盖）
 ```
 
 ## run_state.json
@@ -57,7 +61,18 @@ runs/<operator>-<timestamp>/
 `operator_family`、`test_framework`、
 `hs_scenario_mode`、`run_scope`、`scene`、`current_iteration`、`state`、`history` 和时间戳。
 
-`operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run 目录内的快照，后续 Agent 只使用快照。
+`run_state.json` 由 `scripts/run_state.py` 统一写入：主协调器在状态迁移、分类回写与
+constraint_check 子状态维护节点分别调用其 `set-state` / `set-fields` /
+`set-constraint-check` 子命令；`init_run.py`、`render_scene_directive.py`、
+`update_supplement_state.py` 的落盘委托其库函数。任何角色不得手动 Edit 该文件。
+`history` 条目格式为 `{"state": <状态名>, "at": <ISO8601>}`，终态失败可附 `"code"`
+（如 `CONSTRAINT_CHECK_FAILED`），constraints-only 成功附
+`"event": "CONSTRAINTS_ONLY_SUCCESS"`。`updated_at` 刷新点：
+`set-constraint-check` 与 scene/supplement 脚本落盘时刷新，`set-state` /
+`set-fields` 不刷新。
+
+`operator_doc_source` 可以指向项目外部，只允许读取；`operator_doc` 必须指向 run
+目录内的快照，后续 Agent 只使用快照。
 
 `supplement_constraints_source` 可指向项目外部的补充约束 Markdown（可选，未提供时为空串）；
 `supplement_constraints` 指向 run 内 `inputs/supplement_constraints.md` 快照。为空串时跳过 约束补充阶段，回退纯文档驱动流程。
@@ -98,15 +113,22 @@ state 状态合法值见 WORKFLOW.md §3 状态机。状态迁移操作见 itera
 
 ## constraints.json
 
-必须满足 `agent.generators.common_model_definition.OperatorRule`。
-关键字段包括 operator_name、product_support、parameters 和 constraints_in_parameters。
-每个约束应来自已冻结的有效事实源，不用聊天内容补充。
-
-每条约束带 `origin` 字段：
-`doc`（文档提取）、
-`source_analysis`（显式启用且精准命中的锁定源码分析知识）
-`supplement`（约束补充阶段合并，约束补充阶段产出的 `constraints_patch.json` 经 `scripts/apply_supplement_constraints.py`
-确定性合并后追加/替换条目并标 `origin="supplement"`。）
+必须满足 `agent.generators.common_model_definition.OperatorRule`。关键字段包括
+operator_name、product_support、parameters 和 constraints_in_parameters。每个约束
+应来自已冻结的有效事实源，不用聊天内容补充。每条约束带 `origin` 字段：`doc`（文档提取）、
+`source_analysis`（显式启用且精准命中的锁定源码分析知识）或
+`supplement`（约束补充阶段合并）。每条 `constraints_in_parameters` 约束条目带全局唯一
+`id`（格式 `C-<NNN>`，按文件出现顺序连续编号：extractor 产出；supplement 合并时
+`apply_supplement_constraints.py` 给新增条目分配新 id、replace 保留原 id），供
+analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条目还必须带
+`src_txt_line`（整数数组，1-based、升序）：该约束 `src_text` 引用条款在算子文档快照
+（`inputs/` 下快照）中的具体行号，多条款列全部行；补充来源条目（`origin != "doc"`）
+对应补充文档行号，经 patch 的 `proposed.src_txt_line` 透传。extractor 落盘前逐条核对
+行号与原文一致；checker 复核行号与 `src_text` 的对应关系；updater/repairer 保留原值、
+新增条目必填、来源条款变化时更新。旧产物允许缺省（空数组），新提取必填。
+约束补充阶段产出的
+`constraints_patch.json` 经
+`scripts/apply_supplement_constraints.py` 确定性合并后追加/替换条目并标 `origin="supplement"`。
 
 `allowed_range_value.value` 非空时：
 `type` 必须显式标注为 `enum`（离散枚举，如 格式码/bool/字符串候选）或 `range`（数值区间）；
@@ -116,6 +138,28 @@ state 状态合法值见 WORKFLOW.md §3 状态机。状态迁移操作见 itera
 
 被 validate_artifacts.py constraints 校验（构造 OperatorRule Pydantic 模型）。
 由 constraint-extractor 产出、 constraint-repairer/updater 修改。
+
+## extraction_provenance.json
+
+首轮 EXTRACT 与 `constraints.json` 同时产出，记录必载知识清单（确定性路由命中集）
+的逐模块执行情况，供 constraint-checker 审计"命中未应用"（check-constraints skill
+第 9 条）。最小结构：
+
+```json
+{
+  "schema_version": "1.0",
+  "operator_family": "aclnn",
+  "required_modules": ["official_basics", "..."],
+  "modules_applied": [
+    {"module_id": "official_basics", "skill": "aclnn-official-basics", "status": "applied", "reason": ""},
+    {"module_id": "nz_matmul", "skill": "aclnn-nz-matmul", "status": "not_applicable", "reason": "文档无 NZ/FRACTAL_NZ 信号"}
+  ],
+  "extra_modules_loaded": []
+}
+```
+
+`required_modules` 必须与 `prompt_v1.md` 必载清单一一对应；`not_applicable` 必须给理由。
+反馈轮（UPDATE_CONSTRAINTS）不重新提取、不重写本文件。
 
 ## constraint_check.json
 
@@ -168,6 +212,40 @@ constraint-repairer 不修改报告。
 由 constraint-checker 产出，constraint-repairer 不修改此文件。
 状态推进操作见 iterate-operator/SKILL.md 步骤 6。
 // TODO 待skill优化后调整这里
+
+## relation_examples.json
+
+仅 `operator_family=aclnn`：每个 check 轮开始时由 constraint-checker 执行
+`python scripts/verify_relation_exprs.py <iter>/constraints.json` 产出（默认写
+constraints.json 同目录，每轮覆盖写，只反映最近一轮检查时的 constraints.json；
+repairer 修改后的下一轮自动重新取证，无过期问题）。历史正反例证据经 checker 在
+issue 文本中引用实例值沉淀进 `constraint_check.json`（fixed 项不删除）。
+
+脚本与生成管线共用同一套转换栈（`Z3ConstraintBuilder`/`ASTtoZ3Converter`/
+`ExpressionPreprocessor`，自 `agent/generators` 只读导入），对
+`constraints_in_parameters` 逐平台桶处理：每条 expr 先 `push/add expr/check` 取
+`satisfy_example`（正例），再 `push/add Not(expr)/check` 取 `violate_example`
+（反例）；参数卡 `allowed_range_value` 同时编译为域约束，保证实例落在文档声明
+域内；整桶联合 assert unsat → `bucket_status=contradiction`（附 `unsat_core`）。
+
+顶层字段：`schema_version`、`operator`、`constraints_file`、`generated_at`、
+`timeout_ms`、`counts`（各状态计数 + `bucket_contradictions` + `constraints`
+总数）、`syntax_errors`、`platforms`。每平台桶含 `bucket_status`、`unsat_core`、
+`constraints[]`（`constraint_index`/`expr_type`/`expr`/`relation_params`/
+`src_text`/`status`/`satisfy_example`/`violate_example`/`declared_params`，可选
+`undeclared_params`/`error`）。每条 `status ∈ {ok_with_witnesses, tautology,
+unsatisfiable, skipped_todo, syntax_error, unconvertible, unknown}`。
+
+exit code 仅 `syntax_error` → 2，其余 advisory → 0。checker 按检查规则第 10 条
+消费（正反例核对）；failure-analyst 在文件存在时读取辅助 generator_bug 判定。
+机器确定性产物，不经 `validate_artifacts.py` 校验。torch_npu（hs）不产出——Z3
+类型映射未适配，扩展前置核查：`ACL_TYPE_TRANSFER_ATK_MAP` 对 torch 类型名的
+回退行为 + 真实 torch_npu constraints 的 unconvertible 误报率统计。
+
+已知限制：`allowed_range_value=[null]`（"仅支持传 nullptr"编码）的 presence
+参数无法声明，其 `param is None` 类 expr 报 `unconvertible`（error 为
+`'NoneType' object has no attribute 'get_z3_expr'`）；该类由 checker 按规则 10
+豁免，不计 issue。
 
 ## constraint_update.json
 
@@ -433,7 +511,7 @@ fail-closed，不得产出可执行成功结论。
 都必须在 `input_artifacts` 冻结 constraints/cases/generation_summary 的路径与 sha256；后续
 UPDATE_CONSTRAINTS 只允许复制这里记录且哈希仍一致的 constraints，防止基于错误版本修改。
 
-真实 TTK E2E/ACLNN NPU 执行还必须包含 `plog`：
+真实 TTK E2E/ACLNN NPU 与 ATK（mode=real）执行还必须包含 `plog`：
 
 ```json
 {
@@ -451,7 +529,9 @@ UPDATE_CONSTRAINTS 只允许复制这里记录且哈希仍一致的 constraints�
 
 `collected` 时四个本地路径必须存在。`missing|error` 必须给出 collection_error，但不能把
 收集失败伪装成算子 case fail。PLOG 在远端打包前执行 `grep -rn ERROR`，完整摘要与原始
-日志一起同步；failure-analyst 必须同时使用 TTK 日志和 PLOG，不能只看其一。
+日志一起同步；failure-analyst 必须同时使用 TTK/ATK 日志和 PLOG，不能只看其一。
+ATK 链的 PLOG 采集配置与 TTK 链一致：`servers.json` 的 `atk.collect_plog`（默认 true）/
+`atk.plog_dir`（缺省回落 `ttk.*` / `/root/ascend/log/debug`）。
 
 ## analysis.json
 
@@ -472,6 +552,34 @@ validator 必须从 clusters 重算 summary 和 action，禁止 Agent 自报 act
 schema 2.1 不再生成 `supplement_additions.md`；问题、修复建议在 analysis findings 中记录，
 实际修改与状态在下一轮 `constraint_update.json` 中记录。`merge_supplement_additions.py`
 仅保留用于读取/迁移旧 schema 2.0 run。
+`param_failure_locations`（schema 2.0 起 failure-analyst 必产）为参数级失败定位，
+说明"哪个输入/输出参数的参数定义提取错"或"哪条参数内约束没提取对"。每项含 `id`、
+`param_name`、`io`（input/output）、`scope`（param_definition /
+constraints_in_parameters）、`target`（param_definition 时写 constraints.json 中该参数
+属性名；constraints_in_parameters 时写约束表达式索引和/或 `src_text` 摘录）、
+`issue_kind`（与 findings 的 kind 同枚举）、可选 `finding_id`（关联同 id 的
+constraint_findings）、可选 `target_id`（`C-<NNN>` 字符串数组，存放与本条定位关联的
+constraints_in_parameters 条目 id，`target` 描述内不嵌 id；非 missing 且
+`scope=constraints_in_parameters` 时必填（问题约束自身 id、可为多条）；missing 可填
+缺口参考的相邻现有约束 id；param_definition 省略）、`case_ids`、`evidence`。
+root_cause=constraint_extraction 时
+必须定位到参数级（证据不足允许空数组并在 specific_issues 说明）；generator_bug/
+executor_bug 时必须为空数组。校验器对旧产物兼容：字段缺省不报错，存在时校验结构。
+
+`param_failure_locations` 每条还必须**同时**携带两个报错来源原文字段（schema 2.1 校验
+强制，旧产物兼容缺省）：`atk_or_ttk_error_info` 必填非空，摘执行层报错原文（ATK：
+`records[].failure_reason` 与 `engine_error`；TTK：`engine_error` 与 remote_stdout/stderr、
+results.csv 报错列）；`plog_error_info` 摘 `plog/error_summary.log`（及需要上下文时
+`plog/raw/` 原始文件）中与该 case 对齐的原文行。两者都是原文，禁止改写、翻译或归纳，
+每段前标注来源（case id + 字段/文件名:行号）；有可对齐 PLOG 时两字段必须并存，仅当
+无可对齐 PLOG 日志（未采集、status=missing|error、case 未触达 NPU 无设备侧报错）时
+`plog_error_info` 允许置空或省略，不得以历史噪声充数；超长截断须带
+`... [truncated N chars]` 标记。
+
+failure-analyst 推断的 `supplement_additions.md` 不是正式补充源；必须运行
+`scripts/merge_supplement_additions.py <analysis> <additions> <supplementary-doc>`，只有返回
+`merged=true` 才完成本轮增量落库。脚本按内容 sha256 幂等，空文件、finding 不匹配或
+重复合入不计为新增补充。
 
 ## quality_gate.json
 

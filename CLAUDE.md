@@ -10,7 +10,8 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE → DIAGNOSE`
 
 - 初始化 EXTRACT 固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 → 独立
-  `constraint-checker` / `constraint-repairer` 语义检查修复循环；默认
+  `constraint-checker` / `constraint-repairer` 语义检查修复循环（aclnn 时
+  checker 每轮先自跑 `verify_relation_exprs.py` 做 Z3 正反例取证）；默认
   `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
 - 全部通过 → `SUCCESS`
 - 有失败 → `DIAGNOSE` 分析全部失败簇；所有簇均为约束问题且 findings 完整时，复制上一版
@@ -161,27 +162,26 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 会在 Agent 结束后清理，导致 `constraints.json` 等阶段产物无法交接。并行仅用于写入
 互不重叠产物的阶段，不以文件系统隔离实现。
 
-| 阶段                 | Agent                     | 预加载 Skill                                   | 主要产物                                                                                       |
-|--------------------|---------------------------|---------------------------------------------|--------------------------------------------------------------------------------------------|
-| 场景扫描（条件，EXTRACT 前） | `scene-scanner`           | `scan-scenes`                               | `<run-dir>/inputs/scene_scan.json`                                                         |
-| 约束提取               | `constraint-extractor`    | `extract-constraints`                       | `constraints.json`                                                                         |
-| 源码分析（条件）           | `source-analyst`          | `analyze-source`                            | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
-| 约束补充（条件）           | `constraint-supplementer` | `supplement-constraints`                    | `constraints_patch.json`                                                                   |
-| 失败后约束增量更新          | `constraint-updater`      | `update-constraints`                        | 新版 `constraints.json` + `constraint_update.json`                                           |
-| 约束语义检查（每个新版本）      | `constraint-checker`      | `check-constraints`                         | `constraint_check.json`                                                                    |
-| 约束精准修复（检查发现问题）     | `constraint-repairer`     | `repair-constraints`                        | 修改当前 `constraints.json`                                                                    |
-| 用例生成               | `case-generator`          | `generate-cases`                            | `cases.json` + `generation_summary.json`                                                   |
-| 用例执行               | `case-executor`           | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json`                      |
-| 根因诊断               | `failure-analyst`         | `diagnose-failure`                          | `analysis.json`                                                                            |
-| 提示词优化（仅离线沉淀）       | `prompt-optimizer`        | `optimize-prompt`                           | `prompt_update_proposal.json`                                                              |
-| 质量门禁               | `quality-reviewer`        | `validate-run`                              | `quality_gate.json`                                                                        |
+| 阶段 | Agent | 预加载 Skill | 主要产物 |
+|---|---|---|---|
+| 场景扫描（条件，EXTRACT 前） | `scene-scanner` | `scan-scenes` | `<run-dir>/inputs/scene_scan.json` |
+| 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` + `extraction_provenance.json` |
+| 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
+| 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
+| 失败后约束增量更新 | `constraint-updater` | `update-constraints` | 新版 `constraints.json` + `constraint_update.json` |
+| 约束语义检查（每个新版本） | `constraint-checker` | `check-constraints` | `constraint_check.json` + `relation_examples.json`（脚本产，仅 aclnn） |
+| 约束精准修复（检查发现问题） | `constraint-repairer` | `repair-constraints` | 修改当前 `constraints.json` |
+| 用例生成 | `case-generator` | `generate-cases` | `cases.json` + `generation_summary.json` |
+| 用例执行 | `case-executor` | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
+| 根因诊断 | `failure-analyst` | `diagnose-failure` | `analysis.json` |
+| 提示词优化（仅离线沉淀） | `prompt-optimizer` | `optimize-prompt` | `prompt_update_proposal.json` |
+| 质量门禁 | `quality-reviewer` | `validate-run` | `quality_gate.json` |
 
 ## 架构分层
 
 ### Claude Code 编排层（.claude/）
-
-- `.claude/agents/*.md` — 专职 Agent 定义（角色、上下文、产物格式）
-- `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
+- `.claude/agents/*.md` — 专职 Agent 定义（WHO：角色身份、输入隔离安全边界、返回契约；流程细节一律在各阶段 SKILL.md，不重复抄写）
+- `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（HOW：可执行规则、输入清单、校验命令；`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
 - `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
 - `.claude/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
@@ -234,18 +234,21 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 **scripts/** — 确定性 CLI 工具，不调用 LLM：
 
 - `init_run.py` — 创建 run 目录 + `run_state.json`；校验文档和 servers.json
+- `run_state.py` — `run_state.json` 唯一写入器：主协调器 CLI 子命令（set-state / set-fields / set-constraint-check）+ 供脚本 import 的落盘库函数
 - `init_batch.py` — 初始化批次目录
 - `batch_state.py` — 批次状态迁移
 - `generate_cases.py` — 调 facade 生成用例
 - `execute_cases.py` — 调 executer 执行用例
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）
+- `verify_relation_exprs.py` — Z3 正反例验证：`constraints_in_parameters` 逐条采 satisfy/violate 实例 + 整桶矛盾检测，产 `relation_examples.json`（CHECK 阶段 checker 步骤 0 自跑，仅 aclnn；语法错误 exit 2，其余 advisory）
 - `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
 - `render_scene_directive.py` — 校验三级场景选择、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
 - `check_scene_conflicts.py` — Q3 组装 selection.json 后、渲染 directive 前做特性参数取值冲突识别（advisory、exit 0；判据 `scene_scan.params[].value_conflicts`；产 `inputs/scene_conflicts.json`，render_scene_directive 据此标注 `known_conflicts`）
-- `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 `base + 命中知识` → 冻结 `prompt_v1.md`+`prompt_preanalysis.json`+`prompt_assembly.json`
+- `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 → 冻结 `prompt_v1.md`（base 核心层 + **必载知识清单**，模块正文不进快照）+`prompt_preanalysis.json`+`prompt_assembly.json`
 - `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
+- `build_knowledge_skills.py` — 把两 family manifest 知识模块生成 `.claude/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 注册 skill（生成物禁止手改；canonical 变更后必须重跑，`--check` 只校验同步）
 - `route_aclnn_knowledge.py` / `route_torch_npu_knowledge.py` — manifest 驱动知识路由（正向 trigger + `reject_on` 负向否决 + `depends_on` 依赖闭包）
 - `validate_aclnn_knowledge.py` / `validate_torch_npu_knowledge.py` — 知识完整性预校验（manifest 字段、默认集、依赖闭包、跨 family 隔离、`reject_on` 合法性）
 - `validate_prompt_assembly.py` — 校验冻结装配记录的全部 sha256 与模块顺序标记
@@ -275,10 +278,16 @@ ACLNN 与 torch_npu 现同构：`prompts/<family>_constraints/base.md` 为 **can
 为历史来源（provenance only），一次性机械拆分已完成、不再作为生成源（原迁移工具
 `build_*_prompt_base.py` 已退场归档于 `archive/builders/`，仅留审计、不再 gate）。
 再由 manifest 驱动的知识路由在 run
-初始化（PLAN）阶段装配 `base + 命中知识模块`，并冻结为 `prompt_v1.md` +
-`prompt_preanalysis.json` + `prompt_assembly.json`（含 sha256）。两 family 知识根
+初始化（PLAN）阶段装配 `base 核心层 + 必载知识清单`，并冻结为 `prompt_v1.md` +
+`prompt_preanalysis.json` + `prompt_assembly.json`（含模块 sha256 全集）。知识模块
+正文不进快照，由 `build_knowledge_skills.py` 生成为 `.claude/skills/` 下注册 skill
+（`aclnn-*` / `torch-npu-*`，生成物禁止手改）：extractor 按必载清单逐一 Skill 加载
+并写 `extraction_provenance.json`，checker 对照路由命中集审计"命中未应用"；其余
+Agent（failure-analyst / constraint-updater / repairer / supplementer）按 description
+信号自然触发加载。两 family 知识根
 相互隔离（`knowledge/aclnn` / `knowledge/torch_npu`，由各自 validator 禁跨 family
-引用）；extractor 只读冻结快照，不重走路由。v1-v4（torch v1-v3）仅作历史来源。
+引用；validator 同时做 skill 同步校验，canonical 漂移即拦截）；
+extractor 只读冻结快照，不重走路由。v1-v4（torch v1-v3）仅作历史来源。
 迭代优化只在 run 内写候选、变更说明和 `prompt_update_proposal.json`，按
 base/common/feature/exact-operator/torch_npu/no-update 选择最小目的地。任务终态由
 主协调器展示证据、适用范围和试验结果并逐条询问用户；只有明确批准后才能修改
@@ -294,12 +303,15 @@ runs/<operator>-<timestamp>/
   inputs/                  # 只读快照（算子文档 + prompt）
   iter_001/                # 第一轮产物
     constraints.json       # 必须满足 OperatorRule
+    relation_examples.json # Z3 正反例取证（仅 aclnn，checker 步骤 0 产，每轮覆盖）
     generation_summary.json
     cases.json             # 紧凑表示；执行阶段展开为 cases_expanded.json
     cases_executor.py      # ATK 执行脚本（含 CPU golden）
-    execution_result.json  # passed+failed=total
+    execution_result.json  # passed+failed=total；真实 TTK/ATK 执行含 plog 采集元信息
+    execution_logs/        # ATK 执行产物（atk.log、report/ 与 plog/{error_summary.log, raw/}）
     quality_gate.json      # next_state 决定流程走向
     analysis.json          # 全部 failure_clusters + root_cause_summary + overall_action
+                           # + plog_error_info / atk_or_ttk_error_info 报错日志原文
   iter_002/
     constraints.json       # 从上一轮实际用例所用版本复制后最小修改
     constraints.json.pre_update
@@ -341,12 +353,21 @@ runs/<operator>-<timestamp>/
 ## 重要约定
 
 - `constraints.json` 的 `allowed_range_value.type=range` 不允许 null 端点；开区间写 `constraints_in_parameters` 不等式
+- `constraints_in_parameters` 每条约束必须带 `src_txt_line`（1-based 升序行号数组，指向
+  算子文档快照中 `src_text` 引用条款的具体行；补充来源对应补充文档）；extractor 落盘前
+  逐条核对、checker 复核、updater/repairer 保留或补全
+- 反馈轮约束必须在上一轮 constraints.json 基础上按 id 原位修改：同 id 条目可直接修正，
+  新增约束分配新 id，禁止重新提取/整份重写；每轮 UPDATE/REPAIR 后必须跑
+  `scripts/diff_constraints_by_id.py` 门禁（exit 2 = 换 id 违规）
 - `type=enum` 允许 null 作为离散候选；`expr` 中裸 null 规范化为 Python `None`
 - `cases.json` 是紧凑表示；带 `length` 的列表类输入在执行阶段展开为 `cases_expanded.json`
 - 诊断用例格式问题必须同时检查 `cases.json` 和 `cases_expanded.json`
 - `execution_result.json` 的 `engine_error` 非空时不能宣称业务成功
-- 真实 TTK 执行必须产出 `execution_result.plog`；failure analysis 同时读取 TTK 日志、
-  `plog/error_summary.log` 和必要原始 PLOG，不得仅靠 TTK stdout/stderr 下根因
+- 真实 TTK/ATK 执行必须产出 `execution_result.plog`；failure analysis 同时读取 TTK/ATK
+  日志、`plog/error_summary.log` 和必要原始 PLOG，不得仅靠 TTK/ATK stdout/stderr 下根因
+- `analysis.json` 的 `param_failure_locations` 每条错误原因必须同时摘录
+  `atk_or_ttk_error_info`（执行层报错原文，必填）与 `plog_error_info`（PLOG 对齐报错
+  原文），标注来源并保留原文，禁止改写；无可对齐 PLOG 日志时后者才允许置空或省略
 - `analysis.json` 的顶层 `root_cause` 只用于兼容；调度必须使用全部 `failure_clusters` 聚合并经
   校验的 `overall_action`，禁止把混合失败压缩成单一根因后自动修改约束
 - `quality_gate.json` 的 `blocking_issues` 非空时 status 必须为 blocked，主协调器不得越过门禁

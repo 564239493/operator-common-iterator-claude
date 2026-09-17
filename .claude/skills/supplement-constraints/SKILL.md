@@ -18,9 +18,17 @@ uncertain-doc.md 或未裁决 conflict。条目去重：若同一 `expr` 在两�
 supplementary-doc.md（源码分析）为准；若当前 constraints 已有规范化后等价的
 `expr_type+expr+relation_params`，不得再次 add。
 
+`analysis.supplement_decision.has_explicit_additions=false` 时不得把 analysis 中的
+推测转成 patch；add/replace 合入前后表达等价时属于 noop，不得把 noop 汇报为本轮
+约束提升。
+
 先读取 `run_state.operator_family` 和 `run_state.current_prompt`。补充阶段必须沿用当前
 family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能读 torch_npu 快照和
 已装配知识，禁止跨 family 读取另一知识根。
+
+**知识 skill 按需加载**：补充内容涉及量化、NZ/格式、广播、dtype 推导等主题时，先
+Skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再写
+patch——patch 表达必须符合 skill 中的规则。
 
 > 本阶段**不重新提取约束**，只对 EXTRACT 已产出的 `constraints.json` 做关系
 > 补充：追加（add）补充文件描述的新关系约束、替换（replace）文档提取过宽/过窄
@@ -74,6 +82,15 @@ family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能�
        (len(srcTensor.shape) in {2,3})`
    - 同理适用于 `format` 码 attr（`acl_format` int 码 ↔ format 名字符串）等其他
      int 枚举码 attr 与 tensor 属性的跨 sort 比较：一律展开成同 sort 字面量析取。
+   **【条件蕴含必须机械展开】** 补充条件约束时先写清 `A -> B`，再**机械展开**为
+   `(not A) or B`；A 含 `!=` 时不得套用 `not (x == y)` 的形式。
+   - 例：`layout != "PA_BSND" -> block_table is None` 必须展开为
+     `(layout == "PA_BSND") or (block_table is None)`；反之
+     `layout != "PA_BSND" -> block_table is not None` 必须展开为
+     `(layout == "PA_BSND") or (block_table is not None)`。
+   - 「A 时存在、否则缺省」必须拆成两个 implication 或完整双分支，不得只写单边。
+   - 新增约束与已有约束使目标场景一边要求存在、一边要求缺省时**不得产出 patch**，
+     必须先纠正蕴含方向。
 3. 对每条关系区分操作：
    - **add_constraint**：补充文件描述了 `constraints.json` 中没有的新关系。
      `target_platform` 为该关系生效的平台（中文产品名，须与 `constraints.json`
@@ -96,9 +113,10 @@ family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能�
      "expected_effect": "case_001 应被该约束拒绝"
    }
    ```
-   - `proposed` **只含** `expr_type`/`expr`/`relation_params` 三字段；
+   - `proposed` **只含** `expr_type`/`expr`/`relation_params` 三必填字段，外加可选
+     `src_txt_line`（1-based 升序行号数组，指向补充文档中该约束依据的具体行）；
      `src_text`/`origin` 由合并器填（`src_text=basis`、`origin="supplement"`），
-     **不要**塞进 `proposed`（`InterParamConstraint` 为 `extra:forbid`）。
+     其余字段**不要**塞进 `proposed`（`InterParamConstraint` 为 `extra:forbid`）。
    - `basis` 是补充文件依据：supplementary-doc.md 的 basis 来自源码分析
      （`source_location` + `error_string`）；supplement_constraints.md 的 basis
      来自手写说明。写入 patch 时取条目内给出的依据文本。

@@ -1,7 +1,10 @@
 # ACLNN 提示词装配与冻结
 
 默认 ACLNN 流程为：算子文档快照 → 文档预分析 → 知识路由 → 适用性判断 →
-`base + applicable modules` → 冻结 `prompt_v1.md` 与组装记录。
+`base 核心层 + 必载知识清单` → 冻结 `prompt_v1.md` 与组装记录。知识模块正文
+**不进快照**：每个 manifest 模块由 `scripts/build_knowledge_skills.py` 生成为
+`.claude/skills/aclnn-*/SKILL.md` 注册 skill，提取时按必载清单用 Skill 工具逐一
+加载（其他阶段按 description 信号自然触发），实现按需加载而非全量拼接。
 
 ## 事实源与分层
 
@@ -21,12 +24,30 @@ ACLNN run 初始化会写：
 
 - `inputs/prompt_preanalysis.json`：文档哈希、算子名、接口模式、平台与结构信号；
 - `inputs/prompt_assembly.json`：base/manifest/模块/最终 prompt 哈希、顺序、命中证据和
-  适用性结论；
-- `inputs/prompt_v1.md`：不可变的完整提取上下文。
+  适用性结论（模块 sha256 全集冻结——可复现性由它保证，正文不进快照不损失审计）；
+- `inputs/prompt_v1.md`：base 核心层 + 「本次必载知识清单」
+  （`<!-- required-knowledge-begin/end -->` 边界内，逐模块列 skill 名、作用与命中依据）。
+
+## 知识 skill 生成与同步
+
+`scripts/build_knowledge_skills.py` 读两 family manifest，把每个模块渲染为
+`.claude/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 生成物（frontmatter 在文件首行；
+description 由模块 `description` + 触发器关键词 + 阶段信号合成；正文为 canonical
+拷贝，尾部标注依赖模块）。**canonical 保持在 `knowledge/<family>/**`，生成物禁止
+手改**；模块退场后重跑生成脚本会清理残留 skill 目录。
+
+同步校验由 `validate_aclnn_knowledge.py` / `validate_torch_npu_knowledge.py` 内置
+（manifest 模块 ↔ skill 一一对应、内容与渲染结果逐字节一致、无跨 family 残留），
+init_run 预校验自动执行——canonical 变更后忘跑生成脚本会在 run 启动时被拦截。
+
+提取侧协议见 `.claude/skills/extract-constraints/SKILL.md` 的「必载知识协议」：
+必载清单逐条 Skill 加载并应用，产出 `<iter>/extraction_provenance.json`；
+constraint-checker 对照路由命中集审计"命中未应用"（check-constraints skill 第 9 条）。
 
 校验：
 
 ```text
+python scripts/build_knowledge_skills.py --check
 python scripts/validate_prompt_assembly.py --record runs/<id>/inputs/prompt_assembly.json
 ```
 
@@ -65,8 +86,8 @@ torch_npu 分支待对称实现后接入 `validate_torch_npu_knowledge`（见 to
 
 ## 在线约束更新与知识路由
 
-- **初始化 EXTRACT**：读取 run 初始化冻结的 `prompt_v1.md`（含 `base + 命中知识`）；
-  路由只在 run 初始化（PLAN）阶段执行一次。
+- **初始化 EXTRACT**：读取 run 初始化冻结的 `prompt_v1.md`（base 核心层 + 必载知识
+  清单），按清单 Skill 加载知识模块正文；路由只在 run 初始化（PLAN）阶段执行一次。
 - **执行反馈轮**：不再调用 constraint-extractor，也不生成或消费 `prompt_vN+1.md`。
   failure-analyst 将全部失败簇聚合为 `overall_action`；仅当全部是约束问题且 findings
   完整时，constraint-updater 基于上一版约束做版本化最小修改。
@@ -104,7 +125,7 @@ foundation 与 feature 的区分：`foundation/*` 是官方原始概念参考（
 `broadcast_relation`、`sparse_mode_foundation`、`type_derivation`、
 `type_conversion_foundation`、`quantization_intro`），按文档信号 trigger 命中；`features/*`
 是派生约束规则（如何把概念落为 `expr_type` / `constraints_in_parameters`）。两者共存且
-区分显示（`render_bundle` 各自带 `<!-- knowledge-module: <id> -->` 标记）。foundation
+区分显示（生成 skill 的 description 各自带 `<family>·<scope>` 标记）。foundation
 模块不进 `EXPECTED_DEFAULTS`（仍为 6）。
 
 ## torch_npu 装配契约

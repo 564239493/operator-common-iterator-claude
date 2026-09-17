@@ -43,6 +43,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from run_state import save_run_state
+
 ROOT = Path(__file__).resolve().parents[1]
 SELECTION_POLICY = {
     "selected_param": "fix_or_expand",
@@ -498,9 +500,7 @@ def _write_run_state_scene(run_dir: Path, scene_payload: dict) -> None:
         raise ValueError("run_state.json root must be an object")
     state["scene"] = scene_payload
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    state_path.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    save_run_state(state_path, state, trailing_newline=False)
 
 
 def main() -> int:

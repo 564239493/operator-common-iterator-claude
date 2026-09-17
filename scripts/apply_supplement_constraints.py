@@ -3,8 +3,9 @@
 
 把 constraint-supplementer 产出的 constraints_patch.json(op=add/replace +
 proposed + match_expr + basis)确定性合并进 constraints.json:剥离 patch 层
-字段,只保留 InterParamConstraint 五字段(expr_type/expr/relation_params/
-src_text/origin),标 origin="supplement"。合并后重跑 normalize_constraints.py
+字段,保留 InterParamConstraint 字段(expr_type/expr/relation_params/
+src_text/origin),新增条目由本脚本分配唯一 `id`（C-<NNN>，replace 保留原 id），
+标 origin="supplement"。合并后重跑 normalize_constraints.py
 + validate_artifacts.py constraints,任一失败退出非 0,主协调器据此阻断、
 不进 GENERATE。
 
@@ -17,6 +18,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -26,7 +28,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 VALID_OPS = {"add_constraint", "replace_constraint"}
-# InterParamConstraint 必填三字段;src_text/origin 由本脚本填,不取自 patch
+# InterParamConstraint 必填三字段;src_text/origin 由本脚本填,不取自 patch;
+# src_txt_line 为可选溯源行号数组,proposed 携带时透传
 INTER_REQUIRED_FIELDS = ("expr_type", "expr", "relation_params")
 # patch 层"展开到所有平台"的哨兵值:合并器据此把条目写入 cip 中每个平台桶,
 # 不产生 common 桶(跨平台约束直接落各平台,不依赖生成器侧 common 合并)。
@@ -113,8 +116,8 @@ def _build_entry(patch: dict, origin: str) -> dict:
     """从 patch.proposed 构造 InterParamConstraint 条目,填 src_text/origin。
 
     只取三必填字段,src_text 取自 patch.basis,origin 由本脚本指定;
-    patch 的 op/match_expr/proposed/basis 等套壳字段一律不进 constraints.json
-    (InterParamConstraint 为 extra:forbid)。
+    patch 的 op/match_expr/proposed/basis 等套壳字段一律不进 constraints.json。
+    条目 `id` 由 apply_patch 分配:add 用 _next_constraint_id,replace 保留原 id。
     """
     proposed = patch.get("proposed")
     if not isinstance(proposed, dict):
@@ -148,7 +151,32 @@ def _build_entry(patch: dict, origin: str) -> dict:
         raise ValueError(f"patch 项 basis 必须包含可追溯依据: {patch!r}")
     entry["src_text"] = basis.strip()
     entry["origin"] = origin
+    src_lines = proposed.get("src_txt_line")
+    if src_lines is not None:
+        if (
+            not isinstance(src_lines, list)
+            or not src_lines
+            or any(
+                isinstance(line, bool) or not isinstance(line, int) or line < 1
+                for line in src_lines
+            )
+        ):
+            raise ValueError(
+                f"patch 项 proposed.src_txt_line 必须是 >=1 的整数非空数组: {patch!r}"
+            )
+        entry["src_txt_line"] = src_lines
     return entry
+
+
+def _next_constraint_id(cip: dict[str, list[dict]]) -> str:
+    """返回现有约束最大编号 +1 的 id（C-<NNN>，三位补零）。"""
+    max_num = 0
+    for items in cip.values():
+        for item in items:
+            match = re.fullmatch(r"C-(\d+)", str(item.get("id") or ""))
+            if match:
+                max_num = max(max_num, int(match.group(1)))
+    return f"C-{max_num + 1:03d}"
 
 
 def _find_replace_index(bucket: list[dict], match_expr: str) -> int | None:
@@ -209,6 +237,7 @@ def apply_patch(
                     skipped += 1
                     new_expr = entry["expr"]
                     continue
+                entry["id"] = _next_constraint_id(cip)
                 bucket.append(entry)
                 added += 1
                 new_expr = entry["expr"]
@@ -236,6 +265,7 @@ def apply_patch(
                         f"未找到 expr==match_expr 的条目: {match_expr!r}"
                     )
                 entry = _build_entry(patch, origin)
+                entry["id"] = bucket[target_idx].get("id")
                 if constraint_fingerprint(bucket[target_idx]) == constraint_fingerprint(entry):
                     skipped += 1
                     new_expr = entry["expr"]

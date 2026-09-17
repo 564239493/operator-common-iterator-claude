@@ -53,10 +53,18 @@ class ParamAttributes(BaseModel):
 
 class InterParamConstraint(BaseModel):
     """参数约束条目"""
+    id: str | None = Field(default=None, description="约束条目唯一标识（格式 C-<NNN>，全局唯一）")
     expr_type: str = Field(..., description="约束表达式类型")
     expr: str = Field(..., description="约束表达式")
     relation_params: List[str] = Field(..., description="涉及的参数列表")
     src_text: str = Field(default="", description="来源文本")
+    src_txt_line: List[int] = Field(
+        default_factory=list,
+        description=(
+            "约束来源在算子文档快照中的行号数组（1-based、升序，与 src_text 引用的"
+            "条款一一对应；补充来源条目对应补充文档行号；旧产物允许空数组）"
+        ),
+    )
     origin: str = Field(default="doc", description="约束来源:doc(文档提取)")
 
     model_config = {"extra": "forbid"}

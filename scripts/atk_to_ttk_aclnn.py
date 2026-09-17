@@ -42,6 +42,15 @@ DTYPE_MAP = {
     "uint8": "uint8",
     "uint64": "uint64",
     "bool": "bool",
+    # CANN 新量化 dtype（原样小写名透传，与本地校验器白名单一致）
+    "hifloat8": "hifloat8",
+    "float8_e4m3fn": "float8_e4m3fn",
+    "float8_e5m2": "float8_e5m2",
+    "float8_e8m0": "float8_e8m0",
+    "float4_e2m1": "float4_e2m1",
+    "float4_e1m2": "float4_e1m2",
+    "float6_e3m2": "float6_e3m2",
+    "float6_e2m3": "float6_e2m3",
 }
 
 # ---------------------------------------------------------------------------
@@ -281,6 +290,16 @@ def _tensor_data_range(item: dict[str, Any] | None) -> tuple[Any, Any]:
     return (None, None)
 
 
+def _merge_sub_ranges(group: list[dict[str, Any]]) -> tuple[Any, Any]:
+    """Merge per-sub-tensor data ranges into one (lo, hi) TensorList range."""
+    ranges = [_tensor_data_range(sub) for sub in group]
+    los = [r[0] for r in ranges if r[0] is not None]
+    his = [r[1] for r in ranges if r[1] is not None]
+    if not los and not his:
+        return (None, None)
+    return (min(los), max(his))
+
+
 def materialize_scatter_pa_kv_cache_cases(
     cases: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -432,6 +451,17 @@ def _format_attrs(case: dict[str, Any], attr_specs: list[dict[str, str]]) -> dic
     attr_name_set = set(attr_type_map.keys())
 
     for item in case.get("inputs", []):
+        if isinstance(item, list):
+            # Expanded attr-array group: [{name, range_values, ...}, ...]
+            if not item:
+                continue
+            name = item[0].get("name", "")
+            if name not in attr_name_set:
+                continue
+            attrs[name] = [sub.get("range_values") for sub in item]
+            continue
+        if not isinstance(item, dict):
+            continue
         name = item.get("name", "")
         if name not in attr_name_set:
             continue
@@ -493,10 +523,16 @@ def convert_case(
     api_name = case.get("name") or case.get(
         "aclnn_name", "aclnnGroupedMatmulV5",
     )
-    # index ATK inputs by name
-    by_name: dict[str, dict[str, Any]] = {}
+    # index ATK inputs by name; expanded (executor) cases wrap tensors/attrs
+    # slots in list-groups ``[{sub0}, {sub1}, ...]`` instead of flat dicts.
+    by_name: dict[str, Any] = {}
     for item in case.get("inputs", []):
-        name = item.get("name", "")
+        if isinstance(item, dict):
+            name = item.get("name", "")
+        elif isinstance(item, list) and item:
+            name = item[0].get("name", "")
+        else:
+            name = ""
         if name:
             by_name[name] = item
 
@@ -515,6 +551,29 @@ def convert_case(
         is_tensor_list = sig["tensor_list"]
         is_output = sig["output"]
         item = by_name.get(name)
+
+        # Expanded (executor) form: a list-group of sub-tensor dicts for a
+        # TensorList slot that generator.py already unfolded from ``length``.
+        if isinstance(item, list):
+            if not is_tensor_list:
+                # 非 TensorList 槽位不应出现 list 组；防御性渲染为缺席槽
+                shapes_parts.append("None")
+                dtypes_parts.append("None")
+                formats_parts.append("None")
+                data_ranges.append((None, None))
+                continue
+            sub_shapes = [deepcopy(sub.get("shape")) for sub in item]
+            shapes_parts.append(_format_tensor_list_shapes(sub_shapes))
+            dtypes_parts.append(
+                repr(tuple(_format_dtype(sub.get("dtype")) for sub in item))
+            )
+            formats_parts.append(
+                repr(tuple(_format_tensor_format(sub.get("format")) for sub in item))
+            )
+            data_ranges.append(_merge_sub_ranges(item))
+            if is_output:
+                output_indexes.append(idx)
+            continue
 
         if item is None or item.get("type") not in ("tensor", "tensors"):
             # absent optional tensor
@@ -615,7 +674,16 @@ def audit_case(
 ) -> list[str]:
     """Basic sanity checks."""
     issues: list[str] = []
-    by_name = {item.get("name"): item for item in case.get("inputs", [])}
+    by_name = {}
+    for item in case.get("inputs", []):
+        if isinstance(item, dict):
+            name = item.get("name")
+        elif isinstance(item, list) and item:
+            name = item[0].get("name")
+        else:
+            name = None
+        if name:
+            by_name[name] = item
     signature = signature or _SIGNATURE
     # Every non-optional entry is checked more precisely by upstream constraint
     # validation.  Here ensure every signature tensor has a generated slot; an
@@ -656,6 +724,14 @@ def audit_case(
             expected_formats: list[Any] = []
             for entry in signature:
                 item = by_name.get(entry["name"])
+                if isinstance(item, list):
+                    if entry["tensor_list"]:
+                        expected_formats.append(
+                            tuple(_format_tensor_format(sub.get("format")) for sub in item)
+                        )
+                    else:
+                        expected_formats.append(None)
+                    continue
                 if item is None or item.get("type") not in ("tensor", "tensors"):
                     expected_formats.append(None)
                     continue
@@ -719,10 +795,17 @@ def convert_file(
     attr_names = [spec["name"] for spec in attr_specs]
     audit = []
     for i, (case, row) in enumerate(zip(cases, rows)):
-        null_attrs = [
-            item.get("name") for item in case.get("inputs", [])
-            if item.get("name") in attr_names and item.get("range_values") is None
-        ]
+        null_attrs = []
+        for item in case.get("inputs", []):
+            if isinstance(item, dict):
+                if item.get("name") in attr_names and item.get("range_values") is None:
+                    null_attrs.append(item.get("name"))
+            elif isinstance(item, list) and item:
+                name = item[0].get("name")
+                if name in attr_names and all(
+                    sub.get("range_values") is None for sub in item
+                ):
+                    null_attrs.append(name)
         audit.append({
             "id": case.get("id", i),
             "issues": audit_case(case, signature, row, attr_specs),

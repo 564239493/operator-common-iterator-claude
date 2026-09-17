@@ -86,9 +86,10 @@ flowchart TD
 ### CLASSIFY（初始化 EXTRACT barrier 后，非独立状态）
 
 主协调器跑 `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，
-读 stdout JSON（`operator_category` + `evidence`），回写 `run_state.json` 的
-`execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
-`operator_category`、`operator_category_evidence`。分类不进 constraints.json、
+读 stdout JSON（`operator_category` + `evidence`），运行
+`python scripts/run_state.py set-fields --run-dir <run-dir> --set execution_strategy=<fusion|default> --set operator_category=<operator_category> --set operator_category_evidence=<evidence JSON>`
+回写 `run_state.json` 的 `execution_strategy`（`fusion_comm_compute` → `fusion`，否则
+`default`）、`operator_category`、`operator_category_evidence`。分类不进 constraints.json、
 不依赖 constraint-extractor 自由文本。此步初始化时执行一次，后续约束更新沿用分类结果。
 
 ### 融合（fusion）执行路径（`run_state.execution_strategy=="fusion"` 时）
@@ -184,6 +185,8 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 
 1. `constraint-checker` 使用隔离上下文读取算子文档、当前最终 constraints、场景指令、
    本轮补充证据和已有 `constraint_check.json`，完整检查整份约束；只写报告、不修改约束。
+   aclnn 时每轮先自跑 `verify_relation_exprs.py` 产 `relation_examples.json`，按
+   check-constraints 检查规则第 10 条做正反例核对（torch_npu 不跑，行为不变）。
 2. 报告无 open/unfixed 问题则通过；有问题且未到 `constraint-check-rounds` 上限时，
    `constraint-repairer` 使用另一个隔离上下文，只 Edit 报告指出的问题并重跑
    validate_operator_rule + normalize + validate_artifacts constraints。
@@ -353,7 +356,8 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 
 ## 6. 循环与终止
 
-每次状态迁移都更新 `run_state.json`。循环只在以下条件同时成立时发生：
+每次状态迁移都更新 `run_state.json`（一律经 `python scripts/run_state.py` 子命令写入，
+禁止手动 Edit）。循环只在以下条件同时成立时发生：
 
 - 根因严格等于 constraint_extraction；
 - 新提示词已生成并通过基本检查；

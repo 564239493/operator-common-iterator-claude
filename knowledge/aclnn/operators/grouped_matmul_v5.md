@@ -104,20 +104,22 @@ src_text: "groupListType=2：仅全量化且groupType=0场景下支持"
 
 文档 groupType=-1 行：`weight 可转置（统一），shape 为 (n_i,k_i) 或 (k_i,n_i)`，
 且「weight 转置时对应 Tensor 必须非连续」。API 签名无 `transposeWeight` 形参，
-cases 层使用 shape 顺序表达逻辑布局：非转置为 `(n,k)`，转置为 `(k,n)`。executor
-随后把两种 cases 表示物化为 ACLNN 调用所需的 `(k,n)` Tensor；该执行层转换不得反向
-改写 cases 层的轴约束。
+cases 层使用 shape 顺序表达逻辑布局（以算子文档行 595-597 为准：weight 不转置时
+最后一维为 N 轴，转置时为 K 轴）：非转置为 `(k,n)`，转置为 `(n,k)`。executor 把两种
+cases 表示物化为 ACLNN 调用所需的数学 `(k,n)` Tensor；该执行层转换不得反向改写
+cases 层的轴约束。
 
 按 §4.6.3 J，**禁止**写成丢失布局条件的无前提 OR。`groupType=-1 + 非量化` 场景必须
 由可物化的 `weight_transposed` 隐式 bool 门控两种 cases shape：
 
 ```text
 expr_type: shape_value_dependency
-expr: (x.shape[1] == weight.shape[1] and weight.shape[0] == out.shape[1] and out.shape[0] == x.shape[0]) if (weight_transposed.range_value == False) else (x.shape[1] == weight.shape[0] and weight.shape[1] == out.shape[1] and out.shape[0] == x.shape[0]) if (weight_transposed.range_value == True) else True
+expr: (x.shape[1] == weight.shape[0] and weight.shape[1] == out.shape[1] and out.shape[0] == x.shape[0]) if (weight_transposed.range_value == False) else (x.shape[1] == weight.shape[1] and weight.shape[0] == out.shape[1] and out.shape[0] == x.shape[0]) if (weight_transposed.range_value == True) else True
 relation_params: ["x", "weight", "out", "weight_transposed"]
-src_text: "groupType=-1: x不转置 shape=(m,k); weight 可转置 shape=(n,k)或(k,n);
-           weight 转置时对应 Tensor 必须非连续；out shape=(m_i,n_i)。cases 层
-           False=(n,k)、True=(k,n)，executor 再按转置状态物化 ACLNN 调用布局。"
+src_text: "groupType=-1: x不转置 shape=(m,k); weight 可转置 shape=(k,n)或(n,k);
+           weight 转置时对应 Tensor 必须非连续；out shape=(m_i,n_i)。cases 层按
+           文档约定 False=(k,n)（末维 N 轴）、True=(n,k)（末维 K 轴），executor
+           按转置状态物化 ACLNN 数学 (k,n) 调用布局。"
 ```
 
 > **M 轴绑定（v5 增补，R5 验证）**：文档 groupType=-1 行明定「非量化 x，out 中 tensor
@@ -127,10 +129,11 @@ src_text: "groupType=-1: x不转置 shape=(m,k); weight 可转置 shape=(n,k)或
 > `and out.shape[0] == x.shape[0]` 后 10/0/10 全过。groupType=-1 的场景表另行规定
 > splitItem=0/1；K.1 只负责 groupType/groupListType 互斥，不承担 splitItem 门控。
 
-当前 executor 已通过 `weight_transposed=False/True` 的二维 FP32 ND 硬件用例验证：
-False 将 cases `(n,k)` 转为连续 `(k,n)`；True 保持 cases `(k,n)` shape/数值并构造
-非连续转置 view。NZ、三维 weight、量化以及 `x_transposed=True` 仍需完整回归，不得由
-本次二维 ND 结果直接宣称全部布局已验证。
+当前 executor 模板（`executer/resources/aclnn_api_template.py.j2`，2026-09-10 按文档
+约定修正；run aclnnGroupedMatmulV5-20260909-181759-339169 iter_002/iter_003 real-run
+验证）：False 时 cases `(k,n)` 已连续、直传；True 将 cases `(n,k)` 转置为数学 `(k,n)`
+并以非连续转置 view 承载转置标志（NPU 侧物化 stride）。`x_transposed=True` 的 NPU
+非连续呈现仍需完整回归，不得由既有二维 ND 结果直接宣称全部布局已验证。
 
 **K.2.1 DIAGNOSE_INFERRED_GUARD：Atlas A3/A2 非量化 FP16/BF16 的 2D NZ N 轴对齐**
 
@@ -143,14 +146,14 @@ ATK cases 仍以二维逻辑 shape 表示 weight，仅把 `format` 设为 `NZ`�
 
 ```text
 expr_type: shape_value_dependency
-expr: not(weight.format == "NZ") or not(weight.dtype == "FLOAT16" or weight.dtype == "BFLOAT16") or (weight_transposed.range_value == False and weight.shape[0] % 16 == 0) or (weight_transposed.range_value == True and weight.shape[1] % 16 == 0)
+expr: not(weight.format == "NZ") or not(weight.dtype == "FLOAT16" or weight.dtype == "BFLOAT16") or (weight_transposed.range_value == False and weight.shape[1] % 16 == 0) or (weight_transposed.range_value == True and weight.shape[0] % 16 == 0)
 relation_params: ["weight", "weight_transposed"]
 src_text: "Atlas A3/A2：weight 为 FRACTAL_NZ 格式时 shape 须满足 NZ 格式要求；运行 aclnnGroupedMatmulV5-20260813-075223-209105 R3 的成功/失败真值方向校验支持逻辑 N 轴按 16 对齐，K 轴非 16 倍数仍可成功"
 ```
 
 适用边界：仅 Atlas A3/A2、非量化、二维逻辑 weight、FP16/BF16、format=NZ。FLOAT32
-在本场景仅支持 ND，不由本条处理；ND 不受本条约束。非转置 `(N,K)` 的 N 轴为
-`shape[0]`，转置 `(K,N)` 的 N 轴为 `shape[1]`，必须由 `weight_transposed` 门控。
+在本场景仅支持 ND，不由本条处理；ND 不受本条约束。非转置 `(K,N)` 的 N 轴为
+`shape[1]`，转置 `(N,K)` 的 N 轴为 `shape[0]`，必须由 `weight_transposed` 门控。
 
 **证据等级与待补测项**：这是 `origin=diagnose_inferred` 的运行经验护栏，不是文档明确
 给出的精确公式。现有样本尚不能区分“仅 N 轴对齐”和“K/N 至少一轴对齐”，因为没有
@@ -253,14 +256,16 @@ relation_params: ["biasOptional", "x"]
 共同确认：`weight_transposed=False` 时 cases 已为 `[E,K,N]`，executor 应保持连续且
 不得再次转置；`weight_transposed=True` 时 cases 为 `[E,N,K]`，executor 必须执行一次
 `transpose(-1,-2)`，向 ACLNN 传入数学布局 `[E,K,N]`。不得用“双重转置”保持原 shape，
-否则 K 维仍按 N 解释。K.2 的 false `(N,K)->(K,N)` 仅适用于其明确限定的
-`groupType=-1 + 2-D FP32 ND` 场景。
+否则 K 维仍按 N 解释。K.2 的 2-D 物化（False 直传 `(k,n)`、True 转置 `(n,k)` 为
+`(k,n)` view）仅适用于其明确限定的 `groupType=-1 + 2-D ND` 场景。
 
-**M.1 biasOptional 与 perTokenScaleOptional 的完整 rank/shape**
+**M.1 biasOptional、perTokenScaleOptional 与 scaleOptional 的完整 rank/shape**
 
 该场景中 weight 的归一化数学布局为 `[E,K,N]`，`out` 的单个 tensor 为 `[M,N]`。
 `biasOptional` 存在时不是一维 `[N]`，而是二维 `[E,N]`；
-`perTokenScaleOptional` 存在时必须是一维 `[M]`。可选参数缺席仍是合法分支，不得把
+`perTokenScaleOptional` 存在时必须是一维 `[M]`；`scaleOptional` 存在时为二维
+`[E,N]`，N 轴必须等于 `out.shape[1]`（A2 不授予 pertensor `[E,1]`，见 M.1a 注）。
+可选参数缺席仍是合法分支，不得把
 本轮 present 样本沉淀成强制必传：
 
 ```text
@@ -286,6 +291,11 @@ expr_type: rank_constraint
 expr: scaleOptional is None or len(scaleOptional.shape) == 2
 relation_params: ["scaleOptional"]
 src_text: "A2/A8W8, groupType=0, single TensorList: scaleOptional 必须为二维"
+
+expr_type: shape_equality
+expr: scaleOptional is None or scaleOptional.shape[1] == out.shape[1]
+relation_params: ["scaleOptional", "out"]
+src_text: "A2/A8W8, groupType=0, single TensorList: scaleOptional shape=[E,N]，N=out.shape[1]；[E,1]（pertensor）仅 Ascend 950PR/950DT 章节授予，A2 A8W8 章节未授予，A2 NPU EZ1001 在 N>1 时拒绝"
 ```
 
 **M.1a biasOptional / scaleOptional 的 E 轴等式（v2 增补，必须落库）**
@@ -313,13 +323,25 @@ src_text: "A2/A8W8, groupType=0, single TensorList: biasOptional shape=[E,N]，E
 expr_type: shape_equality
 expr: scaleOptional is None or scaleOptional.shape[0] == weight.shape[0]
 relation_params: ["scaleOptional", "weight"]
-src_text: "A2/A8W8, groupType=0, single TensorList: scaleOptional shape=[E,N]或[E,1]，E=weight.shape[0]（分组数g）"
+src_text: "A2/A8W8, groupType=0, single TensorList: scaleOptional shape=[E,N]，E=weight.shape[0]（分组数g）"
 ```
 
 E=1（`weight.shape[0]==1`）时 bias/scale 首维被钉死为 1，消除 `(65534,1)` 等非法 shape。
 适用边界：仅 A2/A8W8、groupType=0、单 TensorList（weight 3D (E,K,N)）。多 TensorList
 （weight 2D）E 由 `len(weight)` 决定；groupType=2 groupNum 取自 `dim(out[0],0)`，不套用
 `weight.shape[0]`。
+
+> **scaleOptional N 轴收敛（v3 增补）**：原 src_text「scaleOptional shape=[E,N]或[E,1]」
+> 系跨产品误引——pertensor `(g,1)`/`(g,)` scale 形态仅出现在 Ascend 950PR/950DT 章节
+> （aclnnGroupedMatmulV5.md line 389-394、413-418），Atlas A2 的 A8W8 章节
+> （line 666-704）只授予 `[E,N]` perchannel 形态。运行
+> `aclnnGroupedMatmulV5-20260902-072457-450784` iter_002 case 5/7 在 N>1 下传 `[E,1]`
+> 被 NPU GetWorkspaceSize 拒绝（EZ1001「NDim[1] of scale should be equal with
+> NDim[N] of weight」双例证伪）；收窄为纯等式
+> `scaleOptional.shape[1] == out.shape[1]` 后 iter_003 10/10、iter_004 100/100 全过。
+> **必须**在 M.1 落库上述 shape_equality，**禁止**在 A2 场景引入 `或 shape[1]==1`
+> 析取；N==1 时 `[E,1]` 与 `[E,N]` 数值重合，由等式自然覆盖，无需单独分支。950 系列
+> 设备场景如需 pertensor，须由该设备章节单独授予，不得从 A2 规则推广。
 
 **M.2 groupListType 0/1/2 的 shape 与内容职责分离**
 
