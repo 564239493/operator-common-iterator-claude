@@ -86,9 +86,10 @@ flowchart TD
 ### CLASSIFY（初始化 EXTRACT barrier 后，非独立状态）
 
 主协调器跑 `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，
-读 stdout JSON（`operator_category` + `evidence`），回写 `run_state.json` 的
-`execution_strategy`（`fusion_comm_compute` → `fusion`，否则 `default`）、
-`operator_category`、`operator_category_evidence`。分类不进 constraints.json、
+读 stdout JSON（`operator_category` + `evidence`），运行
+`python scripts/run_state.py set-fields --run-dir <run-dir> --set execution_strategy=<fusion|default> --set operator_category=<operator_category> --set operator_category_evidence=<evidence JSON>`
+回写 `run_state.json` 的 `execution_strategy`（`fusion_comm_compute` → `fusion`，否则
+`default`）、`operator_category`、`operator_category_evidence`。分类不进 constraints.json、
 不依赖 constraint-extractor 自由文本。此步初始化时执行一次，后续约束更新沿用分类结果。
 
 ### 融合（fusion）执行路径（`run_state.execution_strategy=="fusion"` 时）
@@ -184,6 +185,8 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 
 1. `constraint-checker` 使用隔离上下文读取算子文档、当前最终 constraints、场景指令、
    本轮补充证据和已有 `constraint_check.json`，完整检查整份约束；只写报告、不修改约束。
+   aclnn 时每轮先自跑 `verify_relation_exprs.py` 产 `relation_examples.json`，按
+   check-constraints 检查规则第 10 条做正反例核对（torch_npu 不跑，行为不变）。
 2. 报告无 open/unfixed 问题则通过；有问题且未到 `constraint-check-rounds` 上限时，
    `constraint-repairer` 使用另一个隔离上下文，只 Edit 报告指出的问题并重跑
    validate_operator_rule + normalize + validate_artifacts constraints。
@@ -221,6 +224,20 @@ ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生
 持续读取结构化进度；Monitor 命令不得包含变量、管道或 shell
 `while`/`grep`/`sleep` 循环，避免触发与业务无关的安全审批。Monitor 中断不影响已经
 脱离会话的生成进程，之后可重新运行 `watch` 或单次运行 `status` 继续观察。
+
+> **长时间监听脚本必须写成一条裸命令（Claude Code 与 opencode 通用）**：
+> 所有长时间监听命令（`generation_progress.py watch`、`watch_constraints_copy.py` 等）
+> 一律写成单条裸命令 `<venv-python> <repo>/scripts/<script>.py <args>`——即 python
+> 解释器直接跟一个项目内 `.py` 脚本，**不要**用 `Start-Process -FilePath $py -ArgumentList @(...)`、
+> `Start-Job`、`& { }` 等 shell/PowerShell 包装。原因：项目的写入守卫
+> （`guard_project_writes.py`）只对"python 直接跑项目内 .py"这种裸命令自动放行；
+> 一旦用 shell/PowerShell 包装，守卫认不出其中的 .py 入口，会弹用户确认。
+> - **Claude Code**：用 `Monitor` 工具（`persistent: true`）挂这条裸命令。**不要改用
+>   `run_in_background`**——`run_in_background` 虽也自动放行，但它不会在文件事件出现时
+>   唤醒空闲会话；只有 Monitor 能在监听脚本输出事件后把会话唤醒。
+> - **opencode**：用 `bash` 工具直接跑同一条裸命令（前台阻塞，给足 `timeout`；超时未出
+>   事件就重跑同一条，不轮询、不 kill）。
+> - 两种运行时共享同一自动放行规则，命令写法完全一样。
 
 ### EXECUTE
 
@@ -273,6 +290,54 @@ SSH/CANN/TBE/NPU环境归入 execution_environment。
 prompt-optimizer 保留为任务结束后的离线知识沉淀能力：可基于多轮证据提出 canonical
 prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不产生新的完整提取轮。
 
+### 人工约束上传通道（`--human-constraints-upload`，默认关闭；由 human-checkpoint 检查点触发）
+
+`init_run.py --human-constraints-upload` 置 `run_state.human_constraints_upload=true`。**前
+`human_checkpoint_round` 轮纯自动迭代**（走 UPDATE_CONSTRAINTS 自动更新分支，不挂起）。到达
+检查点（`current_iteration >= human_checkpoint_round` 且本轮以 constraint_extraction 失败、
+本轮未弹过、`< max_iterations`）时，弹 AskUserQuestion **四选一**：
+
+1. **人工修复**（constraints_copy.json + 监听）→ 进入下方挂起流程；
+2. **人工补充**（用户补充事实/证据，append 到 `supplement_constraints.md`，重新诊断）→ 回自动更新；
+3. **自动修复**（自主迭代）→ 原 UPDATE_CONSTRAINTS 自动更新；
+4. **立即停止** → `STOPPED_BY_USER`。
+
+**此后每个 `>= human_checkpoint_round` 的失败轮都重新弹该四选一**（`human_checkpoint_resolved_iteration`
+仅防同一轮重复，不阻断后续新轮再问），用户可逐轮在四种方式间切换。未开启
+`--human-constraints-upload` 时检查点退化为三选一（人工修复不可选），向后兼容。
+
+**挂起流程**（用户选「人工修复」时执行）：
+1. **挂起**：`state=AWAITING_HUMAN_CONSTRAINTS`，history `HUMAN_CONSTRAINTS_PENDING`。
+2. **等待用户上传（agent 不创建文件）**：**不复制**任何约束。告诉用户当前轮只读基线是
+   `<iter_N>/constraints.json`；用户据此（或经 web 页面）编辑后把修改后的约束**上传**到
+   `<iter_N>/constraints_copy.json`。文件出现 = 已上传、待开启下一轮；文件未出现 = 仍在修改/
+   尚未上传，继续等待。
+3. **挂监听器**：Monitor 工具（`persistent: true`，单条绝对路径命令、无变量/管道/shell
+   循环）挂 `python scripts/watch_constraints_copy.py --run-dir <run-dir>`。监听器轮询
+   `iter_<N>/constraints_copy.json` 的**出现 + 稳定性**：启动时文件应缺席——缺席时**继续
+   等待、不退出**（缺席 = 未上传）；文件出现后连续两次轮询 mtime/size 不变（≈ interval×2，
+   默认 10 秒，防部分写入竞态）才判定上传完成，输出一行 JSON 后**退出**（单次触发后退出：只报告一个事件即结束），
+   由 Monitor 把事件送回空闲会话。向用户提示上传目标路径与「上传完成后自动开启下一轮」。
+4. **唤醒与接入**：会话被唤醒后运行 `python scripts/apply_human_constraints.py --run-dir <run-dir>`
+   （可选 `--max-iterations N` 提升上限，须 > 当前轮次）。该脚本三阶段：
+   - 预检（不写盘）：`human_constraints_upload==true`、状态门禁（`AWAITING_HUMAN_CONSTRAINTS`；
+     `UPDATE_CONSTRAINTS` 且目标 iter 无生成/执行产物视作已接入未跑的幂等恢复）、
+     `target = current_iteration + 1 ≤ max_iterations`；
+   - 校验（不写盘）：operator_name 一致性 → `OperatorRule` → `validate_constraints`
+     → 归一化 → 复验 → noop 检查（与上一轮约束 canonical-JSON 相等则 `NO_CHANGE`）；
+   - 落盘（按序写盘）：建 `iter_<N+1>` → `.pre_update` 备份 + `.submitted` 原样存档 +
+     归一化 `constraints.json` → 原子更新 `run_state`（`state=UPDATE_CONSTRAINTS`、
+     `current_iteration=N+1`、history `HUMAN_CONSTRAINTS_APPLIED` `origin=human`）→ 消费
+     `mv iter_<N>/constraints_copy.json → iter_<N>/constraints_copy.consumed-<ts>.json`。
+   前两阶段只读、不碰磁盘，校验失败时什么都没改过，用户改完重新上传/保存再次触发即可（exit 2 + 错误码，文件未消费）。
+5. **续跑**：CHECK/REPAIR（人工来源无 findings 清单 → checker 做首轮式完整语义检查）→
+   GENERATE → EXECUTE → GATE → DIAGNOSE。若再次以 constraint_extraction 失败且
+   `current_iteration >= human_checkpoint_round` → 回到检查点重新弹四选一。终态不变，问环自然结束。
+
+断开恢复：监听器随会话死亡即失效；`claude --continue`（同对话，重新执行第 3 步挂监听器）或
+`/iterate-operator --resume-run <run-dir>`（纯文件驱动：`AWAITING`→第 3 步挂监听器等待上传；
+`UPDATE_CONSTRAINTS` 且 iter 无生成产物→从 CHECK/REPAIR 续跑）。
+
 ### constraints-only
 
 对尚无 TTK adapter 的 torch_npu API，auto 选择 `test_framework=constraints`、
@@ -291,7 +356,8 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 
 ## 6. 循环与终止
 
-每次状态迁移都更新 `run_state.json`。循环只在以下条件同时成立时发生：
+每次状态迁移都更新 `run_state.json`（一律经 `python scripts/run_state.py` 子命令写入，
+禁止手动 Edit）。循环只在以下条件同时成立时发生：
 
 - 根因严格等于 constraint_extraction；
 - 新提示词已生成并通过基本检查；
@@ -304,6 +370,9 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 
 会话中断后，使用 `claude --continue` 或重新启动 Claude，读取 run_state.json，从最后一个
 完成状态继续。任何 Agent 都不得依赖聊天历史恢复事实；产物目录是唯一真相源。
+`/iterate-operator --resume-run <run-dir>` 提供全新会话的瘦恢复入口：不创建新 run，
+直接读 `<run-dir>/run_state.json` 与 iter 产物判定续跑点（含人工约束上传通道的
+`AWAITING_HUMAN_CONSTRAINTS` 挂起状态与 `UPDATE_CONSTRAINTS` 已接入未跑状态）。
 
 ## 8. 目录批次
 

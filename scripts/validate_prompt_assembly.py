@@ -59,11 +59,24 @@ def validate(record_path: Path) -> list[str]:
     output = Path(assembly.get("output_path", ""))
     if output.is_file():
         text = output.read_text(encoding="utf-8")
-        if text.count("assembled-knowledge-begin") != 1 or text.count("assembled-knowledge-end") != 1:
+        legacy = text.count("assembled-knowledge-begin") == 1 and text.count("assembled-knowledge-end") == 1
+        current = text.count("required-knowledge-begin") == 1 and text.count("required-knowledge-end") == 1
+        if legacy:
+            # 历史拼接格式：正文模块逐一带 knowledge-module 标记。
+            for module_id in ids:
+                if text.count(f"knowledge-module: {module_id} -->") != 1:
+                    errors.append(f"assembled prompt missing/duplicates module marker: {module_id}")
+        elif current:
+            # 现行格式：正文不进快照，快照含必载清单表；逐模块校验 skill 名行存在。
+            skill_names = assembly.get("skill_names", {})
+            for module_id in ids:
+                name = skill_names.get(module_id)
+                if not name:
+                    errors.append(f"assembly record missing skill_names entry: {module_id}")
+                elif name not in text:
+                    errors.append(f"assembled prompt missing required-list row: {module_id} ({name})")
+        else:
             errors.append("assembled prompt knowledge boundary markers are invalid")
-        for module_id in ids:
-            if text.count(f"knowledge-module: {module_id} -->") != 1:
-                errors.append(f"assembled prompt missing/duplicates module marker: {module_id}")
     return errors
 
 

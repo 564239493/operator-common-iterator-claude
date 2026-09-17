@@ -8,8 +8,10 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ## 核心流程
 
 状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE → DIAGNOSE`
+
 - 初始化 EXTRACT 固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 → 独立
-  `constraint-checker` / `constraint-repairer` 语义检查修复循环；默认
+  `constraint-checker` / `constraint-repairer` 语义检查修复循环（aclnn 时
+  checker 每轮先自跑 `verify_relation_exprs.py` 做 Z3 正反例取证）；默认
   `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
 - 全部通过 → `SUCCESS`
 - 有失败 → `DIAGNOSE` 分析全部失败簇；所有簇均为约束问题且 findings 完整时，复制上一版
@@ -19,6 +21,18 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 - 达到 max-iterations → `MAX_ITERATIONS`
 - 约束簇证据不足时进入 `NEEDS_HUMAN_EVIDENCE`；人工补充后重新运行 failure analysis，
   形成可校验 findings 后再更新约束
+- `--human-constraints-upload` 启用「人工约束上传通道」：
+  前 `human-checkpoint-round` 轮纯自动迭代；
+  到达检查点（`current_iteration >= human_checkpoint_round` 且以 constraint_extraction 失败）后弹**四选一**
+  ——人工修复（状态 `AWAITING_HUMAN_CONSTRAINTS`，挂 `watch_constraints_copy.py`， 用户把修改后的约束上传到
+  `<run>/iter_<N>/constraints_copy.json`，监听器检测到文件出现 + 稳定后唤醒会话，
+  `apply_human_constraints.py` 接入下一轮；监听命令写成一条裸命令 `python 脚本.py 参数`
+  （不加 shell 包装），Claude Code 用 Monitor / opencode 用 bash 前台阻塞，见 WORKFLOW.md 监听命令纪律）
+  ——人工补充（append 到 `supplement_constraints.md` 重新诊断） 
+  ——自动修复（原 UPDATE_CONSTRAINTS）/ 
+  ——立即停止。
+  此后每个失败轮都重新弹该四选一， 可逐轮切换。默认关闭（缺省 false，检查点退化为三选一，人工修复不可选）。
+  详见`docs/WORKFLOW.md` §4「人工约束上传通道」
 
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
@@ -60,12 +74,14 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ## 常用命令
 
 ### 算子迭代
+
 ```text
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 3 --case-count 10
 /iterate-operator operator_docs/aclnnFoo.md --constraint-check-rounds 3  # 每个新约束版本最多 3 次语义 check
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 5 --human-checkpoint-round 3  # 第3轮仍失败弹人工补充检查点（0=禁用）
 /iterate-operator D:\operator_docs\aclnnFoo.md  # 支持项目外路径
 /iterate-operator operator_docs/aclnnFoo.md --scene auto  # EXTRACT 前扫描量化场景并征询（默认）；--scene all 取全场景不问；--scene off 跳过
+/iterate-operator operator_docs/aclnnFoo.md --human-constraints-upload --max-iterations 5  # 人工约束上传通道：检查点选人工修复后挂起等用户上传 constraints_copy.json，监听触发下一轮
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
 /show-workforce  # 查看可用 Skills、Agents 和调度拓扑
@@ -119,6 +135,7 @@ python scripts/normalize_constraints.py .../constraints.json  # 原地规范化
 ```
 
 ### 环境配置
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -148,11 +165,11 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 | 阶段 | Agent | 预加载 Skill | 主要产物 |
 |---|---|---|---|
 | 场景扫描（条件，EXTRACT 前） | `scene-scanner` | `scan-scenes` | `<run-dir>/inputs/scene_scan.json` |
-| 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` |
+| 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` + `extraction_provenance.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
 | 失败后约束增量更新 | `constraint-updater` | `update-constraints` | 新版 `constraints.json` + `constraint_update.json` |
-| 约束语义检查（每个新版本） | `constraint-checker` | `check-constraints` | `constraint_check.json` |
+| 约束语义检查（每个新版本） | `constraint-checker` | `check-constraints` | `constraint_check.json` + `relation_examples.json`（脚本产，仅 aclnn） |
 | 约束精准修复（检查发现问题） | `constraint-repairer` | `repair-constraints` | 修改当前 `constraints.json` |
 | 用例生成 | `case-generator` | `generate-cases` | `cases.json` + `generation_summary.json` |
 | 用例执行 | `case-executor` | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
@@ -163,11 +180,21 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 ## 架构分层
 
 ### Claude Code 编排层（.claude/）
-- `.claude/agents/*.md` — 专职 Agent 定义（角色、上下文、产物格式）
-- `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
+- `.claude/agents/*.md` — 专职 Agent 定义（WHO：角色身份、输入隔离安全边界、返回契约；流程细节一律在各阶段 SKILL.md，不重复抄写）
+- `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（HOW：可执行规则、输入清单、校验命令；`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
 - `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
 - `.claude/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
+
+### opencode 原生层（.opencode/）
+
+- `.opencode/plugins/guard-project-writes.js` — 直接以 `.venv` python 调用
+  `guard_project_writes.py` 做 PreToolUse 守卫：deny → throw 阻断工具，ask → 以「需要用户确认」
+  错误反馈（模型可用 question 工具征询用户），allow → 放行
+- `.opencode/plugins/trace-hook.js` — `session.created`→SessionStart、`task` 工具
+  before/after→SubagentStart/Stop，写 `.claude/runtime/schedule.jsonl`
+- opencode 工具名小写映射：`read/glob/grep/edit/write/apply_patch/bash/task` → 守卫脚本的
+  `Read/Glob/Grep/Edit/Write/Bash/Agent`；脚本仍复用，不复制逻辑
 
 > EXTRACT 后可选触发约束补充（`--supplement-constraints` 非空时）：
 > `constraint-supplementer` 产 `constraints_patch.json`，
@@ -191,31 +218,37 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 ### Python 确定性层
 
 **agent/generators/** — 保留的正式用例生成器（Z3 约束求解 + pairwise 组合）：
+
 - `facade.py` → `TestCaseGenerator` 是公共入口，委托 `single_operator_handle` 按 platform 生成
 - `common_model_definition.py` → `OperatorRule` Pydantic 模型，constraints.json 必须满足此校验
 - `operator_handle_main.py` → `single_operator_handle` 正式生成逻辑
 - `param_constraint_solve/z3_expression_solver_utils.py` → Z3 solver
 
 **executer/** — 执行适配层（SSH + ATK 上传运行）：
+
 - `runner.py` → `RunRequest` + `run_cases(mock|real|generate)` 三种模式
 - `ssh.py` → asyncssh 连接、SFTP 上传、远程 ATK 执行
 - `resources/generator.py` → 生成 `cases_executor.py`（含 dummy CPU golden 占位）
 - `report_parser.py` → ATK xlsx 结果解析
 
 **scripts/** — 确定性 CLI 工具，不调用 LLM：
+
 - `init_run.py` — 创建 run 目录 + `run_state.json`；校验文档和 servers.json
+- `run_state.py` — `run_state.json` 唯一写入器：主协调器 CLI 子命令（set-state / set-fields / set-constraint-check）+ 供脚本 import 的落盘库函数
 - `init_batch.py` — 初始化批次目录
 - `batch_state.py` — 批次状态迁移
 - `generate_cases.py` — 调 facade 生成用例
 - `execute_cases.py` — 调 executer 执行用例
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）
+- `verify_relation_exprs.py` — Z3 正反例验证：`constraints_in_parameters` 逐条采 satisfy/violate 实例 + 整桶矛盾检测，产 `relation_examples.json`（CHECK 阶段 checker 步骤 0 自跑，仅 aclnn；语法错误 exit 2，其余 advisory）
 - `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
 - `render_scene_directive.py` — 校验三级场景选择、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
 - `check_scene_conflicts.py` — Q3 组装 selection.json 后、渲染 directive 前做特性参数取值冲突识别（advisory、exit 0；判据 `scene_scan.params[].value_conflicts`；产 `inputs/scene_conflicts.json`，render_scene_directive 据此标注 `known_conflicts`）
-- `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 `base + 命中知识` → 冻结 `prompt_v1.md`+`prompt_preanalysis.json`+`prompt_assembly.json`
+- `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 → 冻结 `prompt_v1.md`（base 核心层 + **必载知识清单**，模块正文不进快照）+`prompt_preanalysis.json`+`prompt_assembly.json`
 - `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
+- `build_knowledge_skills.py` — 把两 family manifest 知识模块生成 `.claude/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 注册 skill（生成物禁止手改；canonical 变更后必须重跑，`--check` 只校验同步）
 - `route_aclnn_knowledge.py` / `route_torch_npu_knowledge.py` — manifest 驱动知识路由（正向 trigger + `reject_on` 负向否决 + `depends_on` 依赖闭包）
 - `validate_aclnn_knowledge.py` / `validate_torch_npu_knowledge.py` — 知识完整性预校验（manifest 字段、默认集、依赖闭包、跨 family 隔离、`reject_on` 合法性）
 - `validate_prompt_assembly.py` — 校验冻结装配记录的全部 sha256 与模块顺序标记
@@ -231,6 +264,9 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `update_supplement_state.py` — 持久化补充事实 revision/hash 与已消费 hash，支持会话恢复
 - `validate_supplement_effect.py` — 校验 findings 被 patch 覆盖且诊断 patch 不是全量 noop
 - `constraint_update_state.py` — 从上一轮冻结约束准备新版本，并校验增量更新覆盖全部 findings 且不是 noop
+- `watch_constraints_copy.py` — 人工约束上传通道的监听器：单次触发后退出，检测 `iter_<N>/constraints_copy.json` 从无到有 +
+  稳定性校验（agent 不创建该文件，等用户上传），唤醒空闲会话（Claude Code 用 Monitor / opencode 用 bash 前台阻塞；命令写成一条裸 `python 脚本.py 参数`，见 WORKFLOW.md）
+- `apply_human_constraints.py` — 人工约束上传通道的确定性接入：校验链 + 建 iter_N+1 产物四件套 + 原子 run_state 更新 + 消费mv
 - `apply_conflict_resolution.py` — 人工冲突裁决的机读合并层（不替用户决定胜负）
 - `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
 - `show_registry.py` — 展示 Skills/Agents 注册表
@@ -242,10 +278,16 @@ ACLNN 与 torch_npu 现同构：`prompts/<family>_constraints/base.md` 为 **can
 为历史来源（provenance only），一次性机械拆分已完成、不再作为生成源（原迁移工具
 `build_*_prompt_base.py` 已退场归档于 `archive/builders/`，仅留审计、不再 gate）。
 再由 manifest 驱动的知识路由在 run
-初始化（PLAN）阶段装配 `base + 命中知识模块`，并冻结为 `prompt_v1.md` +
-`prompt_preanalysis.json` + `prompt_assembly.json`（含 sha256）。两 family 知识根
+初始化（PLAN）阶段装配 `base 核心层 + 必载知识清单`，并冻结为 `prompt_v1.md` +
+`prompt_preanalysis.json` + `prompt_assembly.json`（含模块 sha256 全集）。知识模块
+正文不进快照，由 `build_knowledge_skills.py` 生成为 `.claude/skills/` 下注册 skill
+（`aclnn-*` / `torch-npu-*`，生成物禁止手改）：extractor 按必载清单逐一 Skill 加载
+并写 `extraction_provenance.json`，checker 对照路由命中集审计"命中未应用"；其余
+Agent（failure-analyst / constraint-updater / repairer / supplementer）按 description
+信号自然触发加载。两 family 知识根
 相互隔离（`knowledge/aclnn` / `knowledge/torch_npu`，由各自 validator 禁跨 family
-引用）；extractor 只读冻结快照，不重走路由。v1-v4（torch v1-v3）仅作历史来源。
+引用；validator 同时做 skill 同步校验，canonical 漂移即拦截）；
+extractor 只读冻结快照，不重走路由。v1-v4（torch v1-v3）仅作历史来源。
 迭代优化只在 run 内写候选、变更说明和 `prompt_update_proposal.json`，按
 base/common/feature/exact-operator/torch_npu/no-update 选择最小目的地。任务终态由
 主协调器展示证据、适用范围和试验结果并逐条询问用户；只有明确批准后才能修改
@@ -261,6 +303,7 @@ runs/<operator>-<timestamp>/
   inputs/                  # 只读快照（算子文档 + prompt）
   iter_001/                # 第一轮产物
     constraints.json       # 必须满足 OperatorRule
+    relation_examples.json # Z3 正反例取证（仅 aclnn，checker 步骤 0 产，每轮覆盖）
     generation_summary.json
     cases.json             # 紧凑表示；执行阶段展开为 cases_expanded.json
     cases_executor.py      # ATK 执行脚本（含 CPU golden）
@@ -302,6 +345,7 @@ runs/<operator>-<timestamp>/
 每次委派后输出：`完成 <- <agent> | 结论: ... | 产物: ...`
 
 运行时观测：
+
 - `/agents` — 查看运行中和最近完成的 Agent
 - `/hooks` — 查看 Hooks 配置
 - `.claude/runtime/schedule.jsonl` — 每行一个调度事件 JSON

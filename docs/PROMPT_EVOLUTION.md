@@ -22,5 +22,7 @@
 
 主协调器逐条向用户展示摘要、证据、适用范围和目标，询问“应用 / 暂缓 / 拒绝”。只有
 用户明确选择应用后才能修改 `prompts/` 或 `knowledge/`；批处理、运行成功和用户沉默都
-不能推断批准。应用后必须重建 base（如涉及）、验证 manifest/路由、再跑组装冻结校验。
+不能推断批准。应用后必须重建 base（如涉及）、重跑
+`scripts/build_knowledge_skills.py` 再生成知识 skill（canonical 与生成物漂移会被
+`validate_*_knowledge` 同步校验拦截）、验证 manifest/路由、再跑组装冻结校验。
 

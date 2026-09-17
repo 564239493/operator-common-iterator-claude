@@ -19,6 +19,7 @@ from runtime_config import (
     resolve_input_path,
     validate_server_config,
 )
+from run_state import write_initial
 from select_prompt import assemble as assemble_aclnn_prompt
 from select_torch_npu_prompt import (
     assemble as assemble_torch_npu_prompt,
@@ -291,6 +292,18 @@ def main() -> int:
         ),
     )
     parser.add_argument("--case-count", type=int, default=10)
+    parser.add_argument(
+        "--human-constraints-upload",
+        dest="human_constraints_upload",
+        action="store_true",
+        help=(
+            "启用人工约束上传通道：前 human-checkpoint-round 轮纯自动迭代；到达检查点"
+            "（constraint_extraction 失败）后弹四选一，选「人工修复」时挂起等待用户把"
+            "修改后的约束上传到 <run>/iter_<N>/constraints_copy.json；"
+            "监听器检测到文件出现 + 稳定后唤醒会话，走 apply_human_constraints.py 校验接入"
+            "下一轮。默认关闭（缺省 false，现有路由行为不变）。"
+        ),
+    )
     parser.add_argument(
         "--human-checkpoint-round",
         type=int,
@@ -592,6 +605,7 @@ def main() -> int:
             "report": "",
         },
         "case_count": args.case_count,
+        "human_constraints_upload": args.human_constraints_upload,  # 人工约束上传通道：检查点选「人工修复」后挂起等用户上传 constraints_copy.json
         "human_checkpoint_round": args.human_checkpoint_round,  # 0=禁用；>=1 时第 N 轮 constraint_extraction 失败触发人工补充检查点
         "human_checkpoint_resolved_iteration": 0,  # 已决断到的最大轮次；防上下文压缩后对同一轮重复询问
         "operator_family": operator_family,
@@ -608,9 +622,7 @@ def main() -> int:
         "created_at": now,
         "updated_at": now,
     }
-    (run_dir / "run_state.json").write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    write_initial(run_dir, state)
     print(json.dumps(
         {
             "ok": True,
@@ -641,6 +653,7 @@ def main() -> int:
             "run_scope": "constraints_only" if test_framework == "constraints" else "full",
             "server_config": str(server_config) if server_config else "",
             "constraint_check_rounds": args.constraint_check_rounds,
+            "human_constraints_upload": args.human_constraints_upload,
         },
         ensure_ascii=False,
     ))

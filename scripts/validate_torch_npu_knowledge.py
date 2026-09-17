@@ -7,8 +7,10 @@ import json
 from pathlib import Path
 
 try:
+    from scripts.build_knowledge_skills import FAMILY_KNOWLEDGE, check_family
     from scripts.route_torch_npu_knowledge import DEFAULT_KNOWLEDGE, _load_modules
 except ModuleNotFoundError:
+    from build_knowledge_skills import FAMILY_KNOWLEDGE, check_family
     from route_torch_npu_knowledge import DEFAULT_KNOWLEDGE, _load_modules
 
 
@@ -66,6 +68,10 @@ def validate(root: Path) -> list[str]:
                     f"reject_on contradicts a positive trigger (same kind+value): "
                     f"{module_id}: {kind}={trigger.get('value')}"
                 )
+    # 知识 skill 生成物同步校验：canonical 变更后必须重跑
+    # scripts/build_knowledge_skills.py，否则 run 初始化在此拦截。
+    if root.resolve() == FAMILY_KNOWLEDGE["torch_npu"].resolve():
+        errors.extend(check_family("torch_npu"))
     return errors
 
 
