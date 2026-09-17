@@ -8,6 +8,7 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ## 核心流程
 
 状态机：`PLAN → EXTRACT → GENERATE → EXECUTE → GATE → DIAGNOSE`
+
 - 初始化 EXTRACT 固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 → 独立
   `constraint-checker` / `constraint-repairer` 语义检查修复循环；默认
   `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
@@ -19,6 +20,18 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 - 达到 max-iterations → `MAX_ITERATIONS`
 - 约束簇证据不足时进入 `NEEDS_HUMAN_EVIDENCE`；人工补充后重新运行 failure analysis，
   形成可校验 findings 后再更新约束
+- `--human-constraints-upload` 启用「人工约束上传通道」：
+  前 `human-checkpoint-round` 轮纯自动迭代；
+  到达检查点（`current_iteration >= human_checkpoint_round` 且以 constraint_extraction 失败）后弹**四选一**
+  ——人工修复（状态 `AWAITING_HUMAN_CONSTRAINTS`，挂 `watch_constraints_copy.py`， 用户把修改后的约束上传到
+  `<run>/iter_<N>/constraints_copy.json`，监听器检测到文件出现 + 稳定后唤醒会话，
+  `apply_human_constraints.py` 接入下一轮；监听命令写成一条裸命令 `python 脚本.py 参数`
+  （不加 shell 包装），Claude Code 用 Monitor / opencode 用 bash 前台阻塞，见 WORKFLOW.md 监听命令纪律）
+  ——人工补充（append 到 `supplement_constraints.md` 重新诊断） 
+  ——自动修复（原 UPDATE_CONSTRAINTS）/ 
+  ——立即停止。
+  此后每个失败轮都重新弹该四选一， 可逐轮切换。默认关闭（缺省 false，检查点退化为三选一，人工修复不可选）。
+  详见`docs/WORKFLOW.md` §4「人工约束上传通道」
 
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
@@ -60,12 +73,14 @@ Python 只承担确定性业务（校验、用例生成、执行适配、调度�
 ## 常用命令
 
 ### 算子迭代
+
 ```text
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 3 --case-count 10
 /iterate-operator operator_docs/aclnnFoo.md --constraint-check-rounds 3  # 每个新约束版本最多 3 次语义 check
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 5 --human-checkpoint-round 3  # 第3轮仍失败弹人工补充检查点（0=禁用）
 /iterate-operator D:\operator_docs\aclnnFoo.md  # 支持项目外路径
 /iterate-operator operator_docs/aclnnFoo.md --scene auto  # EXTRACT 前扫描量化场景并征询（默认）；--scene all 取全场景不问；--scene off 跳过
+/iterate-operator operator_docs/aclnnFoo.md --human-constraints-upload --max-iterations 5  # 人工约束上传通道：检查点选人工修复后挂起等用户上传 constraints_copy.json，监听触发下一轮
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
 /show-workforce  # 查看可用 Skills、Agents 和调度拓扑
@@ -119,6 +134,7 @@ python scripts/normalize_constraints.py .../constraints.json  # 原地规范化
 ```
 
 ### 环境配置
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -145,29 +161,40 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 会在 Agent 结束后清理，导致 `constraints.json` 等阶段产物无法交接。并行仅用于写入
 互不重叠产物的阶段，不以文件系统隔离实现。
 
-| 阶段 | Agent | 预加载 Skill | 主要产物 |
-|---|---|---|---|
-| 场景扫描（条件，EXTRACT 前） | `scene-scanner` | `scan-scenes` | `<run-dir>/inputs/scene_scan.json` |
-| 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` |
-| 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
-| 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
-| 失败后约束增量更新 | `constraint-updater` | `update-constraints` | 新版 `constraints.json` + `constraint_update.json` |
-| 约束语义检查（每个新版本） | `constraint-checker` | `check-constraints` | `constraint_check.json` |
-| 约束精准修复（检查发现问题） | `constraint-repairer` | `repair-constraints` | 修改当前 `constraints.json` |
-| 用例生成 | `case-generator` | `generate-cases` | `cases.json` + `generation_summary.json` |
-| 用例执行 | `case-executor` | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
-| 根因诊断 | `failure-analyst` | `diagnose-failure` | `analysis.json` |
-| 提示词优化（仅离线沉淀） | `prompt-optimizer` | `optimize-prompt` | `prompt_update_proposal.json` |
-| 质量门禁 | `quality-reviewer` | `validate-run` | `quality_gate.json` |
+| 阶段                 | Agent                     | 预加载 Skill                                   | 主要产物                                                                                       |
+|--------------------|---------------------------|---------------------------------------------|--------------------------------------------------------------------------------------------|
+| 场景扫描（条件，EXTRACT 前） | `scene-scanner`           | `scan-scenes`                               | `<run-dir>/inputs/scene_scan.json`                                                         |
+| 约束提取               | `constraint-extractor`    | `extract-constraints`                       | `constraints.json`                                                                         |
+| 源码分析（条件）           | `source-analyst`          | `analyze-source`                            | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
+| 约束补充（条件）           | `constraint-supplementer` | `supplement-constraints`                    | `constraints_patch.json`                                                                   |
+| 失败后约束增量更新          | `constraint-updater`      | `update-constraints`                        | 新版 `constraints.json` + `constraint_update.json`                                           |
+| 约束语义检查（每个新版本）      | `constraint-checker`      | `check-constraints`                         | `constraint_check.json`                                                                    |
+| 约束精准修复（检查发现问题）     | `constraint-repairer`     | `repair-constraints`                        | 修改当前 `constraints.json`                                                                    |
+| 用例生成               | `case-generator`          | `generate-cases`                            | `cases.json` + `generation_summary.json`                                                   |
+| 用例执行               | `case-executor`           | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json`                      |
+| 根因诊断               | `failure-analyst`         | `diagnose-failure`                          | `analysis.json`                                                                            |
+| 提示词优化（仅离线沉淀）       | `prompt-optimizer`        | `optimize-prompt`                           | `prompt_update_proposal.json`                                                              |
+| 质量门禁               | `quality-reviewer`        | `validate-run`                              | `quality_gate.json`                                                                        |
 
 ## 架构分层
 
 ### Claude Code 编排层（.claude/）
+
 - `.claude/agents/*.md` — 专职 Agent 定义（角色、上下文、产物格式）
 - `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（`iterate-operator`、`iterate-directory`、各阶段 Skill）
 - `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
 - `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
 - `.claude/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
+
+### opencode 原生层（.opencode/）
+
+- `.opencode/plugins/guard-project-writes.js` — 直接以 `.venv` python 调用
+  `guard_project_writes.py` 做 PreToolUse 守卫：deny → throw 阻断工具，ask → 以「需要用户确认」
+  错误反馈（模型可用 question 工具征询用户），allow → 放行
+- `.opencode/plugins/trace-hook.js` — `session.created`→SessionStart、`task` 工具
+  before/after→SubagentStart/Stop，写 `.claude/runtime/schedule.jsonl`
+- opencode 工具名小写映射：`read/glob/grep/edit/write/apply_patch/bash/task` → 守卫脚本的
+  `Read/Glob/Grep/Edit/Write/Bash/Agent`；脚本仍复用，不复制逻辑
 
 > EXTRACT 后可选触发约束补充（`--supplement-constraints` 非空时）：
 > `constraint-supplementer` 产 `constraints_patch.json`，
@@ -191,18 +218,21 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 ### Python 确定性层
 
 **agent/generators/** — 保留的正式用例生成器（Z3 约束求解 + pairwise 组合）：
+
 - `facade.py` → `TestCaseGenerator` 是公共入口，委托 `single_operator_handle` 按 platform 生成
 - `common_model_definition.py` → `OperatorRule` Pydantic 模型，constraints.json 必须满足此校验
 - `operator_handle_main.py` → `single_operator_handle` 正式生成逻辑
 - `param_constraint_solve/z3_expression_solver_utils.py` → Z3 solver
 
 **executer/** — 执行适配层（SSH + ATK 上传运行）：
+
 - `runner.py` → `RunRequest` + `run_cases(mock|real|generate)` 三种模式
 - `ssh.py` → asyncssh 连接、SFTP 上传、远程 ATK 执行
 - `resources/generator.py` → 生成 `cases_executor.py`（含 dummy CPU golden 占位）
 - `report_parser.py` → ATK xlsx 结果解析
 
 **scripts/** — 确定性 CLI 工具，不调用 LLM：
+
 - `init_run.py` — 创建 run 目录 + `run_state.json`；校验文档和 servers.json
 - `init_batch.py` — 初始化批次目录
 - `batch_state.py` — 批次状态迁移
@@ -231,6 +261,9 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `update_supplement_state.py` — 持久化补充事实 revision/hash 与已消费 hash，支持会话恢复
 - `validate_supplement_effect.py` — 校验 findings 被 patch 覆盖且诊断 patch 不是全量 noop
 - `constraint_update_state.py` — 从上一轮冻结约束准备新版本，并校验增量更新覆盖全部 findings 且不是 noop
+- `watch_constraints_copy.py` — 人工约束上传通道的监听器：单次触发后退出，检测 `iter_<N>/constraints_copy.json` 从无到有 +
+  稳定性校验（agent 不创建该文件，等用户上传），唤醒空闲会话（Claude Code 用 Monitor / opencode 用 bash 前台阻塞；命令写成一条裸 `python 脚本.py 参数`，见 WORKFLOW.md）
+- `apply_human_constraints.py` — 人工约束上传通道的确定性接入：校验链 + 建 iter_N+1 产物四件套 + 原子 run_state 更新 + 消费mv
 - `apply_conflict_resolution.py` — 人工冲突裁决的机读合并层（不替用户决定胜负）
 - `diag_fusion_step1.py` — 融合执行诊断第一步（step1 产物检查）
 - `show_registry.py` — 展示 Skills/Agents 注册表
@@ -300,6 +333,7 @@ runs/<operator>-<timestamp>/
 每次委派后输出：`完成 <- <agent> | 结论: ... | 产物: ...`
 
 运行时观测：
+
 - `/agents` — 查看运行中和最近完成的 Agent
 - `/hooks` — 查看 Hooks 配置
 - `.claude/runtime/schedule.jsonl` — 每行一个调度事件 JSON
