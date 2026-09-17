@@ -26,6 +26,18 @@ description: 根据 analysis.json 的所有约束类失败簇，对复制后的 
 5. expected_effect 必须说明哪些失败 case 将被拒绝/修正，并检查代表性已通过 case 不被排除。
 6. 不允许空改、格式重写、无关数组重排或把特定失败 shape/value 写成黑名单。
 
+## change 记录与知识 skill
+
+每项实际修改写入当前轮 `constraint_update.json.changes`，字段：`id`、`finding_ids`、
+`op`、`target`、`before`、`after`、`basis`、`expected_effect`；允许的 op 为
+`set_parameter_field`、`add_relation`、`replace_relation`、`remove_relation`、
+`update_product_support`。无法安全修改时停止并说明，不得伪造 change。
+
+**知识 skill 按需加载**：finding 涉及量化、NZ/格式、广播、dtype 推导等主题时，先
+Skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再写
+修改——skill 载有该类约束的正确表达规则；修改表达与 skill 规则冲突而证据又不足以
+推翻时，停止并说明而不是硬改。
+
 ## 校验与交接
 
 更新后运行：

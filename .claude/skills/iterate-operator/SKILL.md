@@ -154,7 +154,9 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
 
 6. 初始化首轮按顺序委派：
    - **EXTRACT（fork-join，仅初始化首轮）**：当 `run_state.operator_src_snapshot` 非空时，
-     **并行**委派 `constraint-extractor`（产 `constraints.json`）与 `source-analyst`
+     **并行**委派 `constraint-extractor`（产 `constraints.json` +
+     `extraction_provenance.json`——必载知识清单逐条 Skill 加载的 applied/
+     not_applicable 记录，首轮 CHECK 用它审计"命中未应用"）与 `source-analyst`
      （extract 域：产 `<iter>/source_raw.json` + `inputs/supplementary-doc.md` +
      `inputs/uncertain-doc.md` + `inputs/conflict-doc.md` +
      `inputs/conflict_candidates.json`）；两者只读文档快照、互不写对方产物，可并行。
@@ -207,7 +209,10 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
      2. 将 check 轮次设为 `current_round + 1`，委派一个**全新上下文**的
         `constraint-checker`。消息必须给绝对路径：run_state、算子文档快照、本轮最终
         constraints、report，以及存在的 scene directive、supplementary-doc、
-        supplement_constraints、conflict_candidates、conflict_resolution。checker 只写 report、不改约束；
+        supplement_constraints、conflict_candidates、conflict_resolution。**首轮 check
+        还必须给** `<iter>/extraction_provenance.json` 与 `inputs/prompt_preanalysis.json`
+        路径（checker 据此做必载知识审计：命中未应用 = open issue）。
+        checker 只写 report、不改约束；
         每轮完整扫描并复核旧 open/unfixed，只有 checker 可标 fixed。
      3. 运行
         `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`。

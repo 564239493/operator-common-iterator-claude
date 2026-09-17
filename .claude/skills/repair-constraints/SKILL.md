@@ -22,6 +22,10 @@ description: 根据 constraint_check.json 对当前 constraints.json 做最小�
 - `src_txt_line`（文档快照行号数组）为溯源字段：修复保留原条目时原样保留，新增条目
   必须带该字段（从 `inputs/` 快照核实），来源条款不变时保持原值。
 
+**知识 skill 按需加载**：待修复问题涉及量化、NZ/格式、广播、dtype 推导等主题时，
+先 Skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再
+修复，修复表达必须符合 skill 中的规则。
+
 ## 修复和校验
 
 1. 按 issue id 逐项定位当前文件行和约束。
@@ -36,4 +40,3 @@ description: 根据 constraint_check.json 对当前 constraints.json 做最小�
    id，新增条目必须为新分配 id。
 7. 结构失败只修正本次改动，最多三次；无法安全修复时停止并保留 issue 未关闭。
 7. 返回尝试的 issue id；随后必须由新的 constraint-checker 上下文执行下一轮完整复检。
-

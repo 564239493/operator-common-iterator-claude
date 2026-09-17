@@ -25,7 +25,7 @@ return torch.ones([1024, 1, 16], dtype=torch.float16)
 
 ## Skip These Operators (Do NOT Process)
 
-If the operator is **`aclnnSwinAttentionScoreQuant`**, **`aclnnSwinTransformerLnQkvQuant`**, **`aclnnBatchMatMulWeightNz`**, **`aclnnNpuFormatCast`**, **`aclnnReflectionPad1dBackward`**, **`aclnnCalculateMatmulWeightSize`**, **`aclnnCalculateMatmulWeightSizeV2`**, or **`aclnnAlltoAllMatmul`**, **stop immediately** — do not read docs, do not modify any files, do not derive CPU golden code. These operators use completely pre-defined test scripts that are output verbatim by `generator.py` via special `.tpl` templates. There is no `# TODO: CPU_GOLDEN` marker and no dummy computation to replace. The skill flow ends here for these operators.
+If the operator is **`aclnnSwinAttentionScoreQuant`**, **`aclnnGroupedMatmulV5`**, **`aclnnSwinTransformerLnQkvQuant`**, **`aclnnBatchMatMulWeightNz`**, **`aclnnNpuFormatCast`**, **`aclnnReflectionPad1dBackward`**, **`aclnnCalculateMatmulWeightSize`**, **`aclnnCalculateMatmulWeightSizeV2`**, or **`aclnnAlltoAllMatmul`**, **stop immediately** — do not read docs, do not modify any files, do not derive CPU golden code. These operators use completely pre-defined test scripts that are output verbatim by `generator.py` via special `.tpl` templates. There is no `# TODO: CPU_GOLDEN` marker and no dummy computation to replace. The skill flow ends here for these operators.
 
 ## Non-Skip Operators: Derive a Real CPU Golden
 

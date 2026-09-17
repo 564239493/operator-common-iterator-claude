@@ -21,7 +21,9 @@ runs/<operator>-<timestamp>/
     selection.json                     # 可选：主协调器 Q1/Q2/Q3 答案汇总（值级），render_scene_directive.py 据此渲染 directive
   iter_001/
     constraints.json
+    extraction_provenance.json         # 必载知识清单逐模块 applied/not_applicable 记录（首轮 EXTRACT 产，checker 审计用）
     constraint_check.json              # 本轮最终约束的语义检查/修复累计报告
+    relation_examples.json             # Z3 正反例取证（仅 aclnn；checker 步骤 0 自跑脚本产，每轮覆盖）
     constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
     constraints.json.pre_conflict      # 可选：冲突合并前备份
     constraints_patch.json             # 可选：约束补充阶段产出的 add/replace patch
@@ -45,6 +47,7 @@ runs/<operator>-<timestamp>/
     constraints.json.pre_update       # updater 修改前的不可变基线
     constraint_update.json            # finding/change/hash 审计
     constraint_check.json
+    relation_examples.json            # Z3 正反例取证（仅 aclnn，每轮覆盖）
 ```
 
 ## run_state.json
@@ -148,6 +151,28 @@ analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条�
 `type=enum` 允许 `null` 作为明确的离散候选。`expr` 中允许裸 `null`，校验和求解前
 会规范化为 Python `None`，但只能用于空值/存在性判断，不能参与数值大小比较。
 
+## extraction_provenance.json
+
+首轮 EXTRACT 与 `constraints.json` 同时产出，记录必载知识清单（确定性路由命中集）
+的逐模块执行情况，供 constraint-checker 审计"命中未应用"（check-constraints skill
+第 9 条）。最小结构：
+
+```json
+{
+  "schema_version": "1.0",
+  "operator_family": "aclnn",
+  "required_modules": ["official_basics", "..."],
+  "modules_applied": [
+    {"module_id": "official_basics", "skill": "aclnn-official-basics", "status": "applied", "reason": ""},
+    {"module_id": "nz_matmul", "skill": "aclnn-nz-matmul", "status": "not_applicable", "reason": "文档无 NZ/FRACTAL_NZ 信号"}
+  ],
+  "extra_modules_loaded": []
+}
+```
+
+`required_modules` 必须与 `prompt_v1.md` 必载清单一一对应；`not_applicable` 必须给理由。
+反馈轮（UPDATE_CONSTRAINTS）不重新提取、不重写本文件。
+
 ## constraint_check.json
 
 每个新约束版本生成一个累计报告：首轮在 SUPPLEMENT/已裁决 conflict 合并后生成，
@@ -182,6 +207,40 @@ analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条�
 上限且仍有 active issue。使用：
 
 `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`
+
+## relation_examples.json
+
+仅 `operator_family=aclnn`：每个 check 轮开始时由 constraint-checker 执行
+`python scripts/verify_relation_exprs.py <iter>/constraints.json` 产出（默认写
+constraints.json 同目录，每轮覆盖写，只反映最近一轮检查时的 constraints.json；
+repairer 修改后的下一轮自动重新取证，无过期问题）。历史正反例证据经 checker 在
+issue 文本中引用实例值沉淀进 `constraint_check.json`（fixed 项不删除）。
+
+脚本与生成管线共用同一套转换栈（`Z3ConstraintBuilder`/`ASTtoZ3Converter`/
+`ExpressionPreprocessor`，自 `agent/generators` 只读导入），对
+`constraints_in_parameters` 逐平台桶处理：每条 expr 先 `push/add expr/check` 取
+`satisfy_example`（正例），再 `push/add Not(expr)/check` 取 `violate_example`
+（反例）；参数卡 `allowed_range_value` 同时编译为域约束，保证实例落在文档声明
+域内；整桶联合 assert unsat → `bucket_status=contradiction`（附 `unsat_core`）。
+
+顶层字段：`schema_version`、`operator`、`constraints_file`、`generated_at`、
+`timeout_ms`、`counts`（各状态计数 + `bucket_contradictions` + `constraints`
+总数）、`syntax_errors`、`platforms`。每平台桶含 `bucket_status`、`unsat_core`、
+`constraints[]`（`constraint_index`/`expr_type`/`expr`/`relation_params`/
+`src_text`/`status`/`satisfy_example`/`violate_example`/`declared_params`，可选
+`undeclared_params`/`error`）。每条 `status ∈ {ok_with_witnesses, tautology,
+unsatisfiable, skipped_todo, syntax_error, unconvertible, unknown}`。
+
+exit code 仅 `syntax_error` → 2，其余 advisory → 0。checker 按检查规则第 10 条
+消费（正反例核对）；failure-analyst 在文件存在时读取辅助 generator_bug 判定。
+机器确定性产物，不经 `validate_artifacts.py` 校验。torch_npu（hs）不产出——Z3
+类型映射未适配，扩展前置核查：`ACL_TYPE_TRANSFER_ATK_MAP` 对 torch 类型名的
+回退行为 + 真实 torch_npu constraints 的 unconvertible 误报率统计。
+
+已知限制：`allowed_range_value=[null]`（"仅支持传 nullptr"编码）的 presence
+参数无法声明，其 `param is None` 类 expr 报 `unconvertible`（error 为
+`'NoneType' object has no attribute 'get_z3_expr'`）；该类由 checker 按规则 10
+豁免，不计 issue。
 
 ## constraint_update.json
 

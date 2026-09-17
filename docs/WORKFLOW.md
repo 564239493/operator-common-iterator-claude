@@ -185,6 +185,8 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
 
 1. `constraint-checker` 使用隔离上下文读取算子文档、当前最终 constraints、场景指令、
    本轮补充证据和已有 `constraint_check.json`，完整检查整份约束；只写报告、不修改约束。
+   aclnn 时每轮先自跑 `verify_relation_exprs.py` 产 `relation_examples.json`，按
+   check-constraints 检查规则第 10 条做正反例核对（torch_npu 不跑，行为不变）。
 2. 报告无 open/unfixed 问题则通过；有问题且未到 `constraint-check-rounds` 上限时，
    `constraint-repairer` 使用另一个隔离上下文，只 Edit 报告指出的问题并重跑
    validate_operator_rule + normalize + validate_artifacts constraints。
