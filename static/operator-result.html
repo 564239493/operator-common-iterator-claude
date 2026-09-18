@@ -10,7 +10,7 @@
 </head>
 <body>
 <div id="app">
-    <!-- 顶栏: 标题 + 任务情况汇总 + 查询按钮 -->
+    <!-- 顶栏: 标题 + 任务情况汇总 + 覆盖率展示按钮 -->
     <div class="topbar">
         <div class="topbar-right">
             <div class="topbar-title">算子自主测试智能体-约束审核工具</div>
@@ -22,7 +22,7 @@
                 <div class="stat-item stat-running"><span class="stat-num">{{ taskStats.running }}</span> 运行中</div>
             </template>
         </div>
-        <el-button :loading="queryLoading" @click="queryProgress">查询任务执行情况</el-button>
+        <el-button @click="goCover">覆盖率展示</el-button>
     </div>
 
     <!-- 副信息栏: 任务/迭代/状态选择器 + 产品系列 + 约束统计 -->

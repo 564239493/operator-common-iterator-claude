@@ -196,6 +196,8 @@ const app = createApp({
                         expr: c.expr || '',
                         relation_params: [...(c.relation_params || [])],
                         src_text: c.src_text || '',
+                        // 保留原始行号, 编辑态点击"原始文本"定位原文仍可用, 且提交时不丢
+                        src_txt_line: Array.isArray(c.src_txt_line) ? [...c.src_txt_line] : [],
                         origin: c.origin || '',
                         status: c.status !== undefined ? c.status : 'pass',
                         _pflErrors: [...errors],
@@ -219,13 +221,19 @@ const app = createApp({
             editMode.value = false;
         }
 
+        function goCover() {
+            window.location.href = '/cover';
+        }
+
         function addConstraint() {
-            editConstraints.value.push({
+            // 新增约束置于表格最上方，便于用户立即定位编辑
+            editConstraints.value.unshift({
                 id: '',
                 expr_type: '',
                 expr: '',
                 relation_params: [],
                 src_text: '',
+                src_txt_line: [],
                 origin: 'manual',
                 status: null,
                 _pflErrors: [],
@@ -296,6 +304,21 @@ const app = createApp({
             }
         }
 
+        // 构建提交的单条约束对象: 保留 id 与 src_txt_line (轮次对比按 id 匹配依赖)
+        function buildConstraintObj(c) {
+            const o = {
+                expr_type: c.expr_type,
+                expr: c.expr,
+                relation_params: c.relation_params,
+                src_text: c.src_text,
+                origin: c.origin || 'manual'
+            };
+            if (c.id) o.id = c.id;                       // 原位修改依赖 id, 不得丢
+            if (Array.isArray(c.src_txt_line) && c.src_txt_line.length) o.src_txt_line = c.src_txt_line;
+            if (c.status) o.status = c.status;
+            return o;
+        }
+
         async function submitConstraints() {
             const task = runTasks.value.find(t => t.dir_name === currentTaskDir.value);
             if (!task) {
@@ -309,34 +332,14 @@ const app = createApp({
                 const newCnp = {};
                 Object.keys(base).forEach(prod => {
                     if (prod === currentProduct.value) {
-                        newCnp[prod] = editConstraints.value.map(c => {
-                            const o = {
-                                expr_type: c.expr_type,
-                                expr: c.expr,
-                                relation_params: c.relation_params,
-                                src_text: c.src_text,
-                                origin: c.origin || 'manual'
-                            };
-                            if (c.status) o.status = c.status;
-                            return o;
-                        });
+                        newCnp[prod] = editConstraints.value.map(c => buildConstraintObj(c));
                     } else {
                         newCnp[prod] = base[prod];
                     }
                 });
                 // 如果当前产品不在 base 中，也加上
                 if (currentProduct.value && !(currentProduct.value in base)) {
-                    newCnp[currentProduct.value] = editConstraints.value.map(c => {
-                        const o = {
-                            expr_type: c.expr_type,
-                            expr: c.expr,
-                            relation_params: c.relation_params,
-                            src_text: c.src_text,
-                            origin: c.origin || 'manual'
-                        };
-                        if (c.status) o.status = c.status;
-                        return o;
-                    });
+                    newCnp[currentProduct.value] = editConstraints.value.map(c => buildConstraintObj(c));
                 }
                 const payload = {constraints: {constraints_in_parameters: newCnp}};
                 const iterDir = iterDirOf(currentIter.value);
@@ -744,11 +747,17 @@ const app = createApp({
             currentProduct.value = (DATA.value.product_support || [])[0] || '';
             runTasks.value = await loadRunTasks();
             if (runTasks.value.length) {
-                const first = runTasks.value[0];
+                // 深链: ?run=<dir>&iter=<iter> 定位到指定 run/iter (raise_dashboard.py 拉起时使用)
+                const qp = new URLSearchParams(window.location.search);
+                const qRun = qp.get('run');
+                const qIter = qp.get('iter');
+                const match = qRun ? runTasks.value.find(t => t.dir_name === qRun) : null;
+                const first = match || runTasks.value[0];
                 currentTaskDir.value = first.dir_name;
                 const iters = await loadIterList(first);
                 iterList.value = iters;
-                const defaultIter = iters.length ? iters[iters.length - 1] : String(first.current_iteration || 1);
+                let defaultIter = iters.length ? iters[iters.length - 1] : String(first.current_iteration || 1);
+                if (qIter && iters.includes(qIter)) defaultIter = qIter;
                 await applyTaskData(first, defaultIter);
                 await loadHistory(first);
             }
@@ -765,7 +774,7 @@ const app = createApp({
             statusFilterOptions,
             inputRows, outputRows, cellText, boolText,
             statPass, statFail, statWarn, taskStats,
-            onTaskChange, onIterChange, queryProgress,
+            onTaskChange, onIterChange, queryProgress, goCover,
             editConstraints, editMode, submitLoading, exprTypeOptions,
             enterEditMode, cancelEdit,
             addConstraint, removeConstraint, addParam, removeParam,

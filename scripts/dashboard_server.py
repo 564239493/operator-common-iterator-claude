@@ -21,6 +21,7 @@ PORT = 8899
 ROOT = Path(__file__).resolve().parent.parent
 RUNS_DIR = ROOT / "runs"
 STATIC_DIR = ROOT / "static"
+COVER_DIR = ROOT / "operator_cover_doc"
 
 # 安全: run_id / artifact 名只允许字母数字下划线连字符
 _SAFE_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -139,6 +140,30 @@ def _list_runs():
         })
     return runs
 
+def _list_cover_dirs():
+    """扫描 operator_cover_doc/ 目录, 返回每个覆盖率数据目录的摘要."""
+    items = []
+    if not COVER_DIR.is_dir():
+        return items
+    for entry in sorted(COVER_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        jsons = list(entry.glob("*_coverage.json"))
+        if not jsons:
+            continue
+        operator = entry.name
+        # 从 coverage.json 的 operator 字段取更准确的算子名
+        data = _load_json(jsons[0])
+        if data and isinstance(data.get("operator"), str):
+            operator = data["operator"]
+        items.append({
+            "dir_name": entry.name,
+            "operator": operator,
+            "has_coverage": True,
+            "has_analysis": (entry / "analysis.md").is_file(),
+        })
+    return items
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = unquote(self.path)
@@ -150,14 +175,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # /static/<file>: 项目 static/ 目录下的页面与静态资源
-        m = re.match(r"^/static/([A-Za-z0-9_.\-]+)$", path)
+        # /cover → 覆盖率展示页面 (友好路由, 重定向到 static/cover/cover.html)
+        if path == "/cover":
+            self.send_response(302)
+            self.send_header("Location", "/static/cover/cover.html")
+            self.end_headers()
+            return
+
+        # /static/<path>: 项目 static/ 目录下的页面与静态资源 (支持子目录, 防路径穿越)
+        m = re.match(r"^/static/(.+)$", path)
         if m:
-            _send_file(self, STATIC_DIR / m.group(1))
+            target = (STATIC_DIR / m.group(1)).resolve()
+            try:
+                target.relative_to(STATIC_DIR.resolve())
+            except ValueError:
+                # 解析后逃出 static/ 目录 (含 .. 穿越尝试) → 拒绝
+                _send_text(self, "Forbidden", 403)
+                return
+            _send_file(self, target)
             return
 
         if path == "/api/runs":
             _send_json(self, _list_runs())
+            return
+
+        # /api/cover/dirs — operator_cover_doc 下所有覆盖率数据目录
+        if path == "/api/cover/dirs":
+            _send_json(self, _list_cover_dirs())
+            return
+
+        # /api/cover/<dir>/coverage — 该目录下的 *_coverage.json
+        m = re.match(r"^/api/cover/([A-Za-z0-9_\-]+)/coverage$", path)
+        if m:
+            dir_name = m.group(1)
+            d = COVER_DIR / dir_name
+            if not d.is_dir():
+                _send_json(self, {"error": "cover dir not found"}, 404)
+                return
+            jsons = sorted(d.glob("*_coverage.json"))
+            if not jsons:
+                _send_json(self, {"error": "no *_coverage.json in dir"}, 404)
+                return
+            data = _load_json(jsons[0])
+            if data is None:
+                _send_json(self, {"error": "coverage json parse error"}, 500)
+                return
+            _send_json(self, data)
+            return
+
+        # /api/cover/<dir>/analysis — 该目录下的 analysis.md 原文
+        m = re.match(r"^/api/cover/([A-Za-z0-9_\-]+)/analysis$", path)
+        if m:
+            dir_name = m.group(1)
+            d = COVER_DIR / dir_name
+            if not d.is_dir():
+                _send_json(self, {"error": "cover dir not found"}, 404)
+                return
+            md = d / "analysis.md"
+            if not md.is_file():
+                _send_json(self, {"error": "analysis.md not found"}, 404)
+                return
+            try:
+                content = md.read_text(encoding="utf-8")
+            except OSError as e:
+                _send_json(self, {"error": f"read error: {e}"}, 500)
+                return
+            _send_json(self, {"filename": md.name, "content": content})
             return
 
         # /api/runs/<run_id>
@@ -255,73 +338,90 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         _send_text(self, "Not Found", 404)
 
-        def do_POST(self):
-            path = unquote(self.path)
+    def do_POST(self):
+        path = unquote(self.path)
 
-            # /api/runs/<run_id>/<iter_dir>/constraints_update
-            m = re.match(r"^/api/runs/([^/]+)/(iter_\d+)/constraints_update$", path)
-            if m:
-                run_id, iter_dir = m.group(1), m.group(2)
-                if not _SAFE_RE.match(run_id):
-                    _send_json(self, {"error": "invalid run_id"}, 400)
-                    return
-                run_dir = RUNS_DIR / run_id
-                if not run_dir.is_dir():
-                    _send_json(self, {"error": "run not found"}, 404)
-                    return
-
-                # 读取完整 constraints.json
-                src_path = run_dir / iter_dir / "constraints.json"
-                if not src_path.is_file():
-                    _send_json(self, {"error": "constraints.json not found",
-                                      "path": str(src_path.relative_to(ROOT))}, 404)
-                    return
-                constraints = _load_json(src_path)
-                if constraints is None:
-                    _send_json(self, {"error": "constraints.json parse error"}, 500)
-                    return
-
-                # 读取请求体
-                try:
-                    length = int(self.headers.get("Content-Length", 0))
-                    body = self.rfile.read(length)
-                    req = json.loads(body.decode("utf-8"))
-                except (json.JSONDecodeError, ValueError, OSError):
-                    _send_json(self, {"error": "invalid request body"}, 400)
-                    return
-
-                new_constraints = req.get("constraints")
-                if not isinstance(new_constraints, dict):
-                    _send_json(self, {"error": "missing or invalid 'constraints' object"}, 400)
-                    return
-
-                # 合并: 用编辑后的 constraints_in_parameters 替换原值
-                cnp = new_constraints.get("constraints_in_parameters")
-                if cnp is None:
-                    _send_json(self, {"error": "missing 'constraints_in_parameters'"}, 400)
-                    return
-                merged = dict(constraints)
-                merged["constraints_in_parameters"] = cnp
-
-                out_path = run_dir / iter_dir / "constrains_copy.json"
-                out_path.write_text(
-                    json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8"
-                )
-
-                _send_json(self, {
-                    "ok": True,
-                    "path": str(out_path.relative_to(ROOT)),
-                    "sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
-                })
+        # /api/runs/<run_id>/<iter_dir>/constraints_update
+        m = re.match(r"^/api/runs/([^/]+)/(iter_\d+)/constraints_update$", path)
+        if m:
+            run_id, iter_dir = m.group(1), m.group(2)
+            if not _SAFE_RE.match(run_id):
+                _send_json(self, {"error": "invalid run_id"}, 400)
+                return
+            run_dir = RUNS_DIR / run_id
+            if not run_dir.is_dir():
+                _send_json(self, {"error": "run not found"}, 404)
                 return
 
-            _send_json(self, {"error": "not found"}, 404)
+            # 读取完整 constraints.json
+            src_path = run_dir / iter_dir / "constraints.json"
+            if not src_path.is_file():
+                _send_json(self, {"error": "constraints.json not found",
+                                  "path": str(src_path.relative_to(ROOT))}, 404)
+                return
+            constraints = _load_json(src_path)
+            if constraints is None:
+                _send_json(self, {"error": "constraints.json parse error"}, 500)
+                return
 
-        def log_message(self, fmt, *args):
-            # 静默默认日志, 只打印错误
-            if args and "404" in str(args[1]):
-                super().log_message(fmt, *args)
+            # 读取请求体
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+                req = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, ValueError, OSError):
+                _send_json(self, {"error": "invalid request body"}, 400)
+                return
+
+            new_constraints = req.get("constraints")
+            if not isinstance(new_constraints, dict):
+                _send_json(self, {"error": "missing or invalid 'constraints' object"}, 400)
+                return
+
+            # 合并: 用编辑后的 constraints_in_parameters 替换原值
+            cnp = new_constraints.get("constraints_in_parameters")
+            if cnp is None:
+                _send_json(self, {"error": "missing 'constraints_in_parameters'"}, 400)
+                return
+            merged = dict(constraints)
+            merged["constraints_in_parameters"] = cnp
+
+            # 删除每条约束条目的 status 字段 (运行态字段, 不入落盘产物)
+            def _strip_status(cnp_obj):
+                if isinstance(cnp_obj, dict):
+                    # dict-by-product: {product: [条目, ...]}
+                    for items in cnp_obj.values():
+                        if isinstance(items, list):
+                            for it in items:
+                                if isinstance(it, dict):
+                                    it.pop("status", None)
+                elif isinstance(cnp_obj, list):
+                    # array: [条目, ...]
+                    for it in cnp_obj:
+                        if isinstance(it, dict):
+                            it.pop("status", None)
+
+            _strip_status(merged["constraints_in_parameters"])
+
+            out_path = run_dir / iter_dir / "constraints_copy.json"
+            out_path.write_text(
+                json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8"
+            )
+
+            _send_json(self, {
+                "ok": True,
+                "path": str(out_path.relative_to(ROOT)),
+                "sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
+            })
+            return
+
+        _send_json(self, {"error": "not found"}, 404)
+
+    def log_message(self, fmt, *args):
+        # 静默默认日志, 只打印错误
+        if args and "404" in str(args[1]):
+            super().log_message(fmt, *args)
 
 def main():
     print(f"算子结果展示平台服务启动中...")
