@@ -414,6 +414,10 @@ class ParamConstraintUtils(CommonDispatcher):
                 logger.warning("[choice_core] unsat_core contains no static tag — base infeasible?")
                 break
             assume.remove(to_remove)
+            dropped_expr = next(
+                (expr for expr, tag in tag_of.items() if tag is to_remove), None)
+            logger.warning(
+                f"[choice_core] drop conflicting static : '{dropped_expr}'")
 
         logger.info(f"[choice_core] iters={iters}, kept {len(assume)}/{len(tag_of)} statics")
         builder.solver.pop()
@@ -453,12 +457,18 @@ class ParamConstraintUtils(CommonDispatcher):
             constraint_exprs.extend(static_value_exprs)
 
     def build_param_range_value_constraint(self, constraint_exprs: List[str],
-                                           builder: Z3ConstraintBuilder, check: bool = True) -> None:
+                                           builder: Z3ConstraintBuilder, check: bool = True,
+                                           hard_static_expr_list: List[str] | None = None) -> None:
         """
         对于range_value，如果range_value是浮点数或整数，则直接加入求解条件表达式，否则不加入求解表达式
         :param constraint_exprs: 约束条件数据（会被原地修改）
         :param builder: Z3求解器构建器
         :param check: 是否立即执行冲突检测
+        :param hard_static_expr_list: 标量参数的取值域静态表达式硬约束输出列表（可
+            选）。标量参数（非 TENSOR_ATK_TYPE）的 allowed_range_value 是文档声明
+            的合法取值域，不允许在冲突消解中被当作偏好丢弃；传入该列表时，标量
+            域表达式改写入此列表，由 solve_z3_constraints 在偏好消解前永久断言。
+            tensor 参数的 range_value 是数据内容区间，仍按偏好静态参与消解。
         """
         static_range_value_expr_list = []
         scalar_range_value_attr_name = "range_value"
@@ -512,7 +522,13 @@ class ParamConstraintUtils(CommonDispatcher):
                         logger.error(
                             f"Param name : {param_name}, allowed range value is invalid, type : 'range', value : '{value_rule}'")
             param_range_value_expr = " or ".join(param_range_value_expr_list)
-            static_range_value_expr_list.append(param_range_value_expr)
+            if (hard_static_expr_list is not None
+                    and z3_param_type not in ParamModelConfig.TENSOR_ATK_TYPE):
+                # 标量取值域 → 硬约束通道，不参与冲突丢弃（防域外解，见
+                # solve_z3_constraints 注释）
+                hard_static_expr_list.append(param_range_value_expr)
+            else:
+                static_range_value_expr_list.append(param_range_value_expr)
         if check:
             self.choice_no_conflicts_expr(builder=builder, param_union_expr=constraint_exprs,
                                           param_static_expr_list=static_range_value_expr_list)
@@ -725,12 +741,41 @@ class ParamConstraintUtils(CommonDispatcher):
 
         # 收集所有静态表达式，一次性批量冲突检测（5 次 choice_no_conflicts_expr → 1 次）
         all_static = []
+        domain_static = []
         self.build_param_dtype_constraint(all_static, builder, check=False)
         self.build_param_format_constraint(all_static, builder, check=False)
         self.build_param_shape_constraint(all_static, builder, check=False)
-        self.build_param_range_value_constraint(all_static, builder, check=False)
+        self.build_param_range_value_constraint(all_static, builder, check=False,
+                                                hard_static_expr_list=domain_static)
         self.build_param_shape_len_constraint(all_static, builder, check=False)
         self.build_param_length_constraint(all_static, builder, check=False)
+
+        # 文档声明的标量取值域（allowed_range_value enum/range）是硬约束：在偏好
+        # 消解之前永久断言。旧实现把它与 dtype/长度等偏好静态同权重送入
+        # choice_no_conflicts_expr_core，联合不可满足时 unsat_core 可能丢掉域
+        # 约束，标量随即漂到文档域外——20260917 run iter_001 FC-001 实证：
+        # groupType enum [-1,0,2] 被丢后解出 4/5，全部 not(gt==X) 门控对域外值
+        # 空真，生成非法用例。域约束先断言后，与偏好冲突时消解只会丢弃偏好
+        # 静态；与硬约束集（JSON 关系约束）本身冲突时 whole solve UNSAT →
+        # 返回 False → 上层按 param combination 轮换重试，快速失败不产非法用例。
+        for domain_expr in domain_static:
+            if not domain_expr or not domain_expr.strip():
+                continue
+            try:
+                replaced = ExpressionPreprocessor.apply_keyword_replace(domain_expr)
+                if not ExpressionPreprocessor.validate_expression(replaced):
+                    logger.error(
+                        f"Domain static expr invalid, skip hard assert : '{domain_expr}'")
+                    continue
+                tree = ast.parse(replaced, mode='eval')
+                z3_constraint = ASTtoZ3Converter(builder).visit(tree.body)
+                if z3_constraint is not None:
+                    builder.solver.assert_and_track(
+                        z3_constraint, f"perm_domain:{domain_expr[:50]}")
+            except Exception as e:
+                logger.error(
+                    f"hard domain static assert failed, expr : '{domain_expr}', "
+                    f"err msg : '{str(e)}'")
 
         if all_static:
             self.choice_no_conflicts_expr_core(builder=builder, param_union_expr=expr_list,

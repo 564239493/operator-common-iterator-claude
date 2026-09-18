@@ -1794,7 +1794,16 @@ def validate_constraint_update(value) -> list[str]:
             analysis_errors = validate_analysis(analysis_value)
             if analysis_errors:
                 errors.append("constraint_update.analysis_file is invalid")
-            elif analysis_value.get("overall_action") != "UPDATE_CONSTRAINTS":
+            elif analysis_value.get("overall_action") != "UPDATE_CONSTRAINTS" and not (
+                analysis_value.get("overall_action") == "MIXED_FAILURE_REVIEW"
+                and isinstance(value.get("user_approved_mixed"), dict)
+            ):
+                # 用户批准的混合失败路径（WORKFLOW.md 混合失败复核节）：仅当
+                # prepare 的 _user_approved_mixed_update 三个落盘证据（MIXED
+                # action、非空 findings、run_state 中仅能由 flow_control 在
+                # --user-decision approve 后产生的 UPDATE_CONSTRAINTS 迁移）
+                # 全部通过并写入 user_approved_mixed 审计字段后才放行；批准
+                # 证据的复验继续由 constraint_update_state.finalize 承担。
                 errors.append("constraint_update analysis does not allow UPDATE_CONSTRAINTS")
             else:
                 expected_findings = {

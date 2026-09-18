@@ -27,6 +27,40 @@ def _load_object(path: Path, label: str) -> dict:
     return value
 
 
+MIXED_ACTION = "MIXED_FAILURE_REVIEW"
+
+
+def _user_approved_mixed_update(analysis: dict, run_dir: Path) -> bool:
+    """用户批准的混合失败复核路径是否成立（WORKFLOW.md 混合失败复核节）。
+
+    MIXED_FAILURE_REVIEW 下用户明确批准后，允许只把约束 findings 版本化应用
+    （generator/executor 缺陷走各自修复通道，不随批准自动修复）。放行必须同时
+    满足以下落盘证据，不提供任何绕过开关：
+    - analysis.overall_action == MIXED_FAILURE_REVIEW（validate_analysis 已保证
+      它由 failure_clusters 重算得出，不是 Agent 自报）；
+    - analysis.constraint_findings 非空（存在可应用的约束 findings）；
+    - run_state.json history 已记录进入 UPDATE_CONSTRAINTS 的迁移——该迁移只能
+      由 flow_control 在 MIXED_FAILURE_REVIEW 收到 --user-decision approve 后裁决
+      产生，模型无法直接制造。
+    """
+    if analysis.get("overall_action") != MIXED_ACTION:
+        return False
+    findings = analysis.get("constraint_findings")
+    if not isinstance(findings, list) or not findings:
+        return False
+    try:
+        state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    history = state.get("history")
+    if not isinstance(history, list):
+        return False
+    return any(
+        isinstance(entry, dict) and entry.get("state") == "UPDATE_CONSTRAINTS"
+        for entry in history
+    )
+
+
 def prepare(
     source: Path,
     target: Path,
@@ -40,7 +74,13 @@ def prepare(
     if errors:
         raise ValueError("analysis validation failed: " + "; ".join(errors))
     if analysis.get("overall_action") != "UPDATE_CONSTRAINTS":
-        raise ValueError("analysis.overall_action must be UPDATE_CONSTRAINTS")
+        # 用户批准的混合失败路径（WORKFLOW.md）：MIXED_FAILURE_REVIEW + 非空
+        # findings + run_state 已有 approve 迁移证据时同样可版本化应用。
+        if not _user_approved_mixed_update(analysis, source.parent.parent):
+            raise ValueError(
+                "analysis.overall_action must be UPDATE_CONSTRAINTS (or "
+                "MIXED_FAILURE_REVIEW with user-approved findings path)"
+            )
     findings = analysis.get("constraint_findings", [])
     if not findings:
         raise ValueError("UPDATE_CONSTRAINTS requires constraint_findings")
@@ -85,6 +125,14 @@ def prepare(
         "finding_ids": [item["id"] for item in findings],
         "changes": [],
     }
+    if analysis.get("overall_action") == MIXED_ACTION:
+        report["user_approved_mixed"] = {
+            "from_action": MIXED_ACTION,
+            "evidence": (
+                "run_state history contains the flow_control UPDATE_CONSTRAINTS "
+                "transition granted via --user-decision approve"
+            ),
+        }
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -113,8 +161,14 @@ def finalize(report_path: Path) -> dict[str, object]:
     analysis_errors = validate_analysis(analysis)
     if analysis_errors:
         raise ValueError("analysis validation failed: " + "; ".join(analysis_errors))
-    if analysis.get("overall_action") != "UPDATE_CONSTRAINTS":
-        raise ValueError("analysis.overall_action must be UPDATE_CONSTRAINTS")
+    if analysis.get("overall_action") != "UPDATE_CONSTRAINTS" and not (
+        report.get("user_approved_mixed")
+        and _user_approved_mixed_update(analysis, report_path.parent.parent)
+    ):
+        raise ValueError(
+            "analysis.overall_action must be UPDATE_CONSTRAINTS (or "
+            "MIXED_FAILURE_REVIEW with user-approved findings path)"
+        )
     execution = _load_object(execution_path, "execution result")
     execution_errors = validate_execution(execution)
     if execution_errors:
