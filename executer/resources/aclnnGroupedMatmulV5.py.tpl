@@ -139,9 +139,18 @@ def _prepare_grouped_matmul_v5_weight(
     if not isinstance(tensor, torch.Tensor) or tensor.dim() < 2:
         return tensor
 
-    if group_type == 0 and tensor.dim() == 3 and tensor.dtype == torch.int8:
+    # 3-D（groupType=0）：cases 层按文档 L595-597 约定 False 存 (E,K,N)、
+    # True 存 (E,N,K)（末维 N/K 轴），ACLNN 消费数学 (E,K,N)；True 分支以
+    # 非连续转置 view 的 stride 信号承载转置标志。按 md 权威约定去 dtype
+    # 限定：int8 与浮点（fp32/fp16/bf16）共用本分支；int4（torch.int32
+    # 逻辑值）走下方 A4W4 专属分支。原 int8 限定使 3-D 浮点 True 用例
+    # fallthrough 原样透传 (E,N,K)，20260917 run iter_001 FC-002 同类缺陷。
+    if (group_type == 0 and tensor.dim() == 3
+            and tensor.dtype != torch.int32):
         if weight_transposed:
+            # cases (E,N,K) -> mathematical (E,K,N), non-contiguous view.
             return tensor.transpose(-1, -2)
+        # cases already store contiguous (E,K,N).
         return tensor.contiguous()
 
     # A4W4 全量化：cases 层 weight 逻辑 shape 恒为 (E,K,N)（weight_transposed
@@ -174,17 +183,22 @@ def _prepare_grouped_matmul_v5_weight(
             return _int4_nibble_wrap(phys).transpose(-1, -2)
         return _int4_nibble_wrap(tensor.contiguous())
 
-    # groupType∈{-1,0}, rank-2: cases-layer weight is (N,K) when weight_transposed=False,
-    # (K,N) when weight_transposed=True. ACLNN expects (K,N) (dim 0 == K == x dim 1).
-    # 非量化浮点 weight (fp16/bf16/fp32) 与 int8 共用同一转置逻辑；原条件漏掉
-    # fp16/bf16 导致 weight_transposed=False 时 fallthrough 不转置，NPU EZ1001 拒绝。
+    # groupType∈{-1,0}, rank-2: 按文档 L595-597 / md 权威约定，cases 层 weight
+    # False 存 (K,N)（末维 N 轴）、True 存 (N,K)（末维 K 轴）；ACLNN 两个分支都
+    # 消费数学 (K,N)（dim 0 == K == x dim 1）：False 保持连续 (K,N)，True 变为
+    # (N,K) 存储上的非连续转置 view（stride 信号承载转置标志，由 NPU 物化）。
+    # 浮点 (fp32/fp16/bf16) 与 int8（A16W8）共用同一约定。旧实现按 (N,K)-False
+    # 约定写反两个分支（20260909 run iter_001 FC-004 证伪后 md 已更正，
+    # 20260917 run iter_001 FC-002 实证本模板漏同步：非方阵 weight 全部
+    # matmul 形状不匹配（CPU 侧）/ EZ1001（NPU 侧））。
     if (group_type in (-1, 0) and tensor.dim() == 2
             and tensor.dtype in (
-                torch.float16, torch.bfloat16, torch.float32, torch.int8,
-            )):
+                torch.float32, torch.float16, torch.bfloat16, torch.int8)):
         if weight_transposed:
-            return tensor.transpose(-1, -2).contiguous().transpose(-1, -2)
-        return tensor.transpose(-1, -2).contiguous()
+            # cases (N,K) -> mathematical (K,N), non-contiguous transposed view.
+            return tensor.transpose(-1, -2)
+        # cases already store contiguous (K,N).
+        return tensor.contiguous()
 
     return tensor
 
@@ -199,7 +213,11 @@ def _grouped_matmul_v5_weight_for_matmul(
         return tensor
 
     if group_type in (-1, 0) and tensor.dim() == 2:
-        return tensor if weight_transposed else tensor.transpose(-1, -2)
+        # Documented 2-D cases convention (md 权威约定 / doc L595-597): False
+        # stores (K,N) (last dim N); True stores (N,K) (last dim K) ->
+        # transpose to mathematical (K,N). 旧实现两分支写反，20260917 run
+        # iter_001 FC-002 实证后按 aclnn_api_template.py.j2 同步。
+        return tensor.transpose(-1, -2) if weight_transposed else tensor
 
     if group_type == 0 and tensor.dim() == 3:
         return tensor.transpose(-1, -2) if weight_transposed else tensor
