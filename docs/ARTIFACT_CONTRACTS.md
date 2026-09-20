@@ -52,16 +52,14 @@ runs/<operator>-<timestamp>/
 
 ## run_state.json
 
-必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、`current_prompt_source`、`current_prompt`、
+必须包含 `run_id`、`operator_doc_source`、`operator_doc`、`operator_src_source`、`operator_src_snapshot`、
+`current_prompt_source`、`current_prompt`、
 `current_prompt_modules`、`source_analysis_knowledge`、`supplement_constraints_source`、`supplement_constraints`、`mode`、
-`server_config`、`max_iterations`、`constraint_check`、`case_count`、`human_checkpoint_round`、`human_checkpoint_resolved_iteration`、
-`supplement_revision`、`supplement_hash`、`last_consumed_supplement_hash`、
-`supplement_updated_iteration`、`operator_family`、`test_framework`、
-`hs_scenario_mode`、
-`run_scope`、`scene`、`current_iteration`、`state`、
-`history` 和时间戳。state 只能取
-WORKFLOW.md 定义的状态（含 `UPDATE_CONSTRAINTS`、`MIXED_FAILURE_REVIEW`、
-`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 与 `STOPPED_BY_USER`）。
+`server_config`、`max_iterations`、`constraint_check`、`case_count`、`human_checkpoint_round`、
+`human_checkpoint_resolved_iteration`、
+`supplement_revision`、`supplement_hash`、`last_consumed_supplement_hash`、`supplement_updated_iteration`、
+`operator_family`、`test_framework`、
+`hs_scenario_mode`、`run_scope`、`scene`、`current_iteration`、`state`、`history` 和时间戳。
 
 `run_state.json` 由 `scripts/run_state.py` 统一写入：主协调器在状态迁移、分类回写与
 constraint_check 子状态维护节点分别调用其 `set-state` / `set-fields` /
@@ -77,50 +75,41 @@ constraint_check 子状态维护节点分别调用其 `set-state` / `set-fields`
 目录内的快照，后续 Agent 只使用快照。
 
 `supplement_constraints_source` 可指向项目外部的补充约束 Markdown（可选，未提供时为空串）；
-`supplement_constraints` 指向 run 内 `inputs/supplement_constraints.md` 快照。为空串时跳过
-约束补充阶段，回退纯文档驱动流程。
-`supplement_revision/hash` 对 `supplementary-doc.md` 与 `supplement_constraints.md` 的
-非空内容做持久化版本记录；`last_consumed_supplement_hash` 只在 SUPPLEMENT 合并及检查
-成功后更新。人工或诊断追加后必须运行 `update_supplement_state.py`，不能依赖会话记忆
-判断“刚刚 append”。
+`supplement_constraints` 指向 run 内 `inputs/supplement_constraints.md` 快照。为空串时跳过 约束补充阶段，回退纯文档驱动流程。
+`supplement_revision/hash` 对 `supplementary-doc.md` 与 `supplement_constraints.md` 的 非空内容做持久化版本记录；
+`last_consumed_supplement_hash` 只在 SUPPLEMENT 合并及检查 成功后更新。
+人工或诊断追加后必须运行 `update_supplement_state.py`，不能依赖会话记忆 判断“刚刚 append”。
 
-`current_prompt_source` 指向项目内当前 family 的基线：ACLNN 默认基础提示词为
-`prompts/operator_constraints/base.md`（canonical 直接编辑，`v4` 为历史来源），
-运行时结合 `knowledge/aclnn/manifest.json` 路由装配；历史版本归档于
-`prompts/history/operator_constraints_extract_vN.md`。torch_npu 为
-`prompts/torch_npu_constraints/base.md`；`current_prompt` 指向 run 内
-`inputs/prompt_v1.md` 完整快照。
+`current_prompt_source` 指向项目内当前 family 的基线：
+ACLNN 默认基础提示词为`prompts/operator_constraints/base.md`，
+运行时结合 `knowledge/aclnn/manifest.json` 路由装配。
+torch_npu 为`prompts/torch_npu_constraints/base.md`；
+`current_prompt` 指向 run 内 `inputs/prompt_v1.md` 完整快照。
 
-ACLNN canonical 版本以及 torch_npu v3+ 都是独立完整基线，不使用跨版本继承或
-“沿用 vN”占位。ACLNN selector 先生成 `prompt_preanalysis.json` 与适用性判断，再追加
-当前文档命中的知识模块并写 `prompt_assembly.json`；torch_npu
-v1/v2 仅作为历史任务复现材料。
+ACLNN selector 先生成 `prompt_preanalysis.json` 与适用性判断，再追加 当前文档命中的知识模块并写 `prompt_assembly.json`；
 
-默认（未传 `--prompt`）时，ACLNN 由 `scripts/select_prompt.py` 装配
-`knowledge/aclnn/manifest.json` 中的模块；torch_npu 由 `scripts/select_torch_npu_prompt.py` 装配
-`knowledge/torch_npu/**/*.md`。两个选择器不扫描对方的根目录。
-`current_prompt_modules` 记录命中的模块名清单（torch_npu 始终含
-`common/documentation_conventions`）；显式 `--prompt` 为逃生口，原样复制指定文件、
-`current_prompt_modules=[]`。constraint-extractor 始终只读 `current_prompt` 快照，
-不感知装配过程。
+默认（未传 `--prompt`）时，
+ACLNN 由 `scripts/select_prompt.py` 装配 `knowledge/aclnn/manifest.json` 中的模块；
+torch_npu 由 `scripts/select_torch_npu_prompt.py` 装配`knowledge/torch_npu/**/*.md`。
+两个选择器不扫描对方的根目录。
+`current_prompt_modules` 记录命中的模块名清单（torch_npu 始终含`common/documentation_conventions`）；
 
-`source_analysis_knowledge` 默认为 `false`。仅在 ACLNN 初始化显式传入
-`--source-analysis-knowledge` 时为 `true`；此时仍须通过模块自身的
-`operator_name_eq` 精准命中才会进入 `current_prompt_modules`。开关状态与命中/拒绝证据
-同时冻结在 `prompt_assembly.json`。执行反馈轮不重新提取，也不得动态改变该装配记录。
+显式 `--prompt` 时，原样复制指定文件、`current_prompt_modules=[]`。
+constraint-extractor 始终只读 `current_prompt` 快照， 不感知装配过程。
 
-`run_scope` 为 `full` 或 `constraints_only`。后者由尚未适配 TTK 的 torch_npu API 在
-auto 模式下使用：约束 normalize/validate 且当前轮 constraint_check passed 后可进入 SUCCESS，但 history 必须包含
-`CONSTRAINTS_ONLY_SUCCESS`；不得生成 cases 或宣称执行/精度成功。
+`source_analysis_knowledge` 默认为 `false`。仅在 ACLNN 初始化显式传入`--source-analysis-knowledge` 时为 `true`；
+此时仍须通过模块自身的 `operator_name_eq` 精准命中才会进入 `current_prompt_modules`。
+开关状态与命中/拒绝证据同时冻结在 `prompt_assembly.json`。执行反馈轮不重新提取，也不得动态改变该装配记录。
 
-`constraint_check={max_rounds, iteration, current_round, status, report}` 保存当前约束版本
-的内部检查进度。`max_rounds` 默认 3；首轮 EXTRACT 或 UPDATE_CONSTRAINTS 创建新
-iteration 时重置其他字段并保留上限。同 iteration 恢复时不得重置已通过结果。
+`constraint_check={max_rounds, iteration, current_round, status, report}` 保存当前约束版本的内部检查进度。
+`max_rounds` 默认 3；首轮 EXTRACT 或 UPDATE_CONSTRAINTS 创建新 iteration 时重置其他字段并保留上限。
+同 iteration 恢复时不得重置已通过结果。
 
-`hs_scenario_mode` 为 `original` 或 `planned`，默认 `original`。它只影响
-torch_npu + TTK 的 GENERATE：`original` 使用原生生成器，`planned` 才启用
-TND/BSND/paged-attention 场景拆分和投影。case-generator 必须从 run_state
-透传该值。
+`hs_scenario_mode` 为 `original` 或 `planned`，默认 `original`。它只影响 torch_npu + TTK 的 GENERATE：
+`original` 使用原生生成器，`planned` 才启用 TND/BSND/paged-attention 场景拆分和投影。
+case-generator 必须从 run_state 透传该值。
+
+state 状态合法值见 WORKFLOW.md §3 状态机。状态迁移操作见 iterate-operator/SKILL.md。
 
 ## constraints.json
 
@@ -141,15 +130,14 @@ analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条�
 `constraints_patch.json` 经
 `scripts/apply_supplement_constraints.py` 确定性合并后追加/替换条目并标 `origin="supplement"`。
 
-`allowed_range_value.value` 非空时，`type` 必须显式标注为 `enum`（离散枚举，如
-格式码/bool/字符串候选）或 `range`（数值区间）；缺失或非法值由
-`scripts/validate_artifacts.py` 的 `validate_constraints` 兜底报错并阻断流程。
-`value=[]`（空）时不强制 `type`（tensor 参数无值域约束常留空）。
+`allowed_range_value.value` 非空时：
+`type` 必须显式标注为 `enum`（离散枚举，如 格式码/bool/字符串候选）或 `range`（数值区间）；
+缺失或非法值由 `scripts/validate_artifacts.py` 的 `validate_constraints` 兜底报错并阻断流程。
+`value=[]`（空）时：
+不强制 `type`（tensor 参数无值域约束常留空）。
 
-`allowed_range_value.type=range` 的区间端点必须为实际数值，不允许用 `null` 表示
-无界；单边或开区间写入 `constraints_in_parameters`，使用不等式表达。
-`type=enum` 允许 `null` 作为明确的离散候选。`expr` 中允许裸 `null`，校验和求解前
-会规范化为 Python `None`，但只能用于空值/存在性判断，不能参与数值大小比较。
+被 validate_artifacts.py constraints 校验（构造 OperatorRule Pydantic 模型）。
+由 constraint-extractor 产出、 constraint-repairer/updater 修改。
 
 ## extraction_provenance.json
 
@@ -175,9 +163,12 @@ analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条�
 
 ## constraint_check.json
 
-每个新约束版本生成一个累计报告：首轮在 SUPPLEMENT/已裁决 conflict 合并后生成，
-后续在 constraint-updater 完成最小更新后生成。只保留当前轮单文件，不创建逐 check
-轮目录。最小结构：
+每个新约束版本生成一个累计报告：
+首轮在 SUPPLEMENT/已裁决 conflict 合并后生成，
+后续在 constraint-updater 完成最小更新后生成。
+只保留当前轮单文件，不创建逐 check 轮目录。
+
+最小结构如下：
 
 ```json
 {
@@ -187,26 +178,40 @@ analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条�
   "current_round": 1,
   "status": "needs_repair",
   "constraints_file": "<constraints.json 绝对路径>",
-  "issues": [{
-    "id": "CR-001",
-    "found_round": 1,
-    "last_checked_round": 1,
-    "line": 86,
-    "constraint": "groupType.allowed_range_value",
-    "problem": "当前连续范围与文档有限枚举冲突。",
-    "suggestion": "改为 enum [0,1]。",
-    "status": "open"
-  }],
-  "summary": {"total": 1, "open": 1, "fixed": 0, "unfixed": 0}
+  "issues": [
+    {
+      "id": "CR-001",
+      "found_round": 1,
+      "last_checked_round": 1,
+      "line": 86,
+      "constraint": "groupType.allowed_range_value",
+      "problem": "当前连续范围与文档有限枚举冲突。",
+      "suggestion": "改为 enum [0,1]。",
+      "status": "open"
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "open": 1,
+    "fixed": 0,
+    "unfixed": 0
+  }
 }
 ```
 
-`status` 只能为 `passed|needs_repair|failed`，issue status 只能为
-`open|fixed|unfixed`。只有 constraint-checker 能确认 fixed；constraint-repairer 不修改
-报告。`passed` 不得含 active issue；`needs_repair` 要求尚未到上限；`failed` 要求已到
-上限且仍有 active issue。使用：
+`status` 只能为 `passed|needs_repair|failed`，
+issue status 只能为`open|fixed|unfixed`。
+只有 constraint-checker 能确认 fixed；
+constraint-repairer 不修改报告。
+`passed` 不得含 active issue；
+`needs_repair` 要求尚未到上限；
+`failed` 要求已到 上限且仍有 active issue。
 
+被 validate_artifacts.py constraint_check 校验，使用：
 `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`
+由 constraint-checker 产出，constraint-repairer 不修改此文件。
+状态推进操作见 iterate-operator/SKILL.md 步骤 6。
+// TODO 待skill优化后调整这里
 
 ## relation_examples.json
 
@@ -244,10 +249,12 @@ exit code 仅 `syntax_error` → 2，其余 advisory → 0。checker 按检查�
 
 ## constraint_update.json
 
-仅用于执行反馈轮。`constraint_update_state.py prepare` 先验证上一轮 analysis 的
-`overall_action=UPDATE_CONSTRAINTS`，把上一轮实际生成用例所用的 constraints 复制到新
-iteration，同时写 `.pre_update` 与 pending 报告；`constraint-updater` 修改目标文件并填写
-changes，最后由 `finalize` 校验。核心结构：
+仅用于执行用例结束，执行结果分析后根据分析结果进行约束修改。
+`constraint_update_state.py prepare` 先验证上一轮 analysis 的`overall_action=UPDATE_CONSTRAINTS`，
+把上一轮实际生成用例所用的 constraints 复制到新 iteration，同时写 `.pre_update` 与 pending 报告；
+`constraint-updater` 修改目标文件并填写 changes，最后由 `finalize` 校验。
+
+核心结构如下：
 
 ```json
 {
@@ -275,17 +282,19 @@ changes，最后由 `finalize` 校验。核心结构：
 ```
 
 允许的 op 为 `set_parameter_field|add_relation|replace_relation|remove_relation|update_product_support`。
-所有 findings 必须至少被一项 change 覆盖，不得引用未知 finding；`before` 与 `after` 必须
-不同，结果 hash 必须区别于基线。该报告只证明“发生了可追踪修改”，不能替代后续独立
-constraint-checker 的语义结论。使用：
+所有 findings 必须至少被一项 change 覆盖，不得引用未知 finding；
+`before` 与 `after` 必须不同，结果 hash 必须区别于基线。
+该报告只证明“发生了可追踪修改”，不能替代后续独立 constraint-checker 的语义结论。
 
+被 `validate_artifacts.py constraint_update` 校验，使用：
 `python scripts/validate_artifacts.py constraint_update <iter>/constraint_update.json`
+由 `constraint-updater` 产出（`constraint_update_state.py prepare/finalize` 管理生命周期），
+`constraint-checker` 消费（验证 findings 覆盖与 expected_effect）。
 
 ## constraints_patch.json
 
-约束补充阶段（条件触发，`inputs/supplementary-doc.md` 与/或
-`inputs/supplement_constraints.md` 任一非空时执行，两者都空则跳过）的产物。
-`constraint-supplementer` 读补充输入与已提取 `constraints.json`，产出 JSON 数组，每项：
+约束补充阶段（条件触发，`inputs/supplementary-doc.md` 或`inputs/supplement_constraints.md` 任一非空时执行，两者都空则跳过）的产物。
+`constraint-supplementer` 读补充输入与已提取的 `constraints.json`，产出 JSON 数组，每项数据结构如下：
 
 ```json
 {
@@ -299,27 +308,41 @@ constraint-checker 的语义结论。使用：
 }
 ```
 
-`proposed` 只含 `expr_type`/`expr`/`relation_params` 三字段；`src_text`/`origin` 由
-`scripts/apply_supplement_constraints.py` 合并时填（`src_text=basis`、`origin="supplement"`），
+`proposed` 只含 `expr_type`/`expr`/`relation_params` 三字段；
+`src_text`/`origin` 由 `scripts/apply_supplement_constraints.py` 合并时填（`src_text=basis`、`origin="supplement"`），
 patch 层字段（`op`/`match_expr`/`proposed`/`basis`/`finding_ids`/`expected_effect`）不进 `constraints.json`
-（`InterParamConstraint` 为 `extra:forbid`）。合并后重跑 `normalize_constraints` +
-`validate_artifacts constraints`，失败则阻断、不进 GENERATE。`target_platform="all"`
-的条目由合并器**展开写入 `constraints_in_parameters` 中每个平台桶**（不产生 `common`
-桶；`"common"` 已废弃，合并器拒绝并引导改用 `"all"`）。
-`add_constraint` 按规范化后的 `expr_type+expr+relation_params` 幂等去重；等价项返回
-`noop-add`。replace 先精确匹配 `match_expr`，再按表达式 AST 规范化匹配；等价替换返回
-`noop-replace`。空 patch/noop 合法，但不得作为约束已经提升的证据。patch 先通过
-`validate_artifacts.py constraints_patch`；诊断 finding 还须通过
-`validate_supplement_effect.py` 的覆盖和非全量 noop 门禁。
+（`InterParamConstraint` 为 `extra:forbid`）。
+合并后重跑 `normalize_constraints` + `validate_artifacts constraints`，失败则阻断、不进 GENERATE。
+`target_platform="all"` 的条目由合并器**展开写入 `constraints_in_parameters` 中每个平台桶**（不产生 `common`桶；`"common"`
+已废弃，合并器拒绝并引导改用 `"all"`）。
+`add_constraint` 按规范化后的 `expr_type+expr+relation_params` 幂等去重；
+等价项返回`noop-add`。
+replace 先精确匹配 `match_expr`，再按表达式 AST 规范化匹配；等价替换返回`noop-replace`。
+空 patch/noop 合法，但不得作为约束已经提升的证据。
+patch 先通过`validate_artifacts.py constraints_patch`；
+诊断 finding 还须通过`validate_supplement_effect.py` 的覆盖和非全量 noop 门禁。
 
-## conflict_candidates.json / conflict_resolution.json
+被 `validate_artifacts.py constraints_patch` 校验（诊断 patch 还须过 `validate_supplement_effect.py`）；
+由 `constraint-supplementer` 产出，
+`apply_supplement_constraints.py` 消费（合并写入 constraints.json），
+`constraint-checker` 消费（验证 finding 覆盖与 expected_effect）。
 
-source-analyst extract 域产 `inputs/conflict_candidates.json`（结构化冲突候选），
-用户裁决写 `inputs/conflict_resolution.json`。`scripts/apply_conflict_resolution.py`
-join 两者，source-wins 转 `replace_constraint` patch（`origin="conflict_resolution"`），
-复用 `apply_supplement_constraints.apply_patch` 合并 + revalidate；doc-wins 丢弃。
+# conflict 段拆分后完整替换内容
 
-`conflict_candidates.json` = JSON 数组，每项：
+> 替换范围：ARTIFACT_CONTRACTS.md 中从
+> `## conflict_candidates.json / conflict_resolution.json`
+> 到
+> `## scene_scan.json / scene_directive.md / run_state.scene`
+> 之前的全部内容。
+> 即删除旧的合并段，粘贴下面的两个独立段。
+
+---
+
+## conflict_candidates.json
+
+source-analyst extract 产出 `inputs/conflict_candidates.json`（结构化冲突候选）。
+JSON 数组，每项：
+
 ```json
 {
   "conflict_id": "CF1",
@@ -330,60 +353,86 @@ join 两者，source-wins 转 `replace_constraint` patch（`origin="conflict_res
   "error_string": "..."
 }
 ```
-`conflict_resolution.json` = JSON 数组，每项 `{"conflict_id": "CF1", "winner": "source|doc", "note": ""}`。
-`doc_expr` 必须从 `constraints.json` 精确复制，否则合并器精确匹配失败阻断。
 
-## scene_scan.json / scene_directive.md / run_state.scene
+`doc_expr` 必须从 `constraints.json` 精确复制（不得改写），否则合并器精确匹配失败阻断。
+`proposed_source` 含 `expr_type`/`expr`/`relation_params` 三字段，语义同 `constraints_patch.json` 的 `proposed`。
 
-`scene_scan.json`（scene-scanner 产，落 `<run-dir>/inputs/`；调度时必须显式传入
-`<run-dir>`，不得按仓库 cwd 解析相对 `inputs/`）：按**设备类型
-→ 量化模板 → 特性参数**三级嵌套提取文档中有测试需求的场景，**不设"通用"组**（无设备
-标注内容合并到每个具体设备组下），特性参数**只提取枚举/分档类可选项**（单个取值范围/
-固定取值不提取，归 `definition`），过滤 ACLNN_ERR_*/校验场景。顶层含 `operator`/
-`has_scenarios`/`device_types`（"产品支持情况"具体设备名，无"通用"）/`devices[]`/
-`scan_notes`；每设备 `device`/`templates[]`，每模板 `template`（组内唯一，编码量化方式
-如 `非量化`/`全量化-A8W8`/`全量化-GQA`，分类词不作模板）/`definition`/`unsupported_features`/
-`feature_params[]`；每特性 `feature`/`params[]`，每参数 `name`/`values`（非空 list，枚举
-离散值或分档区间串）/`description`/`constraint`/`related`/`value_conflicts`（可选 list，
-把 `related` 中"取值→关联参数禁止/要求"关系机读化：每条 `when_self`(可选)/`target`(同模板
-选择型参数名)/`forbidden`⊻`required`(非空 list)/`reason`，供 `check_scene_conflicts.py`
-在 Q3 后做确定性冲突识别；关联指向非选择项时只留 `related` 文本不加该字段）。三条落地
-规则：含多参数的 bullet 拆成独立 `params[]` 条目；"与 X 相同"的设备直接内联复制 X 的
-`templates`（无 `same_as` 引用字段）；参数间禁止/要求关系结构化为 `value_conflicts`。
-`has_scenarios` 为 bool（= 任一设备 `templates` 非空）；`=false`
-（文档无场景）时 `device_types`/`devices` 留空，主协调器跳过场景征询；仅有量化参数信号
-而未提取到模板时只写 `scan_notes`（`kind=quant_signal_no_template`）警告，不补造、不置
-`has_scenarios`。结构由 `validate_artifacts.py scene_scan` 校验（派生一致性：
-`device_types` == `devices[].device` 全集）。
+被 `apply_conflict_resolution.py` 消费
+（与 `conflict_resolution.json` join：source-wins 转 `replace_constraint` patch，`origin="conflict_resolution"`，
+复用 `apply_supplement_constraints.apply_patch` 合并 + revalidate；doc-wins 丢弃）；
+由 `source-analyst`（extract 域）产出。
+无独立结构校验命令——合并器对 `doc_expr` 精确匹配失败时阻断（exit 非 0），是唯一的结构门禁。
 
-`run_state.scene`（`init_run` 写 `null`，SCENE_SCAN 子步骤由
-`scripts/render_scene_directive.py` 回写）：形态 `{enabled, scope, device_types,
-selection, param_modes, selection_policy, known_conflicts, directive, scan}`。`scope=subset` 时 `selection` 为
-`{device:{template:<tpl_value>}}`（`<tpl_value>` ∈ `null`（选项1/未填写，按文档和场景自动适配）|
-`"fix_all_default"`（选项2，各参数取 `values[0]`）| `{param:[values]}`（Other JSON：单值→fix、
-多值→expand 子集、未列参数→按文档和已选场景自动适配）；缺模板键=该模板未选 Q2），
-`directive` 指向 `inputs/scene_directive.md`；`scope=all` 全设备全模板全特性参数
-全展开（不剪枝）；`scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件
-（extractor 见无 directive 即按全场景提取，行为不变）。
+## conflict_resolution.json
 
-纯无场景算子（`has_scenarios=false`）不触发场景征询，`run_state.scene=null`，
-执行时不传 `--scene`。
+用户人工裁决写 `inputs/conflict_resolution.json`。
+JSON 数组，每项：
+`{"conflict_id": "CF1", "winner": "source|doc", "note": ""}`。
+`conflict_id` 须与 `conflict_candidates.json` 中的条目对应。
 
-`scene_directive.md`（`render_scene_directive.py` 渲染，落 `inputs/`，仅 `scope=subset`
-时存在）：逐设备逐模板列出选定模板及其特性参数取值，按 `param_modes` 收窄用户明确
-选择的参数（`{"expand": [取值清单]}` 清单=用户明确选择的子集 /
-`{"fix": X}` 单值=用户单值输入或 values[0]）。缺键参数继续按算子文档和
-已选场景提取适配；已选场景明确禁止的 Optional 参数必须显式生成 `param is None`。
-末尾附机读块 `<!-- scene: {device_types, selection, param_modes, selection_policy, known_conflicts} -->`
-（`selection` 保留逐设备选中模板，使 `param_modes` 为空时仍能机器判定场景；设备类型为具体设备名，
-无"通用"）；`known_conflicts` 为 `check_scene_conflicts.py` 识别出的冲突记录列表（用户确认
-强制继续时非空，directive 同步出"已知特性参数冲突"人读段）；无冲突或 `scope=all/off` 时为 `[]`。
-constraint-extractor 据此按 `param_modes` 产 `allowed_range_value`，并按
-`selection_policy` 保留未显式选择参数的文档约束，保留通用约束
-（shape/dtype/format 等），并按 `device_types` 收窄 `product_support`（直接与文档
-"产品支持情况" √ 行取交集，无"通用"展开）；该列表
-随后驱动 `generate_cases.py` 逐平台生成）。执行反馈轮不改 prompt 或本文件，
-constraint-updater 必须继续遵守同一 directive，保持跨轮稳定。
+冲突永远走人工通道，不由 checker 或其他 Agent 自动选边。
+用户在任意时刻写入此文件后，下一轮 re-supplement 前由`apply_conflict_resolution.py` 合并；
+source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`（`origin="conflict_resolution"`），doc-wins
+的条目丢弃。
+
+被 `apply_conflict_resolution.py` 消费（与 `conflict_candidates.json` join）；
+由用户人工产出。无独立结构校验命令——合并器对`conflict_id` 匹配和 `winner` 取值处理是唯一门禁。
+
+## scene_scan.json
+
+`scene-scanner` 产 `<run-dir>/inputs/scene_scan.json`（调度时必须显式传入 `<run-dir>`，不得按仓库 cwd 解析相对 `inputs/`）。
+按**设备类型 → 量化模板 → 特性参数**三级嵌套提取文档中有测试需求的场景，**禁止输出"通用"设备类型**
+（无明确设备标注的内容，需要分别记录到每个具体设备组下）。
+顶层含 `operator`/`has_scenarios`/`device_types`（"产品支持情况"具体设备名）/`devices[]`/`scan_notes`；
+每设备 `device`/`templates[]`，
+每模板 `template`/`definition`/`unsupported_features`/`feature_params[]`，
+每特性 `feature`/`params[]`，
+每参数 `name`/`values`/`description`/`constraint`/`related`/`value_conflicts`（可选）。
+
+完整 schema、字段语义、JSON 示例见 `prompts/scan_scenes.md` §4。
+提取规则见 `scan-scenes` skill 和 `prompts/scan_scenes.md` §3-§5。
+
+被 `validate_artifacts.py scene_scan` 校验（该函数是 schema 的唯一强制真相源，校验 `has_scenarios`/`device_types`/
+`devices[].device` 派生一致性/`value_conflicts` 结构合法性）；
+由 `scene-scanner` 产出；主协调器消费（据此 Q1→Q2→Q3 三轮征询，征询协议见 `iterate-operator/SKILL.md` 步骤 5）。
+
+## selection.json
+
+主协调器 Q1→Q2→Q3 答案汇总落地到 `<run-dir>/inputs/selection.json`。
+形态 `{device_types, selection}`，
+`selection` 为`{device: {template: <tpl_value>}}`，
+`<tpl_value>` ∈ `null`（保持自动）| `"fix_all_default"` | `{param:[values]}`（Other 用户输入，主协调器识别组装）。
+
+供 `render_scene_directive.py` 解析 `param_modes` 和 `check_scene_conflicts.py` 做冲突识别。
+无独立结构校验命令——`render_scene_directive.py` 和 `check_scene_conflicts.py` 对其内容的解析是唯一门禁。由主协调器产出。
+
+## scene_directive.md
+
+`render_scene_directive.py` 渲染，落 `<run-dir>/inputs/scene_directive.md`（仅 `scope=subset`时存在）。
+逐设备逐模板列出选定模板及特性参数取值，末尾附机读块
+`<!-- scene: {device_types, selection, param_modes, selection_policy, known_conflicts} -->`。
+`param_modes[device][param]` ∈ `{"expand": [取值清单]}` | `{"fix": X}`；
+缺键 = 按文档和已选场景自动适配，已选场景禁止的 Optional 参数显式生成 `param is None`。
+
+`constraint-extractor` 消费（按 `param_modes` 收窄 `allowed_range_value`，按 `device_types` 收窄 `product_support`，消费规则见
+`extract-constraints` skill 场景屏蔽规则段）；
+执行反馈轮不改本文件，`constraint-updater` 必须遵守同一 directive 保持跨轮稳定。
+
+被 `render_scene_directive.py` 渲染时校验（设备/模板/param 名/值 ∈ scan、解析 `param_modes`、非法选择 exit 2 阻断）；
+由`render_scene_directive.py` 产出（从 `scene_scan.json` + `selection.json` 渲染），
+`constraint-extractor`消费。无独立结构校验命令——渲染器的校验是唯一门禁。
+
+## run_state.scene
+
+`init_run` 写 `null`，SCENE_SCAN 子步骤由 `render_scene_directive.py` 回写。
+形态`{enabled, scope, device_types, selection, param_modes, selection_policy, known_conflicts, directive, scan}`。
+`scope=subset` 时 `directive` 指向 `inputs/scene_directive.md`；
+`scope=all` 全设备全模板全特性参数全展开（不剪枝，不写 directive 文件）；
+`scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件（extractor 见无 directive 即按全场景提取，行为不变）。
+纯无场景算子（`has_scenarios=false`）不触发征询，`run_state.scene=null`。
+
+无独立结构校验命令——`render_scene_directive.py` 写入时校验合法性，`init_run` 读取时校验初始 `null`。由
+`render_scene_directive.py` 回写。
 
 ## source_raw.json / source_evidence.json
 
