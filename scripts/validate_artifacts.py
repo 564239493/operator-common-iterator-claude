@@ -967,6 +967,79 @@ def _validate_src_txt_lines(value) -> list[str]:
     return errors
 
 
+def _is_permutation(values) -> bool:
+    return (
+        isinstance(values, list)
+        and all(isinstance(v, int) and not isinstance(v, bool) for v in values)
+        and sorted(values) == list(range(len(values)))
+    )
+
+
+def _attr_field_value(attributes: dict, field: str):
+    raw = attributes.get(field)
+    if isinstance(raw, dict):
+        return raw.get("value")
+    return raw
+
+
+def _validate_transpose_ids(value) -> list[str]:
+    """constraints.json 卡级 transpose_id 校验（字段缺省/空 = 无转置语义，不报错）。
+
+    value 必须为 full-form perm 候选集 List[List[int]]，每个 perm 是 0..n-1 的排列，
+    同一 rank 至多一个候选（还原时按 rank 唯一匹配）；inputs 卡声明 transpose_id 时
+    同平台必须有配套 <name>_transposed 隐式 bool 卡（type=bool 且
+    is_operator_param=false）；outputs 不支持 transpose_id（生成器只还原 inputs）。
+    """
+    errors: list[str] = []
+    input_cards: dict[tuple[str, str], dict] = {}
+    for section_name, param_name, platform, attributes in _iter_param_attributes(value):
+        if section_name == "inputs":
+            input_cards[(str(platform), param_name)] = attributes
+    for section_name, param_name, platform, attributes in _iter_param_attributes(value):
+        raw = attributes.get("transpose_id")
+        if raw is None:
+            continue
+        perm_value = raw.get("value") if isinstance(raw, dict) else raw
+        if perm_value is None or perm_value == "N/A" or (isinstance(perm_value, list) and not perm_value):
+            continue
+        prefix = f"{section_name}.{param_name}[{platform}].transpose_id"
+        if section_name != "inputs":
+            errors.append(f"{prefix}: 仅 inputs 张量支持 transpose_id（生成器只还原 inputs）")
+            continue
+        if not isinstance(perm_value, list):
+            errors.append(
+                f"{prefix}: 必须为 full-form perm 候选集 List[List[int]]（[]/\"N/A\"=无转置）, "
+                f"got {perm_value!r}")
+            continue
+        ranks_seen: dict[int, int] = {}
+        for perm_index, perm in enumerate(perm_value):
+            if not _is_permutation(perm):
+                errors.append(
+                    f"{prefix}[{perm_index}]: 每个 perm 必须为 0..n-1 的排列, got {perm!r}")
+                continue
+            if len(perm) in ranks_seen:
+                errors.append(
+                    f"{prefix}: rank {len(perm)} 存在多个候选 "
+                    f"({ranks_seen[len(perm)]} 与 {perm_index})，还原时无法唯一匹配")
+            else:
+                ranks_seen[len(perm)] = perm_index
+        bool_name = f"{param_name}_transposed"
+        bool_attr = input_cards.get((str(platform), bool_name))
+        if bool_attr is None:
+            errors.append(
+                f"{prefix}: 缺少配套隐式 bool 卡 inputs.{bool_name}[{platform}]"
+                "（type=bool 且 is_operator_param=false）")
+            continue
+        type_value = _attr_field_value(bool_attr, "type")
+        op_param_value = _attr_field_value(bool_attr, "is_operator_param")
+        if type_value != "bool" or op_param_value not in (False, "false", "False"):
+            errors.append(
+                f"{prefix}: 配套卡 inputs.{bool_name}[{platform}] 应为 type=bool 且 "
+                f"is_operator_param=false, got type={type_value!r}, "
+                f"is_operator_param={op_param_value!r}")
+    return errors
+
+
 def validate_constraints(value) -> list[str]:
     if not isinstance(value, dict):
         return ["constraints must be an object"]
@@ -993,6 +1066,7 @@ def validate_constraints(value) -> list[str]:
             + _validate_grouped_matmul_v5_constraints(value)
             + _validate_constraint_ids(value)
             + _validate_src_txt_lines(value)
+            + _validate_transpose_ids(value)
         )
         if str(value.get("operator_name", "")).startswith(("torch_npu.", "torch.npu.")):
             from agent.hs.constraint_validation import validate_hs_constraints
@@ -1152,12 +1226,76 @@ def validate_constraint_check(value) -> list[str]:
     return errors
 
 
+def _iter_case_input_items(case: dict):
+    inputs = case.get("inputs")
+    if not isinstance(inputs, list):
+        return
+    for item in inputs:
+        if isinstance(item, list):
+            for sub_item in item:
+                if isinstance(sub_item, dict):
+                    yield sub_item
+        elif isinstance(item, dict):
+            yield item
+
+
+def _validate_case_transpose(value) -> list[str]:
+    """cases.json 转置字段一致性校验（缺省字段不报错，旧产物兼容）。
+
+    is_transpose=true：条目必须为 tensor/tensors，transpose_id 必须为合法排列且
+    与 shape 的 rank 一致（嵌套 shape 逐子 shape 校验）——shape 为转置前物理 shape，
+    permute(shape, transpose_id) 即约束体系的逻辑视图；其余 is_transpose 取值时
+    transpose_id 必须为 null。
+    """
+    errors: list[str] = []
+    for case_index, case in enumerate(value):
+        if not isinstance(case, dict):
+            continue
+        for item_index, item in enumerate(_iter_case_input_items(case)):
+            if "is_transpose" not in item:
+                continue
+            flag = item.get("is_transpose")
+            perm = item.get("transpose_id")
+            prefix = f"cases[{case_index}].inputs[{item_index}]({item.get('name')})"
+            if flag is True:
+                if item.get("type") not in ("tensor", "tensors"):
+                    errors.append(f"{prefix}: is_transpose=true 仅允许 tensor/tensors 条目")
+                    continue
+                if not _is_permutation(perm):
+                    errors.append(
+                        f"{prefix}: transpose_id 必须为 0..n-1 的排列, got {perm!r}")
+                    continue
+                shape = item.get("shape")
+                shapes = (
+                    shape
+                    if isinstance(shape, list) and shape and isinstance(shape[0], list)
+                    else [shape]
+                )
+                for sub_shape in shapes:
+                    if not isinstance(sub_shape, list) or len(sub_shape) != len(perm):
+                        errors.append(
+                            f"{prefix}: shape rank 与 transpose_id 长度不一致: "
+                            f"shape={shape!r}, transpose_id={perm!r}")
+                        break
+            elif perm is not None:
+                errors.append(
+                    f"{prefix}: is_transpose={flag!r} 时 transpose_id 必须为 null, "
+                    f"got {perm!r}")
+    return errors
+
+
 def validate_cases(value) -> list[str]:
     if not isinstance(value, list):
         return ["cases must be an array"]
     if not value:
         return ["cases must not be empty"]
-    return [f"cases[{index}] must be an object" for index, item in enumerate(value) if not isinstance(item, dict)]
+    errors = [
+        f"cases[{index}] must be an object"
+        for index, item in enumerate(value)
+        if not isinstance(item, dict)
+    ]
+    errors.extend(_validate_case_transpose(value))
+    return errors
 
 
 def validate_ttk_cases(path: str) -> list[str]:
