@@ -1,6 +1,6 @@
 ---
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -8,6 +8,15 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
 参数：`$ARGUMENTS`
 
 先读 `docs/WORKFLOW.md` 与 `docs/ARTIFACT_CONTRACTS.md`，然后严格执行：
+
+> **阶段迁移硬守卫（强制）**：所有阶段状态迁移一律运行
+> `python scripts/flow_control.py advance --run-dir <run-dir>`，由代码读取落盘产物、
+> 按内置规则表裁决去向并落盘（TRANSIT=迁移 / HOLD=条件未满原地等待 / NOOP=终态 /
+> NO_ROUTE=需人工，决策证据见 stdout 与 `<iter>/transition_decision.json`）。
+> **禁止直调 `run_state.py set-state` 做阶段迁移**（其兜底边校验会对非法边 exit 2，
+> `--force` 仅限人工恢复逃生口）。`set-constraint-check` 子状态回写与 `set-fields`
+> 字段回写不受影响。等待态的用户决定只能经 `--user-decision approve|stop` 转达，
+> 模型不得代替用户决定。
 
 1. 解析参数。算子文档支持绝对路径、项目相对路径和包含 `..` 的外部相对路径。
    `operator-family=auto`、`test-framework=auto`；未传 `--prompt` 时由
@@ -59,9 +68,9 @@ argument-hint: <项目内或外部算子文档路径> [--src path] [--prompt pat
 4. 在主会话展示完整计划、可用 Agents、每阶段输入/输出和终止条件。
 5. `init_run.py` 成功后 state 为 `PLAN`；主协调器必须继续推进到 EXTRACT，不能仅创建 run 后结束。
    **委派 constraint-extractor 之前**，主协调器必须先运行
-   `python scripts/run_state.py set-state --run-dir <run-dir> --to EXTRACT`
-   （脚本负责写 `"state": "EXTRACT"` 并 append history `{"state": "EXTRACT", "at": <ISO8601>}`；
-   run_state.json 一律经 `scripts/run_state.py` 写入，禁止手动 Edit）。
+   `python scripts/flow_control.py advance --run-dir <run-dir>`
+   （推进器裁决 PLAN→EXTRACT 并落盘；run_state.json 一律经 `scripts/run_state.py` /
+   `scripts/flow_control.py` 写入，禁止手动 Edit）。
    extract-constraints 在写 `constraints.json` 前会校验 state 已是 `EXTRACT`，未推进会被拦截并
    空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
    最小修改上一轮约束，不再委派 constraint-extractor。
@@ -228,9 +237,12 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`。
         通过后运行
         `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --current-round <N> --status <status>`
-        把 report 的 `current_round/status` 回写子状态。报告 `passed` → 结束子循环；
-        `failed` → 运行
-        `python scripts/run_state.py set-state --run-dir <run-dir> --to BLOCKED --code CONSTRAINT_CHECK_FAILED`，
+        把 report 的 `current_round/status` 回写子状态。报告 `passed` → 结束子循环，随后运行
+        `python scripts/flow_control.py advance --run-dir <run-dir>` 推进到 GENERATE
+        （constraints-only 范围由推进器按 `run_scope` 自动改道 SUCCESS，见下）；
+        `failed`（或 `needs_repair` 且轮次用尽）→ 运行
+        `python scripts/flow_control.py advance --run-dir <run-dir>`
+        （推进器将裁决至 `BLOCKED`，history 附 `code=CONSTRAINT_CHECK_FAILED`），
         列出未修复问题并终止，
         禁止进入 constraints-only SUCCESS 或 GENERATE。
      4. 报告 `needs_repair` → 委派一个与 checker **隔离的新上下文**
@@ -255,7 +267,8 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
    - **constraints-only 终止**：若 `run_state.test_framework="constraints"`，在 EXTRACT
      和可能的 SUPPLEMENT、CONSTRAINT CHECK/REPAIR 完成后运行 constraints
      normalize/validate；只有当前 iteration 的 `constraint_check.json.status=passed` 才运行
-     `python scripts/run_state.py set-state --run-dir <run-dir> --to SUCCESS --event CONSTRAINTS_ONLY_SUCCESS`，并明确
+     `python scripts/flow_control.py advance --run-dir <run-dir>`（推进器按 `run_scope`
+     自动裁决至 `SUCCESS` 并附 event=`CONSTRAINTS_ONLY_SUCCESS`），并明确
      报告成功范围仅为约束提取。跳过 case-generator、executor、Golden 和执行质量门禁。
    - `case-generator`：读取 `run_state.hs_scenario_mode`，调用
      `generate_cases.py` 时原样透传 `--hs-scenario-mode`；旧 run 缺少该字段时使用
@@ -296,7 +309,8 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
           或 kill 重启——平台是否选对只在 `state=complete` 后、`generation_summary.json.selected_platform`
           不符 `servers.json` 时才处理（EXECUTE 前的事）。
        4. `state=complete`（`generation_summary.json` 已产出）后跑
-          `python scripts/validate_artifacts.py cases <cases 路径>`，通过再进 EXECUTE；
+          `python scripts/validate_artifacts.py cases <cases 路径>`，通过后运行
+          `python scripts/flow_control.py advance --run-dir <run-dir>` 进入 EXECUTE；
           `state=failed` 读 `status` JSON 的 `error` 字段（已有界摘录）报告 `generator_bug`，不自行解析日志。
        5. **绝不在已有 `cases_<plat>.json` 时重跑 `generate_cases.py`**（`generate_platform_outputs:192`
           先 `target.unlink` 删 `cases_<plat>.json` 再生成，重跑=丢弃已完成平台数小时成果）；
@@ -315,9 +329,14 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
        精度对比），拼 `execute_cases.py --mode real --strategy fusion --num <case_count>`
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
       `engine_error` 终止流程。
+   - 执行完成后运行 `python scripts/flow_control.py advance --run-dir <run-dir>`
+     （裁决 EXECUTE → GATE），随后再委派 `quality-reviewer`；gate 产出后由第 7 步的
+     `advance` 决定去向。
    - `quality-reviewer`
 7. 若基础产物可读、至少生成一条用例且执行器已完成运行，运行
-   `python scripts/run_state.py set-state --run-dir <run-dir> --to SUCCESS` 并结束。Golden 覆盖率和准确度 warning 当前不作为门禁。HS+TTK 所选执行平台
+   `python scripts/flow_control.py advance --run-dir <run-dir>`（推进器按 `quality_gate.json`
+   的 blocking 与 `execution_result.failed` 裁决至 SUCCESS / DIAGNOSE / BLOCKED），
+   按其决策结束或继续。Golden 覆盖率和准确度 warning 当前不作为门禁。HS+TTK 所选执行平台
    `semantically_clean_count=0`，或 `planned` 模式缺失计划内必需场景时，生成器必须
    以 `HS_SEMANTIC_GATE_FAILED` 停在 GENERATE，不得进入 EXECUTE；其他部分语义
    warning 仍按非阻断处理。
@@ -355,9 +374,9 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
      用户可逐轮在四种方式间切换。
      `human_constraints_upload == false`时检查点退化为"人工修复不可选"，其余三项不变（向后兼容）。
      以下自动更新分支在「未触发检查点」或「检查点选择人工补充/自动修复」时执行：
-     1. 先检查当前轮 `< max_iterations`，然后运行
-        `python scripts/run_state.py set-state --run-dir <run-dir> --to UPDATE_CONSTRAINTS --bump-iteration`
-        （脚本完成 `current_iteration += 1`、置状态并 append history 同名状态）；不得进入
+     1. 运行 `python scripts/flow_control.py advance --run-dir <run-dir>`：推进器按重算的
+        `overall_action` 与轮次裁决——`< max_iterations` 时迁移至 UPDATE_CONSTRAINTS 并
+        `current_iteration += 1`；轮次已满时自动改道 MAX_ITERATIONS 终止。不得进入
         EXTRACT/SUPPLEMENT，不调用 prompt-optimizer。
      2. 用上一轮 `execution_result.input_artifacts.constraints` 的 path/sha256 核对实际生成
         用例所用约束；缺少或哈希不一致时阻断，不能复制一个已被修改的文件。
@@ -375,7 +394,8 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
              然后继续进入 CHECK/REPAIR（用户确认回归可接受）
            - **选项 2**：回滚到 `<next>/constraints.json.pre_update` 版本，终止本轮更新
              （执行 `cp <next>/constraints.json.pre_update <next>/constraints.json`，再运行
-             `python scripts/run_state.py set-state --run-dir <run-dir> --to BLOCKED --code CONSTRAINT_REGRESSION_USER_ABORT`）
+             `python scripts/flow_control.py advance --run-dir <run-dir> --user-decision stop`，
+             推进器将裁决至 `BLOCKED` 并附 `code=CONSTRAINT_REGRESSION_USER_ABORT`）
            - **选项 3**：用户手动修改约束后继续（主协调器等待用户提供修改后的 constraints.json，
              收到后重新运行 `validate_constraint_regression.py --attempt 1`，通过后运行 finalize，再进入 CHECK/REPAIR）
          - 若 `limit_reached=false` 且 `ok=true`：无回归，继续。
@@ -384,17 +404,21 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         checker 必须验证所有 finding 的 expected_effect。passed 后直接 GENERATE → EXECUTE，
         不重新完整提取。
    - **MIXED_FAILURE_REVIEW**：运行
-     `python scripts/run_state.py set-state --run-dir <run-dir> --to MIXED_FAILURE_REVIEW`，
-     展示每个 cluster、case、根因、建议动作和可用 findings；
+     `python scripts/flow_control.py advance --run-dir <run-dir>`（推进器裁决至
+     MIXED_FAILURE_REVIEW），展示每个 cluster、case、根因、建议动作和可用 findings；
      默认阻断自动更新/生成。用户可先处理 generator/executor 问题，或明确批准只应用约束
-     findings；批准后仍须走上述版本化 UPDATE_CONSTRAINTS 和 CHECK/REPAIR，不能跳过。
-   - **NEEDS_HUMAN_EVIDENCE**：立即进入 HUMAN_CHECKPOINT，请用户补充事实/停止；收到
-     补充后 append 到 `supplement_constraints.md`，重新运行 failure-analyst 形成可校验
-     findings，再决定 UPDATE_CONSTRAINTS，仍不 re-EXTRACT。
-   - **STOP_GENERATOR_BUG**：运行
-     `python scripts/run_state.py set-state --run-dir <run-dir> --to STOP_GENERATOR_BUG`，停止。
-   - **STOP_EXECUTOR_BUG**：运行
-     `python scripts/run_state.py set-state --run-dir <run-dir> --to STOP_EXECUTOR_BUG`，停止。
+     findings（用户批准 → `advance --user-decision approve`，推进器迁移至
+     UPDATE_CONSTRAINTS 并 bump；用户停止 → `--user-decision stop`；沉默 → 保持等待）。
+     批准后仍须走上述版本化 UPDATE_CONSTRAINTS 和 CHECK/REPAIR，不能跳过。
+   - **NEEDS_HUMAN_EVIDENCE**：运行 `flow_control.py advance`（推进器无条件迁入
+     HUMAN_CHECKPOINT），请用户补充事实/停止；收到补充后 append 到
+     `supplement_constraints.md` 并经 `update_supplement_state.py` 刷新，随后 `advance`
+     （推进器检测补充 hash 变化后迁回 DIAGNOSE）重新运行 failure-analyst 形成可校验
+     findings，再决定 UPDATE_CONSTRAINTS，仍不 re-EXTRACT；用户停止 →
+     `advance --user-decision stop`。
+   - **STOP_GENERATOR_BUG** / **STOP_EXECUTOR_BUG**：运行
+     `python scripts/flow_control.py advance --run-dir <run-dir>`，推进器按重算的
+     `overall_action` 直接裁决至同名终态，停止。
    `prompt_optimization` 只允许在任务成功后形成知识沉淀提案，不参与当前任务在线路由。
 
 ## 挂起、监听与唤醒（`human_constraints_upload == true` 时，由 human-checkpoint 检查点「人工修复」触发）
@@ -462,8 +486,9 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
   会话挂掉期间用户已上传的 `iter_<N>/constraints_copy.json` 不丢失——新会话恢复时按 run_state 归位。
 - 监听器随会话死亡即失效（其生命期与会话绑定）；恢复时重新挂起即可。
 
-9. 达到上限（`current_iteration > max_iterations`）后运行
-   `python scripts/run_state.py set-state --run-dir <run-dir> --to MAX_ITERATIONS`。
+9. 轮次上限由推进器强制：DIAGNOSE 路由时 `current_iteration >= max_iterations` 会被
+   `python scripts/flow_control.py advance --run-dir <run-dir>` 直接裁决至
+   `MAX_ITERATIONS`（无需模型判断轮次）。
 10. **（终态前）分层沉淀询问**：若存在 `prompt_update_proposal.json`，先按
    `docs/PROMPT_EVOLUTION.md` 核验试验结果，再逐条展示目标 canonical 文件、摘要、
    失败/文档证据、适用范围与候选 diff，向用户询问“应用 / 暂缓 / 拒绝”。
