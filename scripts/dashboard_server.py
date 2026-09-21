@@ -167,23 +167,26 @@ def _list_cover_dirs():
 class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = unquote(self.path)
+        # 剥离 query string (?run=...&iter=...) 后再匹配路由
+        base_path = path.split("?", 1)[0]
 
-        # 根路径: 重定向到算子结果展示平台
-        if path == "/":
+        # 根路径: 重定向到算子结果展示平台 (保留 query string 以便深链定位任务/轮次)
+        if base_path == "/":
+            qs = path[len(base_path):]  # 含开头的 "?", 无 query 时为空串
             self.send_response(302)
-            self.send_header("Location", "/static/operator-result.html")
+            self.send_header("Location", "/static/operator-result.html" + qs)
             self.end_headers()
             return
 
         # /cover → 覆盖率展示页面 (友好路由, 重定向到 static/cover/cover.html)
-        if path == "/cover":
+        if base_path == "/cover":
             self.send_response(302)
             self.send_header("Location", "/static/cover/cover.html")
             self.end_headers()
             return
 
         # /static/<path>: 项目 static/ 目录下的页面与静态资源 (支持子目录, 防路径穿越)
-        m = re.match(r"^/static/(.+)$", path)
+        m = re.match(r"^/static/(.+)$", base_path)
         if m:
             target = (STATIC_DIR / m.group(1)).resolve()
             try:
@@ -195,17 +198,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _send_file(self, target)
             return
 
-        if path == "/api/runs":
+        if base_path == "/api/runs":
             _send_json(self, _list_runs())
             return
 
         # /api/cover/dirs — operator_cover_doc 下所有覆盖率数据目录
-        if path == "/api/cover/dirs":
+        if base_path == "/api/cover/dirs":
             _send_json(self, _list_cover_dirs())
             return
 
         # /api/cover/<dir>/coverage — 该目录下的 *_coverage.json
-        m = re.match(r"^/api/cover/([A-Za-z0-9_\-]+)/coverage$", path)
+        m = re.match(r"^/api/cover/([A-Za-z0-9_\-]+)/coverage$", base_path)
         if m:
             dir_name = m.group(1)
             d = COVER_DIR / dir_name
@@ -224,7 +227,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # /api/cover/<dir>/analysis — 该目录下的 analysis.md 原文
-        m = re.match(r"^/api/cover/([A-Za-z0-9_\-]+)/analysis$", path)
+        m = re.match(r"^/api/cover/([A-Za-z0-9_\-]+)/analysis$", base_path)
         if m:
             dir_name = m.group(1)
             d = COVER_DIR / dir_name
@@ -244,7 +247,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # /api/runs/<run_id>
-        m = re.match(r"^/api/runs/([^/]+)$", path)
+        m = re.match(r"^/api/runs/([^/]+)$", base_path)
         if m:
             run_id = m.group(1)
             if not _SAFE_RE.match(run_id):
@@ -263,7 +266,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # /api/runs/<run_id>/iters — 任务目录下 iter_ 开头的迭代文件夹名
-        m = re.match(r"^/api/runs/([^/]+)/iters$", path)
+        m = re.match(r"^/api/runs/([^/]+)/iters$", base_path)
         if m:
             run_id = m.group(1)
             if not _SAFE_RE.match(run_id):
@@ -281,7 +284,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # /api/runs/<run_id>/operator_doc — 算子文档原文 (路径取 run_state.json 的 operator_doc 字段)
-        m = re.match(r"^/api/runs/([^/]+)/operator_doc$", path)
+        m = re.match(r"^/api/runs/([^/]+)/operator_doc$", base_path)
         if m:
             run_id = m.group(1)
             if not _SAFE_RE.match(run_id):
@@ -314,7 +317,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # /api/runs/<run_id>/<iter_dir>/<artifact>  (iter_dir 形如 iter_001)
-        m = re.match(r"^/api/runs/([^/]+)/(iter_\d+)/([A-Za-z0-9_\-]+)$", path)
+        m = re.match(r"^/api/runs/([^/]+)/(iter_\d+)/([A-Za-z0-9_\-]+)$", base_path)
         if m:
             run_id, iter_dir, artifact = m.group(1), m.group(2), m.group(3)
             if not _SAFE_RE.match(run_id):
@@ -340,9 +343,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = unquote(self.path)
+        base_path = path.split("?", 1)[0]
 
         # /api/runs/<run_id>/<iter_dir>/constraints_update
-        m = re.match(r"^/api/runs/([^/]+)/(iter_\d+)/constraints_update$", path)
+        m = re.match(r"^/api/runs/([^/]+)/(iter_\d+)/constraints_update$", base_path)
         if m:
             run_id, iter_dir = m.group(1), m.group(2)
             if not _SAFE_RE.match(run_id):

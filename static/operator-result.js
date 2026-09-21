@@ -7,7 +7,9 @@ const STATE_LABELS = {
     SUPPLEMENT: '约束补充', CONSTRAINT_CHECK: '检查修复', GENERATE: '用例生成',
     EXECUTE: '用例执行', GATE: '质量门禁', DIAGNOSE: '根因诊断',
     UPDATE_CONSTRAINTS: '增量更新', MIXED_FAILURE_REVIEW: '混合复核',
-    HUMAN_CHECKPOINT: '人工检查', SUCCESS: '成功', MAX_ITERATIONS: '轮次耗尽',
+    NEEDS_HUMAN_EVIDENCE: '待人工证据', HUMAN_CHECKPOINT: '人工检查',
+    AWAITING_HUMAN_CONSTRAINTS: '等待人工约束', ROLLBACK_TO_ITERATION: '回退轮次',
+    SUCCESS: '成功', MAX_ITERATIONS: '轮次耗尽',
     STOP_GENERATOR_BUG: '生成器止损', STOP_EXECUTOR_BUG: '执行器止损',
     STOPPED_BY_USER: '用户终止', BLOCKED: '阻断'
 };
@@ -41,7 +43,7 @@ const app = createApp({
         const iterList = ref([]);
         const taskLoading = ref(false);
         const queryLoading = ref(false);
-        const activePanels = ref([]);
+        const activePanels = ref(['rel', 'inputs', 'outputs']);
         const progressPolling = ref(false);
         const history = ref([]);
         const editConstraints = ref([]);
@@ -207,6 +209,13 @@ const app = createApp({
             } else {
                 editConstraints.value = [];
             }
+        }
+
+        function togglePanel(name) {
+            const arr = activePanels.value;
+            const i = arr.indexOf(name);
+            if (i >= 0) arr.splice(i, 1);
+            else arr.push(name);
         }
 
         function enterEditMode() {
@@ -535,6 +544,16 @@ const app = createApp({
             pflMap.value = {};
         }
 
+        // 根据当前任务状态同步轮询: 非终止态启动, 终止态停止
+        function syncPollingByCurrentState() {
+            const s = currentTaskState.value;
+            if (s && !TERMINAL_STATES.has(s)) {
+                startProgressPolling();
+            } else {
+                stopProgressPolling();
+            }
+        }
+
         async function onTaskChange(dir) {
             const task = runTasks.value.find(t => t.dir_name === dir);
             if (!task) return;
@@ -546,6 +565,7 @@ const app = createApp({
                 const defaultIter = iters.length ? iters[iters.length - 1] : String(task.current_iteration || 1);
                 await applyTaskData(task, defaultIter);
                 await loadHistory(task);
+                syncPollingByCurrentState();
             } finally {
                 taskLoading.value = false;
             }
@@ -717,10 +737,22 @@ const app = createApp({
                 const currentTask = runTasks.value.find(t => t.dir_name === currentTaskDir.value);
                 if (currentTask) {
                     await loadHistory(currentTask);
+                    // 非编辑态: 同步刷新当前轮次表格数据(约束/输入/输出/PFL错误)
+                    if (!editMode.value && currentIter.value) {
+                        try {
+                            const c = await (await fetch('/api/runs/' + encodeURIComponent(currentTask.dir_name) +
+                                '/' + iterDirOf(currentIter.value) + '/constraints')).json();
+                            if (c && !c.error) {
+                                DATA.value = c;
+                            }
+                            await loadAnalysis(currentTask, currentIter.value);
+                            await loadDiff(currentTask);
+                        } catch (e) { /* 单次表格刷新失败不中断 */
+                        }
+                    }
                 }
-                if (runTasks.value.length && runTasks.value.every(r => TERMINAL_STATES.has(r.state))) {
-                    stopProgressPolling();
-                }
+                // 当前任务进入终止态则停止轮询, 非终止态确保在跑
+                syncPollingByCurrentState();
             } catch (e) { /* 单次失败不中断 */
             }
         }
@@ -734,6 +766,7 @@ const app = createApp({
                     return;
                 }
                 await refreshProgress();
+                // refreshProgress 末尾已按当前任务状态同步轮询, 此处补查列表级启停
                 if (runTasks.value.some(r => !TERMINAL_STATES.has(r.state))) {
                     startProgressPolling();
                 }
@@ -760,6 +793,8 @@ const app = createApp({
                 if (qIter && iters.includes(qIter)) defaultIter = qIter;
                 await applyTaskData(first, defaultIter);
                 await loadHistory(first);
+                // 当前任务非终止态: 自动每 5 秒轮询
+                syncPollingByCurrentState();
             }
         });
         onBeforeUnmount(() => stopProgressPolling());
@@ -779,6 +814,7 @@ const app = createApp({
             enterEditMode, cancelEdit,
             addConstraint, removeConstraint, addParam, removeParam,
             syncEditConstraints, submitConstraints,
+            togglePanel,
             timelineScroll,
             docDialogVisible, docDialogLoading, docDialogError, docDialogTitle,
             docLines, docHitLines, docViewerRef, showSrcInDoc,

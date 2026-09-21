@@ -243,77 +243,70 @@ body {
     overflow-y: auto;
 }
 
-/* el-collapse 面板: 自然高度, 表格显示完整 */
-.panels {
+/* div 卡片: 替代 el-collapse, 自然高度 */
+.cards {
     display: flex;
     flex-direction: column;
+    gap: 12px;
 }
 
-.panels .el-collapse {
-    display: flex;
-    flex-direction: column;
-    border-top: none;
-}
-
-.panels .el-collapse-item {
-    display: flex;
-    flex-direction: column;
-    margin-bottom: 12px;
+.card {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
     border-radius: 8px;
+    display: flex;
+    flex-direction: column;
 }
 
-.panels .el-collapse-item:last-child {
-    margin-bottom: 0;
-}
-
-.panels .el-collapse-item__header {
+.card-header {
     padding: 8px 16px;
-    height: 44px;
+    min-height: 44px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     background: var(--panel-bg);
     border-bottom: 1px solid var(--border);
     user-select: none;
-    border-radius: 8px 8px 0 0;
+    cursor: pointer;
+    transition: background 0.12s;
+    position: sticky;
+    top: 0;
+    z-index: 10;
 }
 
-.panels .el-collapse-item.is-active .el-collapse-item__header {
+.card.expanded .card-header {
     border-radius: 0;
 }
 
-.panels .el-collapse-item__header:hover {
+.card-header:hover {
     background: #fafbfc;
 }
 
-.panels .el-collapse-item__arrow {
+.card-toggle {
     margin-left: auto;
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1;
+    transition: transform 0.2s;
 }
 
-.panels .el-collapse-item__wrap {
-    background: var(--panel-bg);
+.card-toggle.open {
+    transform: rotate(180deg);
 }
 
-/* 展开态: 让 wrap 高度跟随内容自适应, 避免表格行变化(筛选)时被固定高度裁剪 */
-.panels .el-collapse-item.is-active .el-collapse-item__wrap {
-    height: auto !important;
-}
-
-.panels .el-collapse-item__content {
-    padding: 0;
+.card-body {
     flex: 1;
     min-height: 0;
-    height: auto !important;
     display: flex;
     flex-direction: column;
 }
 
-/* 约束面板: 自然高度, 滚动交给 .main; 避免中间层固定高度裁剪 */
-.panels [data-panel="rel"] .el-collapse-item__content {
-    overflow: visible !important;
+/* 约束卡片: 自然高度, 滚动交给 .main */
+.cards [data-panel="rel"] .card-body {
+    overflow: visible;
 }
 
-.panels [data-panel="rel"] .constraint-area {
+.cards [data-panel="rel"] .constraint-area {
     padding-bottom: 0;
 }
 
@@ -544,6 +537,12 @@ body {
     white-space: nowrap;
 }
 
+.c-id {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
 .c-param-chip {
     font-size: 11px;
     font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
@@ -686,103 +685,87 @@ body {
     color: var(--text-muted);
 }
 
-/* ===== 轮次对比(内嵌约束表) ===== */
-.diff-line-tag {
-    font-size: 10px;
-    font-weight: 600;
-    padding: 0 6px;
-    border-radius: 3px;
-    font-family: -apple-system, sans-serif;
-    white-space: nowrap;
-}
-
-.diff-line-tag.prev {
-    background: #fee2e2;
-    color: #991b1b;
-}
-
-.diff-line-tag.cur {
-    background: #d1fae5;
-    color: #065f46;
-}
-
-/* 修改: 上一轮 vs 当前轮 对比块 */
-.expr-diff {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.expr-diff-block {
+/* ===== diff2html 风格: 约束轮次对比 ===== */
+.d2h-diff {
     border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;
-}
-
-.expr-diff-block.prev {
-    border-color: #fecaca;
-    background: #fef7f7;
-}
-
-.expr-diff-block.cur {
-    border-color: #bbf7d0;
-    background: #f7fdf9;
-}
-
-.expr-diff-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 8px;
-    border-bottom: 1px dashed var(--border);
-}
-
-.expr-diff-block.prev .expr-diff-head {
-    background: #fee2e2;
-}
-
-.expr-diff-block.cur .expr-diff-head {
-    background: #d1fae5;
-}
-
-.expr-diff-body {
     font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
     font-size: 12px;
-    line-height: 1.6;
-    padding: 6px 8px;
+    line-height: 1.7;
+    background: #fafbfc;
+}
+
+.d2h-line {
+    display: flex;
+    align-items: baseline;
+    padding: 1px 0;
     white-space: pre-wrap;
     word-break: break-word;
 }
 
-.expr-diff-block.prev .expr-diff-body {
-    color: #991b1b;
-    text-decoration: line-through;
-    text-decoration-color: rgba(153, 27, 27, .5);
+.d2h-line + .d2h-line {
+    border-top: 1px solid #eef2f7;
 }
 
-.expr-diff-block.cur .expr-diff-body {
+/* 删除行: 红底 + 左侧红竖条 */
+.d2h-line.d2h-del {
+    background: #ffecec;
+    border-left: 3px solid #e53935;
+    padding-left: 5px;
+}
+
+/* 新增行: 绿底 + 左侧绿竖条 */
+.d2h-line.d2h-ins {
+    background: #eaffee;
+    border-left: 3px solid #43a047;
+    padding-left: 5px;
+}
+
+/* +/- 前缀符号 */
+.d2h-prefix {
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+    font-weight: 700;
+    user-select: none;
+}
+
+.d2h-del .d2h-prefix {
+    color: #c62828;
+}
+
+.d2h-ins .d2h-prefix {
+    color: #2e7d32;
+}
+
+/* 代码内容: 删除行带删除线 */
+.d2h-code {
+    flex: 1;
+    min-width: 0;
     color: var(--code);
 }
 
-.expr-diff-arrow {
-    align-self: center;
-    color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1;
-    margin: -1px 0;
+.d2h-del .d2h-code {
+    color: #991b1b;
+    text-decoration: line-through;
+    text-decoration-color: rgba(153, 27, 27, .45);
 }
 
-.expr-diff-fields {
-    margin-top: 2px;
+/* 变更字段标签 */
+.d2h-fields {
+    padding: 4px 8px;
+    border-top: 1px dashed var(--border);
     font-size: 11px;
     color: var(--text-muted);
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 4px;
+    font-family: -apple-system, sans-serif;
 }
 
-.expr-diff-field {
+.d2h-field {
     background: var(--panel-bg);
     border: 1px solid var(--border);
     border-radius: 3px;
@@ -792,7 +775,7 @@ body {
     color: var(--text-secondary);
 }
 
-/* 约束表内 diff 标记 */
+/* 约束表内 diff 标记 (新增/删除整条) */
 .op-table ins {
     background: #d1fae5;
     color: #065f46;
