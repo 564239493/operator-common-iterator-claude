@@ -1,4 +1,4 @@
-const {createApp, ref, computed, onMounted, nextTick} = Vue;
+const {createApp, ref, computed, onMounted, onBeforeUnmount, nextTick, watch} = Vue;
 const ElMessage = ElementPlus.ElMessage;
 
 const app = createApp({
@@ -15,6 +15,89 @@ const app = createApp({
         const uncoveredReasons = ref({});    // {funcName → {category, coverable, reason}}
         const coveredUncoveredLines = ref({}); // {funcName → {coveredLines, uncoveredLines, details:[...]}}
         const expandedFunc = ref(''); // 已覆盖函数表展开行详情的函数名
+
+        // ---- ECharts 环形图: 每模块一环 ----
+        const ringEls = ref({});   // {mod: domEl}
+        const ringInstances = {};  // {mod: echartsInstance}
+        const chartReady = computed(() => {
+            if (!coverData.value || !window.echarts) return false;
+            const g = coverData.value.granularities || {};
+            return !!(g[granularity.value] || g.file || g.func);
+        });
+
+        // 单模块环形图 option: covered vs (total-covered), 环心综合率, tooltip 明细
+        function ringOption(mod) {
+            const g = coverData.value && (coverData.value.granularities[granularity.value]
+                || coverData.value.granularities.file || coverData.value.granularities.func);
+            if (!g || !g.coverage || !g.coverage[mod]) return null;
+            const metrics = g.coverage[mod].metrics || [];
+            if (!metrics.length) return null;
+            const sumCovered = metrics.reduce((s, m) => s + (m.covered || 0), 0);
+            const sumTotal = metrics.reduce((s, m) => s + (m.total || 0), 0);
+            const sumRate = sumTotal ? Math.round(sumCovered / sumTotal * 10000) / 100 : 0;
+            const color = rateColor(sumRate);
+            return {
+                tooltip: {
+                    trigger: 'item',
+                    formatter: () => {
+                        let html = '<b>' + mod + '</b> (' + (g.coverage[mod].count || '-') + ' 项)<br/>综合: '
+                            + sumCovered + '/' + sumTotal + ' = ' + sumRate + '%';
+                        metrics.forEach(m => {
+                            html += '<br/>' + m.name + ': ' + m.covered + '/' + m.total + ' = ' + m.rate + '%';
+                        });
+                        return html;
+                    },
+                },
+                series: [{
+                    type: 'pie',
+                    radius: ['58%', '78%'],
+                    center: ['50%', '50%'],
+                    avoidLabelOverlap: false,
+                    label: {show: false},
+                    labelLine: {show: false},
+                    data: [
+                        {value: sumCovered, name: '已覆盖', itemStyle: {color: color}},
+                        {value: Math.max(sumTotal - sumCovered, 0), name: '未覆盖',
+                         itemStyle: {color: '#e2e8f0'}},
+                    ],
+                    emphasis: {scale: false},
+                }],
+                graphic: [{
+                    type: 'text', left: 'center', top: 'center',
+                    style: {
+                        text: sumRate + '%',
+                        fontSize: 18, fontWeight: 'bold', fill: color,
+                    },
+                }, {
+                    type: 'text', left: 'center', top: '62%',
+                    style: {
+                        text: sumCovered + '/' + sumTotal,
+                        fontSize: 11, fill: '#94a3b8',
+                    },
+                }],
+            };
+        }
+
+        function renderRings() {
+            if (!chartReady.value) return;
+            coverModules.forEach(mod => {
+                const el = ringEls.value[mod];
+                if (!el) return;
+                if (!ringInstances[mod]) {
+                    ringInstances[mod] = window.echarts.init(el);
+                }
+                const opt = ringOption(mod);
+                if (opt) ringInstances[mod].setOption(opt, true);
+            });
+        }
+
+        function resizeRings() {
+            Object.values(ringInstances).forEach(inst => inst && inst.resize());
+        }
+
+        watch([coverData, granularity], () => {
+            nextTick(renderRings);
+        });
 
         const filteredDirs = computed(() => {
             const q = coverSearch.value.trim().toLowerCase();
@@ -80,7 +163,7 @@ const app = createApp({
                         rows.push({
                             module: mod, name: f.name || '', dir: f.dir || '',
                             category: r.category || '',
-                            coverable: r.coverable || '',
+                            coverable: normalizeCover(r.coverable || ''),
                             reason: r.reason || '',
                         });
                     });
@@ -117,10 +200,26 @@ const app = createApp({
             expandedFunc.value = (expandedFunc.value === name) ? '' : name;
         }
 
+        // 规范化"能否覆盖": 去 emoji, 统一为 否/可能/是
+        function normalizeCover(cover) {
+            const s = (cover || '').trim();
+            if (s.includes('是') || s.includes('✅')) return '是';
+            if (s.includes('可能') || s.includes('⚠')) return '可能';
+            return '否';
+        }
+
         function coverTypeOf(cover) {
-            if (cover.includes('✅') || cover.includes('是')) return 'yes';
-            if (cover.includes('⚠') || cover.includes('可能')) return 'maybe';
+            const n = normalizeCover(cover);
+            if (n === '是') return 'yes';
+            if (n === '可能') return 'maybe';
             return 'no';
+        }
+
+        function coverTagType(cover) {
+            const n = normalizeCover(cover);
+            if (n === '是') return 'success';
+            if (n === '可能') return 'warning';
+            return 'danger';
         }
 
         // ---- 解析 analysis.md: 提取 C 节(未覆盖函数原因) + D 节(已覆盖函数未覆盖行详情) ----
@@ -281,9 +380,17 @@ const app = createApp({
                 if (coverDirs.value.length) {
                     await selectCoverDir(coverDirs.value[0]);
                 }
+                nextTick(renderRings);
             } catch (e) {
                 ElMessage.error('加载目录列表失败: ' + e.message);
             }
+            window.addEventListener('resize', resizeRings);
+        });
+
+        onBeforeUnmount(() => {
+            window.removeEventListener('resize', resizeRings);
+            Object.values(ringInstances).forEach(inst => inst && inst.dispose());
+            Object.keys(ringInstances).forEach(k => delete ringInstances[k]);
         });
 
         return {
@@ -292,7 +399,8 @@ const app = createApp({
             uncoveredReasons, coveredUncoveredLines, expandedFunc,
             coverModules, metricsOf, modCount, rateColor,
             opDomain, opDir, uncoveredRows, coveredFuncRows,
-            selectCoverDir, goBack, funcDetails, toggleFunc, coverTypeOf,
+            ringEls, chartReady,
+            selectCoverDir, goBack, funcDetails, toggleFunc, coverTypeOf, normalizeCover, coverTagType,
         };
     }
 });

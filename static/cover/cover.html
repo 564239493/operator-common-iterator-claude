@@ -60,22 +60,14 @@
                     </el-radio-group>
                 </div>
 
-                <!-- 覆盖率总览卡片: 4 模块 × 3 指标 -->
-                <div class="cov-cards">
-                    <div v-for="mod in coverModules" :key="mod" class="cov-card">
-                        <div class="cov-card-head">
-                            <span class="cov-mod-name">{{ mod }}</span>
-                            <span class="cov-mod-count" v-if="modCount(mod) !== null">{{ modCount(mod) }} 项</span>
+                <!-- 覆盖率环形图: 4 模块各一环 (covered/total, 环心综合率, tooltip 展开明细) -->
+                <div class="cov-rings" v-if="chartReady">
+                    <div v-for="mod in coverModules" :key="mod" class="cov-ring-item">
+                        <div class="cov-ring-head">
+                            <span class="cov-ring-mod">{{ mod }}</span>
+                            <span class="cov-ring-count" v-if="modCount(mod) !== null">{{ modCount(mod) }} 项</span>
                         </div>
-                        <div v-for="m in metricsOf(mod)" :key="m.name" class="cov-metric">
-                            <div class="cm-row">
-                                <span class="cm-name">{{ m.name }}</span>
-                                <span class="cm-rate" :style="{color: rateColor(m.rate)}">{{ m.rate }}%</span>
-                            </div>
-                            <el-progress :percentage="m.rate" :color="rateColor(m.rate)" :show-text="false"
-                                         :stroke-width="6"></el-progress>
-                            <div class="cm-detail">{{ m.covered }} / {{ m.total }} 行</div>
-                        </div>
+                        <div :ref="el => ringEls[mod] = el" class="cov-ring-body"></div>
                     </div>
                 </div>
 
@@ -115,7 +107,7 @@
                             </el-table-column>
                             <el-table-column label="能否覆盖" width="90" align="center">
                                 <template #default="{ row }">
-                                    <el-tag size="small" :type="row.coverable.includes('❌') ? 'danger' : (row.coverable.includes('⚠') ? 'warning' : 'info')">
+                                    <el-tag size="small" :type="coverTagType(row.coverable)" effect="light">
                                         {{ row.coverable || '-' }}
                                     </el-tag>
                                 </template>
@@ -144,7 +136,9 @@
                                                  class="line-card" :class="coverTypeOf(d.coverable)">
                                                 <div class="lc-head">
                                                     <span class="lc-lineno">L{{ d.lineno }}</span>
-                                                    <span class="lc-cover" :class="coverTypeOf(d.coverable)">{{ d.coverable }}</span>
+                                                    <el-tag size="small" :type="coverTagType(d.coverable)" effect="light">
+                                                        {{ normalizeCover(d.coverable) }}
+                                                    </el-tag>
                                                 </div>
                                                 <div class="lc-src mono" v-if="d.src" v-html="d.src"></div>
                                                 <div class="lc-reason" v-if="d.reason"><span class="lc-label">原因</span><span v-html="d.reason"></span></div>
@@ -184,6 +178,7 @@
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 <script src="https://unpkg.com/element-plus/dist/index.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
 <script src="cover.js"></script>
 </body>
 </html>
