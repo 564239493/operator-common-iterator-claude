@@ -68,7 +68,7 @@ depends_on: [implicit_parameters]
      索引循环强制等长，应根据文档的总量语义对两个完整数组分别求和。
 5. **"维数 vs 长度"**：表达式中的 `len(x.shape)` 表示 rank（仅 `aclTensor` / `aclTensorList` 有 `.shape`），"shape size" 永远指 rank，**不是**各维大小乘积。`aclIntArray` / `aclFloatArray` / `aclBoolArray` **没有 `.shape`**，其元素个数直接写 `len(paramName)`（裸参数名），**禁止** `len(paramName.shape)`。
 6. **负索引优先**：当约束引用了以字母命名的维度（如 `H`、`W`）且该维度在 shape 描述中**始终处于固定语义位置**（如"最后一维"），必须使用 `shape[-1]` 而非固定正索引 `shape[1]` 或 `shape[3]`。
-   - **"固定语义位置"指物理位置固定，非逻辑轴名固定**：shape 元组重排编码转置时（如 `x` 不转置 shape=(M,K)、转置 shape=(K,M)），末维物理位置始终是 `shape[-1]`，逻辑轴名虽变（K 或 M）但物理位置不变，仍适用本条。条件映射（"K 轴或 M 轴"）只放 `src_text`，不因此改用 `[:-1]` 或加 if/else。
+   - **"固定语义位置"指逻辑视图 L 上的位置固定**：shape 元组重排编码转置时（如 `x` 不转置 shape=(M,K)、转置 shape=(K,M)），按转置形状知识声明 `transpose_id` 后约束统一按逻辑视图 L=(M,K) 书写，末维物理位置始终是 `shape[-1]`（即 L 的末轴 K），无需区分转置态。条件映射（"K 轴或 M 轴"）只放 `src_text`，不因此改用 `[:-1]` 或加 if/else。
    - **`[-1]` 与 `[:-1]` 不可混用（语义相反）**：`shape[-1]` 取最后一维（单值），`shape[:-1]` 是**排除**最后一维的切片（多值序列）。文档"最后一维 < X"必须写 `shape[-1] < X` 或保守写 `all(d < X for d in shape)`（全维）；**禁止** `all(d < X for d in shape[:-1])`（漏掉末维，约束的是非末维，与文档相反）。`[:-1]` 仅用于第 12 条"排除末维派生轴"的 shape 切片等式。
 7. **命名维度变量 / 外部常量引用**：使用 `变量名.range_value` 形式（如 `BS.range_value`、`rankSize.range_value`），不写 `BS.shape[0]`。
 8. **已知常量直接使用数值**：若文档给出 `k0 = 16` 这种赋值，表达式里直接写 `16`，不需要 `k0.range_value`；NZ 块尺寸硬约束中 `mat2.shape[3] == 16` / `mat2.shape[4] == 16` 即此规则的体现（v2 新增）。
@@ -251,9 +251,12 @@ not({gate}.range_value == {gated_value}) or ({target}.shape == [{shape_gated}])
 | "group=tp 时 x shape 为 (BS/rankSize, H)" | `x.shape` | `group` |
 | "squeeze 为 True 时输出 shape 去除 axis 维" | `output.shape` | `squeeze` |
 
-> 模式 5（NZ 块尺寸）、模式 6.1（隐式 bool 门控）、模式 7（Partial-Shape）、模式 9（派生值查找）按需见
+> 模式 5（NZ 块尺寸）、模式 7（Partial-Shape）、模式 9（派生值查找）按需见
 > `knowledge/aclnn/features/nz_matmul.md`、`knowledge/aclnn/features/backward_partial.md`、
 > `knowledge/aclnn/features/format_cast.md`。
+> 旧模式 6.1（隐式 bool 门控 shape 轴位）已废止：shape 元组重排类转置改按
+> `knowledge/aclnn/features/transpose_shape.md` 的 `transpose_id` + 逻辑视图 L
+> 无分支约定处理；模式 6 仅用于真实签名参数/场景参数门控的条件 Shape。
 
 ## §expr_type
 

@@ -193,6 +193,23 @@ def _is_absent_tensor(inp: dict[str, Any]) -> bool:
     return explicit_null or not has_shape
 
 
+def _logical_view_shape(item: dict[str, Any]) -> tuple:
+    """cases.json tensor 条目的 shape 为转置前物理 shape S；is_transpose=true 时按
+    transpose_id 正向置换回约束体系的逻辑视图 L（L[i] = S[perm[i]]）。
+    torch_npu 当前无转置场景，此为与 atk_to_ttk_aclnn 同型的防御性同步。"""
+    shape = item.get("shape") or []
+    if not item.get("is_transpose") or not isinstance(shape, list):
+        return tuple(shape)
+    perm = item.get("transpose_id")
+    if (
+        not isinstance(perm, list)
+        or any(isinstance(axis, bool) or not isinstance(axis, int) for axis in perm)
+        or sorted(perm) != list(range(len(perm)))
+    ):
+        return tuple(shape)
+    return tuple(shape[axis] for axis in perm)
+
+
 def _precision_policy(api_name: str, num_outputs: int = 1) -> tuple[str, str]:
     # MLA Prolog V3 returns 5 outputs (query_out, query_rope_out, and three
     # reserved empty tensors). TTK's resolve_tolerance indexes
@@ -314,7 +331,7 @@ def convert_case(case: dict[str, Any], platform: str = "",
             data_ranges.append((0, 0))
             continue
         else:
-            view_shapes.append(tuple(item.get("shape") or ()))
+            view_shapes.append(_logical_view_shape(item))
             dtypes.append(DTYPES[item["dtype"].lower()])
             formats.append(item.get("format") or "ND")
             data_ranges.append(_data_range(item))

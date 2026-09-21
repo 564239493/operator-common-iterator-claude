@@ -15,8 +15,9 @@
       "Read(//**/.env)",
       "Read(//**/.env.*)",
       "Edit(/servers.json)",
-      "Edit(/executer/**)",
+      "Edit(/runs/**/run_state.json)",
       "Edit(/agent/generators/**)",
+      "Edit(/executer/**)",
       "Edit(/.git/**)",
       "EnterWorktree"
     ]
@@ -28,8 +29,8 @@
     "allowUnsandboxedCommands": false,
     "filesystem": {
       "denyWrite": [
-        "./executer",
         "./agent/generators",
+        "./executer",
         "./servers.json",
         "./.git"
       ],

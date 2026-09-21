@@ -14,7 +14,7 @@ from pathlib import Path
 from agent.generators.atk_common_utils.case_config import CaseConfig
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.logger_util import LazyLogger
-from agent.generators.data_definition.constants import GlobalConfig
+from agent.generators.data_definition.constants import GlobalConfig, ParamModelConfig
 from agent.generators.data_definition.param_models_def import OperatorParameterCombination, RunPlatform, \
     ParameterPropertyData
 from agent.generators.operator_param_combine.combination_generator_main import PairwiseParamCombinationGenerator
@@ -52,6 +52,137 @@ class OperatorCaseGenerator:
         """
         output_params = list(operator_constraint_data.outputs.keys())
         return ",".join(output_params)
+
+    @staticmethod
+    def _inverse_perm(perm: List[int]) -> List[int]:
+        """perm 的逆置换：inv[perm[i]] = i"""
+        inv = [0] * len(perm)
+        for i, axis in enumerate(perm):
+            inv[axis] = i
+        return inv
+
+    @staticmethod
+    def _as_bool(value) -> bool | None:
+        """把 Z3 解出的标量/枚举值规整为 bool；无法识别返回 None"""
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "false"):
+                return lowered == "true"
+            return None
+        if isinstance(value, (bool, int)):
+            return bool(value)
+        return None
+
+    def _resolve_transposed_flag(self, case: CaseConfig, operator_rule_instance: OperatorRule,
+                                 tensor_name: str) -> bool | None:
+        """读取该用例解出的 <tensor>_transposed bool；无解出值时按约束卡固定态回退。
+
+        返回 None 表示形态无法确定（调用方按逻辑视图跳过并已告警）。
+        """
+        bool_item = case.get_input_data_config(name=f"{tensor_name}_transposed")
+        if bool_item is not None:
+            range_value = bool_item.range_values
+            if isinstance(range_value, list):
+                range_value = range_value[0] if range_value else None
+            resolved = self._as_bool(range_value)
+            if resolved is None:
+                logger.error(
+                    f"Tensor '{tensor_name}': transposed flag '{range_value}' is not a bool, "
+                    f"keep logical shape")
+            return resolved
+        # 无隐式 bool 输入时按约束卡 allowed_range_value 固定态回退（仅 [true]/[false] 单值）
+        bool_attr = operator_rule_instance.inputs.get(f"{tensor_name}_transposed")
+        if bool_attr is None:
+            logger.error(
+                f"Tensor '{tensor_name}' declares transpose_id but no '{tensor_name}_transposed' "
+                f"input/card exists, keep logical shape")
+            return None
+        allowed_value, _ = DataHandleUtil.get_relevant_attribute_value(
+            f"{tensor_name}_transposed", bool_attr.allowed_range_value, "allowed_range_value")
+        if isinstance(allowed_value, list) and len(allowed_value) == 1:
+            fixed = self._as_bool(allowed_value[0])
+            if fixed is None:
+                logger.error(
+                    f"Tensor '{tensor_name}': '{tensor_name}_transposed' fixed form "
+                    f"'{allowed_value[0]}' is not a bool, keep logical shape")
+            return fixed
+        logger.error(
+            f"Tensor '{tensor_name}': '{tensor_name}_transposed' has no fixed form "
+            f"(allowed_range_value={allowed_value}), keep logical shape")
+        return None
+
+    @classmethod
+    def _match_perm_by_rank(cls, tensor_name: str, perm_candidates: List, shape: List) -> List[int] | None:
+        """按解出 shape 的 rank 在 transpose_id 候选集中匹配唯一合法 perm"""
+        if shape and isinstance(shape[0], list):
+            rank = len(shape[0])
+        else:
+            rank = len(shape)
+        matched = [p for p in perm_candidates
+                   if isinstance(p, list) and len(p) == rank and sorted(p) == list(range(rank))]
+        if len(matched) != 1:
+            logger.error(
+                f"Tensor '{tensor_name}': rank {rank} matches {len(matched)} valid perm candidates "
+                f"in transpose_id={perm_candidates}, keep logical shape")
+            return None
+        return matched[0]
+
+    @classmethod
+    def _transpose_shape_to_physical(cls, tensor_name: str, shape: List, perm: List[int]) -> List:
+        """L = permute(S, perm) 的逆变换 S[j] = L[inv[j]]；嵌套 shape 逐子 shape 同 perm 处理"""
+        if shape and isinstance(shape[0], list):
+            return [cls._transpose_shape_to_physical(tensor_name, sub, perm) for sub in shape]
+        if len(shape) != len(perm):
+            logger.error(
+                f"Tensor '{tensor_name}': shape rank {len(shape)} != perm length {len(perm)}, "
+                f"keep logical shape")
+            return shape
+        inv = cls._inverse_perm(perm)
+        return [shape[inv[j]] for j in range(len(shape))]
+
+    def _restore_item_transpose(self, item, case: CaseConfig, operator_rule_instance: OperatorRule) -> None:
+        """对单个 input 条目执行逻辑视图 L → 物理 shape S 的最终还原（幂等）。
+
+        仅当约束卡声明了 transpose_id 且该用例解出转置态时才还原：
+        shape 改为物理 S，is_transpose=True，transpose_id 原样保留正向 perm；
+        其余条目保持 L 且两字段维持默认值（False/None）。
+        """
+        if getattr(item, "is_transpose", False):
+            return
+        if item.name is None or item.type not in ParamModelConfig.TENSOR_ATK_TYPE or not item.shape:
+            return
+        attr = operator_rule_instance.inputs.get(item.name)
+        if attr is None:
+            return
+        perm_candidates, _ = DataHandleUtil.get_relevant_attribute_value(
+            item.name, attr.transpose_id, "transpose_id")
+        if not perm_candidates or not isinstance(perm_candidates, list):
+            return
+        transposed = self._resolve_transposed_flag(case, operator_rule_instance, item.name)
+        if not transposed:
+            return
+        perm = self._match_perm_by_rank(item.name, perm_candidates, item.shape)
+        if perm is None:
+            return
+        item.shape = self._transpose_shape_to_physical(item.name, item.shape, perm)
+        item.is_transpose = True
+        item.transpose_id = list(perm)
+
+    def restore_transpose_physical_shape(self, case: CaseConfig,
+                                         operator_rule_instance: OperatorRule) -> None:
+        """最终序列化前的转置还原（Z3 全程按逻辑视图 L 求解，此处一次性还原物理 shape）。
+
+        按每个用例解出的 <tensor>_transposed bool：转置用例的 tensor shape 还原为
+        转置前物理 shape S（L = permute(S, transpose_id)），is_transpose=True 且
+        transpose_id 保持正向 perm 原样落盘（执行侧 permute(*transpose_id) 还原逻辑视图）；
+        非转置用例 shape 即 L，字段维持默认值 False/None。
+        """
+        for item in case.inputs:
+            if isinstance(item, (list, tuple)):
+                for sub_item in item:
+                    self._restore_item_transpose(sub_item, case, operator_rule_instance)
+            else:
+                self._restore_item_transpose(item, case, operator_rule_instance)
 
     def handle_single_operator(self, operator_constraint_data: OperatorRule,
                                param_combination_list: List[OperatorParameterCombination],
@@ -110,6 +241,8 @@ class OperatorCaseGenerator:
             logger.debug(
                 f"Operator solve constraint running, solve time : {solve_time}, solve status : {correct_status}")
             if correct_status:
+                # Z3 全程按逻辑视图 L 求解；写盘前一次性还原物理 shape 并填转置字段
+                self.restore_transpose_physical_shape(correct_case, operator_constraint_data)
                 correct_case.outputs = OperatorCaseGenerator.get_output_param(operator_constraint_data)
                 correct_case.id = case_index
                 final_case_list.append(correct_case)

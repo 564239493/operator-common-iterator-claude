@@ -45,6 +45,13 @@ class ParamAttributes(BaseModel):
     dtype: ValueWithSrcText | str = Field(..., description="支持的数据类型")
     dimensions: ValueWithSrcText | str = Field(..., description="维度信息")
     allowed_range_value: ValueWithSrcText | str = Field(default_factory=lambda : ValueWithSrcText(value=[], src_text=""), description="允许的取值范围")
+    transpose_id: ValueWithSrcText | str = Field(
+        default_factory=lambda: ValueWithSrcText(value=[], src_text=""),
+        description=(
+            "转置 perm 候选集（List[List[int]]，full-form）：permute(物理shape S, perm)=="
+            "逻辑视图 L（非转置规范布局）；约束表达式统一按 L 书写；[]或\"N/A\"=无转置语义"
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 

@@ -54,9 +54,34 @@ def _build_grouped_matmul_v5_group_list(
     return torch.stack((group_indexes, group_sizes), dim=1)
 
 
+def _build_grouped_matmul_v5_group_list_from_sizes(
+        sizes, group_list_type, device):
+    """Deterministic groupList content from explicit per-group row counts.
+
+    多-x（多多单）专用：组 i 的行数 = x_i 的第一维（位置配对语义），
+    不做均匀拆分近似。type0=cumsum(sizes) / type1=sizes / type2=(idx,size)。
+    """
+    sizes_tensor = torch.tensor(sizes, dtype=torch.int64, device=device)
+    if group_list_type == 0:
+        return torch.cumsum(sizes_tensor, dim=0)
+    if group_list_type == 1:
+        return sizes_tensor
+    group_indexes = torch.arange(
+        len(sizes), dtype=torch.int64, device=device
+    )
+    return torch.stack((group_indexes, sizes_tensor), dim=1)
+
+
 def _prepare_grouped_matmul_v5_group_list(
         x_value, weight_value, group_list, group_type, group_list_type):
-    """Materialise type-0/1/2 content for quantized single-list cases."""
+    """Materialise type-0/1/2 content for groupType=0 single-list cases.
+
+    Covers quantized (int8/int32-logical-int4) and non-quantized
+    (fp32/fp16/bf16) A2 documented scenarios alike: the materialisation
+    only consumes x dim-0 (M) and the group count, so the documented
+    dtypes share one content path. 多-x（多多单）同样支持：内容按 x_i
+    逐组尺寸物化（位置配对），见 _build_grouped_matmul_v5_group_list_from_sizes。
+    """
     def single_tensor(value):
         if isinstance(value, torch.Tensor):
             return value
@@ -75,35 +100,68 @@ def _prepare_grouped_matmul_v5_group_list(
         items = list(weight_value)
         if items and all(isinstance(w, torch.Tensor) for w in items):
             weight_list = items
+    # 多-x（多多单，L627）：x 为 TensorList（多个 2D 张量），x_i 与
+    # weight_i 位置配对，组 i 覆盖 x_i 全部行（k_i 可不同，L66/L69）。
+    x_list = None
+    if x_tensor is None and isinstance(x_value, (list, tuple)):
+        x_items = list(x_value)
+        if x_items and all(
+            isinstance(t, torch.Tensor) and t.dim() == 2 for t in x_items
+        ):
+            x_list = x_items
+    scope_dtypes = (
+        torch.float32, torch.float16, torch.bfloat16,
+        torch.int8, torch.int32,
+    )
     in_supported_scope = (
         group_type == 0
         and group_list_type in (0, 1, 2)
-        and isinstance(x_tensor, torch.Tensor)
-        and x_tensor.dim() == 2
-        and x_tensor.dtype in (
-            torch.float16, torch.bfloat16, torch.int8, torch.int32
+        and (
+            (x_tensor is not None and x_tensor.dim() == 2
+             and x_tensor.dtype in scope_dtypes)
+            or (x_list is not None
+                and all(t.dtype in scope_dtypes for t in x_list))
         )
         and (
             (
                 isinstance(weight_tensor, torch.Tensor)
                 and weight_tensor.dim() == 3
-                and weight_tensor.dtype in (torch.int8, torch.int32)
+                and weight_tensor.dtype in scope_dtypes
             )
             or (
                 weight_list is not None
                 and all(
-                    w.dim() == 2 and w.dtype in (torch.int8, torch.int32)
+                    w.dim() == 2 and w.dtype in scope_dtypes
                     for w in weight_list
                 )
             )
         )
     )
     if not in_supported_scope:
+        if group_type == 0 and group_list is not None:
+            # gt=0 带 groupList 但落在物化 scope 外：ATK 按 range 随机生成
+            # groupList 内容，直通内核会按错误行偏移读 x——20260920 run
+            # iter_001 FC-001 实证 groupList=[1024 个 2147483647]（fp32
+            # 非量化曾被 dtype 限定排除在 scope 外）内核挂起约 10 分钟后
+            # aicore timeout 并毒化设备级联。fail-closed 显式报错，
+            # 禁止静默透传随机内容。
+            raise ValueError(
+                "GroupedMatmulV5 groupType=0 groupListOptional content "
+                "materialisation scope unsupported (x/weight dtype or "
+                "rank out of documented scope); refusing to pass random "
+                "groupList content to the kernel"
+            )
+        # groupList 缺省（多多单 L627 可选）与 gt=-1/2 场景维持原行为。
         return group_list
     if not isinstance(group_list, torch.Tensor):
+        if weight_list is not None:
+            # 多多单（L627）groupList 可选：缺省透传 nullptr 属文档合法
+            # 形态；dtype 扩展后非量化 fp32 多多单缺省用例落入 scope，
+            # 不得误触单 weight 分支的必传校验。
+            return None
         raise ValueError(
             "GroupedMatmulV5 groupListOptional is required in the "
-            "quantized groupType=0 single-list scope"
+            "groupType=0 single-list scope"
         )
     if group_list.dtype != torch.int64:
         raise ValueError(
@@ -127,6 +185,20 @@ def _prepare_grouped_matmul_v5_group_list(
             "GroupedMatmulV5 groupListOptional shape must be "
             f"{expected_shape} for groupListType={group_list_type}, got "
             f"{tuple(group_list.shape)}"
+        )
+    if x_list is not None:
+        # 多-x：内容按 x_i 逐组尺寸确定性物化（组 i = x_i 全部行），NPU
+        # 与 CPU golden 共用；len(x) != len(weight) 的位置配对无定义，
+        # fail-closed 拒绝（C-057 约束亦应拦截该组合）。
+        if len(x_list) != group_count:
+            raise ValueError(
+                "GroupedMatmulV5 groupType=0 multi-x requires "
+                "len(weight) == len(x) for positional pairing, got "
+                f"{group_count} vs {len(x_list)}"
+            )
+        sizes = [int(t.shape[0]) for t in x_list]
+        return _build_grouped_matmul_v5_group_list_from_sizes(
+            sizes, group_list_type, group_list.device
         )
     return _build_grouped_matmul_v5_group_list(
         x_tensor.shape[0], group_count, group_list_type, group_list.device
