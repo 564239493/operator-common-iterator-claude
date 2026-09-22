@@ -111,16 +111,14 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     operator_constraint_data = _build_constraint_data(operator_constraint)
     if operator_constraint_data is None:
         logger.error("Failed to build operator constraint data, abort generation")
-        return []
+        return [], ""
     operator_name = _resolve_operator_name(operator_constraint, operator_constraint_data)
     logger.info(f"Start handle operator, operator name : {operator_name}")
     effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_constraint_data,
                                                                                     target_platform=platform)
     if effective_operator_constraint_data is None:
         logger.error(f"Effective operator rule data is None, operator name : {operator_name}")
-        return []
-    # param_combination_generator = ParamCombinationGenerator(operator_rule_data=effective_operator_constraint_data,
-    #                                                                 case_num=case_num)
+        return [], operator_name
     param_combination_generator = PairwiseParamCombinationGenerator(
         operator_rule_data=effective_operator_constraint_data, case_num=case_num,
         combination_data_save_path=jsonl_save_path)
