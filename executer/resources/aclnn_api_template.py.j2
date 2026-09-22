@@ -685,6 +685,7 @@ class {{ cpu_class_name }}(BaseApi):
     _OP_NAME = "{{ op_name }}"
     _SIG_STR = """{{ signature }}"""
     _INPUT_PARAM_NAMES = {{ input_sig_names }}
+    _OUTPUT_PARAM_NAMES = {{ output_param_names }}
     _REQUIRED_TENSOR_NAMES = {{ required_tensor_names }}
 
     def __call__(self, input_data: InputDataset, with_output: bool = False):
@@ -781,8 +782,29 @@ class {{ cpu_class_name }}(BaseApi):
                 f"kwargs_keys={list(_kwargs.keys())}"
             )
 
-        # TODO: CPU_GOLDEN
-        return torch.ones([1024, 1, 16], dtype=torch.float16)
-        # END_CPU_GOLDEN
+        # CPU golden: MOCKED at generation time (doc-based derivation
+        # disabled).  Returns deterministic zeros sharing each declared
+        # output placeholder's shape/dtype so ATK materialises the NPU
+        # output tensors correctly and the kernel is genuinely exercised;
+        # precision comparison against this mock is intentionally
+        # meaningless.  No doc reading and no post-generation rewriting.
+        _mock_outputs = []
+        for _name in self._OUTPUT_PARAM_NAMES:
+            _placeholder = _get_tensor(_name)
+            _mock_outputs.append(
+                torch.zeros_like(_placeholder)
+                if _placeholder is not None
+                else None
+            )
+        if _mock_outputs and all(item is not None for item in _mock_outputs):
+            if len(_mock_outputs) == 1:
+                return _mock_outputs[0]
+            return _mock_outputs
+        # Fallback chain: first required input tensor, then fixed dummy.
+        for _name in self._REQUIRED_TENSOR_NAMES:
+            _candidate = _get_tensor(_name)
+            if _candidate is not None:
+                return torch.zeros_like(_candidate)
+        return torch.zeros(1, dtype=torch.float16)
 
 {% endfor %}

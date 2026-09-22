@@ -7,6 +7,13 @@ metadata:
 
 # ACLNN Signature → PyTorch CPU Golden Derivation
 
+> **⚠️ 已废弃（2026-09-21，仅留历史参考）**：ATK 链的 CPU golden 已改为
+> **生成时 mock**——`executer/resources/generator.py` 直接产出形状感知的 mock
+> 块（按用例 JSON 声明的 output 占位张量返回同 shape/dtype 全零张量），生成的
+> `cases_executor.py` 不再含 `# TODO: CPU_GOLDEN` 占位，执行流程不再调用本
+> skill。正文中的推导方法（签名→torch 映射、dtype 对齐、广播处理）仍可作为
+> 手工推导或恢复推导链路时的参考知识，但当前流程中不应被触发。
+
 ## When to Use
 
 Use this skill when:

@@ -313,13 +313,14 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
      轮询 + `validate_artifacts.py cases` 校验。）
    - `case-executor`：
      - **default**（`run_state.execution_strategy != "fusion"`）：real 模式内部完成
-       generate→`atc-cpu-golden-derivation` 推导→real-run 三子步骤；推导须清除
-       `cases_executor.py` 中的 dummy 标记并通过语法检查，否则不得进 real-run。
+       generate→自检→real-run 两子步骤；CPU golden 已在生成时直接 mock（形状感知
+       zeros，不经文档推导），无推导环节；`validate_artifacts.py executor` 须通过，
+       否则不得进 real-run。
      - **fusion**（`run_state.execution_strategy == "fusion"`）：先读 `run_state.json`
-       取 `execution_strategy` 确认策略；generate 子步骤不变；**跳过** CPU golden
-       推导（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.tpl`，已是真实实现，无 dummy 标记，
-       skill 天然无操作）；real-run 替换为 4 步流程（CPU 标杆→NPU 级联标杆→改名→
-       精度对比），拼 `execute_cases.py --mode real --strategy fusion --num <case_count>`
+       取 `execution_strategy` 确认策略；generate 与自检子步骤不变（fusion 走
+       `_SPECIAL_TEMPLATES` 专属 `.tpl`，已是真实实现而非 mock）；real-run 替换为
+       4 步流程（CPU 标杆→NPU 级联标杆→改名→精度对比），拼
+       `execute_cases.py --mode real --strategy fusion --num <case_count>`
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
       `engine_error` 终止流程。
    - 执行完成后运行 `python scripts/flow_control.py advance --run-dir <run-dir>`
@@ -504,8 +505,8 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
 - `ttk`：先产出统一 `cases.json`，再适配为 `cases_ttk.csv`；generator 命令必须带
   `--test-framework ttk`。`operator_family=hs` 默认加载可用的自主推导或源码 Golden，
   但不以 Golden manifest 或精度结果阻塞流程；只有用户明确要求完全跳过 Golden 时
-  才使用 `--no-golden`。`operator_family=aclnn` 直接走原生 `ttk aclnn`。两者均不得调用
-  ATK golden 推导。
+  才使用 `--no-golden`。`operator_family=aclnn` 直接走原生 `ttk aclnn`。两者均不得进入
+  ATK 链。
 - `constraints`：只产出并校验 `constraints.json`，不调用任何 case/executor 命令；
   SUCCESS 必须注明 `run_scope=constraints_only`，不能表述成用例或精度闭环成功。
 - EXTRACT 阶段与测试框架无关，任何 framework 都必须先产生非空且校验通过的

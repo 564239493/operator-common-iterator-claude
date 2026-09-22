@@ -491,7 +491,9 @@ def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str) -
 
     生成两个类:
     1. AclnnBaseApi 子类 — 给 PyAclnn 后端调用算子用 (aclnn_api_type)
-    2. BaseApi 子类 — 给 CPU 后端用，返回 dummy 结果让 ATK 流程跑通 (api_type)
+    2. BaseApi 子类 — 给 CPU 后端用，返回生成时 mock 的标杆结果 (api_type):
+       按用例 JSON 声明的 output 占位张量返回同 shape/dtype 的全零张量，
+       占位缺失时回退首个必填输入，不经文档推导、无需生成后改写
 
     使用 Jinja2 模板 (aclnn_api_template.py.j2) 渲染输出。
     特殊算子 (aclnnCalculateMatmulWeightSize / V2) 直接返回预定义模板。
@@ -583,9 +585,6 @@ def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str) -
         default = _attr_default_repr(p["raw_type"], p["name"])
         attr_lines.append(f'        {p["name"]} = _get_param("{p["name"]}", {default})  # {p["raw_type"]}')
 
-    # output append 行
-    output_append_lines = [f'        outputs.append(_dummy_output("{out_name}"))' for out_name in output_param_names]
-
     cpu_classes = [(api_type, _to_class_name(api_type)) for api_type in api_types]
 
     # ---- 渲染模板 ----
@@ -607,7 +606,7 @@ def generate_api_class_for_op(cases: list[dict], signature: str, op_name: str) -
         scalar_lines=scalar_lines,
         attr_lines=attr_lines,
         output_count=output_count,
-        output_append_lines=output_append_lines,
+        output_param_names=output_param_names,
     )
 
 def missing_params_repr(missing_params: list[dict]) -> str:

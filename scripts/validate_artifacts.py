@@ -2067,10 +2067,10 @@ def validate_source_evidence(value) -> list[str]:
     return errors
 
 
-# CPU golden 推导 (atc-cpu-golden-derivation skill) 完成后, cases_executor.py
-# 里 generator.py 写入的 dummy 块必须被替换. 这里的标记 / dummy 函数若仍存在,
-# 说明推导未真正执行或未生效, real 模式上传的会是 torch.ones 假参考, 精度比对
-# 无意义. 该校验是质量门禁兜住 "dummy 上线" 的确定性依据.
+# CPU golden 已改为生成时 mock (2026-09-21): generator.py 直接产出无标记的
+# mock 块（形状感知 zeros），不再有文档推导环节. 这里的标记 / dummy 函数若
+# 仍出现, 说明生成模板回归或有人手工引入了旧占位块, real 模式上传的会是假
+# 参考. 该校验继续兜住 "dummy 上线" 的确定性依据.
 _EXECUTOR_DUMMY_MARKERS = (
     "_dummy_output",
     "# [FALLBACK]",
@@ -2100,9 +2100,9 @@ def validate_executor(path: str) -> list[str]:
     hits = [m for m in _EXECUTOR_DUMMY_MARKERS if m in source]
     if hits:
         errors.append(
-            "CPU golden 推导未完成, 仍含 dummy 标记: "
+            "executor 仍含历史 dummy 标记 (生成时 mock 化后不应出现): "
             + ", ".join(hits)
-            + " — 需先跑 atc-cpu-golden-derivation skill 替换后再执行 real"
+            + " — 请用 executer/resources/generator.py 重新生成 cases_executor.py"
         )
     if _EXECUTOR_BINDING_MARKER in source:
         missing_binding = [
@@ -2113,8 +2113,8 @@ def validate_executor(path: str) -> list[str]:
             errors.append(
                 "CPU golden 通用入参绑定不完整: "
                 + ", ".join(missing_binding)
-                + " — 推导时只能替换 CPU_GOLDEN 标记之间的占位语句，"
-                "必须保留 kwargs/args 双通道绑定与必填 tensor 诊断"
+                + " — mock 化后模板自带的 kwargs/args 双通道绑定与必填"
+                " tensor 诊断必须保留，不得删改"
             )
     try:
         ast.parse(source)

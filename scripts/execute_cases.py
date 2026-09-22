@@ -508,9 +508,9 @@ def main() -> int:
             "执行已生成的测试用例并写出 execution_result.json。"
             "默认 real 模式；显式 --mode mock 才回退到本地 Mock。"
             "real 模式不再自动生成 executor：必须先跑 --generate 产出 "
-            "cases_executor.py + cases_expanded.json。通用模板需由 "
-            "atc-cpu-golden-derivation skill 完成 CPU golden 推导；专属模板直接校验，"
-            "通过后再以 real 上传执行。"
+            "cases_executor.py + cases_expanded.json。通用模板在生成时直接内联 "
+            "mock CPU golden（不经文档推导）；专属模板为完整实现，校验通过后 "
+            "以 real 上传执行。"
         )
     )
     parser.add_argument(
@@ -582,8 +582,9 @@ def main() -> int:
         action="store_true",
         help=(
             "仅跑平台过滤 + generator.py, 不连 SSH/ATK。"
-            "产出 cases_executor.py + cases_expanded.json 到 iter_dir。通用模板含 "
-            "CPU golden TODO，需推导后执行；专属模板为完整实现，校验后直接执行。"
+            "产出 cases_executor.py + cases_expanded.json 到 iter_dir。通用模板"
+            "直接内联 mock CPU golden（形状感知 zeros），校验后即可执行；"
+            "专属模板为完整实现，校验后直接执行。"
         ),
     )
     parser.add_argument(
