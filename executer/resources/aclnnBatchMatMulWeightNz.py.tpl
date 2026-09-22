@@ -44,6 +44,7 @@ class AclnnBatchMatMulWeightNz(AclnnBaseApi):
         # 获取到算子参数的类型
         param_type = self.parse_operator_params(self.get_cpp_func_signature_type())
 
+        self.handle_transpose_param(input_data)
         self.handle_special_param(self.get_cpp_func_signature_type(), input_data)
 
         self.handle_attr_param(input_tmp, param_list)
@@ -175,29 +176,33 @@ class AclnnBatchMatMulWeightNz(AclnnBaseApi):
                         data.append(self.get_ctype(config_item.dtype)(range_val))
                         input_tmp[data_name] = nnopbase.create_x_list(data)
 
+    def handle_transpose_param(self, input_data):
+        for config_item in self.task_result.case_config.inputs:
+            if not isinstance(config_item, list):
+                is_transpose = config_item.is_transpose
+                transpose_id = config_item.transpose_id
+                if is_transpose:
+                    input_data.kwargs[config_item.name] = input_data.kwargs[config_item.name].permute(*transpose_id)
+
     def handle_special_param(self, operator_name, input_data):
 
         if "aclnnBatchMatMulWeightNz" in operator_name:
-            found_mat2_transposed = next((config for config in self.task_result.case_config.inputs if config.name == "mat2_transposed"), None)
-            found_self_transposed = next(
-                (config for config in self.task_result.case_config.inputs if config.name == "self_transposed"), None)
+            found_mat2 = next((config for config in self.task_result.case_config.inputs if config.name == "mat2"), None)
             # 转置的情况
-            if found_mat2_transposed.range_values:
+            if found_mat2.is_transpose:
                 # 转换
-                input_data.kwargs['mat2'] = input_data.kwargs['mat2'].permute(0, 2, 1, 4, 3).reshape(
+                input_data.kwargs['mat2'] = input_data.kwargs['mat2'].reshape(
                     input_data.kwargs['mat2'].shape[0],  # b
-                    input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4],  # k1 * k0 = k
-                    input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3]  # n1 * n0 = n
+                    input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3],  # k1 * k0 = K（L 轴位：mat2 已由 handle_transpose_param permute 还原）
+                    input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4]  # n1 * n0 = N（L 轴位）
                 )
-                #input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
             else:
                 input_data.kwargs['mat2'] = input_data.kwargs['mat2'].reshape(
-                input_data.kwargs['mat2'].shape[0],  # a
-                input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3],  # c*d
-                input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4]  # b*e
-            )
-            if found_self_transposed.range_values:
-                input_data.kwargs['self'] = input_data.kwargs['self'].permute(0, 2, 1)
+                    input_data.kwargs['mat2'].shape[0],  # a
+                    input_data.kwargs['mat2'].shape[2] * input_data.kwargs['mat2'].shape[3],  # c*d
+                    input_data.kwargs['mat2'].shape[1] * input_data.kwargs['mat2'].shape[4]  # b*e
+                )
+            return
 
 
     def parse_operator_params(self, func_signature: str):
@@ -392,14 +397,16 @@ class Function(BaseApi):
         mat2_t = _get_tensor("mat2")  # 5D NZ format
 
         # Extract attrs (self_transposed/mat2_transposed from JSON config, not in C++ signature)
-        self_transposed = bool(_get_param("self_transposed", False))
-        mat2_transposed = bool(_get_param("mat2_transposed", False))
+        # self_transposed = bool(_get_param("self_transposed", False))
+        # mat2_transposed = bool(_get_param("mat2_transposed", False))
+        found_self = next((config for config in self.task_result.case_config.inputs if config.name == "self"), None)
+        found_mat2 = next((config for config in self.task_result.case_config.inputs if config.name == "mat2"), None)
 
         k0, n0 = 16, 16  # NZ block size (fixed per doc)
 
         # --- Handle self_transposed ---
         # When self_transposed=True, JSON shape is [b, k, m]; transpose to [b, m, k] for bmm
-        if self_transposed and self_t is not None:
+        if found_self.is_transpose and self_t is not None:
             self_t = self_t.permute(0, 2, 1)
 
         # --- NZ to Dense decompression for mat2 ---
@@ -407,7 +414,7 @@ class Function(BaseApi):
             nz = mat2_t.float()
             b = nz.shape[0]
 
-            if mat2_transposed:
+            if found_mat2.is_transpose:
                 # Transposed NZ: [b, k1, n1, n0=16, k0=16]
                 k1 = nz.shape[1]
                 n1 = nz.shape[2]

@@ -93,6 +93,8 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
         - "Atlas 推理系列产品" -> Platform_G2
         - "Atlas A3 训练系列产品" -> Platform_G1
     :param case_num: 生成用例个数
+    :param jsonl_save_path: jsonl文件保存路径
+    :param json_file_name: json文件名称，默认为constraints的名字
     :return: ``List[CaseConfig]``，已通过 inter-parameter 约束求解与修正
     """
     # 正式生成代码依赖 ``init_logger`` 初始化文件 logger，这里做一次惰性兜底。
@@ -109,16 +111,14 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     operator_constraint_data = _build_constraint_data(operator_constraint)
     if operator_constraint_data is None:
         logger.error("Failed to build operator constraint data, abort generation")
-        return []
+        return [], ""
     operator_name = _resolve_operator_name(operator_constraint, operator_constraint_data)
     logger.info(f"Start handle operator, operator name : {operator_name}")
     effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_constraint_data,
                                                                                     target_platform=platform)
     if effective_operator_constraint_data is None:
         logger.error(f"Effective operator rule data is None, operator name : {operator_name}")
-        return []
-    # param_combination_generator = ParamCombinationGenerator(operator_rule_data=effective_operator_constraint_data,
-    #                                                                 case_num=case_num)
+        return [], operator_name
     param_combination_generator = PairwiseParamCombinationGenerator(
         operator_rule_data=effective_operator_constraint_data, case_num=case_num,
         combination_data_save_path=jsonl_save_path)
@@ -126,7 +126,7 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     case_list = operator_case_generate.handle_single_operator(
         operator_constraint_data=effective_operator_constraint_data, param_domain_data=param_domain_data,
         param_combination_list=param_combination_list, target_platform=platform,
-        case_num=case_num, jsonl_save_path=jsonl_save_path)
+        case_num=case_num, jsonl_save_path=jsonl_save_path, json_file_name=json_file_name)
     return case_list, operator_name
 
 
@@ -208,7 +208,7 @@ def main():
         init_logger(log_name=operator_name + "_" + time_str)
         single_operator_handle(operator_constraint=args.operator_constraint_path,
                                platform=args.platform, case_num=args.case_num,
-                               jsonl_save_path=args.case_save_path)
+                               jsonl_save_path=args.case_save_path, json_file_name=operator_name)
         DataHandleUtil.convert_jsonl_to_json(api_name=operator_name, jsonl_save_path=args.case_save_path,
                                               json_save_path=args.case_save_path)
 

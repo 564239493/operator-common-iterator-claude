@@ -15,6 +15,44 @@ from agent.generators.param_constraint_solve.param_var_definition import TensorV
 
 logger = LazyLogger()
 
+# 进程级全局计数器：Z3 的 RecFunction/RecAddDefinition 注册在模块全局 ctx
+# （z3.main_ctx()）。z3 5.0+ 对同名函数第二次 RecAddDefinition 会抛
+# "recursive function ... already defined"。若用 per-builder 的
+# get_next_slice_id() 命名（跨 case/重试会归零），重试时同名重注册异常会被
+# z3_expression_solver_utils.add_constraint 静默捕获并丢弃约束，导致生成器产出
+# 违反文档关系的"伪 SAT"非法用例（如 aclnnApplyAdamWQuant 的 absmax 尺寸失控）。
+# 改用进程级单调计数 + 按名幂等注册（见 _register_rec_fn），彻底杜绝该类冲突。
+_rec_fn_counter = 0
+
+
+def _next_rec_fn_id() -> int:
+    global _rec_fn_counter
+    _rec_fn_counter += 1
+    return _rec_fn_counter
+
+
+# 按名幂等注册 RecFunction：首次 RecAddDefinition，之后直接复用。RecFunction
+# 的定义体只依赖序列 sort，与具体调用无关，可安全跨 case/builder 复用（与
+# param_var_definition._get_or_register_prod_shape 同一模式）。
+_REC_FUNCS: dict[str, z3.FuncDeclRef] = {}
+
+
+def _register_rec_fn(name: str, seq_sort, arg_sort, body_builder):
+    """返回名为 ``name`` 的共享递归函数；首次注册，之后复用。"""
+    existing = _REC_FUNCS.get(name)
+    if existing is not None:
+        return existing
+    fn = z3.RecFunction(name, seq_sort, arg_sort)
+    arg = z3.Const(f"{name}_arg", seq_sort)
+    z3.RecAddDefinition(fn, [arg], body_builder(fn, arg))
+    _REC_FUNCS[name] = fn
+    return fn
+
+
+# shape 秩上限：与 validate_artifacts 对 dimensions 的 [0,10] 上限一致。prod(shape)
+# 用秩有界 If 展开（见 _prod_z3_sequence），不依赖 Z3 递归函数。
+_MAX_SHAPE_RANK = 10
+
 
 # ==========================================
 # 共享模板 TensorListVar 元素代理
@@ -779,47 +817,38 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             element_sort = z3.IntSort()
 
         seq_sort = seq.sort()
-        slice_id = self.builder.get_next_slice_id()
-        func_name = f"__sum_seq_{slice_id}"
+        func_name = f"__sum_seq_{_next_rec_fn_id()}"
 
-        SumSeq = z3.RecFunction(func_name, seq_sort, element_sort)
-        seq_var = z3.Const(f"{func_name}_arg", seq_sort)
+        def _body(fn, seq_var):
+            if element_sort == z3.IntSort():
+                zero = z3.IntVal(0)
+            elif element_sort == z3.RealSort():
+                zero = z3.RealVal(0)
+            else:
+                zero = z3.IntVal(0)
+            return z3.If(
+                z3.Length(seq_var) == 0,
+                zero,
+                seq_var[0] + fn(z3.SubSeq(seq_var, 1, z3.Length(seq_var) - 1)))
 
-        if element_sort == z3.IntSort():
-            zero = z3.IntVal(0)
-        elif element_sort == z3.RealSort():
-            zero = z3.RealVal(0)
-        else:
-            zero = z3.IntVal(0)
-
-        z3.RecAddDefinition(SumSeq, [seq_var],
-            z3.If(z3.Length(seq_var) == 0,
-                   zero,
-                   seq_var[0] + SumSeq(z3.SubSeq(seq_var, 1, z3.Length(seq_var) - 1))))
-
+        SumSeq = _register_rec_fn(func_name, seq_sort, element_sort, _body)
         return SumSeq(seq)
 
     def _prod_z3_sequence(self, seq):
-        seq_sort = seq.sort()
-        slice_id = self.builder.get_next_slice_id()
-        func_name = f"__prod_seq_{slice_id}"
-
-        ProdSeq = z3.RecFunction(func_name, seq_sort, z3.IntSort())
-        seq_var = z3.Const(f"{func_name}_arg", seq_sort)
-
-        z3.RecAddDefinition(ProdSeq, [seq_var],
-            z3.If(z3.Length(seq_var) == 0,
-                   z3.IntVal(1),
-                   seq_var[0] * ProdSeq(z3.SubSeq(seq_var, 1, z3.Length(seq_var) - 1))))
-
-        return ProdSeq(seq)
+        # 秩有界 If 展开替代 Z3 递归函数：shape 的 rank 受参数 dimensions 约束
+        # （validator 上限 _MAX_SHAPE_RANK=10），逐维连乘，Length<=i 的维度贡献
+        # 因子 1；空序列（Length==0）结果恒为 1。避免递归函数（递归函数求解慢、
+        # 且同名 RecAddDefinition 在全局 ctx 重复注册抛异常致约束被静默丢弃）。
+        result = z3.IntVal(1)
+        for i in range(_MAX_SHAPE_RANK):
+            result = z3.If(z3.Length(seq) > i, seq[i], 1) * result
+        return result
 
     def _sum_tensor_elements(self, tensor_var):
         arr = tensor_var.range_value
         element_sort = tensor_var.get_element_sort()
 
-        slice_id = self.builder.get_next_slice_id()
-        func_name = f"__sum_tensor_{tensor_var.name}_{slice_id}"
+        func_name = f"__sum_tensor_{tensor_var.name}_{_next_rec_fn_id()}"
 
         array_sort = z3.ArraySort(z3.IntSort(), element_sort)
 

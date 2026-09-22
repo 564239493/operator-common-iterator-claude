@@ -136,6 +136,17 @@ analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条�
 `value=[]`（空）时：
 不强制 `type`（tensor 参数无值域约束常留空）。
 
+`ParamAttributes.transpose_id`（inputs 张量卡可选，缺省/空/`"N/A"` = 无转置语义）：
+声明该张量存在转置形态及其物理↔逻辑 perm 映射。`value` 为 full-form perm **候选集**
+`List[List[int]]`（rank 多态张量每 rank 一个候选，如 2D/3D 权重 `[[1,0],[0,2,1]]`），
+满足 `permute(物理shape S, perm) == 逻辑视图 L`，其中 L 取该张量非转置模式的规范布局
+（转置与非转置两种模式的 L 相同，跨参数约束因此无分支）。声明 `transpose_id` 的张量
+必须同平台配套隐式 bool 卡 `<name>_transposed`（`type=bool`、`is_operator_param=false`、
+`allowed_range_value` 按场景取 `[false]`/`[true]`/`[false,true]`）；仅 outputs 声明为错误。
+**约束表达式统一按逻辑视图 L 书写（branch-free）**，不写按转置 bool 换轴位的
+`shape_value_dependency` if/else 门控（该写法已废止）；bool 只用于场景
+`value_dependency` 门控与逐用例形态选择。stride 编码类转置（shape 不变）不走本字段。
+
 被 validate_artifacts.py constraints 校验（构造 OperatorRule Pydantic 模型）。
 由 constraint-extractor 产出、 constraint-repairer/updater 修改。
 
@@ -460,6 +471,15 @@ adapter 按 case id 将标量属性的 `range_values` 确定性选择为具体�
 - `range_values` 为列表且长度等于 `length` 时，表示逐元素取值规格；
 - 生成阶段不得为了匹配 `length`，在 `ListVar.resolve_model()` 中把标量复制成列表。
 
+tensor 条目的转置字段（生成器按解出的 `<name>_transposed` bool 写入，禁止手工修改）：
+
+- `shape` 一律为**转置前物理 shape S**。Z3 求解全程使用逻辑视图 L（= 非转置规范
+  布局），仅在最终序列化前由生成器对转置用例做一次性还原 `S[j] = L[p_inv[j]]`；
+- `is_transpose=true` 的条目：`transpose_id` 为该张量约束卡候选集中按 rank 匹配的
+  唯一正向 perm，执行侧必须先 `permute(*transpose_id)` 得到逻辑视图 L 再参与计算；
+- `is_transpose=false`（或缺省）的条目：`shape` 即 L，`transpose_id` 必须为 `null`；
+- 执行阶段 `cases_expanded.json` 原样透传这两个字段。
+
 诊断用例格式问题时必须同时检查 `cases.json` 和 `cases_expanded.json`。如果紧凑
 表示已被正确展开，不能把标量 `range_values` 判为 generator_bug；如果展开过程
 本身有误，应归入执行适配层的 executor_bug。
@@ -468,7 +488,10 @@ adapter 按 case id 将标量属性的 `range_values` 确定性选择为具体�
 
 仅当 `run_state.test_framework == "ttk"` 时使用。必须具有 `testcase_name`、
 `api_name`、`tensor_view_shapes`、`tensor_dtypes`。`api_name=aclnn*` 时使用 TTK
-ACLNN 模式；`api_name=torch_npu.*` 时使用 TTK E2E 模式。使用：
+ACLNN 模式；`api_name=torch_npu.*` 时使用 TTK E2E 模式。cases.json 中
+`is_transpose=true` 的 tensor，adapter 必须按 `transpose_id` 把物理 shape 正向置换回
+逻辑视图 L 再写入 `tensor_view_shapes`（TTK 按视图 shape 直接构造输入并调用 API）。
+使用：
 
 `python scripts/validate_artifacts.py ttk_cases <iter>/cases_ttk.csv`
 

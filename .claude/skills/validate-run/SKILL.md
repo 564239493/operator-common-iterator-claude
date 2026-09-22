@@ -21,11 +21,13 @@ description: 对单轮 constraints、constraint_check、cases、execution 和 an
 - 下一状态与根因/通过统计一致。
 - 一段式算子（`function_signature` 不含 `GetWorkspaceSize`）合法；其 `outputs` 可含标量指针输出（`type` 为 `uint64_t`/`int64_t` 等、`format=N/A`、`dimensions=[]`），不得判为"缺失 GetWorkspaceSize"或误标框架参数。`is_single_function_mode` 字段已废弃，命中即阻断。
 
-real 模式额外追加 CPU golden 推导门禁：对 `iter_dir/cases_executor.py` 运行
+real 模式额外追加 executor 门禁：对 `iter_dir/cases_executor.py` 运行
 `python scripts/validate_artifacts.py executor <iter>/cases_executor.py`，命中
 `_dummy_output` / `# [FALLBACK]` / `# TODO: CPU_GOLDEN` 任一标记或语法错误 →
-`blocking_issues` 非空。dummy 拋留说明 `atc-cpu-golden-derivation` skill 未真正执行
-或未生效，real 上传的会是 `torch.ones` 假参考，passed/failed 无精度语义，必须阻断。
+`blocking_issues` 非空。CPU golden 已改为生成时 mock（形状感知 zeros），正常产物
+不含这些标记；dummy 残留说明生成模板回归或产物被手工破坏，real 上传的会是假参考，
+passed/failed 无业务语义，必须阻断。另注意 mock 化后精度比对本身无业务语义
+（NPU 结果对比的是 mock zeros），passed/failed 反映的是执行成败而非精度。
 
 写入 quality_gate.json。任何 blocking_issues 非空时 status 必须为 blocked。
 质量门禁只确认阻断事实，不得跳过 failure-analyst 直接把表达式解析失败判成

@@ -910,10 +910,11 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
     )
 
     # ── 2. Locate generate-generated executor + expanded cases ───────
-    # real 模式不再重生成: 通用模板先产出带 TODO 标记的 CPU golden 占位，
-    # 专属模板则直接产出完整实现。若在此重调 ``_generate_atk_executor``，会覆盖
-    # atc-cpu-golden-derivation skill 已改写的通用 executor。生成职责已整体移到
-    # ``--generate``；real 只复用 iter_dir 里已落盘的 executor + expanded.
+    # real 模式不再重生成: 通用模板在生成时直接内联 mock CPU golden（无
+    # TODO 标记，无需生成后推导改写），专属模板则直接产出完整实现。若在此
+    # 重调 ``_generate_atk_executor``，会覆盖 ``--generate`` 已落盘的 executor。
+    # 生成职责已整体移到 ``--generate``；real 只复用 iter_dir 里已落盘的
+    # executor + expanded.
     #
     # ``scoped_request.cases_path`` 经 ``_resolve_iter_cases_for_server``
     # 定到 ``iter_dir/cases.json`` (stem="cases"), 与 generate 一致, 因此
@@ -947,8 +948,9 @@ async def _execute_real(req: RunRequest) -> ExecutionResult:
     }
 
     # Agent 流程之外（人工 CLI、恢复执行、第三方调度）也可能直接进入 real。
-    # 因此必须在 runner 内再次执行门禁，不能只依赖提示词要求。专属模板没有
-    # TODO 标记，会通过语法检查；通用模板必须完成 golden 推导并保留稳健绑定。
+    # 因此必须在 runner 内再次执行门禁，不能只依赖提示词要求。通用模板的
+    # mock golden 与稳健绑定随生成直接可用；门禁继续拦截生成器回归产出
+    # dummy 标记的异常产物，专属模板无标记自然通过。
     executor_errors = _executor_validation_errors(executor_files)
     if executor_errors:
         result.status = "error"

@@ -4,8 +4,9 @@ description: 以 ATK 或 TTK 模式准备/执行用例，并输出 execution_res
 
 # 用例执行规范
 
-real 模式已拆为 **generate → 推导 → real-run** 三步：生成、CPU golden 推导、上传执行
-三者分离，避免 real 重生成覆盖推导结果。禁止在 dummy 块未清除时跑 real-run。
+real 模式已拆为 **generate → real-run** 两步：生成与上传执行分离，避免 real 重生成
+覆盖 generate 产物。CPU golden 已在生成时直接 mock（形状感知 zeros，不经文档推导，
+无生成后改写环节）。
 
 平台选择：生成阶段可能已有多个 `cases_<platform>.json`，但执行阶段只跑一个平台。
 默认不要传 `--platform`，执行器会按 `servers.json` 里服务器 `platforms` 数组顺序，
@@ -13,7 +14,7 @@ real 模式已拆为 **generate → 推导 → real-run** 三步：生成、CPU 
 平台生成，执行器自动复用匹配平台的 `cases_<platform>.json`，重组 `cases.json` 和
 `cases_ttk.csv`，不重跑 EXTRACT 或正式用例生成。`--platform` 只作为人工覆盖项。
 
-## real 模式三步
+## real 模式两步
 
 ### 1. generate（生成 executor + expanded）
 
@@ -25,28 +26,26 @@ python scripts/execute_cases.py --generate \
   --server-config servers.json --run-id <run-id>
 ```
 
-产出 `<iter>/cases_executor.py` 与 `<iter>/cases_expanded.json`。通用模板含 dummy
-`# TODO: CPU_GOLDEN` 块；`generator.py::_SPECIAL_TEMPLATES` 中的算子直接生成完整实现。
+产出 `<iter>/cases_executor.py` 与 `<iter>/cases_expanded.json`。通用模板直接内联
+mock CPU golden（`# CPU golden: MOCKED at generation` 块，无占位标记）；
+`generator.py::_SPECIAL_TEMPLATES` 中其余算子直接生成完整实现
+（aclnnGroupedMatmulV5 专属模板的 CPU 标杆段同样为 mock，NPU 侧为专属实现）。
 不连 SSH。
 
-### 2. CPU golden 推导（atc-cpu-golden-derivation skill）
+### 2. 自检 + real-run（上传 + 跑 atk，不再重生成）
 
-若 executor 含 `# TODO: CPU_GOLDEN`，对其调用 skill，替换包含起止标记在内的整个
-CPU_GOLDEN 占位块并保留块外绑定逻辑；doc 使用 `inputs/<doc>.md` 快照。若不含标记，必须确认算子属于
-`_SPECIAL_TEMPLATES`，跳过推导；非专属模板缺少标记视为产物损坏。随后统一自检：
+先自检：
 
 ```text
-# 使用 Grep 工具确认 _dummy_output|FALLBACK|TODO: CPU_GOLDEN 无命中
 python scripts/validate_artifacts.py executor <iter>/cases_executor.py
 ```
 
-`validate_artifacts.py executor` 同时执行 Python AST 语法检查；不要再用会触发权限询问的
-`python -c` 做重复检查。
+`validate_artifacts.py executor` 执行 Python AST 语法检查并拦截 dummy 标记回归；
+不要再用会触发权限询问的 `python -c` 做重复检查。
 
-两项全过（Grep 无命中 + `valid:true`）才进 real-run；否则重试推导最多 3 次；
-仍不过则写 `execution_result.json`（status=error, engine_error="CPU golden 推导未完成"）并停止。
-
-### 3. real-run（上传 + 跑 atk，不再重生成）
+`valid:true` 才进 real-run；否则重新 generate 最多 1 次后再检；
+仍不过则写 `execution_result.json`（status=error,
+engine_error="executor 校验未通过"）并停止。通过后执行：
 
 ```text
 python scripts/execute_cases.py --mode real \
@@ -86,7 +85,7 @@ python scripts/execute_cases.py --mode mock --cases <cases.json> --output <execu
 
 ## TTK 分支
 
-当 `run_state.json.test_framework == "ttk"` 时，不执行上面的 ATK generate/golden 流程：
+当 `run_state.json.test_framework == "ttk"` 时，不执行上面的 ATK generate/real-run 流程：
 
 先确认 `cases_ttk.csv` 存在且可读。当前 HS/E2E 默认只做 NPU 功能运行，
 不要求 `golden_manifest.json`，不调用 `derive-ttk-golden`，不做精度/覆盖率
@@ -133,9 +132,8 @@ source /usr/local/Ascend/ascend-toolkit/set_env.sh && { test ! -d /root/ascend/l
 `mode=mock` 时才执行 TTK mock。
 ## fusion 模式（通算融合算子，`run_state.execution_strategy=="fusion"`）
 
-仅当 `run_state.execution_strategy=="fusion"` 时启用；否则走上面 real 三步。fusion 走
-4 步执行流程，**跳过 CPU golden 推导**（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.tpl`，
-已是真实实现，无 dummy 标记）。
+仅当 `run_state.execution_strategy=="fusion"` 时启用；否则走上面 real 两步。fusion 走
+4 步执行流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.tpl`，已是真实实现而非 mock）。
 
 ### 1. generate（与 default 相同）
 
@@ -146,12 +144,11 @@ python scripts/execute_cases.py --generate \
   --server-config servers.json --run-id <run-id>
 ```
 
-fusion 的 `cases_executor.py` 走专属 `.tpl`，无 `# TODO: CPU_GOLDEN` 块。
+fusion 的 `cases_executor.py` 走专属 `.tpl`，为完整实现。
 
-### 2. 跳过 CPU golden 推导
+### 2. 自检
 
-fusion `.tpl` 已是真实实现，`atc-cpu-golden-derivation` skill 天然无操作，不执行
-golden 推导；仍执行 `validate_artifacts.py executor`。runner 会在连接和上传前重复执行
+仍执行 `validate_artifacts.py executor`。runner 会在连接和上传前重复执行
 该门禁，失败时直接终止。
 
 ### 3. real-run（4 步流程）

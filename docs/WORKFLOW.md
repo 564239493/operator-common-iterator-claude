@@ -94,11 +94,12 @@ flowchart TD
 
 ### 融合（fusion）执行路径（`run_state.execution_strategy=="fusion"` 时）
 
-EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 `_SPECIAL_TEMPLATES`
-专属 `.tpl`，已是真实实现、无 dummy 标记，`atc-cpu-golden-derivation` skill 天然无操作）：
+EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.tpl`，已是真实
+实现而非 mock；default 路径同样无 golden 推导环节——CPU golden 已在生成时 mock 化，
+`atc-cpu-golden-derivation` skill 已废弃）：
 
 1. **generate**：`execute_cases.py --generate`（同 default）；
-2. **跳过 CPU golden 推导**（不自检 dummy 标记）；
+2. **自检**：`validate_artifacts.py executor`（专属模板为完整实现，自然通过）；
 3. **real-run（4 步）**：`--mode real --strategy fusion`——① CPU 标杆(dist/gloo)
    ② NPU 级联标杆(dist/hccl/is_bm) ③ `dist_cpu→cpu_benchmark` 改名
    ④ 精度对比(`accuracy_load`)。每步远程命令完整落 `execution.log`；
@@ -106,6 +107,13 @@ EXECUTE 阶段走 4 步融合流程，**跳过 CPU golden 推导**（fusion 走 
    精度对比记入 `comparison_result`，**不入成败**——passed/failed 只反映执行成败；
 4. **门禁**：`validate_artifacts.py execution` 校验 `execution_strategy=fusion` 时
    `fusion_phases` 非空且 `dir_check_passed` 全真，`comparison_result` 可选。
+
+> default 路径的 EXECUTE 已从「generate → 推导 → real-run」三步简化为
+> 「generate → 自检 → real-run」两步：通用模板在生成时直接内联 mock CPU golden
+>（按用例 JSON 声明的 output 占位张量返回同 shape/dtype 全零张量，形状感知、
+> 不经文档推导），ATK 用其返回物化 NPU 输出张量、kernel 真实执行；精度比对
+> 结果无业务语义（对比的是 mock zeros）。`validate_artifacts.py executor` 继续
+> 拦截 dummy 标记回归。
 
 ## 4. 单轮执行协议
 
