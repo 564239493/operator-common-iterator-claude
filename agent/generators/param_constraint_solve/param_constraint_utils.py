@@ -739,6 +739,18 @@ class ParamConstraintUtils(CommonDispatcher):
         json_expr_dict = {f"json:{expr}": expr for expr in expr_list}
         builder.add_constraints(expr_str_dict=json_expr_dict)
 
+        # fail-closed：任何 JSON 约束真实转换失败（非 todo_skip）即阻断该 case，
+        # 禁止静默丢弃约束后产出缺约束的"伪 SAT"非法用例（曾致
+        # aclnnApplyAdamWQuant absmax 尺寸失控 → NPU aivec 崩溃）。
+        real_drops = [d for d in builder.dropped_constraints if d.get("reason") != "todo_skip"]
+        if real_drops:
+            logger.error(
+                f"operator name : '{self.operator_name}', "
+                f"{len(real_drops)} constraint(s) failed to convert and were "
+                f"dropped (fail-closed): {[d.get('expr') for d in real_drops]}"
+            )
+            return False
+
         # 收集所有静态表达式，一次性批量冲突检测（5 次 choice_no_conflicts_expr → 1 次）
         all_static = []
         domain_static = []
