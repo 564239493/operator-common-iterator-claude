@@ -179,6 +179,16 @@ class Z3ConstraintBuilder:
                     logger.debug(f"[SKIP] '{expr_str}': converter returned None, ignored")
         except Exception as e:
             logger.error(f"[FAIL] expr : '{expr_str}': err msg : '{e}'")
+            # 真实转换失败必须 fail-closed：记录到 dropped_constraints（区别于
+            # todo_skip），由 solve_z3_constraints 判定真实 drop 并阻断该 case。
+            # 禁止静默丢弃约束后继续产出缺约束的"伪 SAT"非法用例（曾致
+            # aclnnApplyAdamWQuant absmax 尺寸失控 → NPU aivec 崩溃）。
+            self.dropped_constraints.append({
+                "name": expr_name,
+                "expr": expr_str,
+                "error": str(e),
+                "reason": "conversion_failed",
+            })
 
     def solve(self):
         if self._timeout_ms:
