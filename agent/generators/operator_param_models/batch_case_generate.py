@@ -197,6 +197,7 @@ class OperatorCaseGenerator:
         :param target_platform: 执行机环境
         :param case_num: 生成用例的个数，默认为1
         :param jsonl_save_path: JSONL 增量 checkpoint 保存目录，为 None 时不写 checkpoint
+        :param json_file_name: jsonl文件的名称，默认为constraints中的算子名称
         :return: List[CaseConfig]
         """
         if operator_constraint_data is None:
@@ -388,7 +389,7 @@ class OperatorCaseGenerator:
                                         case_num=case_num,
                                         param_domain_data=param_domain_data,
                                         param_combination_list=param_combination_list,
-                                        jsonl_save_path=case_save_path)
+                                        jsonl_save_path=case_save_path, json_file_name=operator_name)
             data_handle_util.convert_jsonl_to_json(api_name=operator_name, jsonl_save_path=case_save_path,
                                                    json_save_path=case_save_path)
             logger.info(f"End handle operator data, file index : {index}/{tsv_file_num}, file name : {file}")
