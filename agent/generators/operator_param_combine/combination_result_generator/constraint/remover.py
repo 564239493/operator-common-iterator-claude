@@ -32,7 +32,7 @@ Responsibility:
     # result 为不含 biasOptional 的表达式字符串
 
 语义规则:
-    - 空结果（所有子式都被移除）          -> "True"
+    - 空结果（所有子式都被移除）          -> ：And 删空 → True，Or 删空 → False
     - ``param is None``（参数存在）       -> False
     - ``param is None``（参数缺失）       -> True
     - ``param is not None``（参数存在）   -> True
@@ -103,7 +103,8 @@ class _SubExprRemover(ast.NodeTransformer):
             ]
 
         if not values:
-            return ast.copy_location(ast.Constant(value=True), node)
+            identity = isinstance(node.op, ast.And)
+            return ast.copy_location(ast.Constant(value=identity), node)
         if len(values) == 1:
             return values[0]
 
