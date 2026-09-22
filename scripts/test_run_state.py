@@ -143,6 +143,7 @@ class TestSetState(RunStateCliTestBase):
         code, _ = run_cli(
             "set-state", "--run-dir", str(self.run_dir),
             "--to", "BLOCKED", "--code", "CONSTRAINT_CHECK_FAILED",
+            "--force",  # 本用例验证 code 记账机制，显式绕过 flow 边校验
         )
         self.assertEqual(code, 0)
         entry = self.read_state()["history"][-1]
@@ -154,6 +155,7 @@ class TestSetState(RunStateCliTestBase):
         code, _ = run_cli(
             "set-state", "--run-dir", str(self.run_dir),
             "--to", "SUCCESS", "--event", "CONSTRAINTS_ONLY_SUCCESS",
+            "--force",  # 本用例验证 event 记账机制，显式绕过 flow 边校验
         )
         self.assertEqual(code, 0)
         state = self.read_state()
@@ -167,6 +169,7 @@ class TestSetState(RunStateCliTestBase):
         code, payload = run_cli(
             "set-state", "--run-dir", str(self.run_dir),
             "--to", "UPDATE_CONSTRAINTS", "--bump-iteration",
+            "--force",  # 本用例验证 bump 记账机制，显式绕过 flow 边校验
         )
         self.assertEqual(code, 0)
         state = self.read_state()

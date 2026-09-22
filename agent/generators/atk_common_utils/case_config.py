@@ -38,6 +38,10 @@ class InputCaseConfig(MyBaseModel):
     backward: Optional[bool] = False
     align_32B: Optional[bool] = None
     outlier_values: Optional[List[float]] = None
+    # 转置语义：shape 恒为转置前物理 shape S；is_transpose=True 时执行侧
+    # 以 permute(*transpose_id) 得到约束体系使用的逻辑视图 L。
+    is_transpose: Optional[bool] = False
+    transpose_id: Optional[List[int]] = None
 
     def __hash__(self):
         dtype_hash = hash(self.dtype)

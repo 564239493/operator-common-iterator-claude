@@ -64,6 +64,11 @@ class PairwiseParamCombinationGenerator:
             f"Start pairwise parameter combination generation, "
             f"operator name: '{self.operator_rule_data.operator_name}'"
         )
+        if self.combination_data_save_path is None:
+            # 如果没有提供组合数据保存路径，则保存在当前脚本所在的目录下
+            self.combination_data_save_path = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.exists(self.combination_data_save_path):
+            os.makedirs(self.combination_data_save_path)
         reset()
         t0 = time.perf_counter()
         try:

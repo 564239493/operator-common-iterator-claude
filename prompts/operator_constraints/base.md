@@ -337,27 +337,36 @@ transposeX2=True 用例仍按 (H*rankSize, N) 生成）。
 
 **语义 A：shape 不反映转置（stride 编码）**——函数签名无转置标志，文档转置定义指向
 stride / 数据排布且 **shape 元组不变**（如"shape 为 [M,K] 时 stride 为 [1,M]、数据
-排布为 [K,M]"）。此时 `shape[-1]` 永远是逻辑末轴，取不到转置后的物理末轴。
+排布为 [K,M]"）。此时 `shape[-1]` 永远是逻辑末轴，shape 元组本身无两种顺序。
 
-- **必须**按 `knowledge/aclnn/operators/batch_matmul_weight_nz.md` §B.1 新增隐式 bool（`<param>_transposed`）+ `knowledge/aclnn/operators/batch_matmul_weight_nz.md` §D+ 的
-  if/elif/else 门控分支；
+- **不使用** `transpose_id`（shape 元组不变，恒等 perm 无意义）；
+- shape 维持单一表达，约束无需轴分支；转置态由 executor stride 物化通道承担，若需
+  cases 层标识按 `knowledge/aclnn/operators/batch_matmul_weight_nz.md` §B.1 引入
+  隐式 bool（`<param>_transposed`），bool 只做场景 `value_dependency` 门控，
+  不得替代 executor 无法构造的 stride/非连续状态。
 
 **语义 B：shape 元组重排编码转置**——文档在不同 groupType / 场景行给出 shape 元组的
 **两种顺序**（如 weight "(g,N,K) 或 (g,K,N)"、groupType=2 时 x shape=(K,M) 而
 groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元组上。
 
-- **不**引入隐式 bool，**不**写 if/else 分支；
-- `shape[-1]` 在两种布局下都等于文档"最后一维"（不转置=K/N，转置=M/K），直接按
-  `knowledge/aclnn/common/expression_language.md` §语法 第 6 条写 `shape[-1] < X`；条件映射（"K 轴或 M 轴"）仅放 `src_text`；
-- 转置状态本身（如"groupType=2 → x 必须转置即 x.shape=(K,M)"）落成 groupType /
-  场景门控下的 **shape 等式**约束，沿用本节 H 的 `cross_param_constraint` unless
-  范式，把 `len(weight.shape) == N` 推广为轴等式（共享 K：`x.shape[0]==weight.shape[0]`；
-  M：`x.shape[1]==out.shape[1]`；N：`weight.shape[1]==out.shape[2]`）。
+- 按 `knowledge/aclnn/features/transpose_shape.md` 在该张量 inputs 卡声明
+  `transpose_id`（full-form perm 候选集，`permute(物理S, perm) == 逻辑视图 L`，L 取
+  非转置模式规范布局）；
+- **所有引用该张量 shape 的约束表达式统一按逻辑视图 L 书写，单条、无 if/else、无
+  析取**——两种形态共用同一 L，轴等式/ceil 关系只落一套（`shape[-1]` 在 L 下即
+  规范末轴，直接写 `shape[-1] < X`）；
+- 隐式 bool（`<param>_transposed`）**保留但职责收窄**：只落场景 `value_dependency`
+  （把"是否转置"绑到 dtype 组合/groupType 等判别条件）与逐用例形态选择，**禁止**
+  用它写 `shape_value_dependency` if/else 换轴位；
+- 生成器负责还原：转置用例的 cases 层 shape 为物理 S，`is_transpose=true` 且
+  `transpose_id` 为正向 perm，执行侧 `permute(*transpose_id)` 还原 L（模型与 executor
+  已支持）。
 
 **判别信号**：文档若在 shape 元组里直接列出两种顺序（(M,K)/(K,M) 或 (K,N)/(N,K)），
-即语义 B；若只给 stride / 数据排布描述而 shape 元组保持不变，即语义 A。两者不可混用：
-语义 B 误套 A 的隐式 bool 会引入文档未声明的参数；语义 A 误套 B 的 `shape[-1]` 会
-取错轴。
+即语义 B（走 transpose_id + L 无分支）；若只给 stride / 数据排布描述而 shape 元组
+保持不变，即语义 A（stride 通道，不用 transpose_id）。两者不可混用：语义 B 误套
+A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id` 会产出无意义的
+恒等 perm 并误导执行侧 permute。
 
 ##### J. 条件布局的轴关系不得丢失门控（通用规则）
 
@@ -376,7 +385,16 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 
 **强制规则**：
 
-- **禁止**把两套布局的轴等式写成无前提 `or` 析取。以下为反例（必须避免）：
+- **转置形态（语义 B）统一按逻辑视图 L 单条化**：按 §4.6.3 I 与
+  `knowledge/aclnn/features/transpose_shape.md` 声明 `transpose_id` 后，两种形态在
+  约束层共用同一 L，轴等式**只写一条、无门控、无析取**；转置态差异由
+  `transpose_id` + 隐式 bool（场景 `value_dependency` + 逐用例形态选择）承载。
+  生成器把转置用例还原为物理 shape，executor 以 `permute` 物化任意 `transpose_id`
+  形态——因此隐式 bool + `transpose_id` 不会产生 executor 无法构造的状态。
+- **真实参数/场景门控的布局（非转置统一所能覆盖的）仍须逐套门控**：当多套布局由
+  真实 transpose 参数、format、场景枚举等条件区分且**不能**统一为单一 L 时，每套
+  轴等式必须带成立条件。**禁止**把两套布局的轴等式写成无前提 `or` 析取。以下为
+  反例（必须避免）：
 
   ```text
   # ❌ 反例：无前提 OR，丢失转置前提，析取第二支在连续 weight 下被 kernel 拒绝
@@ -385,10 +403,8 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
         or (x.shape[1] == weight.shape[1] and weight.shape[0] == out.shape[1])
   ```
 
-- 选择门控方式时，优先使用函数签名中的真实参数或文档场景参数。只有当前用例模型和
-  executor 都能物化某个隐式状态时，才可按
-  `knowledge/aclnn/features/transpose_shape.md` 引入隐式 bool；隐式 bool 不能代替
-  executor 无法构造的 stride/非连续状态。
+- 隐式 bool 不能代替 executor 无法构造的 stride/非连续状态（语义 A，§4.6.3 I）；
+  stride 编码的转置不走 `transpose_id`。
 - 当前执行能力只能覆盖一种布局时，可在**执行副本/专项能力护栏**中收窄到该布局，
   但不得把文档原始合法域改写成“仅支持该布局”。确定性等式必须带当前场景/布局门控，
   或仅在场景已经被显式固定时生成。
@@ -679,7 +695,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 | 文档写"可选参数 y 存在时与 x 数据类型一致" | `expr_type="type_dependency"`，`expr="y is None or x.dtype == y.dtype"`；存在性判断使其不再是纯等式 |
 | 文档引用 `互推导关系.md` 或写"数据类型推导规则" | 按 `knowledge/aclnn/features/broadcast.md` §A 的推导表生成 `type_dependency`；输出若要求与推导后 dtype 一致，必须绑定输出 dtype；推导结果不在输出 dtype 允许集合内的输入组合必须排除 |
 | 文档引用 `broadcast关系.md` 或写"满足 broadcast 关系" | 按 `knowledge/aclnn/features/broadcast.md` §B 的广播规则生成 `shape_broadcast`；若输出轴由 broadcast 推导得到，还要生成输出轴等于 broadcast 结果的 `shape_value_dependency` |
-| MatMul 文档写"Reduce 维度需要相等" | 生成 `shape_value_dependency` 绑定真实 Reduce 轴；若存在转置/非转置布局，必须按对应 bool 门控分支；不得只写 `ceil(k,k0)=k1` 而允许 NPU 逻辑 Reduce 维度不等 |
+| MatMul 文档写"Reduce 维度需要相等" | 生成 `shape_value_dependency` 绑定真实 Reduce 轴；若存在转置/非转置布局，按 §4.6.3 I 声明 `transpose_id` 并统一按逻辑视图 L 写**单条**等式（无 bool 分支）；不得只写 `ceil(k,k0)=k1` 而允许 NPU 逻辑 Reduce 维度不等 |
 | 多个参数 shape 表复用同名符号，如 `x=[M,K1]`、`weight1=[K1,N1]`、`weight2=[K2,N2]`、`y=[M,N2]` | 将每次出现映射到真实 Tensor 轴并生成 `shape_value_dependency`；至少绑定首个 MatMul Reduce 轴和输出前导轴。不得因正文未重复写“相等”而把同名轴独立随机生成 |
 | 场景指令选择 non-quant/quant/pseudo-quant，文档规定其他场景参数不得输入 | 将场景选择落为完整的可执行约束；被排除场景的全部专属 Optional 参数必须**逐参数**生成 `expr_type="presence_dependency"`、`expr="<param> is None"`、`relation_params=["<param>"]` 的条目，`src_text` 摘录文档中的禁止输入依据。不能只在 `description` / `src_text` 中备注，也不能通过省略 `presence_dependency` 期待参数自动缺席；无 presence 约束的 Optional 参数仍可能被生成器随机置为存在。仅“未选择参数”不能作为强制缺席依据：未选择参数继续按文档和已选场景适配，只有已选场景或文档明确禁止时才生成 `<param> is None` |
 | 文档写"仅 Atlas A3 支持 BF16" | 在对应平台的 `dtype.value` 中体现差异，`src_text` 摘录原文 |
@@ -705,10 +721,10 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 | 文档把 epsilon/eps 描述为"除0保护值"，并建议"≤1e-4" | `allowed_range_value.value=[]`；增加 `value_dependency`：`0 < epsilon.range_value <= 1e-4`，`src_text` 同时摘录两句 |
 | **文档写"NZ格式各个维度表示：（b, n1，k1，k0，n0），其中k0 = 16， n0为16"** | 按 `knowledge/aclnn/features/nz_matmul.md` §4.6.5 全流程处理：①`mat2.dimensions.value=[5]`；②`mat2.allowed_range_value.value=[]`（块尺寸是 shape 约束，不入元素取值字段）；③`constraints_in_parameters` 追加 `mat2.shape[3]==16` 与 `mat2.shape[4]==16` 两条 `shape_equality`，`src_text` 摘录完整原文 |
 | **文档写"NZ格式各个维度表示：（b, k1，n1，n0，k0），其中n0 = 16， k0为16"（转置 NZ）** | 同上，但**作为独立两条约束**落库（与上一种布局不合并），`src_text` 摘录对应的转置原文；`mat2.allowed_range_value.value=[]` |
-| **文档同时写明非转置与转置 NZ 两种布局** | 两套布局的 `mat2.shape[3]==16` / `mat2.shape[4]==16` 必须分别落库（共 4 条 `shape_equality`）；`mat2.allowed_range_value.value=[]`（块尺寸约束不入元素取值字段，约束条目按布局拆分） |
+| **文档同时写明非转置与转置 NZ 两种布局** | 按 §4.6.3 I 在 mat2 卡声明 `transpose_id`（如 `[[0,2,1,4,3]]`），块尺寸硬约束统一按逻辑视图 L=(b,n1,k1,k0,n0) **单套落库**（`mat2.shape[3]==16` / `mat2.shape[4]==16` 共 2 条 `shape_equality`，无 bool 分支）；布局差异由 `transpose_id` + `<param>_transposed` 场景 `value_dependency` 承载；`mat2.allowed_range_value.value=[]`（块尺寸约束不入元素取值字段）。仅当张量无转置形态（文档只有一种物理布局）时才按该布局直写 |
 | **`product_support` 含 ≥2 个平台，但 `inputs`/`outputs` 中某非隐式参数只产出 1 个平台条目** | 漏抽：必须**逐平台复制相同 `ParamAttributes`**（即便各平台字段值完全一致）。常因模型误读 §4.6.2 旧措辞（"约束完全一致可用单个平台名"）所致——该规则禁止用于"代笔"其他平台 |
 | **文档写"X 的 shape 为 (A, B)；当 Y 配置为 True 时 shape 为 (C, D)"** | **不可**拆为两条独立无条件 shape 描述；必须在 `constraints_in_parameters` 中为 X 产出**单一条件 shape 约束**（`knowledge/aclnn/common/expression_language.md` §常用模式 模式 6），用 `Y.range_value` 等门控参数分支；`expr_type` 优先 `shape_choice` 或 `parameter_representation`；`src_text` 同时摘录默认 shape 短语与"配置为 X 时…为…"短语，确保门控可溯源（典型反例：aclnnAlltoAllMatmul 中 x2.shape 在 transposeX2=True 时应为 (N, H*rankSize) 而非无条件 (H*rankSize, N)） |
-| **`shape_value_dependency` 写成无条件形式（含 `mat2.shape[j]` / `self.shape[i]` 引用但未按 `knowledge/aclnn/operators/batch_matmul_weight_nz.md` §B.1 隐式 bool 门控）** | 改写为 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 6.1 单条 if/else 或 unless 多分支；`relation_params` 包含对应隐式 bool；`src_text` 同时摘录"非转置 NZ (b, n1, k1, k0, n0)" 与 "转置 NZ (b, k1, n1, n0, k0)" 原文 |
+| **`shape_value_dependency` 按 `<param>_transposed` 隐式 bool 写轴位 if/else 门控（旧写法）** | 已废止：改按 §4.6.3 I 在该张量卡声明 `transpose_id`，轴等式/ceil 关系统一按逻辑视图 L 改写为**单条无分支** `shape_equality`/`shape_value_dependency`（bool 仅保留场景 `value_dependency`）；参考 `knowledge/aclnn/features/transpose_shape.md`；`src_text` 同时摘录"非转置 NZ (b, n1, k1, k0, n0)" 与 "转置 NZ (b, k1, n1, n0, k0)" 原文 |
 | **一段式算子：函数原型无 `GetWorkspaceSize`** | `function_signature` 取唯一函数声明；参数列表无 `workspaceSize`/`executor`。不得伪造 `GetWorkspaceSize` 段；**不得**写入 `is_single_function_mode` 字段 |
 | **一段式算子：输出为标量指针（`uint64_t*`/`int64_t*` 等）** | 该参数**进 `outputs`**（`type.value` 去 `*`、`format="N/A"`、`dimensions=[]`、`is_operator_param=true`），**不**当流程参数排除；`aclnnCalculateMatmulWeightSize` 的 `weightTensorSize` 即此 |
 | **aclIntArray 参数的 dtype 固定为 int** | `type.value="aclIntArray"` → `dtype.value=["int"]`（固定，见 §4.6.3 aclIntArray 规则）；文档"数据类型"列若列张量 dtype（如 `FLOAT16`/`BFLOAT16`）描述的是关联张量，**不**写入 `dtype`（不得写成 `dtype.value=["FLOAT16","BFLOAT16"]`） |
@@ -762,7 +778,7 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     必须满足**全部**下列子项：
     a. `mat2.allowed_range_value.value=[]`（空）或文档**显式约束元素取值**的端点；**禁止**为表达块尺寸而写 `[[16,16],[16,16]]` / `[[16,16]]`（块尺寸是 shape 约束，只落 `knowledge/aclnn/features/nz_matmul.md` §4.6.5 §C 的 `shape_equality`，见 `knowledge/aclnn/features/nz_matmul.md` §4.6.5 §D）；
     b. `constraints_in_parameters[每个支持平台]` 含 `mat2.shape[3] == 16` 与 `mat2.shape[4] == 16` 两条 `shape_equality`（或 `shape_value_dependency`）；
-    c. 文档同时描述非转置与转置 NZ 两种布局时，两套 `shape[3]/shape[4]==16` 须**分别落库**为不同条目（共 4 条），`src_text` 摘录对应原文；
+    c. 文档同时描述非转置与转置 NZ 两种布局时，按 §4.6.3 I 声明 `transpose_id`，块尺寸 `shape[3]/shape[4]==16` 统一按逻辑视图 L **单套落库**（共 2 条，无 bool 分支），`src_text` 摘录两种布局原文；
     d. 各 `shape_equality` 的 `src_text` 非空，且包含 `k0` / `n0` / `16` 等关键词。
 16. **一段式算子一致性**：若 `function_signature` **不含** `GetWorkspaceSize`（一段式），必须满足**全部**：
     a. 函数名与 `operator_name` 一致（无 `GetWorkspaceSize` 后缀）；
@@ -982,9 +998,10 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
     `shape_value_dependency` / `shape_equality` / `shape_choice` 条目；凡同一 expr
     引用同一 weight/x 参数的两种 shape 顺序并以无前提 `or` 连接（如
     `(x.shape[1]==weight.shape[0]...) or (x.shape[1]==weight.shape[1]...)`），且文档
-    同时写明布局切换条件时，不得保留无前提 `or` 析取。必须使用真实 API/场景参数门控；
-    只有用例模型与 executor 都能物化隐式状态时才可引入隐式 bool。执行能力只能覆盖
-    单一布局时，将收窄写入专项 `TEMP_CAPABILITY_GUARD`，不得篡改文档合法域。
+    同时写明布局切换条件时，不得保留无前提 `or` 析取。转置形态（语义 B）改按
+    §4.6.3 I 声明 `transpose_id` 并统一按逻辑视图 L 写**单条无分支**等式；真实
+    API/场景参数门控的布局仍须逐套门控。执行能力只能覆盖单一布局时，将收窄写入
+    专项 `TEMP_CAPABILITY_GUARD`，不得篡改文档合法域。
 
 35. **条件性取值/存在性关系自检**：重新扫描全部参数 `description`、`src_text` 与
     文档「约束说明」原文，凡含「A 取 v 时 B …」「B 仅在 A=w 场景支持」「A=v 时 B
@@ -1027,8 +1044,10 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 - 处理多格式 Tensor 时参考 `knowledge/aclnn/features/format_cast.md` §4.6.7 与 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 8；必须生成逐格式
   `format_rank_consistency` 守卫，尤其禁止 `NCDHW + 非5D`
 - 识别条件 Shape（被 enum/boolean 门控的 shape）时参考 §4.6.3 G 与 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 6
-- 对含 `self_transposed` / `mat2_transposed` 隐式 bool 的 NZ 算子，`shape_value_dependency`
-  必须参考 `knowledge/aclnn/operators/batch_matmul_weight_nz.md` §D+ 与 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 6.1 按隐式 bool 门控
+- 对含 `self_transposed` / `mat2_transposed` 隐式 bool 的 NZ 算子，转置张量在卡上声明
+  `transpose_id`，轴等式/ceil 关系统一按逻辑视图 L 单条无分支书写（bool 仅做场景
+  `value_dependency` 与逐用例形态选择），参考 `knowledge/aclnn/features/transpose_shape.md`
+  与 `knowledge/aclnn/operators/batch_matmul_weight_nz.md` §D+
 - 处理 aclTensorList 容器长度关系时参考 §4.6.3 TensorList 长度规则与 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 0
 - 处理 backward / grad 的 gradOutput partial-shape 跟随时参考 `knowledge/aclnn/features/backward_partial.md` §4.6.6 与 `knowledge/aclnn/common/expression_language.md` §常用模式 模式 7
 - 处理大小/数量语义参数的隐式 >0 约束时参考 `knowledge/aclnn/features/implicit_pos.md` §4.6.9
@@ -1039,7 +1058,8 @@ groupType∈{-1,0} 时 x shape=(M,K)）。转置状态直接体现在 shape 元�
 - 文档引用 `互推导关系.md` 或 `broadcast关系.md` 时参考 `knowledge/aclnn/features/broadcast.md` §4.6.10（推导表与广播规则
   已内联于该节）
 - 写 expr 表达式时参考 `knowledge/aclnn/common/expression_language.md` §常用模式 模式库（按关系特征匹配模板；NZ 块尺寸使用模式 5；
-  条件 Shape 使用模式 6；shape_value_dependency 隐式 bool 门控使用模式 6.1；
+  条件 Shape 使用模式 6；转置语义 B 按 §4.6.3 I 使用 transpose_id + 逻辑视图 L 无分支，
+  参考 `knowledge/aclnn/features/transpose_shape.md`；
   Partial-Shape 使用模式 7；TensorList 长度相等使用模式 0；派生值查找使用模式 9）
 - 写 allowed_range_value 时参考 `knowledge/aclnn/common/allowed_range.md` §映射表
 - dtype / format / 枚举候选必须与 src_text / 文档原文逐字一致（见 §4.6.3

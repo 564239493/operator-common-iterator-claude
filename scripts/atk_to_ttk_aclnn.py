@@ -290,6 +290,31 @@ def _tensor_data_range(item: dict[str, Any] | None) -> tuple[Any, Any]:
     return (None, None)
 
 
+def _logical_view_shape(item: dict[str, Any]) -> Any:
+    """cases.json tensor 条目的 shape 为转置前物理 shape S；is_transpose=true 时按
+    transpose_id 正向置换回约束体系的逻辑视图 L（L[i] = S[perm[i]]），否则原样返回。
+    TTK 按视图 shape 直接构造输入，必须使用受约束的逻辑视图。"""
+    shape = deepcopy(item.get("shape"))
+    if not item.get("is_transpose") or not isinstance(shape, list):
+        return shape
+    perm = item.get("transpose_id")
+    if (
+        not isinstance(perm, list)
+        or any(isinstance(axis, bool) or not isinstance(axis, int) for axis in perm)
+        or sorted(perm) != list(range(len(perm)))
+    ):
+        return shape
+
+    def _forward(sub_shape):
+        if sub_shape and isinstance(sub_shape[0], list):
+            return [_forward(sub) for sub in sub_shape]
+        if not isinstance(sub_shape, list) or len(sub_shape) != len(perm):
+            return sub_shape
+        return [sub_shape[axis] for axis in perm]
+
+    return _forward(shape)
+
+
 def _merge_sub_ranges(group: list[dict[str, Any]]) -> tuple[Any, Any]:
     """Merge per-sub-tensor data ranges into one (lo, hi) TensorList range."""
     ranges = [_tensor_data_range(sub) for sub in group]
@@ -562,7 +587,7 @@ def convert_case(
                 formats_parts.append("None")
                 data_ranges.append((None, None))
                 continue
-            sub_shapes = [deepcopy(sub.get("shape")) for sub in item]
+            sub_shapes = [_logical_view_shape(sub) for sub in item]
             shapes_parts.append(_format_tensor_list_shapes(sub_shapes))
             dtypes_parts.append(
                 repr(tuple(_format_dtype(sub.get("dtype")) for sub in item))
@@ -583,7 +608,7 @@ def convert_case(
             data_ranges.append((None, None))
             continue
 
-        shape = deepcopy(item.get("shape"))
+        shape = _logical_view_shape(item)
         dtype_ttk = _format_dtype(item.get("dtype"))
         format_ttk = _format_tensor_format(item.get("format"))
 

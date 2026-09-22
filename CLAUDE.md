@@ -172,7 +172,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 | 约束语义检查（每个新版本） | `constraint-checker` | `check-constraints` | `constraint_check.json` + `relation_examples.json`（脚本产，仅 aclnn） |
 | 约束精准修复（检查发现问题） | `constraint-repairer` | `repair-constraints` | 修改当前 `constraints.json` |
 | 用例生成 | `case-generator` | `generate-cases` | `cases.json` + `generation_summary.json` |
-| 用例执行 | `case-executor` | `execute-cases`、`atc-cpu-golden-derivation` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
+| 用例执行 | `case-executor` | `execute-cases` | `execution_result.json` + `cases_executor.py` + `cases_expanded.json` |
 | 根因诊断 | `failure-analyst` | `diagnose-failure` | `analysis.json` |
 | 提示词优化（仅离线沉淀） | `prompt-optimizer` | `optimize-prompt` | `prompt_update_proposal.json` |
 | 质量门禁 | `quality-reviewer` | `validate-run` | `quality_gate.json` |
@@ -228,7 +228,8 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 - `runner.py` → `RunRequest` + `run_cases(mock|real|generate)` 三种模式
 - `ssh.py` → asyncssh 连接、SFTP 上传、远程 ATK 执行
-- `resources/generator.py` → 生成 `cases_executor.py`（含 dummy CPU golden 占位）
+- `resources/generator.py` → 生成 `cases_executor.py`（CPU golden 生成时直接 mock：
+  按用例 JSON 声明的 output 占位张量返回同 shape/dtype 全零张量，不经文档推导）
 - `report_parser.py` → ATK xlsx 结果解析
 
 **scripts/** — 确定性 CLI 工具，不调用 LLM：
@@ -306,7 +307,7 @@ runs/<operator>-<timestamp>/
     relation_examples.json # Z3 正反例取证（仅 aclnn，checker 步骤 0 产，每轮覆盖）
     generation_summary.json
     cases.json             # 紧凑表示；执行阶段展开为 cases_expanded.json
-    cases_executor.py      # ATK 执行脚本（含 CPU golden）
+    cases_executor.py      # ATK 执行脚本（CPU golden 生成时 mock，无推导环节）
     execution_result.json  # passed+failed=total；真实 TTK/ATK 执行含 plog 采集元信息
     execution_logs/        # ATK 执行产物（atk.log、report/ 与 plog/{error_summary.log, raw/}）
     quality_gate.json      # next_state 决定流程走向
