@@ -304,6 +304,9 @@ class PICTGenerator(BaseGenerator):
             self._coverage_tracker.update(pairs)
         if dropped:
             logger.info("PICT rows filtered by constraint: kept=%d dropped=%d", suite.size(), dropped)
+            failed = getattr(self._constraint, "failed_exprs", None)
+            if failed:
+                logger.debug(f"Pict row filtered by constraint, violated expression : {failed}")
         return suite
 
     @property

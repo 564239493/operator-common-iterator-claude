@@ -20,7 +20,8 @@ from agent.generators.operator_param_combine.combination_result_generator.genera
 from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
 from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
 from agent.generators.operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
-from agent.generators.operator_param_combine.combination_result_generator.constraint.evaluator import ConstraintEvaluator
+from agent.generators.operator_param_combine.combination_result_generator.constraint.evaluator import \
+    ConstraintEvaluator
 
 _PARAMETER_ATTRIBUTE_KEYS = frozenset({
     "dtype", "range_value", "is_present", "length",
@@ -73,13 +74,17 @@ def build_constraint(constraints: tuple[str, ...]) -> ConstraintProtocol | None:
     class CombinedConstraint:
         def __init__(self):
             self.compiled = compiled
+            self.failed_exprs = set()
 
         def evaluate(self, context) -> bool:
             for constraint_compile in compiled:
                 try:
                     if not evaluator.evaluate(constraint_compile.tree, context):
+                        self.failed_exprs.add(constraint_compile.expression)
                         return False
                 except Exception as e:
+                    logger.debug(f"Failed to evaluate constraint : {constraint_compile.expression}, error : {str(e)}")
+                    self.failed_exprs.add(constraint_compile.expression)
                     continue
             return True
 
