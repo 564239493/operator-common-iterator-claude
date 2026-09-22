@@ -565,6 +565,20 @@ def _main() -> int:
         per_platform_paths, per_platform_counts, checkpoint_paths = generate_platform_outputs(
             generator, args.count, jsonl_save_path, output_dir
         )
+        # ATK: 'double' is shadowed by a scalar data class in ATK's dtype
+        # registry, so double tensors get scalarized end-to-end.  Rewrite the
+        # generated case dtype as 'fp64' (the registered tensor dtype name) so
+        # ATK uses the fp64 tensor data generator.  No-op for non-double cases.
+        from scripts.transform_double_fp64 import transform_file
+
+        for platform, platform_path in per_platform_paths.items():
+            count = transform_file(platform_path)
+            if count:
+                logger.info(
+                    "ATK double -> fp64: platform=%s replacements=%d",
+                    platform,
+                    count,
+                )
 
     if args.test_framework == "ttk":
         operator_name = generator.operator_name
