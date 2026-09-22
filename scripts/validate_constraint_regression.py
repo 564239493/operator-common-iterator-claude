@@ -55,17 +55,29 @@ def check_regression(
     records = execution_result.get("records", [])
     passed_case_ids = set()
     for record in records:
-        if record.get("execution_status") == "PASS" or record.get("status") == "passed":
-            testcase_name = record.get("testcase_name")
-            case_id = record.get("case_id")
-            if testcase_name:
-                # Extract numeric ID from testcase_name (e.g., "aclnnGroupedMatmulV5_055" -> 55)
-                import re
-                match = re.search(r'_(\d+)$', testcase_name)
-                if match:
-                    passed_case_ids.add(int(match.group(1)))
-            elif case_id is not None:
-                passed_case_ids.add(case_id)
+        run_result = str(record.get("run_result", "")).strip().lower()
+        passed = (
+            record.get("execution_status") == "PASS"      # TTK 路径
+            or run_result in ("success", "pass")           # ATK real / ATK mock
+        )
+        if not passed:
+            continue
+        testcase_name = record.get("testcase_name")
+        case_id = record.get("case_id")
+        if testcase_name:
+            # TTK: "aclnnFoo_055" -> 55
+            import re
+            match = re.search(r'_(\d+)$', str(testcase_name))
+            if match:
+                passed_case_ids.add(int(match.group(1)))
+        elif case_id is not None:
+            passed_case_ids.add(case_id)
+        elif record.get("id") is not None:
+            # ATK: records[].id 是字符串数字（"0"），cases.json 的 id 是 int
+            try:
+                passed_case_ids.add(int(record["id"]))
+            except (TypeError, ValueError):
+                continue
 
     if not passed_case_ids:
         return {
