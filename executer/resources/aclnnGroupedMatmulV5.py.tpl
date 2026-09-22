@@ -537,7 +537,30 @@ class AclnnGroupedMatmulV5(AclnnBaseApi):
                 output.append(self.acl_tensorlist_to_torch(output_pack))
         return output
 
+    def _x_transposed_presentation(self):
+        """gt=2 split-K：x 需以非连续转置张量呈现（x_transposed 卡为真）。"""
+        found = self.get_config_by_name(
+            self.task_result.case_config.inputs, "x_transposed"
+        )
+        if found is None:
+            return False
+        value = getattr(found, "range_values", None)
+        while isinstance(value, list) and len(value) == 1:
+            value = value[0]
+        return bool(value)
+
     def get_storage_shape(self, input_data: InputDataset, index=None, name=None):
+        if name == "x" and self._x_transposed_presentation():
+            # 转置呈现：storage 必须上报物理 S（≠ 逻辑 view L）。远端 atk
+            # create_acl_tensor 在 storage_shape 缺省时取 view shape（探测源码
+            # acl_wrapper.py:298-299），storage==view 会被宿主 CheckCaseSplitK
+            # 判为非转置呈现——20260911 run 四变体全败的根因即 storage==view。
+            found = self.get_config_by_name(self.task_result.case_config.inputs, name)
+            if isinstance(found, list) and found:
+                found = found[0]
+            if (found is not None and not isinstance(found, list)
+                    and found.shape is not None):
+                return torch.Size(found.shape)
         if name is not None:
             found = self.get_config_by_name(self.task_result.case_config.inputs, name)
             if (found is not None and not isinstance(found, list)
@@ -741,6 +764,44 @@ class AclnnGroupedMatmulV5(AclnnBaseApi):
                         input_data.args[index] = prepare_weight_value(
                             input_data.args[index]
                         )
+
+            # gt=2 split-K x 转置呈现（文档场景表：gt=2 x 必须转置；宿主
+            # CheckCaseSplitK 校验）。cases 层 x 存物理 S + is_transpose/
+            # transpose_id（permute(S, perm) == 逻辑 view L）；此处把 x 还原为
+            # L 的非连续 view（strides 经 convert_input_data → create_acl_tensor
+            # 传导给 ACL 描述符），storage 侧由 get_storage_shape 对转置 x
+            # 上报物理 S（storage≠view 才构成宿主认可的转置呈现）。
+            if self._x_transposed_presentation():
+                def permute_x_tensor(tensor):
+                    if not isinstance(tensor, torch.Tensor) or tensor.dim() < 2:
+                        return tensor
+                    found_x = self.get_config_by_name(
+                        self.task_result.case_config.inputs, "x"
+                    )
+                    if isinstance(found_x, list) and found_x:
+                        found_x = found_x[0]
+                    perm = getattr(found_x, "transpose_id", None) \
+                        if found_x is not None else None
+                    if isinstance(perm, (list, tuple)) \
+                            and len(perm) == tensor.dim():
+                        return tensor.permute(*[int(p) for p in perm])
+                    # 配置未透传 transpose_id 时的等价回退：末两维转置
+                    # （gt=2 x 为 rank-2 (K,M) 存储，等价 perm [1,0]）。
+                    return tensor.transpose(-1, -2)
+
+                x_runtime = runtime_value("x")
+                x_items = (
+                    list(x_runtime) if isinstance(x_runtime, (list, tuple))
+                    else [x_runtime]
+                )
+                if x_items and all(
+                        isinstance(t, torch.Tensor) for t in x_items):
+                    permuted = [permute_x_tensor(t) for t in x_items]
+                    replace_runtime_value(
+                        "x",
+                        permuted if isinstance(x_runtime, (list, tuple))
+                        else permuted[0],
+                    )
 
             # A4W4 x 物化：ATK 以 torch.int32 逻辑值生成 int4 数据，先折算
             # 到 [-8,7] 的 int8，init_by_input_data 再打包为 ACL_INT4。
