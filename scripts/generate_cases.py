@@ -575,7 +575,7 @@ def _main() -> int:
             count = transform_file(platform_path)
             if count:
                 logger.info(
-                    "ATK double -> fp64: platform=%s replacements=%d",
+                    "ATK double->fp64: platform=%s replacements=%d",
                     platform,
                     count,
                 )
