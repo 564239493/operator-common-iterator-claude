@@ -216,6 +216,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             if node.attr == 'dtype':
                 return t_var.dtype
             elif node.attr == 'range_value':
+                t_var._range_constraint_used = True
                 return t_var.z3_var
             elif node.attr == 'is_present':
                 return t_var.is_present
@@ -493,8 +494,9 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         if isinstance(value, TensorListVar):
             value._range_constraint_used = True
             return TensorElementProxy(value, actual_idx)
-        if hasattr(value, 'get_element_at'):
-            value._range_constraint_used = True
+        if hasattr(value, 'get_element_at') and hasattr(value, '_range_constraint_used'):
+            return value.get_element_at(actual_idx)
+        elif hasattr(value, 'get_element_at'):
             return value.get_element_at(actual_idx)
         elif z3.is_seq(value):
             return value[actual_idx]
