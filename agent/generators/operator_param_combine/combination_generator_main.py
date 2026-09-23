@@ -174,14 +174,24 @@ class PairwiseParamCombinationGenerator:
                 is_operator_param, _ = DataHandleUtil.get_relevant_attribute_value(param_name,
                                                                                    input_attribute.is_operator_param,
                                                                                    "is_operator_param")
+                # 语义修复：range_value 为真 None（token 反解产物）表示该行该参数取
+                # “空”枚举值（如 alltoAllAxesOptional 支持配置空），按缺席处理。
+                # 守卫条件说明：只要 range_value 为真 None 且 PICT 该行判定参数缺席
+                # （is_present 为 False），即折叠为缺席——None 在下游唯一合法语义
+                # 就是参数缺席；is_present=True 时保留原值交由下游约束过滤兜底。
+                # 注意区分真 None 与字符串 "None"：group 等参数的 range_value 是
+                # 字符串 "None"（DataProfile 名），必须保持原样不得误伤。
+                range_value_profile = case_attribute.get(ParameterAttribute.RANGE_VALUE)
+                is_present_value = case_attribute.get(ParameterAttribute.IS_PRESENT)
+                if range_value_profile is None:
+                    is_present_value = False
                 parameter_property_data = ParameterPropertyData(param_name=param_name, param_type=param_type,
                                                                 dtype=case_attribute.get(ParameterAttribute.DTYPE),
                                                                 format=case_attribute.get(ParameterAttribute.FORMAT),
                                                                 range_value_profile=case_attribute.get(
                                                                     ParameterAttribute.RANGE_VALUE),
                                                                 length=case_attribute.get(ParameterAttribute.LENGTH),
-                                                                is_present=case_attribute.get(
-                                                                    ParameterAttribute.IS_PRESENT),
+                                                                is_present=is_present_value,
                                                                 is_operator_param=is_operator_param)
                 if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
                     shape_property = ParameterShapeProperty(dim_count=case_attribute.get(ParameterAttribute.DIMENSION),

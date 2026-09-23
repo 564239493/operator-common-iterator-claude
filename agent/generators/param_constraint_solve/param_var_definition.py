@@ -978,6 +978,7 @@ class ListVar(BaseVar):
                                               z3.And(
                                                   self.z3_var[idx] >= min_val,
                                                   self.z3_var[idx] <= max_val))))
+        self._range_constraint_used = False
 
     def get_z3_expr(self):
         return self.z3_var
@@ -986,6 +987,7 @@ class ListVar(BaseVar):
         return self._element_sort
 
     def get_element_at(self, idx):
+        self._range_constraint_used = True
         return self.z3_var[idx]
 
     def resolve_model(self, model):
@@ -1013,16 +1015,26 @@ class ListVar(BaseVar):
             py_v = self._z3_val_to_py(elem)
             values.append(py_v if py_v is not None else str(elem))
 
-        # 1. 提取实际值集合
-        py_vals = set(values)
-        # 快速解析 Range, 避免多次调用solver.check(),加快效率
-        resolved_range = BaseVar._resolve_range_from_set_fast(py_vals, self._range_spec)
-        dtype_str = result.get("dtype") if "dtype" in result else self._dtype_arg
-        resolved_range = DataHandleUtil.range_value_post_processing(dtype_str, resolved_range)
-        # 智能解析 Range
-        # resolved_range = BaseVar._resolve_range_from_set(values, self._range_spec)
         result["dtype"] = self.dtype_arg
         result["length"] = seq_len
+
+        # 关键修复（generator_bug）：当 list 元素被约束逐项引用（如 size[0] == theta.shape[0]）时，
+        # 逐元素具体值语义有意义，必须原样保留为长度 == length 的逐元素取值清单，交由下游
+        # cases_expanded 的 `len(rv_list) == length`分支逐元素展开；否则旧实现把逐元素值压成
+        # 统一 [min, max] 区间，size[0] 被抹成 1，导致theta batch N 与 size[0]不匹配
+        # 全元素同值时无需逐元素清单，退回统一区间/单值，避免无意义的膨胀。
+        if self._range_constraint_used and len(set(values)) > 1:
+            logger.debug("******************************* range_constraint_used is true **************************")
+            resolved_range = DataHandleUtil.range_value_post_processing(self.dtype_arg,
+                                                                        values)
+        else:
+            py_vals = set(values)
+            # 快速解析 Range, 避免多次调用solver.check(),加快效率
+            resolved_range = BaseVar._resolve_range_from_set_fast(py_vals, self._range_spec)
+
+            resolved_range = DataHandleUtil.range_value_post_processing(self.dtype_arg, resolved_range)
+            # 智能解析 Range
+            # resolved_range = BaseVar._resolve_range_from_set(values, self._range_spec)
         result["range_values"] = resolved_range
         return result
 

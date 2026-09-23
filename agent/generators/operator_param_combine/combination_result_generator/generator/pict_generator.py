@@ -58,6 +58,18 @@ from agent.generators.common_utils.timing import track
 logger = LazyLogger()
 
 
+# 非标量值的 PICT token 编解码。
+# 背景：domain 数据的 range_value 可能含 None / list 等非标量值（如
+# alltoAllAxesOptional.range_value = [None, [-2,-1]]），PICT 值列表只能承载
+# _SAFE_VALUE_TOKEN 匹配的标量字符串。这里将非标量值编码为确定性 token，
+# 行解析后经 PictModel.token_map 反解还原，使该类参数不再被整列剔除。
+PICT_NONE_TOKEN = "__none__"
+PICT_LIST_TOKEN_PREFIX = "__L_"
+PICT_LIST_TOKEN_SUFFIX = "__"
+# 保守前缀黑名单：值域中真实出现 __ 前缀字符串时退化为计数 token，防止撞名
+PICT_TOKEN_COLLISION_FALLBACK_TEMPLATE = "__v{ordinal}__"
+
+
 class PICTGenerator(BaseGenerator):
     """PICT-compatible 生成器（基于 BaseGenerator 生命周期的真实 PICT 集成）。
 
@@ -76,24 +88,24 @@ class PICTGenerator(BaseGenerator):
     """
 
     def __init__(
-        self,
-        universe: PairUniverse,
-        coverage_tracker: CoverageTracker,
-        constraint: Optional[ConstraintProtocol],
-        config: GeneratorOptions,
-        candidate_generator: CandidateGenerator,
-        pair_builder: PairBuilder,
-        *,
-        operator_name: str = "",
-        candidate_pool_size: int = 100,
-        pict_exe: Optional[str] = None,
-        wsl_distro: Optional[str] = None,
-        pict_timeout: int = 60,
-        pict_max_rounds: int = 20,
-        use_real_pict: Optional[bool] = None,
-        result_output_path: Optional[str] = None,
-        domain_data: Optional[Dict[str, Any]] = None,
-        filter_by_constraint: bool = True,
+            self,
+            universe: PairUniverse,
+            coverage_tracker: CoverageTracker,
+            constraint: Optional[ConstraintProtocol],
+            config: GeneratorOptions,
+            candidate_generator: CandidateGenerator,
+            pair_builder: PairBuilder,
+            *,
+            operator_name: str = "",
+            candidate_pool_size: int = 100,
+            pict_exe: Optional[str] = None,
+            wsl_distro: Optional[str] = None,
+            pict_timeout: int = 60,
+            pict_max_rounds: int = 20,
+            use_real_pict: Optional[bool] = None,
+            result_output_path: Optional[str] = None,
+            domain_data: Optional[Dict[str, Any]] = None,
+            filter_by_constraint: bool = True,
     ) -> None:
         super().__init__(universe, coverage_tracker, constraint, config)
 
@@ -269,6 +281,33 @@ class PICTGenerator(BaseGenerator):
             col_map=col_map,
         )
 
+    def build_constraint_eval_context(self, row_values):
+        """构造黑盒约束求值上下文。
+
+        约束语言语义：x is None ⇔ Not(x.is_present)（与 Z3 侧
+        expression_preprocess_utils 的定义对齐）。但求值器的 x 绑定的是
+        {属性: 值} 字典，`字典 is None` 恒为 False —— 若不映射，
+        “取值为空”的行会被 (x is None) or (...) 类约束误杀。
+
+        规则：参数“取值为 None（传入空）”或“is_present=False（缺席）”时，
+        在求值上下文中映射为 None：
+          - x is None → True（正确短路）
+          - 引用 x.<属性> 的子表达式 → 异常 → 按过滤器宽松设计视为通过
+            （与 Z3 侧 remove_missing_param_exprs 的 True 替换语义一致）
+        其余参数保持属性字典原样。字符串 "None"（DataProfile 名）不是
+        None，走原样分支。
+        """
+        constraint_eval_context = {}
+        for param_name, attribute_dict in row_values.items():
+            if not isinstance(attribute_dict, dict):
+                constraint_eval_context[param_name] = attribute_dict
+                continue
+            if attribute_dict.get("is_present") is False or attribute_dict.get("range_value") is None:
+                constraint_eval_context[param_name] = None
+            else:
+                constraint_eval_context[param_name] = attribute_dict
+        return constraint_eval_context
+
     @track("PictGenerator._pict_rows_to_suite")
     def _pict_rows_to_suite(self, cases: List[Dict[str, Any]]) -> TestSuite:
         """把 PICT 行转成 TestSuite，并同步更新覆盖率。
@@ -281,18 +320,25 @@ class PICTGenerator(BaseGenerator):
         for row in cases:
             test_case = TestCase()
             factor_values = []
-            for col, value in row.items():
-                mapping = self._pict_col_map.get(col)
-                if mapping is None:
+            for pict_column_name, row_value in row.items():
+                column_to_param_attr = self._pict_col_map.get(pict_column_name)
+                if column_to_param_attr is None:
                     continue
-                param, attr = mapping
-                test_case.add_value(TestValue(parameter=param, attribute=attr, value=value))
-                factor_values.append(FactorValue(Factor(param, attr), value))
+                param_name, attribute_name = column_to_param_attr
+                # token 反解：__none__ → None，__L_-2_-1__ → [-2,-1]；
+                # 非 token 列不受影响（token_map 为空 dict 时此处为纯透传）
+                if self._pict_model is not None:
+                    column_tokens = self._pict_model.token_map.get(pict_column_name)
+                    if column_tokens and isinstance(row_value, str) and row_value in column_tokens:
+                        row_value = column_tokens[row_value]
+                test_case.add_value(TestValue(parameter=param_name, attribute=attribute_name, value=row_value))
+                factor_values.append(FactorValue(Factor(param_name, attribute_name), row_value))
             if not factor_values:
                 continue
             if self._filter_by_constraint and self._constraint is not None:
                 try:
-                    ok = self._constraint.evaluate(test_case.values)
+                    constraint_eval_context = self.build_constraint_eval_context(test_case.values)
+                    ok = self._constraint.evaluate(constraint_eval_context)
                 except Exception as exc:
                     logger.warning("constraint evaluate failed on row: %s", exc)
                     ok = False
@@ -365,6 +411,9 @@ class PictModel:
     dropped_constraints: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     operator_name: str = ""
+    # 非标量值 token 映射：{列名: {token: 原值}}，行解析后反解还原。
+    # 默认空 dict：无 token 时行为与历史版本完全一致（回滚安全）。
+    token_map: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -477,6 +526,7 @@ def _to_wsl_path(path: str) -> str:
     if m:
         return "/mnt/{}{}".format(m.group(1).lower(), m.group(2))
     return norm
+
 
 def _find_windows_pict_candidates(max_results: int = 8, max_depth: int = 4) -> List[str]:
     """在常见位置浅层搜索 pict.exe（Windows 未安装到 PATH 时的兜底）。"""
@@ -638,7 +688,8 @@ def check_pict_environment(pict_exe: Optional[str] = None, wsl_distro: Optional[
             f.write(_PROBE_MODEL)
         full = _build_pict_cmd(cmd, probe_path, strength=2, seed=None)
         logger.info("probe pict command: %s", " ".join(full))
-        kwargs: Dict[str, Any] = dict(capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
+        kwargs: Dict[str, Any] = dict(capture_output=True, text=True, timeout=timeout, encoding="utf-8",
+                                      errors="replace")
         if cur == "win32":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         res = subprocess.run(full, **kwargs)
@@ -659,11 +710,14 @@ def check_pict_environment(pict_exe: Optional[str] = None, wsl_distro: Optional[
         if category == PictFailureCategory.LAUNCH_FAILURE:
             dll_diags = _windows_dll_diagnostics()
             diags.extend(dll_diags)
-            sugg.append("Install Microsoft Visual C++ 2015-2022 Redistributable (x86): run vc_redist.x86.exe (needs admin).")
+            sugg.append(
+                "Install Microsoft Visual C++ 2015-2022 Redistributable (x86): run vc_redist.x86.exe (needs admin).")
             sugg.append("Or use a statically-linked pict build / run on WSL instead.")
             distro = wsl_distro or _detect_wsl_distro()
             if distro and _wsl_has_pict(distro):
-                sugg.append("PICT is available via WSL: `wsl.exe -d {} -- pict`. Set PICT_EXE or use --wsl-distro {}.".format(distro, distro))
+                sugg.append(
+                    "PICT is available via WSL: `wsl.exe -d {} -- pict`. Set PICT_EXE or use --wsl-distro {}.".format(
+                        distro, distro))
         elif category == PictFailureCategory.TIMEOUT:
             sugg.append("Increase probe --timeout.")
         else:
@@ -771,6 +825,35 @@ def _format_constraint_value(v: Any) -> Optional[str]:
     if isinstance(v, float):
         return repr(v)
     return None
+
+def encode_pict_value(raw_value, pict_column_name, column_token_map):
+    """把（可能是非标量的）值编码为 PICT token；标量值原样返回其格式化结果。
+
+    :param raw_value: domain 数据中的原始值（可能为 None / list / 标量）
+    :param pict_column_name: 所属 PICT 列名（形如 "{param}_{attr}"），token 命名空间
+    :param column_token_map: {列名: {token: 原值}}，仅记录非标量值的编码，供行解析反解
+    :return: 编码后的 token 字符串；编码失败返回 None（调用方按原逻辑剔除该值）
+    """
+    if raw_value is None:
+        candidate_token = PICT_NONE_TOKEN
+    elif isinstance(raw_value, list):
+        token_body = "_".join(str(element) for element in raw_value)
+        candidate_token = "{}{}{}".format(PICT_LIST_TOKEN_PREFIX, token_body, PICT_LIST_TOKEN_SUFFIX)
+    else:
+        return _format_pict_value(raw_value)          # 标量走原有路径
+    if not _SAFE_VALUE_TOKEN.match(candidate_token):
+        return None                                    # 含非常规字符（如引号），放弃编码
+    tokens_of_column = column_token_map.setdefault(pict_column_name, {})
+    if candidate_token in tokens_of_column and tokens_of_column[candidate_token] != raw_value:
+        # 撞名且原值不同：退化为该列内唯一计数 token
+        collision_counter = len(tokens_of_column)
+        while True:
+            candidate_token = PICT_TOKEN_COLLISION_FALLBACK_TEMPLATE.format(ordinal=collision_counter)
+            if candidate_token not in tokens_of_column:
+                break
+            collision_counter += 1
+    tokens_of_column[candidate_token] = raw_value
+    return candidate_token
 
 
 def _build_model_text(parameters: Dict[str, List[Any]], pict_constraints: List[str]) -> str:
@@ -1187,7 +1270,7 @@ def _translate_anyall(node: ast.Call, columns: set, warnings: List[str],
 
 def _is_relational_ast(node: ast.AST) -> bool:
     return isinstance(node, (ast.Compare, ast.BoolOp)) or (
-        isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)) or isinstance(node, ast.Call)
+            isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)) or isinstance(node, ast.Call)
 
 
 def _translate_compare_expr(node: ast.Compare, columns: set, warnings: List[str],
@@ -1301,10 +1384,10 @@ def _translate_constraint(expr: str, columns: set,
 # PICT 输入转换（domain_data dict -> model txt）
 # --------------------------------------------------------------------------- #
 
-def convert_domain_json_to_pict_model(operator_name:str,
-    domain_data: Dict,
-    output_txt_path: Optional[str] = None,
-) -> PictModel:
+def convert_domain_json_to_pict_model(operator_name: str,
+                                      domain_data: Dict,
+                                      output_txt_path: Optional[str] = None,
+                                      ) -> PictModel:
     """把 domain_data dict 直接转换为 PICT 可接受的 model txt。
 
     输入格式：{ "parameters": {param: {attr: [values]}}, "constraints": [expr, ...] }。
@@ -1324,30 +1407,32 @@ def convert_domain_json_to_pict_model(operator_name:str,
     col_map: Dict[str, Tuple[str, str]] = {}
     columns: List[str] = []
     warnings: List[str] = []
+    token_map: Dict[str, Dict[str, Any]] = {}
 
     for param, attrs in raw_parameters.items():
         if not isinstance(attrs, dict):
             warnings.append("parameter '{}' attributes is not a dict, skipped".format(param))
             continue
-        for attr, values in attrs.items():
-            if not isinstance(values, list):
+        for attr, attribute_values in attrs.items():
+            if not isinstance(attribute_values, list):
                 continue
-            col = "{}_{}".format(param, attr)
-            col_vals: List[Any] = []
-            for v in values:
-                if not _is_scalar(v):
-                    if v is not None:
+            pict_column_name = "{}_{}".format(param, attr)
+            column_token_values: List[str] = []
+            for raw_value in attribute_values:
+                pict_token = encode_pict_value(raw_value, pict_column_name, token_map)
+                if pict_token is None:
+                    if raw_value is not None:
                         warnings.append(
-                            "non-scalar value skipped in {}.{}: {}".format(param, attr, repr(v)[:60]))
+                            "non-scalar value skipped in {}.{}: {}".format(param, attr, repr(raw_value)[:60]))
                     continue
-                if v not in col_vals:
-                    col_vals.append(v)
-            if col_vals:
-                parameters[col] = col_vals
-                col_map[col] = (param, attr)
-                columns.append(col)
+                if pict_token not in column_token_values:
+                    column_token_values.append(pict_token)
+            if column_token_values:
+                parameters[pict_column_name] = column_token_values
+                col_map[pict_column_name] = (param, attr)
+                columns.append(pict_column_name)
             else:
-                warnings.append("empty column skipped: {}".format(col))
+                warnings.append("empty column skipped: {}".format(pict_column_name))
 
     constraints = domain_data.get("constraints")
     if not isinstance(constraints, list):
@@ -1389,6 +1474,7 @@ def convert_domain_json_to_pict_model(operator_name:str,
         dropped_constraints=dropped_constraints,
         warnings=warnings,
         operator_name=operator_name,
+        token_map=token_map
     )
 
 
@@ -1500,19 +1586,20 @@ def _write_json(path: str, data: Any) -> None:
 def _dataclass_to_dict(obj: Any) -> Any:
     return asdict(obj)
 
+
 @track("execute_pict")
 def execute_pict(
-    operator_name: str,
-    model: Union[str, PictModel],
-    result_output_path: str,
-    *,
-    strength: int = 2,
-    seed: Optional[int] = None,
-    timeout: int = 60,
-    max_rounds: int = 20,
-    pict_exe: Optional[str] = None,
-    wsl_distro: Optional[str] = None,
-    write_artifacts: bool = True,
+        operator_name: str,
+        model: Union[str, PictModel],
+        result_output_path: str,
+        *,
+        strength: int = 2,
+        seed: Optional[int] = None,
+        timeout: int = 60,
+        max_rounds: int = 20,
+        pict_exe: Optional[str] = None,
+        wsl_distro: Optional[str] = None,
+        write_artifacts: bool = True,
 ) -> PictRunReport:
     """执行 PICT；失败分类并日志记录；非法约束多轮剔除；结果保存到 result_output_path。
 
