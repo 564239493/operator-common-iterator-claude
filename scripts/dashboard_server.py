@@ -21,7 +21,7 @@ PORT = 8899
 ROOT = Path(__file__).resolve().parent.parent
 RUNS_DIR = ROOT / "runs"
 STATIC_DIR = ROOT / "static"
-COVER_DIR = ROOT / "operator_cover_doc"
+COVER_DIR = ROOT / "ops_cov_report"
 
 # 安全: run_id / artifact 名只允许字母数字下划线连字符
 _SAFE_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -141,7 +141,7 @@ def _list_runs():
     return runs
 
 def _list_cover_dirs():
-    """扫描 operator_cover_doc/ 目录, 返回每个覆盖率数据目录的摘要."""
+    """扫描 ops_cov_report/ 目录, 返回每个覆盖率数据目录的摘要."""
     items = []
     if not COVER_DIR.is_dir():
         return items
@@ -202,7 +202,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _send_json(self, _list_runs())
             return
 
-        # /api/cover/dirs — operator_cover_doc 下所有覆盖率数据目录
+        # /api/cover/dirs — ops_cov_report 下所有覆盖率数据目录
         if base_path == "/api/cover/dirs":
             _send_json(self, _list_cover_dirs())
             return

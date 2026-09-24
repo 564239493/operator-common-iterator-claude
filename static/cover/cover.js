@@ -183,6 +183,7 @@ const app = createApp({
                     name: it.name || '',
                     dir: it.dir || '',
                     fullPath: it.fullPath || '',
+                    coveredLines: it.covered_lines || [],
                     lineCount: it.lineCount || 0,
                     lineStr: it.lineStr || '',
                     uncoveredLines: la.uncoveredLines || '',

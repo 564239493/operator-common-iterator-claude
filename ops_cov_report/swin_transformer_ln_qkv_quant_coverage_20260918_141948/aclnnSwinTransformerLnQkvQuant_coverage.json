@@ -347,19 +347,21 @@
             "name": "FieldHandler",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.h",
-            "lines": [
+            "lineStr": "27,51,63",
+            "lineCount": 3,
+            "covered_lines": [
               27,
               51,
               63
-            ],
-            "lineStr": "27,51,63",
-            "lineCount": 3
+            ]
           },
           {
             "name": "GetBaseParams",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
+            "lineStr": "246,248,251,252,254,255,256,257,259,260,263,264,268,269,270,271,272,273,274,275,285,286,287,288,289,291,292,297,298,300,301",
+            "lineCount": 31,
+            "covered_lines": [
               246,
               248,
               251,
@@ -391,35 +393,35 @@
               298,
               300,
               301
-            ],
-            "lineStr": "246,248,251,252,254,255,256,257,259,260,263,264,268,269,270,271,272,273,274,275,285,286,287,288,289,291,292,297,298,300,301",
-            "lineCount": 31
+            ]
           },
           {
             "name": "IsSupport",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
-              318
-            ],
             "lineStr": "318",
-            "lineCount": 1
+            "lineCount": 1,
+            "covered_lines": [
+              318
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantBaseInfoOpSwinTransformerLnQkvQuantBaseInfoHelper",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.h",
-            "lines": [
-              49
-            ],
             "lineStr": "49",
-            "lineCount": 1
+            "lineCount": 1,
+            "covered_lines": [
+              49
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantGetMatmulTmpSize",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
+            "lineStr": "195,197,199,201,202,204,205,206,207,208,209",
+            "lineCount": 11,
+            "covered_lines": [
               195,
               197,
               199,
@@ -431,36 +433,36 @@
               207,
               208,
               209
-            ],
-            "lineStr": "195,197,199,201,202,204,205,206,207,208,209",
-            "lineCount": 11
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantMmInfoOpSwinTransformerLnQkvQuantMmInfoHelper",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.h",
-            "lines": [
-              61
-            ],
             "lineStr": "61",
-            "lineCount": 1
+            "lineCount": 1,
+            "covered_lines": [
+              61
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantSaveTilingData",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
+            "lineStr": "79,80",
+            "lineCount": 2,
+            "covered_lines": [
               79,
               80
-            ],
-            "lineStr": "79,80",
-            "lineCount": 2
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantSetMatmulTilingData",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
+            "lineStr": "167,169,171,173,175,178,179,180,181,182,183,184,185",
+            "lineCount": 13,
+            "covered_lines": [
               167,
               169,
               171,
@@ -474,47 +476,47 @@
               183,
               184,
               185
-            ],
-            "lineStr": "167,169,171,173,175,178,179,180,181,182,183,184,185",
-            "lineCount": 13
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantSetTilingKey",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
+            "lineStr": "140,141",
+            "lineCount": 2,
+            "covered_lines": [
               140,
               141
-            ],
-            "lineStr": "140,141",
-            "lineCount": 2
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantSetWorkSpace",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
+            "lineStr": "87,88",
+            "lineCount": 2,
+            "covered_lines": [
               87,
               88
-            ],
-            "lineStr": "87,88",
-            "lineCount": 2
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantSwinTransformerLnQkvQuantTilingDataHelper",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.h",
-            "lines": [
-              80
-            ],
             "lineStr": "80",
-            "lineCount": 1
+            "lineCount": 1,
+            "covered_lines": [
+              80
+            ]
           },
           {
             "name": "SwinTransformerLnQkvQuantTilingMainProc",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
+            "lineStr": "336,337,339,342,343,346,347,348,355,356,357,358,359,364,378,379,415,421,426,449,468,487,489,491,492,493,494,495,496,497,499,501,502,503,504,508,510,511,518,519,521,522",
+            "lineCount": 42,
+            "covered_lines": [
               336,
               337,
               339,
@@ -557,20 +559,18 @@
               519,
               521,
               522
-            ],
-            "lineStr": "336,337,339,342,343,346,347,348,355,356,357,358,359,364,378,379,415,421,426,449,468,487,489,491,492,493,494,495,496,497,499,501,502,503,504,508,510,511,518,519,521,522",
-            "lineCount": 42
+            ]
           },
           {
             "name": "TilingFuncForSwinTransformerLnQkvQuant",
             "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
             "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
-            "lines": [
+            "lineStr": "529,531",
+            "lineCount": 2,
+            "covered_lines": [
               529,
               531
-            ],
-            "lineStr": "529,531",
-            "lineCount": 2
+            ]
           }
         ]
       }

@@ -132,11 +132,6 @@
                         </div>
                         <el-table :data="editMode ? editConstraints : relRows" class="op-table">
                             <el-table-column type="index" label="#" width="40" align="center"></el-table-column>
-                            <el-table-column label="ID" width="70" align="center">
-                                <template #default="{ row }">
-                                    <span class="c-id mono">{{ row.id || '-' }}</span>
-                                </template>
-                            </el-table-column>
 
                             <!-- 类型: 始终只读 -->
                             <el-table-column label="类型" width="180">
