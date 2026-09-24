@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>算子自主测试智能体-约束审核工具</title>
+    <!-- Element Plus 样式 -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <link rel="stylesheet" href="operator-result.css">
+</head>
+<body>
+<div id="app">
+    <!-- 顶栏: 标题 + 任务情况汇总 + 覆盖率展示按钮 -->
+    <div class="topbar">
+        <div class="topbar-right">
+            <div class="topbar-title">算子自主测试智能体-约束审核工具</div>
+            <div class="divider-v"></div>
+            <template v-if="taskStats.total">
+                <div class="stat-item stat-total"><span class="stat-num">{{ taskStats.total }}</span> 任务</div>
+                <div class="stat-item stat-succ"><span class="stat-num">{{ taskStats.succ }}</span> 成功</div>
+                <div class="stat-item stat-bad"><span class="stat-num">{{ taskStats.failed }}</span> 失败/阻断</div>
+                <div class="stat-item stat-running"><span class="stat-num">{{ taskStats.running }}</span> 运行中</div>
+            </template>
+        </div>
+        <el-button @click="goCover">覆盖率展示</el-button>
+    </div>
+
+    <!-- 副信息栏: 任务/迭代/状态选择器 + 产品系列 + 约束统计 -->
+    <div class="info-bar">
+        <!-- 左侧: 任务列表 -->
+        <div class="info-left">
+            <span class="field-label">算子任务</span>
+            <el-select v-model="currentTaskDir" placeholder="选择任务" style="width:300px" filterable
+                       :loading="taskLoading" @change="onTaskChange">
+                <el-option v-for="t in runTasks" :key="t.dir_name" :label="t.dir_name" :value="t.dir_name"></el-option>
+            </el-select>
+            <el-select v-model="currentIter" placeholder="迭代" style="width:130px" :disabled="!currentTaskDir"
+                       @change="onIterChange">
+                <el-option v-for="d in iterList" :key="d" :label="d" :value="d"></el-option>
+            </el-select>
+            <el-tag v-if="currentTaskState" :type="currentTaskStateType" effect="light" class="state-tag"
+                    size="default">
+                <span v-if="isRunningState(currentTaskState)" class="spinner"></span>{{ stateLabel(currentTaskState) }}
+            </el-tag>
+        </div>
+        <!-- 右侧: 产品系列 + 约束统计 -->
+        <div class="info-right">
+            <span class="field-label">产品系列</span>
+            <el-select v-model="currentProduct" style="width:300px" filterable @change="syncEditConstraints">
+                <el-option v-for="p in productOptions" :key="p" :label="p" :value="p"></el-option>
+            </el-select>
+            <div class="divider-v"></div>
+            <div class="stat-item stat-pass"><span class="stat-num">{{ statPass }}</span> 约束通过</div>
+            <div class="stat-item stat-fail"><span class="stat-num">{{ statFail }}</span> 约束失败</div>
+            <div class="stat-item stat-warn"><span class="stat-num">{{ statWarn }}</span> 约束警告</div>
+        </div>
+    </div>
+
+    <!-- 时间线: 单独一行, 位于 constraint-toolbar 上方 -->
+    <div class="timeline-bar">
+        <div class="history-wrap">
+            <span v-if="!history.length" class="history-empty">暂无记录</span>
+            <div v-else class="timeline-scroll" ref="timelineScroll">
+                <div class="op-timeline-h">
+                    <div v-for="(h, i) in history" :key="i" class="timeline-node" :class="nodeClass(h.state, i)">
+                        <div class="node-dot"></div>
+                        <div class="node-label">{{ stateLabel(h.state) }}</div>
+                        <div class="node-time">{{ fmtTime(h.at) }}</div>
+                        <div v-if="i < history.length - 1" class="node-line"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="constraint-toolbar">
+        <span class="toolbar-hint">
+            {{ editMode ? '编辑模式 — 修改后点击提交生成当前轮次 constrains_copy.json' : '只读模式'}}
+        </span>
+        <div style="display:flex;gap:8px">
+            <template v-if="!editMode">
+                <el-button size="small" type="primary" plain @click="enterEditMode">编辑</el-button>
+            </template>
+            <template v-else>
+                <el-button size="small" type="primary" plain @click="addConstraint">＋ 新增
+                </el-button>
+                <el-button size="small" plain @click="cancelEdit">取消</el-button>
+                <el-button size="small" type="success" :loading="submitLoading"
+                           @click="submitConstraints">提交
+                </el-button>
+            </template>
+        </div>
+    </div>
+
+    <!-- 主体 -->
+    <div class="main">
+        <!-- 主体卡片: 约束 + 输入 + 输出 (div 替代 el-collapse) -->
+        <div class="cards">
+            <!-- 参数间约束 -->
+            <div class="card" :class="{expanded: activePanels.includes('rel')}" data-panel="rel">
+                <div class="card-header" @click="togglePanel('rel')">
+                    <div class="title-row">
+                        <div class="card-title">
+                            <div class="icon icon-constraint">🔗</div>
+                            参数间约束 constraints_in_parameters
+                        </div>
+                        <div class="card-count">{{ relCount }} 项约束</div>
+                    </div>
+                    <div class="card-toggle" :class="{open: activePanels.includes('rel')}">▾</div>
+                </div>
+                <div class="card-body" v-show="activePanels.includes('rel')">
+                    <div class="constraint-area">
+                        <!-- 轮次对比: 约束数量差异统计 -->
+                        <div v-if="hasDiff" class="diff-stats" @click.stop>
+                            <span class="diff-stats-title">轮次对比（{{ prevIterDir }} → {{ currentIter }}）</span>
+                            <span class="diff-stat-chip total">
+                                上一轮 <b>{{ diffResult.prevCount }}</b>
+                                <span class="arrow">→</span>
+                                当前轮 <b>{{ diffResult.curCount }}</b>
+                            </span>
+                            <span class="diff-stat-chip added clickable" :class="{active: diffFilter==='added'}"
+                                  @click="toggleDiffFilter('added')">新增 <b>{{ diffResult.added.length }}</b></span>
+                            <span class="diff-stat-chip removed clickable" :class="{active: diffFilter==='removed'}"
+                                  @click="toggleDiffFilter('removed')">删除 <b>{{ diffResult.removed.length
+                                }}</b></span>
+                            <span class="diff-stat-chip modified clickable" :class="{active: diffFilter==='modified'}"
+                                  @click="toggleDiffFilter('modified')">修改 <b>{{ diffResult.modified.length
+                                }}</b></span>
+                            <span v-if="!diffResult.rows.length && !diffFilter"
+                                  class="diff-stat-chip none">两轮约束完全一致</span>
+                            <button v-if="diffFilter" class="diff-reset-btn" @click="resetDiffFilter">重置</button>
+                        </div>
+                        <el-table :data="editMode ? editConstraints : relRows" class="op-table">
+                            <el-table-column type="index" label="#" width="40" align="center"></el-table-column>
+
+                            <!-- 类型: 始终只读 -->
+                            <el-table-column label="类型" width="180">
+                                <template #default="{ row }">
+                                    <span class="c-type-tag">{{ row.expr_type || '-' }}</span>
+                                </template>
+                            </el-table-column>
+
+                            <!-- 表达式: 只读文本 / 编辑 textarea (唯一可编辑列); 修改时显示 diff -->
+                            <el-table-column label="表达式 Expr" min-width="320">
+                                <template #default="{ row }">
+                                    <div v-if="editMode">
+                                        <el-input v-model="row.expr" type="textarea" :rows="2" size="small"
+                                                  class="c-cell-edit"></el-input>
+                                    </div>
+                                    <template v-else>
+                                        <!-- 修改: diff2html 风格统一 diff 块 -->
+                                        <div v-if="row._diff && row._diff.type === 'modified'" class="d2h-diff">
+                                            <div class="d2h-line d2h-del">
+                                                <span class="d2h-prefix">-</span>
+                                                <span class="d2h-code">{{ row._diff.prevExpr }}</span>
+                                            </div>
+                                            <div class="d2h-line d2h-ins">
+                                                <span class="d2h-prefix">+</span>
+                                                <span class="d2h-code" v-html="row._diff.html"></span>
+                                            </div>
+                                            <div v-if="row._diff.changedFields && row._diff.changedFields.length"
+                                                 class="d2h-fields">
+                                                变更字段：
+                                                <span v-for="f in row._diff.changedFields" :key="f"
+                                                      class="d2h-field">{{ f }}</span>
+                                            </div>
+                                        </div>
+                                        <!-- 新增: 整条为新增 -->
+                                        <div v-else-if="row._diff && row._diff.type === 'added'" class="c-expr-text">
+                                            <ins>{{ row.expr }}</ins>
+                                        </div>
+                                        <!-- 删除: 整条为删除 -->
+                                        <div v-else-if="row._diff && row._diff.type === 'removed'" class="c-expr-text">
+                                            <del>{{ row.expr }}</del>
+                                        </div>
+                                        <!-- 无变化 -->
+                                        <div v-else class="c-expr-text">{{ row.expr }}</div>
+                                    </template>
+                                </template>
+                            </el-table-column>
+
+                            <!-- 原始文本: 始终只读, 可点击定位原文 -->
+                            <el-table-column label="原始文本" min-width="280">
+                                <template #default="{ row }">
+                                    <div v-if="row.src_text" class="c-src-text c-src-link"
+                                         title="点击在算子文档中定位原文"
+                                         @click="showSrcInDoc(row)">
+                                        {{ row.src_text }}
+                                    </div>
+                                    <span v-else class="c-src-text" style="color:var(--text-muted)">-</span>
+                                </template>
+                            </el-table-column>
+
+                            <!-- 关联参数: 始终只读 -->
+                            <el-table-column label="关联参数" min-width="200">
+                                <template #default="{ row }">
+                                    <div class="c-params">
+                                        <span v-for="p in (row.relation_params || [])" :key="p"
+                                              class="c-param-chip">{{ p }}</span>
+                                    </div>
+                                </template>
+                            </el-table-column>
+
+                            <!-- 状态: 始终只读, 支持表头筛选 -->
+                            <el-table-column label="状态" width="80" align="center"
+                                             :filters="statusFilterOptions"
+                                             :filter-method="(val, row) => !val ? true : (val === 'pass' ? !row._pflErrors.length : row._pflErrors.length)">
+                                <template #default="{ row }">
+                                    <el-tag :type="row._pflErrors.length ? 'danger' : 'success'" size="small">
+                                        {{ row._pflErrors.length ? '不通过' : '通过' }}
+                                    </el-tag>
+                                </template>
+                            </el-table-column>
+
+                            <!-- 错误信息: 始终只读, 来自 analysis.json PFL -->
+                            <el-table-column label="错误信息" min-width="220">
+                                <template #default="{ row }">
+                                    <div v-if="row._pflErrors.length"
+                                         style="display:flex;flex-direction:column;gap:3px">
+                                        <div v-for="(e, ei) in row._pflErrors" :key="ei"
+                                             style="font-size:12px;color:var(--red);white-space:pre-wrap;word-break:break-word">
+                                            <span style="font-weight:600">[{{ e.id }}]</span> {{ e.target }}
+                                        </div>
+                                    </div>
+                                    <span v-else style="color:var(--text-muted)">-</span>
+                                </template>
+                            </el-table-column>
+
+                            <!-- 操作列: 仅编辑态 -->
+                            <el-table-column v-if="editMode" label="" width="50" align="center">
+                                <template #default="{ $index }">
+                                    <el-button size="small" type="danger" plain circle
+                                               @click="removeConstraint($index)">✕
+                                    </el-button>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
+                </div>
+                </div>
+
+                <!-- 输入参数 -->
+                <div class="card" :class="{expanded: activePanels.includes('inputs')}" data-panel="io">
+                    <div class="card-header" @click="togglePanel('inputs')">
+                        <div class="title-row">
+                            <div class="card-title">
+                                <div class="icon icon-input">📥</div>
+                                输入参数 Inputs
+                            </div>
+                            <div class="card-count">{{ inputRows.length }} 个参数</div>
+                        </div>
+                        <div class="card-toggle" :class="{open: activePanels.includes('inputs')}">▾</div>
+                    </div>
+                    <div class="card-body" v-show="activePanels.includes('inputs')">
+                        <div class="table-pad">
+                        <el-table :data="inputRows" class="op-table">
+                            <el-table-column label="参数名" min-width="120" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="param-name mono">{{ row.name }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="类型 Type" min-width="110" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.type) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="格式 Format" min-width="110" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.format) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="数据类型 DType" min-width="160" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.dtype) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="维度 Dimensions" min-width="100" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.dimensions) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="数组长度" min-width="90" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.array_length)
+                                    }}</span></template>
+                            </el-table-column>
+                            <el-table-column label="可选" width="70" align="center">
+                                <template #default="{ row }">{{ boolText(row.p.is_optional) }}</template>
+                            </el-table-column>
+                            <el-table-column label="非连续" width="80" align="center">
+                                <template #default="{ row }">{{ boolText(row.p.is_support_discontinuous) }}</template>
+                            </el-table-column>
+                            <el-table-column label="描述" min-width="220" show-overflow-tooltip>
+                                <template #default="{ row }"><span>{{ cellText(row.p.description) || '-' }}</span>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
+                </div>
+                </div>
+
+                <!-- 输出参数 -->
+                <div class="card" :class="{expanded: activePanels.includes('outputs')}" data-panel="io">
+                    <div class="card-header" @click="togglePanel('outputs')">
+                        <div class="title-row">
+                            <div class="card-title">
+                                <div class="icon icon-output">📤</div>
+                                输出参数 Outputs
+                            </div>
+                            <div class="card-count">{{ outputRows.length }} 个参数</div>
+                        </div>
+                        <div class="card-toggle" :class="{open: activePanels.includes('outputs')}">▾</div>
+                    </div>
+                    <div class="card-body" v-show="activePanels.includes('outputs')">
+                        <div class="table-pad">
+                        <el-table :data="outputRows" class="op-table">
+                            <el-table-column label="参数名" min-width="120" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="param-name mono">{{ row.name }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="类型 Type" min-width="110" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.type) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="格式 Format" min-width="110" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.format) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="数据类型 DType" min-width="160" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.dtype) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="维度 Dimensions" min-width="100" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.dimensions) }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="数组长度" min-width="90" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ cellText(row.p.array_length)
+                                    }}</span></template>
+                            </el-table-column>
+                            <el-table-column label="可选" width="70" align="center">
+                                <template #default="{ row }">{{ boolText(row.p.is_optional) }}</template>
+                            </el-table-column>
+                            <el-table-column label="非连续" width="80" align="center">
+                                <template #default="{ row }">{{ boolText(row.p.is_support_discontinuous) }}</template>
+                            </el-table-column>
+                            <el-table-column label="描述" min-width="220" show-overflow-tooltip>
+                                <template #default="{ row }"><span>{{ cellText(row.p.description) || '-' }}</span>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
+                </div>
+                </div>
+        </div>
+
+    </div>
+
+    <!-- 原文定位弹框 -->
+    <el-dialog v-model="docDialogVisible" :title="docDialogTitle" width="70%" top="5vh" destroy-on-close>
+        <div v-if="docDialogLoading" style="text-align:center;padding:40px;color:var(--text-muted)">
+            加载算子文档中...
+        </div>
+        <div v-else-if="docDialogError" style="text-align:center;padding:40px;color:var(--red)">
+            {{ docDialogError }}
+        </div>
+        <div v-else class="doc-viewer" ref="docViewerRef">
+            <div v-for="(line, li) in docLines" :key="li"
+                 class="doc-line"
+                 :class="{'doc-line-hit': docHitLines.has(li)}">
+                <span class="doc-line-no">{{ li + 1 }}</span>
+                <span class="doc-line-text">{{ line }}</span>
+            </div>
+        </div>
+        <template #footer>
+            <span style="margin-right:auto;font-size:12px;color:var(--text-muted)">
+                共 {{ docLines.length }} 行，高亮 {{ docHitLines.size }} 行匹配
+            </span>
+            <el-button @click="docDialogVisible = false">关闭</el-button>
+        </template>
+    </el-dialog>
+    </el-config-provider>
+</div>
+
+<!-- Vue 3 + Element Plus (CDN, 无构建) -->
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/element-plus/dist/index.full.min.js"></script>
+<script src="operator-result.js"></script>
+</body>
+</html>

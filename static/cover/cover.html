@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>算子覆盖率展示</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <link rel="stylesheet" href="cover.css">
+</head>
+<body>
+<div id="app">
+    <!-- 顶栏 -->
+    <div class="topbar">
+        <div class="topbar-title">算子覆盖率展示</div>
+        <div class="divider-v"></div>
+        <el-button size="small" plain @click="goBack">← 返回约束审核</el-button>
+    </div>
+
+    <!-- 主体: 左侧目录 + 右侧详情 -->
+    <div class="cover-main">
+        <!-- 左侧: 覆盖率数据目录列表 -->
+        <div class="cover-sidebar">
+            <div class="sidebar-header">
+                <span>覆盖率数据</span>
+                <el-tag size="small" type="info">{{ filteredDirs.length }}</el-tag>
+            </div>
+            <div class="sidebar-search">
+                <el-input v-model="coverSearch" placeholder="筛选算子/目录" size="small" clearable
+                          prefix-icon="Search"></el-input>
+            </div>
+            <div class="sidebar-list">
+                <div v-if="!coverDirs.length" class="sidebar-empty">暂无覆盖率数据</div>
+                <div v-for="d in filteredDirs" :key="d.dir_name" class="sidebar-item"
+                     :class="{active: d.dir_name === currentCoverDir}" @click="selectCoverDir(d)">
+                    <div class="si-name">{{ d.operator }}</div>
+                    <div class="si-dir">{{ d.dir_name }}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧: 详情 -->
+        <div class="cover-detail">
+            <div v-if="detailLoading" class="detail-loading">加载中...</div>
+            <div v-else-if="!currentCoverDir" class="detail-empty">
+                <div class="empty-icon">📊</div>
+                <div>请从左侧选择覆盖率数据</div>
+            </div>
+            <template v-else-if="coverData">
+                <!-- 算子信息 -->
+                <div class="op-info-bar">
+                    <div class="op-info-left">
+                        <span class="op-name">{{ coverData.operator }}</span>
+                        <el-tag size="small" type="info" v-if="opDomain">{{ opDomain }}</el-tag>
+                        <span class="op-dir" v-if="opDir">{{ opDir }}</span>
+                    </div>
+                    <!-- 粒度切换 -->
+                    <el-radio-group v-model="granularity" size="small">
+                        <el-radio-button label="file">file 粒度</el-radio-button>
+                        <el-radio-button label="func">func 粒度</el-radio-button>
+                    </el-radio-group>
+                </div>
+
+                <!-- 覆盖率环形图: 4 模块各一环 (covered/total, 环心综合率, tooltip 展开明细) -->
+                <div class="cov-rings" v-if="chartReady">
+                    <div v-for="mod in coverModules" :key="mod" class="cov-ring-item">
+                        <div class="cov-ring-head">
+                            <span class="cov-ring-mod">{{ mod }}</span>
+                            <span class="cov-ring-count" v-if="modCount(mod) !== null">{{ modCount(mod) }} 项</span>
+                        </div>
+                        <div :ref="el => ringEls[mod] = el" class="cov-ring-body"></div>
+                    </div>
+                </div>
+
+                <!-- 折叠面板: 未覆盖函数(含原因) / 已覆盖函数(含未覆盖行详情) -->
+                <el-collapse v-model="activePanels" class="cover-panels">
+                    <el-collapse-item name="uncovered" v-if="uncoveredRows.length">
+                        <template #title>
+                            <div class="panel-title">
+                                <span>未覆盖函数</span>
+                                <el-tag size="small" type="danger">{{ uncoveredRows.length }}</el-tag>
+                            </div>
+                        </template>
+                        <el-table :data="uncoveredRows" class="op-table" max-height="480" size="small" row-key="name">
+                            <el-table-column type="expand">
+                                <template #default="{ row }">
+                                    <div class="uc-expand" v-if="row.reason">
+                                        <div class="uc-reason-label">原因说明</div>
+                                        <div class="uc-reason-text">{{ row.reason }}</div>
+                                    </div>
+                                    <div class="uc-expand-empty" v-else>暂无分析说明</div>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="模块" width="70">
+                                <template #default="{ row }">
+                                    <el-tag size="small" :type="row.module === 'kernel' ? 'warning' : 'info'">
+                                        {{ row.module }}
+                                    </el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="函数名" min-width="240" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
+                            </el-table-column>
+                            <el-table-column label="分类" min-width="160" show-overflow-tooltip>
+                                <template #default="{ row }">
+                                    <span class="uc-category">{{ row.category || '-' }}</span>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="能否覆盖" width="90" align="center">
+                                <template #default="{ row }">
+                                    <el-tag size="small" :type="coverTagType(row.coverable)" effect="light">
+                                        {{ row.coverable || '-' }}
+                                    </el-tag>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </el-collapse-item>
+
+                    <el-collapse-item name="covered" v-if="coveredFuncRows.length">
+                        <template #title>
+                            <div class="panel-title">
+                                <span>已覆盖函数（未覆盖行详情）</span>
+                                <el-tag size="small" type="success">{{ coveredFuncRows.length }}</el-tag>
+                            </div>
+                        </template>
+                        <el-table :data="coveredFuncRows" class="op-table" size="small" row-key="name">
+                            <el-table-column type="expand">
+                                <template #default="{ row }">
+                                    <div class="cv-expand" v-if="row.hasAnalysis">
+                                        <div class="cv-summary">
+                                            <span>已覆盖 <b>{{ row.lineCount }}</b> 行</span>
+                                            <span v-if="row.uncoveredLines" class="cv-uncovered-num">未覆盖 <b>{{ row.uncoveredLines }}</b> 行</span>
+                                            <span class="cv-total-lines">{{ funcDetails(row.name).length }} 条行级分析</span>
+                                        </div>
+                                        <div class="line-cards">
+                                            <div v-for="(d, i) in funcDetails(row.name)" :key="i"
+                                                 class="line-card" :class="coverTypeOf(d.coverable)">
+                                                <div class="lc-head">
+                                                    <span class="lc-lineno">L{{ d.lineno }}</span>
+                                                    <el-tag size="small" :type="coverTagType(d.coverable)" effect="light">
+                                                        {{ normalizeCover(d.coverable) }}
+                                                    </el-tag>
+                                                </div>
+                                                <div class="lc-src mono" v-if="d.src" v-html="d.src"></div>
+                                                <div class="lc-reason" v-if="d.reason"><span class="lc-label">原因</span><span v-html="d.reason"></span></div>
+                                                <div class="lc-suggest" v-if="d.suggest"><span class="lc-label">建议</span><span v-html="d.suggest"></span></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="uc-expand-empty" v-else>暂无行级分析</div>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="函数名" min-width="240" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
+                            </el-table-column>
+                            <el-table-column label="文件" min-width="280" show-overflow-tooltip>
+                                <template #default="{ row }"><span class="mono cm-path">{{ row.dir }}</span></template>
+                            </el-table-column>
+                            <el-table-column label="已覆盖" width="70" align="center">
+                                <template #default="{ row }">{{ row.lineCount }} 行</template>
+                            </el-table-column>
+                            <el-table-column label="未覆盖" width="80" align="center">
+                                <template #default="{ row }">
+                                    <span v-if="row.uncoveredLines" class="cv-uncovered-tag">{{ row.uncoveredLines }} 行</span>
+                                    <span v-else>-</span>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </el-collapse-item>
+                </el-collapse>
+            </template>
+            <div v-else class="detail-empty">
+                <div class="empty-icon">⚠️</div>
+                <div>该目录无有效覆盖率数据</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/element-plus/dist/index.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+<script src="cover.js"></script>
+</body>
+</html>

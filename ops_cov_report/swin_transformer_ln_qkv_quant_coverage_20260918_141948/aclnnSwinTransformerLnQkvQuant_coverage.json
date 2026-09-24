@@ -1,0 +1,579 @@
+{
+  "operator": "aclnnSwinTransformerLnQkvQuant",
+  "operatorInfo": {
+    "name": "aclnnSwinTransformerLnQkvQuant",
+    "dir": "swin_transformer_ln_qkv_quant",
+    "domain": "ffn",
+    "kernelMatchName": "swintransformerlnqkvquant",
+    "otherOpsSameDir": []
+  },
+  "sourceFiles": {
+    "file": ".opencode\\skills\\op-covdata-process\\hitest_export\\file_coverage_covdata_20260914_192103_20260915_101759.xlsx",
+    "func": ".opencode\\skills\\op-covdata-process\\hitest_export\\function_coverage_covdata_20260914_192103_20260915_101759.xlsx",
+    "linenum": ".opencode\\skills\\op-covdata-process\\hitest_export\\invoke_coverage_covdata_20260914_192103_20260915_101759.xlsx"
+  },
+  "granularities": {
+    "file": {
+      "file": ".opencode\\skills\\op-covdata-process\\hitest_export\\file_coverage_covdata_20260914_192103_20260915_101759.xlsx",
+      "granularity": "file",
+      "operatorInfo": {
+        "name": "aclnnSwinTransformerLnQkvQuant",
+        "dir": "swin_transformer_ln_qkv_quant",
+        "domain": "ffn",
+        "kernelMatchName": "swintransformerlnqkvquant",
+        "otherOpsSameDir": [],
+        "matchedFiles": {
+          "host": 4,
+          "kernel": 2,
+          "op": 6,
+          "effective": 23,
+          "excluded": 0
+        }
+      },
+      "coverage": {
+        "host": {
+          "count": 4,
+          "metrics": [
+            {
+              "name": "函数覆盖率",
+              "covered": 41,
+              "total": 61,
+              "rate": 67.21
+            },
+            {
+              "name": "语句覆盖率",
+              "covered": 243,
+              "total": 398,
+              "rate": 61.06
+            },
+            {
+              "name": "分支覆盖率",
+              "covered": 61,
+              "total": 172,
+              "rate": 35.47
+            }
+          ]
+        },
+        "kernel": {
+          "count": 2,
+          "metrics": [
+            {
+              "name": "函数覆盖率",
+              "covered": 0,
+              "total": 4,
+              "rate": 0
+            },
+            {
+              "name": "语句覆盖率",
+              "covered": 0,
+              "total": 17,
+              "rate": 0
+            },
+            {
+              "name": "分支覆盖率",
+              "covered": 0,
+              "total": 2,
+              "rate": 0
+            }
+          ]
+        },
+        "tiling": {
+          "count": 2,
+          "metrics": [
+            {
+              "name": "函数覆盖率",
+              "covered": 41,
+              "total": 56,
+              "rate": 73.21
+            },
+            {
+              "name": "语句覆盖率",
+              "covered": 243,
+              "total": 299,
+              "rate": 81.27
+            },
+            {
+              "name": "分支覆盖率",
+              "covered": 61,
+              "total": 112,
+              "rate": 54.46
+            }
+          ]
+        },
+        "op": {
+          "count": 6,
+          "metrics": [
+            {
+              "name": "函数覆盖率",
+              "covered": 41,
+              "total": 65,
+              "rate": 63.08
+            },
+            {
+              "name": "语句覆盖率",
+              "covered": 243,
+              "total": 415,
+              "rate": 58.55
+            },
+            {
+              "name": "分支覆盖率",
+              "covered": 61,
+              "total": 174,
+              "rate": 35.06
+            }
+          ]
+        }
+      },
+      "uncoveredFiles": []
+    },
+    "func": {
+      "file": ".opencode\\skills\\op-covdata-process\\hitest_export\\function_coverage_covdata_20260914_192103_20260915_101759.xlsx",
+      "granularity": "func",
+      "operatorInfo": {
+        "name": "aclnnSwinTransformerLnQkvQuant",
+        "dir": "swin_transformer_ln_qkv_quant",
+        "domain": "ffn",
+        "kernelMatchName": "swintransformerlnqkvquant",
+        "otherOpsSameDir": [],
+        "matchedFuncs": {
+          "host": 59,
+          "kernel": 4,
+          "op": 63,
+          "excluded": 249
+        }
+      },
+      "coverage": {
+        "host": {
+          "count": 59,
+          "metrics": [
+            {
+              "name": "函数覆盖率",
+              "covered": 39,
+              "total": 59,
+              "rate": 66.1
+            },
+            {
+              "name": "行覆盖率",
+              "covered": 243,
+              "total": 398,
+              "rate": 61.06
+            },
+            {
+              "name": "分支覆盖率",
+              "covered": 61,
+              "total": 172,
+              "rate": 35.47
+            }
+          ]
+        },
+        "kernel": {
+          "count": 4,
+          "metrics": [
+            {
+              "name": "函数覆盖率",
+              "covered": 0,
+              "total": 4,
+              "rate": 0
+            },
+            {
+              "name": "行覆盖率",
+              "covered": 0,
+              "total": 17,
+              "rate": 0
+            },
+            {
+              "name": "分支覆盖率",
+              "covered": 0,
+              "total": 2,
+              "rate": 0
+            }
+          ]
+        },
+        "tiling": {
+          "count": 54,
+          "metrics": [
+            {
+              "name": "函数覆盖率",
+              "covered": 39,
+              "total": 54,
+              "rate": 72.22
+            },
+            {
+              "name": "行覆盖率",
+              "covered": 243,
+              "total": 299,
+              "rate": 81.27
+            },
+            {
+              "name": "分支覆盖率",
+              "covered": 61,
+              "total": 112,
+              "rate": 54.46
+            }
+          ]
+        },
+        "op": {
+          "count": 63,
+          "metrics": [
+            {
+              "name": "函数覆盖率",
+              "covered": 39,
+              "total": 63,
+              "rate": 61.9
+            },
+            {
+              "name": "行覆盖率",
+              "covered": 243,
+              "total": 415,
+              "rate": 58.55
+            },
+            {
+              "name": "分支覆盖率",
+              "covered": 61,
+              "total": 174,
+              "rate": 35.06
+            }
+          ]
+        }
+      },
+      "uncoveredFuncs": {
+        "host": [
+          {
+            "name": "InferDataTypeSwinTransformerLnQkvQuant",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_infershape.cpp"
+          },
+          {
+            "name": "InferShapeSwinTransformerLnQkvQuant",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_infershape.cpp"
+          },
+          {
+            "name": "SetAllUnknownDim",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_infershape.cpp"
+          },
+          {
+            "name": "SetUnknownRank",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_infershape.cpp"
+          },
+          {
+            "name": "SwinTransformerLnQkvQuant",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_def.cpp"
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantSetMatmulMutiTilingData",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp"
+          },
+          {
+            "name": "TilingPrepareForSwinTransformerLnQkvQuant",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp"
+          },
+          {
+            "name": "set_dimNum",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_inputSizeSum",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_lnBlockNum",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_lnBufferNum",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_loopNum",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_loopSum",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_mDim",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_maxCoreNum",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_mmLoopNum",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_nDim",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_resverd1",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_shareUbForMm",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          },
+          {
+            "name": "set_workSpaceSize",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h"
+          }
+        ],
+        "kernel": [
+          {
+            "name": "InitTilingData",
+            "dir": "kernel_meta/SwinTransformerLnQkvQuant_4dec286644abc08416b9d6230ecb902e_tiling_data.h"
+          },
+          {
+            "name": "SwinTransformerLnQkvQuant_4dec286644abc08416b9d6230ecb902e_0",
+            "dir": "kernel_meta/SwinTransformerLnQkvQuant_4dec286644abc08416b9d6230ecb902e_kernel.cpp"
+          },
+          {
+            "name": "SwinTransformerLnQkvQuant_4dec286644abc08416b9d6230ecb902e_100000",
+            "dir": "kernel_meta/SwinTransformerLnQkvQuant_4dec286644abc08416b9d6230ecb902e_kernel.cpp"
+          },
+          {
+            "name": "ascendc_auto_gen_swin_transformer_ln_qkv_quant_kernel",
+            "dir": "kernel_meta/SwinTransformerLnQkvQuant_4dec286644abc08416b9d6230ecb902e_kernel.cpp"
+          }
+        ]
+      },
+      "coveredFuncLineDetail": {
+        "file": ".opencode\\skills\\op-covdata-process\\hitest_export\\invoke_coverage_covdata_20260914_192103_20260915_101759.xlsx",
+        "coveredFuncCount": 13,
+        "totalLines": 112,
+        "items": [
+          {
+            "name": "FieldHandler",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.h",
+            "lineStr": "27,51,63",
+            "lineCount": 3,
+            "covered_lines": [
+              27,
+              51,
+              63
+            ]
+          },
+          {
+            "name": "GetBaseParams",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "246,248,251,252,254,255,256,257,259,260,263,264,268,269,270,271,272,273,274,275,285,286,287,288,289,291,292,297,298,300,301",
+            "lineCount": 31,
+            "covered_lines": [
+              246,
+              248,
+              251,
+              252,
+              254,
+              255,
+              256,
+              257,
+              259,
+              260,
+              263,
+              264,
+              268,
+              269,
+              270,
+              271,
+              272,
+              273,
+              274,
+              275,
+              285,
+              286,
+              287,
+              288,
+              289,
+              291,
+              292,
+              297,
+              298,
+              300,
+              301
+            ]
+          },
+          {
+            "name": "IsSupport",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "318",
+            "lineCount": 1,
+            "covered_lines": [
+              318
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantBaseInfoOpSwinTransformerLnQkvQuantBaseInfoHelper",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.h",
+            "lineStr": "49",
+            "lineCount": 1,
+            "covered_lines": [
+              49
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantGetMatmulTmpSize",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "195,197,199,201,202,204,205,206,207,208,209",
+            "lineCount": 11,
+            "covered_lines": [
+              195,
+              197,
+              199,
+              201,
+              202,
+              204,
+              205,
+              206,
+              207,
+              208,
+              209
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantMmInfoOpSwinTransformerLnQkvQuantMmInfoHelper",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.h",
+            "lineStr": "61",
+            "lineCount": 1,
+            "covered_lines": [
+              61
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantSaveTilingData",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "79,80",
+            "lineCount": 2,
+            "covered_lines": [
+              79,
+              80
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantSetMatmulTilingData",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "167,169,171,173,175,178,179,180,181,182,183,184,185",
+            "lineCount": 13,
+            "covered_lines": [
+              167,
+              169,
+              171,
+              173,
+              175,
+              178,
+              179,
+              180,
+              181,
+              182,
+              183,
+              184,
+              185
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantSetTilingKey",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "140,141",
+            "lineCount": 2,
+            "covered_lines": [
+              140,
+              141
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantSetWorkSpace",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "87,88",
+            "lineCount": 2,
+            "covered_lines": [
+              87,
+              88
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantSwinTransformerLnQkvQuantTilingDataHelper",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.h",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.h",
+            "lineStr": "80",
+            "lineCount": 1,
+            "covered_lines": [
+              80
+            ]
+          },
+          {
+            "name": "SwinTransformerLnQkvQuantTilingMainProc",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "336,337,339,342,343,346,347,348,355,356,357,358,359,364,378,379,415,421,426,449,468,487,489,491,492,493,494,495,496,497,499,501,502,503,504,508,510,511,518,519,521,522",
+            "lineCount": 42,
+            "covered_lines": [
+              336,
+              337,
+              339,
+              342,
+              343,
+              346,
+              347,
+              348,
+              355,
+              356,
+              357,
+              358,
+              359,
+              364,
+              378,
+              379,
+              415,
+              421,
+              426,
+              449,
+              468,
+              487,
+              489,
+              491,
+              492,
+              493,
+              494,
+              495,
+              496,
+              497,
+              499,
+              501,
+              502,
+              503,
+              504,
+              508,
+              510,
+              511,
+              518,
+              519,
+              521,
+              522
+            ]
+          },
+          {
+            "name": "TilingFuncForSwinTransformerLnQkvQuant",
+            "dir": "op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "fullPath": "/home/slave1/cann-oss-repo/ops-transformer/ffn/swin_transformer_ln_qkv_quant/op_host/swin_transformer_ln_qkv_quant_tiling.cpp",
+            "lineStr": "529,531",
+            "lineCount": 2,
+            "covered_lines": [
+              529,
+              531
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

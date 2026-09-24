@@ -257,6 +257,13 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         resolution 或人工操作修改了 constraints，旧 passed 立即失效；运行
         `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --current-round 0 --status pending`，
         并针对新版本重新执行完整 check 预算。
+   - **DASHBOARD 拉起（首轮 CHECK 通过后、进 GENERATE/终止前）**：首轮 CONSTRAINT
+      CHECK/REPAIR `passed` 后，运行
+      `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_001`（探测 8899 未监听则
+      后台拉起 `dashboard_server.py`；`run_state.dashboard_raised=false` 时打开浏览器一次并置 true，
+      已拉起则仅返回 URL）。把返回的 URL 提示给用户「可在该网页监控本轮约束/执行/诊断；人工修复时
+      亦在此编辑提交」。页面 5 秒轮询会自动跟随 EXECUTE/DIAGNOSE 到终态，无需手动刷新。仅首轮拉起一次；
+      后续轮次 `dashboard_raised=true`，人工修复检查点再调该脚本时仅返回 URL。
    - **constraints-only 终止**：若 `run_state.test_framework="constraints"`，在 EXTRACT
      和可能的 SUPPLEMENT、CONSTRAINT CHECK/REPAIR 完成后运行 constraints
      normalize/validate；只有当前 iteration 的 `constraint_check.json.status=passed` 才运行
@@ -353,9 +360,12 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
      自动更新前先弹 AskUserQuestion 检查点（**四选一**，固定顺序），
      并把`human_checkpoint_resolved_iteration` 置为 `current_iteration`（防上下文压缩后对同一轮 重复询问）：
      1. **人工修复**（仅 `human_constraints_upload == true` 时可选；false 时该选项标注"需带
-        `--human-constraints-upload` 启用"）：挂起 `AWAITING_HUMAN_CONSTRAINTS` + 挂监听器，
-        等待用户把修改后的约束上传到 `<run>/iter_<N>/constraints_copy.json`，走「挂起、监听与唤醒」节，
-        文件上传完成触发下一轮。
+        `--human-constraints-upload` 启用"）：先运行
+        `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N>`（页面已拉起则仅返回 URL、
+        未拉起则拉起浏览器一次），把返回的 URL 提示给用户「请到该网页编辑约束并提交，网页提交会自动生成
+        `<run>/iter_<N>/constraints_copy.json`」；随后挂起 `AWAITING_HUMAN_CONSTRAINTS` + 挂监听器，
+        监听器仍检测 `iter_<N>/constraints_copy.json` 出现+稳定后唤醒（文件来源由手动上传改为网页提交，
+        监听机制不变），走「挂起、监听与唤醒」节。
      2. **人工补充**（原检查点选项）：用户补充事实/证据，append 到
         `inputs/supplement_constraints.md`，重新运行 failure-analyst 形成可校验 findings 后再进
         下方自动更新。
@@ -425,10 +435,11 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
 2. **诊断摘要**：向用户输出本轮诊断摘要（`failure_clusters`、每簇 `root_cause` +
    `recommended_action`、`overall_action`、`constraint_findings`、`root_cause_summary`），
    明确告诉用户「这些是发现的问题，请在约束文件里据此修改」。
-3. **等待用户上传（agent 不创建文件）**：**不复制**任何文件。告诉用户当前轮约束只读基线
-   是 `<run>/iter_<N>/constraints.json`；用户据此（或经 web 页面）编辑后把修改后的约束
-   **上传**到 `<run>/iter_<N>/constraints_copy.json`。文件出现即代表用户已上传、准备开启
-   下一轮；文件尚未出现即代表用户仍在修改/尚未上传，继续等待。
+3. **提示用户到网页修改（agent 不创建文件）**：**不复制**任何文件。运行
+   `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N>`（页面已拉起则仅返回 URL、
+   未拉起则拉起浏览器一次），把返回的 URL 提示给用户：「请到该网页编辑约束并提交，网页提交会自动生成
+   `<run>/iter_<N>/constraints_copy.json`」；当前轮约束只读基线是 `<run>/iter_<N>/constraints.json`。
+   文件出现即代表用户已在网页提交、准备开启下一轮；文件尚未出现即代表用户仍在修改，继续等待。
 4. **挂监听器**：用 `Monitor` 工具（`persistent: true`，命令为单条绝对路径、无变量/管道/
    shell 循环——遵守 WORKFLOW.md Monitor 用法纪律）挂起监听器：
    `<venv-python-absolute> <repo-absolute>/scripts/watch_constraints_copy.py --run-dir <run-dir-absolute>`
