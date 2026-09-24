@@ -65,7 +65,10 @@ runs/<operator>-<timestamp>/
 constraint_check 子状态维护节点分别调用其 `set-state` / `set-fields` /
 `set-constraint-check` 子命令；`init_run.py`、`render_scene_directive.py`、
 `update_supplement_state.py` 的落盘委托其库函数。任何角色不得手动 Edit 该文件。
-`history` 条目格式为 `{"state": <状态名>, "at": <ISO8601>}`，终态失败可附 `"code"`
+`history` 条目格式为 `{"state": <状态名>, "at": <ISO8601 开始时刻>, "ended_at"?:
+<ISO8601 结束时刻>}`：`at` 是进入该状态的时刻，`ended_at` 由下一次迁移回填（与
+新条目 `at` 同值），最后一条（当前状态 / 终态）不带 `ended_at` 表示尚未结束。
+终态失败可附 `"code"`
 （如 `CONSTRAINT_CHECK_FAILED`），constraints-only 成功附
 `"event": "CONSTRAINTS_ONLY_SUCCESS"`。`updated_at` 刷新点：
 `set-constraint-check` 与 scene/supplement 脚本落盘时刷新，`set-state` /

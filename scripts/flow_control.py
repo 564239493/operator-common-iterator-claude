@@ -18,7 +18,8 @@ iteration 的落盘产物，按内置迁移规则表（docs/WORKFLOW.md §3 状�
 exit code: TRANSIT/HOLD/NOOP = 0; NO_ROUTE = 4; 输入/产物读取异常 = 2。
 
 落盘约束（与 run_state.py cmd_set_state 语义对齐）:
-  - 写 ``state`` 并 append history 条目 ``{state, code?, event?, at}``；
+  - 写 ``state`` 并经 ``run_state.append_history_entry`` append history 条目
+    ``{state, code?, event?, at}``，同时给未闭合的上一条回填 ``ended_at``；
   - UPDATE_CONSTRAINTS / MIXED_FAILURE_REVIEW→UPDATE_CONSTRAINTS 迁移同时
     ``current_iteration += 1``（对应 set-state --bump-iteration）；
   - 不刷新 ``updated_at``；尾换行保持原文件状态。
@@ -32,7 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from run_state import ALLOWED_STATES, save_run_state
+from run_state import ALLOWED_STATES, append_history_entry, save_run_state
 from validate_artifacts import (
     validate_analysis,
     validate_cases,
@@ -575,19 +576,17 @@ def run_flow(run_dir: Path, dry_run: bool, user_decision: str | None) -> int:
 
     if decision == "TRANSIT" and not dry_run:
         data["state"] = to_state
-        entry: dict[str, Any] = {"state": to_state}
-        if verdict.get("code"):
-            entry["code"] = verdict["code"]
-        if verdict.get("event"):
-            entry["event"] = verdict["event"]
-        entry["at"] = _now()
-        history = data.setdefault("history", [])
-        if not isinstance(history, list):
+        try:
+            entry = append_history_entry(
+                data, str(to_state),
+                code=verdict.get("code") or "",
+                event=verdict.get("event") or "",
+                at=_now(),
+            )
+        except ValueError as exc:
             print(json.dumps({"ok": False, "decision": "ERROR",
-                              "error": "run_state.history must be a list"},
-                             ensure_ascii=False))
+                              "error": str(exc)}, ensure_ascii=False))
             return 2
-        history.append(entry)
         if verdict.get("bump_iteration"):
             data["current_iteration"] = ctx.iteration + 1
         save_run_state(state_path, data,

@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run_state import save_run_state, write_initial
+from run_state import append_history_entry, save_run_state, write_initial
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "run_state.py"
@@ -116,6 +116,13 @@ class TestLibrary(RunStateCliTestBase):
         with self.assertRaises(ValueError):
             write_initial(self.run_dir, state)
 
+    def test_append_history_entry_rejects_corrupt_history(self) -> None:
+        """history 非 list 时先抛 ValueError，不产生半截修改。"""
+        state = initial_state()
+        state["history"] = "corrupt"
+        with self.assertRaises(ValueError):
+            append_history_entry(state, "EXTRACT", at="2026-09-09T00:00:01+00:00")
+
 
 class TestSetState(RunStateCliTestBase):
     def test_advance_to_extract(self) -> None:
@@ -130,13 +137,35 @@ class TestSetState(RunStateCliTestBase):
         entry = state["history"][-1]
         self.assertEqual(set(entry), {"state", "at"})
         self.assertEqual(entry["state"], "EXTRACT")
+        # 上一条 PLAN 回填 ended_at = 新条目 at（状态开始/结束时间记账）
+        self.assertEqual(state["history"][0]["ended_at"], entry["at"])
         # set-state 不刷新 updated_at
         self.assertEqual(state["updated_at"], "2026-09-09T00:00:00+00:00")
         # 其他字段全不变
         expected = initial_state()
         expected["state"] = "EXTRACT"
-        expected["history"] = expected["history"] + [entry]
+        expected_plan = expected["history"][0]
+        expected_plan["ended_at"] = entry["at"]
+        expected["history"] = [expected_plan, entry]
         self.assertEqual(state, expected)
+
+    def test_history_start_end_times(self) -> None:
+        """连续迁移：闭合条目带 ended_at（= 后继 at）；新条目自身无 ended_at。"""
+        self.write_state(initial_state())
+        code, _ = run_cli("set-state", "--run-dir", str(self.run_dir), "--to", "EXTRACT")
+        self.assertEqual(code, 0)
+        state = self.read_state()
+        plan, extract = state["history"]
+        self.assertEqual(plan["ended_at"], extract["at"])  # PLAN 结束 = EXTRACT 开始
+        self.assertNotIn("ended_at", extract)  # 当前状态尚未结束
+        # 已闭合条目不被后续迁移再次改写（幂等）
+        plan_ended = plan["ended_at"]
+        code, _ = run_cli("set-state", "--run-dir", str(self.run_dir), "--to", "GENERATE")
+        self.assertEqual(code, 0)
+        state = self.read_state()
+        self.assertEqual(state["history"][0]["ended_at"], plan_ended)
+        self.assertEqual(state["history"][1]["ended_at"], state["history"][2]["at"])
+        self.assertNotIn("ended_at", state["history"][2])
 
     def test_blocked_with_code(self) -> None:
         self.write_state(initial_state())
