@@ -67,7 +67,8 @@ class ParamCombinationGenerator:
                 param_format_value = random.choice(param_format) if isinstance(param_format, list) else param_format
                 param_dtype = self.generate_dtype_property(input_name)
                 param_length = self.generate_length_property(input_name, param_type)
-                param_range_value_profile = self.generate_range_value_property(input_name, param_dtype)
+                param_range_value_profile = self.generate_range_value_property(param_name=input_name,
+                                                                               param_type=param_type, dtype=param_dtype)
                 param_is_optional, _ = DataHandleUtil.get_relevant_attribute_value(input_name,
                                                                                    input_attribute.is_optional,
                                                                                    "is_optional")
@@ -114,8 +115,9 @@ class ParamCombinationGenerator:
             return ParamModelConfig.DEFAULT_LIST_LENGTH
         choose_length_data = random.choice(length_value)
         if isinstance(choose_length_data, list):
-            length_range_data = DataHandleUtil.get_range_data_boundary(ParamModelConfig.INT_DTYPE[0],
-                                                                       choose_length_data)
+            length_range_data = DataHandleUtil.get_range_data_boundary(dtype=ParamModelConfig.INT_DTYPE[0],
+                                                                       data_type=param_type,
+                                                                       range_data=choose_length_data)
             if length_range_data is None:
                 logger.error(f"Generate parameter length, param name : '{param_name}', "
                              f"length value : '{length_value}' solve failed, use default length: "
@@ -194,9 +196,10 @@ class ParamCombinationGenerator:
         return param_dtype
 
     @staticmethod
-    def get_default_range_by_dtype(dtype: str):
+    def get_default_range_by_dtype(param_type: str, dtype: str):
         """
         如果无法根据allowed_value确定数据range模型，就根据数据类型选择默认模型，如果没有任何一项匹配上，则返回None
+        :param param_type: 参数类型
         :param dtype: 数据类型
         :return: 返回值
         """
@@ -204,11 +207,12 @@ class ParamCombinationGenerator:
             logger.warning(
                 f"Get default range value profile failed, dtype : '{dtype}' is not in dtype map, range model is None")
             return [None]
-        if DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype) in ParamModelConfig.FLOAT_DTYPE:
+        data_dtype = DataHandleUtil.data_dtype_map(data_type=param_type, data_ori_dtype=dtype)
+        if data_dtype in ParamModelConfig.FLOAT_DTYPE:
             range_value_profiles = ParamModelConfig.FLOAT_TENSOR_DATA_PROFILE
-        elif DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype) in ParamModelConfig.INT_DTYPE:
+        elif data_dtype in ParamModelConfig.INT_DTYPE:
             range_value_profiles = ParamModelConfig.INT_TENSOR_DATA_PROFILE
-        elif DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype) in ParamModelConfig.BOOL_DTYPE:
+        elif data_dtype in ParamModelConfig.BOOL_DTYPE:
             range_value_profiles = ParamModelConfig.BOOL_DATA_PROFILE
         else:
             logger.warning(
@@ -216,7 +220,7 @@ class ParamCombinationGenerator:
             range_value_profiles = [None]
         return range_value_profiles
 
-    def generate_range_value_property(self, param_name: str, dtype: str) -> str | int | float | bool:
+    def generate_range_value_property(self, param_name: str, param_type: str, dtype: str) -> str | int | float | bool:
         """
         生成参数的取值范围属性,检查parameter_constraint.allowed_values和parameter_constraint.not_allowed_values，
         1. 如果合法取值指定的固定取值，则设置为该值，如allowed_values = [0.01]
@@ -224,6 +228,7 @@ class ParamCombinationGenerator:
         [ near_max_val ], Normal. (Also include NaN if the type is float)
         3. 如果未指定任何信息：则离散化为：(Float): PosNormal, NegNormal, Zero, NaN, PosInf, NegInf, SubNormal
         (Integer): Pos, Neg, Zero, Max, Min
+        :param param_type: 参数类型
         :param param_name: 参数名称
         :param dtype: 数据类型
         :return: 数据取值模型名称或具体值
@@ -233,7 +238,8 @@ class ParamCombinationGenerator:
         param_attribute = self.operator_rule_data.inputs.get(param_name)
         if param_attribute is None:
             param_attribute = self.operator_rule_data.outputs.get(param_name)
-        default_data_profile = random.choice(ParamCombinationGenerator.get_default_range_by_dtype(dtype))
+        default_data_profile = random.choice(
+            ParamCombinationGenerator.get_default_range_by_dtype(param_type=param_type, dtype=dtype))
         allowed_values, value_type = DataHandleUtil.get_relevant_attribute_value(param_name,
                                                                                  param_attribute.allowed_range_value,
                                                                                  "allowed_range_value")
@@ -248,7 +254,8 @@ class ParamCombinationGenerator:
                 f"param : '{param_name}', range value type : '{value_type}', range value : '{select_allowed_value}'")
             return select_allowed_value
         if isinstance(select_allowed_value, list):
-            allowed_value_boundary = DataHandleUtil.get_range_data_boundary(dtype, select_allowed_value)
+            allowed_value_boundary = DataHandleUtil.get_range_data_boundary(dtype=dtype, data_type=param_type,
+                                                                            range_data=select_allowed_value)
             if allowed_value_boundary is None:
                 logger.error(
                     f"Operator: '{self.operator_rule_data.operator_name}', param: '{param_name}', "

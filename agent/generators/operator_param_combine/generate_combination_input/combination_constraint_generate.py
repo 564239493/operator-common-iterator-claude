@@ -3,6 +3,8 @@ import ast
 import re
 from typing import List, Set, Optional, Any, Dict, TYPE_CHECKING
 
+from agent.generators.common_utils.data_handle_utils import DataHandleUtil
+
 if TYPE_CHECKING:
     from agent.generators import OperatorRule
 from agent.generators.data_definition.constants import ParamModelConfig, DataMatchMap
@@ -138,12 +140,13 @@ class CombinationConstraintGenerate:
         return True
 
     @staticmethod
-    def get_param_range_value_expr(param_name: str, dtype_list: List[str], range_value_profile: List[Any]):
+    def get_param_range_value_expr(param_name: str, param_type:str, dtype_list: List[str], range_value_profile: List[Any]):
         """
         根据dtype确认data_profile可以取的数据模型，构建表达式进行约束
         如："(x1.dtype in ['FLOAT32','FLOAT16','BFLOAT16'] and x1.range in ['PosNormal','PosInf','SubNormal']) or (x1.dtype in ['INT8','INT16'] and x1.range in ['Zero','NegNormal','NaN'])"
         Args:
             param_name: 参数名称
+            param_type: 参数类型
             dtype_list: 参数支持的所有数据类型
             range_value_profile: 该参数支持的所有数据模型
         Returns: str表达式或None（无条件限制时）
@@ -153,7 +156,7 @@ class CombinationConstraintGenerate:
         int_dtype = []
         int_data_profile = []
         for dtype in dtype_list:
-            dtype_value = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype)
+            dtype_value = DataHandleUtil.data_dtype_map(data_type=param_type, data_ori_dtype=dtype)
             if dtype_value in ParamModelConfig.FLOAT_DTYPE:
                 float_dtype.append(dtype)
             elif dtype_value in ParamModelConfig.INT_DTYPE:

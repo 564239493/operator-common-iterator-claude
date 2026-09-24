@@ -41,12 +41,12 @@ class CombinationInputGenerate:
         self.constraint_generate = CombinationConstraintGenerate(operator_rule_data)
 
     @staticmethod
-    def get_default_range_by_dtype(dtype: str, int_tensor_data_profile, float_tensor_data_profile):
-        if dtype not in DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP:
+    def get_default_range_by_dtype(data_type: str, dtype: str, int_tensor_data_profile, float_tensor_data_profile):
+        dtype_value = DataHandleUtil.data_dtype_map(data_type, dtype)
+        if dtype_value is None:
             logger.warning(
                 f"Get default range value profile failed, dtype : '{dtype}' is not in dtype map, range model is None")
             return [None]
-        dtype_value = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype)
         if dtype_value in ParamModelConfig.FLOAT_DTYPE:
             range_value_profiles = float_tensor_data_profile
         elif dtype_value in ParamModelConfig.INT_DTYPE:
@@ -60,9 +60,10 @@ class CombinationInputGenerate:
         return range_value_profiles
 
     @staticmethod
-    def get_range_model_by_range(dtype: str, low: int = None, high: int = None):
+    def get_range_model_by_range(data_type: str, dtype: str, low: int = None, high: int = None):
         """
         如果无法根据allowed_value确定数据range模型，就根据数据类型选择默认模型，如果没有任何一项匹配上，则返回None
+        :param data_type: 参数类型
         :param dtype: 数据类型
         :param low : 范围值的下界
         :param high: 范围值的上界
@@ -80,7 +81,8 @@ class CombinationInputGenerate:
         else:
             int_tensor_data_profile = ParamModelConfig.INT_TENSOR_DATA_PROFILE
             float_tensor_data_profile = ParamModelConfig.FLOAT_TENSOR_DATA_PROFILE
-        range_value_profiles = CombinationInputGenerate.get_default_range_by_dtype(dtype, int_tensor_data_profile,
+        range_value_profiles = CombinationInputGenerate.get_default_range_by_dtype(data_type, dtype,
+                                                                                   int_tensor_data_profile,
                                                                                    float_tensor_data_profile)
         return range_value_profiles
 
@@ -225,8 +227,8 @@ class CombinationInputGenerate:
             f"operator name: '{self.operator_rule_data.operator_name}', param name: '{param_name}', format: '{format_set}'")
         return format_set
 
-    def generate_range_value_property_by_dtype(self, param_name: str, dtype: str) -> List[
-                                                                                         str | int | float | bool] | None:
+    def generate_range_value_property_by_dtype(self, param_name: str, data_type: str, dtype: str) -> List[
+                                                                                                         str | int | float | bool] | None:
         """
         生成参数的取值范围属性,检查parameter_constraint.allowed_values和parameter_constraint.not_allowed_values，
         1. 如果合法取值指定的固定取值，则设置为该值，如allowed_values = [0.01]
@@ -234,6 +236,7 @@ class CombinationInputGenerate:
         [ near_max_val ], Normal. (Also include NaN if the type is float)
         3. 如果未指定任何信息：则离散化为：(Float): PosNormal, NegNormal, Zero, NaN, PosInf, NegInf, SubNormal
         (Integer): Pos, Neg, Zero, Max, Min
+        :param data_type: 参数类型
         :param param_name: 参数名称
         :param dtype: 数据类型
         :return: 数据取值模型名称或具体值
@@ -243,16 +246,17 @@ class CombinationInputGenerate:
         param_attribute = self.get_param_attribute(param_name)
         if param_attribute is None:
             return None
-        default_data_profile = CombinationInputGenerate.get_range_model_by_range(dtype)
+        default_data_profile = CombinationInputGenerate.get_range_model_by_range(data_type, dtype)
         allowed_values, value_type = DataHandleUtil.get_relevant_attribute_value(param_name,
                                                                                  param_attribute.allowed_range_value,
                                                                                  "allowed_range_value")
         if allowed_values is None or len(allowed_values) == 0:
-            dtype_value = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype)
+            dtype_value = DataHandleUtil.data_dtype_map(data_type, dtype)
             if dtype_value in ParamModelConfig.STRING_DTYPE:
                 default_data_profile = ["None"]
             logger.debug(
-                f"Generate range value property, param name : '{param_name}', allowed range value set is None or empty, return default : {default_data_profile}")
+                f"Generate range value property, param name : '{param_name}', allowed range value set is None or empty, "
+                f"return default : {default_data_profile}")
             return default_data_profile
 
         if value_type == "enum":
@@ -263,7 +267,8 @@ class CombinationInputGenerate:
         valid_range_data = []
         for select_allowed_value in allowed_values:
             if isinstance(select_allowed_value, list):
-                allowed_value_boundary = DataHandleUtil.get_range_data_boundary(dtype, select_allowed_value)
+                allowed_value_boundary = DataHandleUtil.get_range_data_boundary(dtype, data_type=data_type,
+                                                                                range_data=select_allowed_value)
                 if allowed_value_boundary is None:
                     logger.error(
                         f"Operator: '{self.operator_rule_data.operator_name}', param: '{param_name}', "
@@ -272,7 +277,9 @@ class CombinationInputGenerate:
                     continue
                 low = select_allowed_value[0]
                 high = select_allowed_value[1]
-                range_value_profile_list = CombinationInputGenerate.get_range_model_by_range(dtype, low, high)
+                range_value_profile_list = CombinationInputGenerate.get_range_model_by_range(data_type=data_type,
+                                                                                             dtype=dtype, low=low,
+                                                                                             high=high)
                 logger.debug(
                     f"Get data profile by dtype, param name : '{param_name}', range value : '{select_allowed_value}', "
                     f"data profile list: {range_value_profile_list}")
@@ -297,17 +304,19 @@ class CombinationInputGenerate:
             f"param name : '{param_name}', value profile : '{valid_range_data}'")
         return valid_range_data
 
-    def generate_range_value_property(self, param_name, dtype_list):
+    def generate_range_value_property(self, param_name, data_type: str, dtype_list):
         """
         选择每个数据类型关联的range_value
         Args:
+            data_type: 参数类型
             param_name: 参数名称
             dtype_list: dtype_list
         Returns: 所有关联的data_profile
         """
         total_range_value_data = []
         for dtype_value in dtype_list:
-            range_value_profile = self.generate_range_value_property_by_dtype(param_name, dtype_value)
+            range_value_profile = self.generate_range_value_property_by_dtype(param_name, data_type=data_type,
+                                                                              dtype=dtype_value)
             if range_value_profile is None:
                 continue
             total_range_value_data.extend(range_value_profile)
@@ -396,7 +405,7 @@ class CombinationInputGenerate:
             if param_dtype is None:
                 continue
             param_type_dict[param_name] = param_type
-            range_value_profile = self.generate_range_value_property(param_name, param_dtype)
+            range_value_profile = self.generate_range_value_property(param_name, param_type, param_dtype)
 
             is_range_value_all_none = len(range_value_profile) > 0 and all(x is None for x in range_value_profile)
 
@@ -413,6 +422,7 @@ class CombinationInputGenerate:
             input_data = CombinationInputDataModel(dtype=param_dtype, range_value=range_value_profile,
                                                    is_present=is_present)
             range_value_expr = CombinationConstraintGenerate.get_param_range_value_expr(param_name=param_name,
+                                                                                        param_type=param_type,
                                                                                         dtype_list=param_dtype,
                                                                                         range_value_profile=range_value_profile)
             if range_value_expr is not None:

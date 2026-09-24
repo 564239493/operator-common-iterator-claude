@@ -27,7 +27,8 @@ from agent.generators.operator_param_combine.combination_result_generator.constr
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
-from agent.generators.operator_param_combine.combination_result_generator.constraint.remover import remove_missing_param_exprs
+from agent.generators.operator_param_combine.combination_result_generator.constraint.remover import \
+    remove_missing_param_exprs
 
 logger = LazyLogger()
 
@@ -79,9 +80,10 @@ class ParamConstraintUtils(CommonDispatcher):
         dtype_domain_data = {}
         format_domain_data = {}
         for param_name in self.case_input_map.keys():
+            param_type = self.case_input_map.get(param_name).type
             dtype_domain = self.param_domain_data.get("parameters", {}).get(param_name, {}).get("dtype")
             format_domain = self.param_domain_data.get("parameters", {}).get(param_name, {}).get("format")
-            dtype_domain = [DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype) for dtype in dtype_domain]
+            dtype_domain = [DataHandleUtil.data_dtype_map(param_type, dtype) for dtype in dtype_domain]
             if dtype_domain:
                 dtype_domain_data[param_name] = dtype_domain
             if format_domain:
@@ -153,43 +155,6 @@ class ParamConstraintUtils(CommonDispatcher):
             logger.debug(f"Relation type : {relation_type}, use strict constraint logical success")
         logger.info(f"End correct case param, operator name : {self.operator_name}")
         return True
-
-    def generate_dtype_string_domain(self, param_name: str) -> List[str]:
-        """
-        获取数据类型dtype可取值，用列表表示
-        :param param_name: 参数名称
-        :return: List[dtype]
-        """
-        param_attribute = self.operator_rule_data.inputs.get(param_name)
-        if param_attribute is None:
-            param_attribute = self.operator_rule_data.outputs.get(param_name)
-        if param_attribute is None:
-            logger.error(f"Param : {param_name}, dtype domain is None")
-            return []
-        dtype_domain, _ = DataHandleUtil.get_relevant_attribute_value(param_name, param_attribute.dtype, "dtype")
-        if dtype_domain is None:
-            logger.error(f"Param : {param_name}, dtype domain is not relevant")
-            return []
-        dtype_domain = [DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype) for dtype in dtype_domain]
-        return dtype_domain
-
-    def generate_format_string_domain(self, param_name: str) -> List[str]:
-        """
-        获取数据格式format的可取值，用列表表示
-        :param param_name: 参数名称
-        :return: List[format]
-        """
-        param_attribute = self.operator_rule_data.inputs.get(param_name)
-        if param_attribute is None:
-            param_attribute = self.operator_rule_data.outputs.get(param_name)
-        if param_attribute is None:
-            logger.warning(f"Param : {param_name}, format domain is None")
-            return []
-        format_domain, _ = DataHandleUtil.get_relevant_attribute_value(param_name, param_attribute.format, "format")
-        if format_domain is None:
-            logger.warning(f"Param : '{param_name}', format domain is not relevant")
-            return []
-        return format_domain
 
     @staticmethod
     def adapter_dtype_in_expr(expr: str) -> str:
