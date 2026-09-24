@@ -226,17 +226,18 @@ class DataHandleUtil:
         return None, None
 
     @staticmethod
-    def get_range_data_boundary(dtype: str, range_data) -> List | None:
+    def get_range_data_boundary(dtype: str, data_type:str, range_data) -> List | None:
         """
         解析allowed_value list格式的数据：[0,1] -> [0,1]; [0,null] -> None; [0, inf] -> [0, 对应数据类型的最大值];
         [-inf, 0] -> []
         :param dtype: 数据类型，用于当边界包含inf, -inf时，确认该数据类型的最大值
+        :param data_type: 参数类型
         :param range_data: 原始的allowed_range_value
         """
         if len(range_data) < 2:
             return None
         value_boundary = []
-        dtype_value = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(dtype)
+        dtype_value = DataHandleUtil.data_dtype_map(data_type=data_type, data_ori_dtype=dtype)
         # 处理下限
         low_boundary = range_data[0]
         if low_boundary == "null":
@@ -283,3 +284,25 @@ class DataHandleUtil:
             else:
                 range_value = max(low_boundary, min(high_boundary, range_value))
         return range_value
+
+    @staticmethod
+    def data_dtype_map(data_type: str, data_ori_dtype: str) -> str | None:
+        """
+        根据参数的类型和dtype映射转换之后的dtype，tensor类参数如果是double数据类型，需要映射为fp64,
+        标量参数的double数据类型需要映射为double
+        :param data_type: 参数类型
+        :param data_ori_dtype: 参数数据类型
+        :return: 映射之后的数据类型
+        """
+        if data_type in ParamModelConfig.TENSOR_ATK_TYPE:
+            if data_ori_dtype not in DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP:
+                logger.error(
+                    f"Data type : '{data_type}', Data dtype : '{data_ori_dtype}', dtype not in tensor transfer map")
+                return None
+            data_dtype = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(data_ori_dtype)
+            return data_dtype
+        if data_ori_dtype not in DataMatchMap.ACL_DTYPE_TRANSFER_SCALAR_MAP:
+            logger.error(
+                f"Data type : '{data_type}', Data dtype : '{data_ori_dtype}', dtype not in scalar transfer map")
+            return None
+        return DataMatchMap.ACL_DTYPE_TRANSFER_SCALAR_MAP.get(data_ori_dtype)

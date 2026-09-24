@@ -37,6 +37,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agent.generators.common_utils.data_handle_utils import DataHandleUtil
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -103,13 +105,13 @@ def _attr_value(attributes: dict, field: str):
     return raw
 
 
-def _dtype_list(attributes: dict) -> list[str] | None:
+def _dtype_list(param_type: str, attributes: dict) -> list[str] | None:
     raw = _attr_value(attributes, "dtype")
     if raw is None:
         return None
     values = raw if isinstance(raw, list) else [raw]
     mapped = [
-        DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(str(v).strip())
+        DataHandleUtil.data_dtype_map(param_type, str(v).strip())
         for v in values
         if isinstance(v, str)
     ]
@@ -117,11 +119,11 @@ def _dtype_list(attributes: dict) -> list[str] | None:
     return mapped or None
 
 
-def _declared_dtype(attributes: dict, type_name: str) -> str | None:
-    mapped = _dtype_list(attributes)
+def _declared_dtype(attributes: dict, param_type: str, type_name: str) -> str | None:
+    mapped = _dtype_list(param_type, attributes)
     if mapped:
         return mapped[0]
-    return DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.get(type_name)
+    return DataHandleUtil.data_dtype_map(param_type, type_name)
 
 
 def _collect_param_cards(value: dict, platform: str) -> dict[str, dict]:
@@ -166,7 +168,7 @@ def _declare_params(builder: Z3ConstraintBuilder, names, cards: dict) -> dict:
         type_name = _type_name(attributes)
         atk_type = DataMatchMap.ACL_TYPE_TRANSFER_ATK_MAP.get(type_name, "attr")
         type_hint = DataMatchMap.Z3_VAR_TYPE_MAP.get(atk_type, "scalar")
-        dtype = _declared_dtype(attributes, type_name)
+        dtype = _declared_dtype(attributes, param_type=atk_type, type_name=type_name)
         range_value = _attr_value(attributes, "allowed_range_value")
         if type_hint == "scalar" and dtype is None:
             dtype = "int64"
@@ -177,7 +179,7 @@ def _declare_params(builder: Z3ConstraintBuilder, names, cards: dict) -> dict:
                     name,
                     type_hint=type_hint,
                     dtype=dtype,
-                    allowed_dtypes=_dtype_list(attributes),
+                    allowed_dtypes=_dtype_list(param_type=atk_type, attributes=attributes),
                     allowed_formats=formats if isinstance(formats, list) else None,
                     range_value=range_value,
                 )
@@ -319,10 +321,10 @@ def _verify_single_expr(expr: str, cards: dict, timeout_ms: int) -> dict:
 
 
 def _verify_bucket_joint(
-    platform: str,
-    exprs: dict[int, str],
-    cards: dict,
-    timeout_ms: int,
+        platform: str,
+        exprs: dict[int, str],
+        cards: dict,
+        timeout_ms: int,
 ) -> tuple[str, list[str]]:
     """整桶联合 assert：unsat → contradiction（附 unsat_core 约束名）。"""
     if not exprs:

@@ -15,7 +15,7 @@ import numpy
 from agent.generators.atk_common_utils.case_config import CaseConfig, InputCaseConfig
 from agent.generators.common_utils.common_dispatcher import CommonDispatcher
 from agent.generators.common_utils.logger_util import LazyLogger
-from agent.generators.data_definition.constants import ParamModelConfig, GlobalConfig
+from agent.generators.data_definition.constants import ParamModelConfig, GlobalConfig, DataMatchMap
 from agent.generators.data_definition.param_models_def import BaseRuleModel, \
     ParamShapeRoleRules, ParamRangeRoleRules, DispatcherTargetType, ParameterPropertyData
 from agent.generators.operator_param_models.param_dtype_models import ParamDtypeModel
@@ -137,7 +137,7 @@ class CaseGenerate:
         input_case_list = []
         for param_name, param_attributes in param_combination.items():
             param_type = param_attributes.param_type
-            param_dtype = self.generate_param_dtype(param_name, param_attributes.dtype)
+            param_dtype = self.generate_param_dtype(param_name, param_type, param_attributes.dtype)
             param_length = param_attributes.length
             # 这里不过滤非算子参数，避免约束表达式中包含非算子参数求解失败
             # if not param_attributes.is_operator_param:
@@ -170,10 +170,11 @@ class CaseGenerate:
         case_config.inputs = input_case_list
         return case_config
 
-    def generate_param_dtype(self, param_name, param_dtype_str: str):
+    def generate_param_dtype(self, param_name, param_type, param_dtype_str: str):
         """
         生成参数的的type
         :param param_name: 参数名称
+        :param param_type: 参数类型
         :param param_dtype_str: 参数数据类型，即Dict[str, str]:
         {"Dtype":FLOAT32, "DataProfile": "NAN", "DimCount":2, "DimProperty":"Has_Large_Size", "Memory":"NonCountiguous"}
         中的Dtype
@@ -182,7 +183,12 @@ class CaseGenerate:
         task_name = "generate param dtype"
         if param_dtype_str is None:
             return self.default_return(task_name, "dtype is None", ParamModelConfig.DEFAULT_PARAM_DTYPE, param_name)
-        param_dtype_instance = ParamDtypeModel(operator_name=self.operator_name, param_name=param_name)
+        if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
+            dtype_transfer_map = DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP
+        else:
+            dtype_transfer_map = DataMatchMap.ACL_DTYPE_TRANSFER_SCALAR_MAP
+        param_dtype_instance = ParamDtypeModel(operator_name=self.operator_name, param_name=param_name,
+                                               dtype_transfer_map=dtype_transfer_map)
         param_dtype = param_dtype_instance.generate_param_dtype(param_dtype_str)
         return param_dtype
 

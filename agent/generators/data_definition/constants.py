@@ -137,11 +137,11 @@ class DataMatchMap:
                                      "UINT16": "uint16", "UINT32": "uint32", "UINT64": "uint64", "INT64": "int64",
                                      "BFLOAT16": "bf16", "bfloat16":"bf16", "BF16": "bf16","bf16":"bf16", "FLOAT16": "fp16", "FLOAT32": "fp32", "FLOAT64": "fp64",
                                      "float32": "fp32", "float16": "fp16", "float64": "fp64", "COMPLEX64": "complex64",
-                                     "COMPLEX128": "complex128", "FLOAT": "fp32", "DOUBLE": "double", "char": "string",
+                                     "COMPLEX128": "complex128", "FLOAT": "fp32", "DOUBLE": "fp64", "char": "string",
                                      "ACL_FLOAT16": "fp16", "float": "fp32",
                                      "ACL_FLOAT32": "fp32", "ACL_FLOAT64": "fp64", "ACL_FLOAT": "fp32",
                                      "ACL_BF16": "bf16", "BOOL": "bool", "STRING": "string", "CHAR": "string", "str": "string",
-                                     "string": "string", "bool": "bool", "double": "double", "int64_t": "int64",
+                                     "string": "string", "bool": "bool", "double": "fp64", "int64_t": "int64",
                                      "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8","HFLOAT8":'hifloat8',
                                      "ACL_HIFLOAT8": "hifloat8", "FLOAT8_E5M2": "float8_e5m2",
                                      "ACL_FLOAT8_E5M2": "float8_e5m2", "FLOAT8_E4M3FN": "float8_e4m3fn",
@@ -151,6 +151,33 @@ class DataMatchMap:
                                      "ACL_FLOAT6_E2M3": "float6_e2m3", "FLOAT4_E2M1": "float4_e2m1",
                                      "ACL_FLOAT4_E2M1": "float4_e2m1", "FLOAT4_E1M2": "float4_e1m2",
                                      "ACL_FLOAT4_E1M2": "float4_e1m2"}
+
+    # 在case_config中只生成数据生成方法字段，不生成实际数据时使用，用于适配ATK框架
+    ACL_DTYPE_TRANSFER_SCALAR_MAP = {"INT4": "int4", "int4": "int4", "INT8": "int8", "int8": "int8", "int8_t": "int8",
+                                     "INT16": "int16", "INT32": "int32", "int32": "int32",
+                                     "UINT8": "uint8", "uint8": "uint8", "INT": "int64", "uint64": "uint64",
+                                     "uint64_t": "uint64",
+                                     "UINT16": "uint16", "UINT32": "uint32", "UINT64": "uint64", "INT64": "int64",
+                                     "BFLOAT16": "bf16", "bfloat16": "bf16", "BF16": "bf16", "bf16": "bf16",
+                                     "FLOAT16": "fp16", "FLOAT32": "fp32", "FLOAT64": "fp64",
+                                     "float32": "fp32", "float16": "fp16", "float64": "fp64", "COMPLEX64": "complex64",
+                                     "COMPLEX128": "complex128", "FLOAT": "fp32", "DOUBLE": "double", "char": "string",
+                                     "ACL_FLOAT16": "fp16", "float": "fp32",
+                                     "ACL_FLOAT32": "fp32", "ACL_FLOAT64": "fp64", "ACL_FLOAT": "fp32",
+                                     "ACL_BF16": "bf16", "BOOL": "bool", "STRING": "string", "CHAR": "string",
+                                     "str": "string",
+                                     "string": "string", "bool": "bool", "double": "double", "int64_t": "int64",
+                                     "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8", "HFLOAT8": 'hifloat8',
+                                     "ACL_HIFLOAT8": "hifloat8", "FLOAT8_E5M2": "float8_e5m2",
+                                     "ACL_FLOAT8_E5M2": "float8_e5m2", "FLOAT8_E4M3FN": "float8_e4m3fn",
+                                     "ACL_FLOAT8_E4M3FN": "float8_e4m3fn", "FLOAT8_E8M0": "float8_e8m0",
+                                     "ACL_FLOAT8_E8M0": "float8_e8m0", "FLOAT6_E3M2": "float6_e3m2",
+                                     "ACL_FLOAT6_E3M2": "float6_e3m2", "FLOAT6_E2M3": "float6_e2m3",
+                                     "ACL_FLOAT6_E2M3": "float6_e2m3", "FLOAT4_E2M1": "float4_e2m1",
+                                     "ACL_FLOAT4_E2M1": "float4_e2m1", "FLOAT4_E1M2": "float4_e1m2",
+                                     "ACL_FLOAT4_E1M2": "float4_e1m2"}
+
+
 
     # 如果type字段在ACL_TYPE_TRANSFER_ATK_MAP中，则转换为MAP中的值，否则默认为attr
     ACL_TYPE_TRANSFER_ATK_MAP = {"aclTensor": "tensor", "aclScalar": "scalar", "aclIntArray": "attrs",
