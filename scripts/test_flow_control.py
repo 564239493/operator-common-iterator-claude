@@ -109,7 +109,11 @@ class FlowControlCliTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_plan_to_extract(self):
-        run_dir = write_run(self.tmp / "r1", "PLAN")
+        # init_run.py 会预置 {"state": "PLAN", "at": ...} 开放条目，这里对齐
+        run_dir = write_run(
+            self.tmp / "r1", "PLAN",
+            history=[{"state": "PLAN", "at": "2026-09-09T00:00:00+00:00"}],
+        )
         (run_dir / "inputs").mkdir()
         (run_dir / "inputs" / "prompt_v1.md").write_text("prompt")
         (run_dir / "inputs" / "aclnnFoo.md").write_text("doc")
@@ -121,6 +125,9 @@ class FlowControlCliTests(unittest.TestCase):
         state = read_state(run_dir)
         self.assertEqual(state["state"], "EXTRACT")
         self.assertEqual(state["history"][-1]["state"], "EXTRACT")
+        # ended_at 回填：上一状态结束 = 新状态开始；新条目自身不闭合
+        self.assertEqual(state["history"][0]["ended_at"], state["history"][1]["at"])
+        self.assertNotIn("ended_at", state["history"][-1])
         self.assertTrue(
             (run_dir / "iter_001" / "transition_decision.json").is_file()
         )

@@ -16,6 +16,9 @@
   update_supplement_state 有），CLI 写回时保持文件原有尾换行状态；
 - ``updated_at`` 仅在 set-constraint-check 刷新（constraint_check 子状态
   回写要求）；set-state / set-fields 不刷新；
+- 状态迁移经 ``append_history_entry`` append history：上一条未闭合条目回填
+  ``ended_at``（= 新条目 ``at``，即上一状态的结束时间）；最后一条 / 终态
+  不带 ``ended_at`` 表示尚未结束；
 - 合法性校验（状态名 / check 状态枚举 / 字段名）失败时 exit 2 且不落盘。
 """
 from __future__ import annotations
@@ -117,6 +120,30 @@ def save_run_state(path: Path, state: dict, trailing_newline: bool) -> None:
     Path(path).write_text(text, encoding="utf-8")
 
 
+def append_history_entry(
+    state: dict, to_state: str, *, code: str = "", event: str = "", at: str
+) -> dict:
+    """append 新 history 条目，并给未闭合的上一条回填 ended_at=at。
+
+``at`` 即新状态的开始时间；同一时刻回填到上一条目的 ``ended_at``，作为
+上一状态的结束时间。上一条已有 ``ended_at`` 时不覆盖（幂等）。history
+损坏（非 list）时先抛 ValueError、不做任何半截修改。
+"""
+    history = state.setdefault("history", [])
+    if not isinstance(history, list):
+        raise ValueError("run_state.history must be a list")
+    if history and isinstance(history[-1], dict) and "ended_at" not in history[-1]:
+        history[-1]["ended_at"] = at
+    entry: dict[str, Any] = {"state": to_state}
+    if code:
+        entry["code"] = code
+    if event:
+        entry["event"] = event
+    entry["at"] = at
+    history.append(entry)
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # CLI 层内部工具
 # ---------------------------------------------------------------------------
@@ -182,16 +209,9 @@ def cmd_set_state(args: argparse.Namespace) -> int:
                 }, ensure_ascii=False))
                 return 2
     state["state"] = args.to
-    entry: dict[str, Any] = {"state": args.to}
-    if args.code:
-        entry["code"] = args.code
-    if args.event:
-        entry["event"] = args.event
-    entry["at"] = _now()
-    history = state.setdefault("history", [])
-    if not isinstance(history, list):
-        raise ValueError("run_state.history must be a list")
-    history.append(entry)
+    entry = append_history_entry(
+        state, args.to, code=args.code, event=args.event, at=_now()
+    )
     if args.bump_iteration:
         state["current_iteration"] = int(state.get("current_iteration", 1)) + 1
     _save_cli(path, state)
