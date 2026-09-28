@@ -500,6 +500,70 @@ class ParamConstraintUtils(CommonDispatcher):
         else:
             constraint_exprs.extend(static_range_value_expr_list)
 
+    def build_param_range_value_seed_constraint(self, constraint_exprs: List[str],
+                                                builder: Z3ConstraintBuilder, check: bool = True) -> None:
+        """把 list 型参数（attrs/scalars/tensors）的 per-row 取值钉入 Z3 求解。
+
+        背景（aclnnAffineGrid theta.shape[0]==1 实证）：PICT 给 size.range_value
+        分配的标量（如 128）传入 ListVar 后仅存入 _range_spec —— 既不构成约束
+        （_add_initial_range_constraints 已禁用），也不参与求解。导致 size 元素
+        仅剩 JSON 表达式约束，size[0] 贴 '0<x' 下界取 1，theta.shape[0] 恒为 1，
+        per-row 多样性全链路丢失。dtype/format/shape/length 四个静态通道都读
+        per-row 值，唯独 range_value 缺失 —— 本方法补上这条通道。
+
+        种子表达式形态（per-row 值的两种形态）：
+        - list（如 [-2,-1]）  -> "{param}.range_value == [-2, -1]"
+          整数组取值钉住（Seq==List 比较，转换器 334-344 行支持）
+        - 标量（如 128）      -> "{param}.range_value[0] == 128"
+          维度代表值钉住首元素，其余元素仍由 JSON 约束（如 0<x<=100000）限定
+
+        安全性：走偏好静态通道（choice_core 冲突消解），种子与 JSON 约束冲突时
+        丢弃种子保 JSON 约束，不会整 case UNSAT —— 与 dtype/length 通道同模式。
+        """
+        seed_static_value_expr_list = []
+        relation_param = list(self.case_input_map.keys())
+        for param in relation_param:
+            case_input = self.case_input_map.get(param)
+            # 仅处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
+            # 自己的取值通道（tensor 的 range_value 是数据内容区间，scalar 的
+            # build_param_range_value_constraint 已按源 JSON 域处理）
+            if case_input.type not in ParamModelConfig.LIST_ATK_TYPE:
+                continue
+            range_value_seed = case_input.range_values
+            if range_value_seed is None:
+                continue
+            if isinstance(range_value_seed, list):
+                if not range_value_seed:
+                    continue
+                # list 形态：整个数组的取值即 per-row 选择（如 alltoAllAxes 的
+                # [-2,-1]）。元素需为数值字面量，profile 名（如 'Pos'）跳过
+                if not all(isinstance(element, (int, float, bool)) for element in range_value_seed):
+                    logger.debug(
+                        f"Range value seed skipped, non-numeric elements, param name : '{param}', "
+                        f"seed : '{range_value_seed}'")
+                    continue
+                seed_expr = "{param_name}.range_value == {seed_value}".format(
+                    param_name=param, seed_value=range_value_seed)
+            elif isinstance(range_value_seed, (int, float)):
+                # 标量形态：维度代表值（如 SHAPE_DIM_VALUES 的 128），钉住首元素
+                seed_expr = "{param_name}.range_value[0] == {seed_value}".format(
+                    param_name=param, seed_value=range_value_seed)
+            else:
+                # profile 名（'Pos'/'Max' 等）或其他形态：无对应 Z3 钉住语义，跳过
+                logger.debug(
+                    f"Range value seed skipped, unsupported seed form, param name : '{param}', "
+                    f"seed : '{range_value_seed}'")
+                continue
+            logger.debug(
+                f"Range value seed constraint, param name : '{param}', seed expr : '{seed_expr}'")
+            seed_static_value_expr_list.append(seed_expr)
+        if check:
+            self.choice_no_conflicts_expr(builder=builder, param_union_expr=constraint_exprs,
+                                          param_static_expr_list=seed_static_value_expr_list)
+        else:
+            constraint_exprs.extend(seed_static_value_expr_list)
+
+
     def build_param_shape_len_constraint(self, constraint_exprs: List[str], builder: Z3ConstraintBuilder,
                                          check: bool = True) -> None:
         """
@@ -724,6 +788,7 @@ class ParamConstraintUtils(CommonDispatcher):
         self.build_param_shape_constraint(all_static, builder, check=False)
         self.build_param_range_value_constraint(all_static, builder, check=False,
                                                 hard_static_expr_list=domain_static)
+        self.build_param_range_value_seed_constraint(all_static, builder, check=False)
         self.build_param_shape_len_constraint(all_static, builder, check=False)
         self.build_param_length_constraint(all_static, builder, check=False)
 
