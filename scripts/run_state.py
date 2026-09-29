@@ -73,7 +73,7 @@ KNOWN_TOP_LEVEL_KEYS = frozenset({
     "mode", "server_config", "max_iterations", "constraint_check",
     "case_count", "human_checkpoint_round",
     "human_checkpoint_resolved_iteration", "operator_family",
-    "test_framework", "hs_scenario_mode", "run_scope", "scene",
+    "test_framework", "hs_scenario_mode", "run_scope", "scene", "scenes",
     "execution_strategy", "operator_category", "operator_category_evidence",
     "dashboard_raised",
     "current_iteration", "state", "history", "created_at", "updated_at",

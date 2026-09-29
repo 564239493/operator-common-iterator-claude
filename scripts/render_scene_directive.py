@@ -467,10 +467,201 @@ def _render_directive(
 """
 
 
+def _resolve_selection_noscan(
+    selection: dict,
+) -> tuple[list[str], list[str], list[str], dict]:
+    """文本直输模式（无 scene_scan）：仅做结构校验，不做枚举交叉校验。
+
+    selection 结构与 scan 模式一致；tpl_value 仅支持 ``None``（保持自动）与
+    ``{param: [values]}``（显式取值，值不与枚举比对——由 extractor 提取阶段对齐
+    文档参数表）。``"fix_all_default"`` 需要 scan 参数枚举，文本模式不支持。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    raw_devices = selection.get("device_types")
+    sel_devices = (
+        [d for d in raw_devices if isinstance(d, str)]
+        if isinstance(raw_devices, list)
+        else []
+    )
+    if not sel_devices:
+        errors.append("device_types must be a non-empty list of device name strings")
+
+    raw_sel = selection.get("selection")
+    if not isinstance(raw_sel, dict) or not raw_sel:
+        errors.append(
+            "selection.selection must be a non-empty dict "
+            "{device: {template: null|{param:[values]}}}"
+        )
+        raw_sel = {}
+
+    resolved: dict[str, dict] = {}
+    for d, raw_dev in raw_sel.items():
+        if not isinstance(d, str) or not d:
+            errors.append(f"selection key must be device name string: {d!r}")
+            continue
+        if d not in sel_devices:
+            errors.append(f"selection device {d!r} not in device_types")
+            continue
+        if not isinstance(raw_dev, dict) or not raw_dev:
+            errors.append(f"selection[{d!r}] must be a non-empty dict {{template: ...}}")
+            continue
+        dev_resolved: dict[str, Any] = {}
+        for t, feats in raw_dev.items():
+            if not isinstance(t, str) or not t:
+                errors.append(
+                    f"selection[{d!r}] template key must be non-empty string: {t!r}"
+                )
+                continue
+            if feats is None:
+                dev_resolved[t] = None
+            elif isinstance(feats, dict):
+                subset: dict[str, list] = {}
+                for pname, vlist in feats.items():
+                    if not isinstance(pname, str) or not pname:
+                        errors.append(
+                            f"selection[{d!r}][{t!r}] param key must be non-empty "
+                            f"string: {pname!r}"
+                        )
+                        continue
+                    if not isinstance(vlist, list) or not vlist:
+                        errors.append(
+                            f"selection[{d!r}][{t!r}][{pname!r}] must be a non-empty "
+                            "list of values"
+                        )
+                        continue
+                    subset[pname] = [
+                        v if isinstance(v, (int, float, bool, str)) else str(v)
+                        for v in vlist
+                    ]
+                dev_resolved[t] = subset if subset else None
+            elif feats == "fix_all_default":
+                errors.append(
+                    f"selection[{d!r}][{t!r}]='fix_all_default' 需要 --scan 参数枚举；"
+                    "文本直输模式请显式列出各参数取值 {param:[values]}"
+                )
+            else:
+                errors.append(
+                    f"selection[{d!r}][{t!r}] must be null or {{param:[values]}}; "
+                    f"got {feats!r}"
+                )
+        if dev_resolved:
+            resolved[d] = dev_resolved
+
+    if not resolved:
+        errors.append("EMPTY_SCENE: selection yields no selected templates")
+
+    return errors, warnings, sel_devices, resolved
+
+
+def _param_modes_noscan(
+    sel_devices: list[str], selection_resolved: dict
+) -> dict[str, dict]:
+    """文本直输模式：直接从 selection_resolved 派生 param_modes（无 scan 枚举）。
+
+    单值 → fix；多值 → expand；None（保持自动）→ 无显式 mode（文档自适应）。
+    """
+    out: dict[str, dict] = {}
+    for d in sel_devices:
+        tmap = selection_resolved.get(d, {})
+        param_state: dict[str, object] = {}
+        for _t, sel in tmap.items():
+            if not isinstance(sel, dict):
+                continue
+            for pname, subset in sel.items():
+                if len(subset) == 1:
+                    contrib_mode, contrib_vals = "fix", subset[0]
+                else:
+                    contrib_mode, contrib_vals = "expand", list(subset)
+                cur = param_state.get(pname)
+                if cur is None:
+                    param_state[pname] = (
+                        {"expand": list(contrib_vals)}
+                        if contrib_mode == "expand"
+                        else {"fix": contrib_vals}
+                    )
+                elif contrib_mode == "expand":
+                    if "expand" in cur:
+                        for v in contrib_vals:
+                            if not any(_scalar_eq(v, x) for x in cur["expand"]):
+                                cur["expand"].append(v)
+                    else:
+                        # was fix → promote to expand with this subset
+                        param_state[pname] = {"expand": list(contrib_vals)}
+        if param_state:
+            out[d] = param_state
+    return out
+
+
+def _render_directive_noscan(
+    sel_devices: list[str],
+    selection_resolved: dict,
+    param_modes: dict[str, dict],
+) -> str:
+    """文本直输模式的 directive：机读块与 scan 模式同构；清单由 selection 派生。"""
+    lines: list[str] = []
+    for d in sel_devices:
+        lines.append(f"**{d}**:")
+        for t, sel in (selection_resolved.get(d, {}) or {}).items():
+            lines.append(f"- **{t}**:")
+            if sel is None:
+                lines.append("  - 参数：保持自动（按文档和已选场景适配）")
+                continue
+            for pname, subset in sel.items():
+                tag = (
+                    f"固定取单值 {subset[0]!r}"
+                    if len(subset) == 1
+                    else f"展开取值分支（取值清单 {subset}）"
+                )
+                lines.append(f"  - {pname}: {tag}")
+    listing = "\n".join(lines) if lines else "(无)"
+
+    machine = json.dumps(
+        {
+            "device_types": sel_devices,
+            "selection": selection_resolved,
+            "param_modes": param_modes,
+            "selection_policy": dict(SELECTION_POLICY, scope="exclusive"),
+            "known_conflicts": [],
+        },
+        ensure_ascii=False,
+    )
+
+    return f"""## 场景指令（run 级，本次提取范围——文本直输模式）
+
+由 `scripts/render_scene_directive.py` 渲染；来源：用户文本输入的场景描述（无
+`scene_scan.json`，无枚举交叉校验——参数名/取值以文档实际参数表为准）。
+
+### 选定设备 / 量化场景 / 参数取值
+
+{listing}
+
+### 提取要求
+
+1. **仅提取所选设备与所选场景**：`product_support` 按机读块 `device_types` 与文档
+   "产品支持情况" √ 行取交集，未列设备不产出；约束条目以**所选场景可达**为准——
+   触发条件在所选参数取值下恒为假的条目、以及未选量化场景专属的条目，不产出；
+   与所选场景共用的基础约束（dtype 合法域、通用 shape 关系等）照常保留。
+2. **选择内容是基本限制**：机读块 `param_modes` 中 `{{"fix": X}}` 参数取单值 X、
+   `{{"expand": [取值清单]}}` 参数按清单收窄，依赖其取值的约束（自身
+   `allowed_range_value`、`dtype`/`format`/`dimensions` 条件分支、
+   `constraints_in_parameters` 行）同此收窄；缺键参数按文档和已选场景适配。
+   已选场景明确禁止的 Optional 参数必须产出 `param is None`。
+3. 与参数取值**无关**的通用约束（shape_equality、维度、groupType 等）原样保留，
+   不得因场景删除。
+4. 未选量化场景/分支的专属 Optional 参数（如已选非量化时的 quant / pseudo-quant
+   专属参数）必须产出 `is None` 可执行约束，不能随未选场景规则一起删除。
+5. 落盘后照常跑 `normalize_constraints.py` + `validate_artifacts.py constraints`；
+   结果必须仍满足 `OperatorRule`。
+
+<!-- scene: {machine} -->
+"""
+
+
 def _scene_payload(
     scope: str,
-    scan_path: Path,
-    scan: dict,
+    scan_path: Path | None,
+    scan: dict | None,
     device_types: list[str] | None = None,
     selection: dict | None = None,
     param_modes: dict[str, dict] | None = None,
@@ -486,7 +677,7 @@ def _scene_payload(
         "selection_policy": dict(SELECTION_POLICY),
         "known_conflicts": known_conflicts or [],
         "directive": str(directive_path) if directive_path else "",
-        "scan": str(scan_path),
+        "scan": str(scan_path) if scan_path else "",
     }
 
 
@@ -498,6 +689,13 @@ def _write_run_state_scene(run_dir: Path, scene_payload: dict) -> None:
     state = _load_json(state_path)
     if not isinstance(state, dict):
         raise ValueError("run_state.json root must be an object")
+    source = (
+        "scenes_param"
+        if str(state.get("scenes") or "").strip()
+        else "interactive_input"
+    )
+    scene_payload = dict(scene_payload)
+    scene_payload["source"] = source
     state["scene"] = scene_payload
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     save_run_state(state_path, state, trailing_newline=False)
@@ -511,7 +709,15 @@ def main() -> int:
             " and the user's AskUserQuestion answers)."
         )
     )
-    p.add_argument("--scan", required=True, help="path to inputs/scene_scan.json")
+    p.add_argument(
+        "--scan",
+        required=False,
+        default=None,
+        help=(
+            "path to inputs/scene_scan.json；省略 = 文本直输模式"
+            "（用户场景文字匹配，无 scene_scan，仅结构校验）"
+        ),
+    )
     p.add_argument(
         "--selection",
         help=(
@@ -529,14 +735,16 @@ def main() -> int:
     args = p.parse_args()
 
     run_dir = Path(args.run_dir).resolve()
-    scan_path = Path(args.scan).resolve()
-    if not scan_path.is_file():
-        print(json.dumps(
-            {"ok": False, "code": "SCENE_SCAN_NOT_FOUND", "path": str(scan_path)},
-            ensure_ascii=False,
-        ))
-        return 2
-    scan = _load_json(scan_path)
+    scan_path = Path(args.scan).resolve() if args.scan else None
+    scan = None
+    if scan_path is not None:
+        if not scan_path.is_file():
+            print(json.dumps(
+                {"ok": False, "code": "SCENE_SCAN_NOT_FOUND", "path": str(scan_path)},
+                ensure_ascii=False,
+            ))
+            return 2
+        scan = _load_json(scan_path)
 
     inputs_dir = run_dir / "inputs"
     directive_path = inputs_dir / "scene_directive.md"
@@ -545,13 +753,20 @@ def main() -> int:
     if args.scope == "off":
         _write_run_state_scene(run_dir, _scene_payload("off", scan_path, scan))
         print(json.dumps(
-            {"ok": True, "scope": "off", "directive": "", "scene_scan": str(scan_path)},
+            {"ok": True, "scope": "off", "directive": "", "scene_scan": str(scan_path) if scan_path else ""},
             ensure_ascii=False,
         ))
         return 0
 
     # ----- all ------------------------------------------------------------ #
     if args.scope == "all":
+        if scan is None:
+            print(json.dumps(
+                {"ok": False, "code": "SCAN_REQUIRED",
+                 "message": "--scope all 需要配对 --scan（全量场景集来自 scene_scan.json）"},
+                ensure_ascii=False,
+            ))
+            return 2
         scan_devices = [d for d in (scan.get("device_types") or []) if isinstance(d, str)]
         # all devices, all templates, Q3 skipped → document-adaptive (None)
         dev_map = _devices_by_name(scan)
@@ -574,7 +789,7 @@ def main() -> int:
         )
         print(json.dumps(
             {"ok": True, "scope": "all", "directive": "",
-             "n_devices": len(scan_devices), "scene_scan": str(scan_path)},
+             "n_devices": len(scan_devices), "scene_scan": str(scan_path) if scan_path else ""},
             ensure_ascii=False,
         ))
         return 0
@@ -599,9 +814,15 @@ def main() -> int:
         ))
         return 2
 
-    errors, warnings, sel_devices, selection_resolved = _resolve_selection(
-        scan, selection
-    )
+    if scan is not None:
+        errors, warnings, sel_devices, selection_resolved = _resolve_selection(
+            scan, selection
+        )
+    else:
+        # 文本直输模式：无 scene_scan，仅结构校验（无枚举交叉校验）
+        errors, warnings, sel_devices, selection_resolved = _resolve_selection_noscan(
+            selection
+        )
     if errors:
         code = (
             "EMPTY_SCENE"
@@ -614,14 +835,21 @@ def main() -> int:
             ensure_ascii=False,
         ))
         return 2
-    param_modes = _param_modes(scan, sel_devices, selection_resolved)
-    # lazy import: avoid a module-load cycle (check_scene_conflicts imports
-    # helpers from this module at its top level).
-    from check_scene_conflicts import detect_conflicts
-    conflicts = detect_conflicts(scan, sel_devices, selection_resolved)
-    directive_text = _render_directive(
-        scan, sel_devices, selection_resolved, param_modes, conflicts
-    )
+    if scan is not None:
+        param_modes = _param_modes(scan, sel_devices, selection_resolved)
+        # lazy import: avoid a module-load cycle (check_scene_conflicts imports
+        # helpers from this module at its top level).
+        from check_scene_conflicts import detect_conflicts
+        conflicts = detect_conflicts(scan, sel_devices, selection_resolved)
+        directive_text = _render_directive(
+            scan, sel_devices, selection_resolved, param_modes, conflicts
+        )
+    else:
+        param_modes = _param_modes_noscan(sel_devices, selection_resolved)
+        conflicts = []  # 文本直输模式：无 scan 结构化冲突规则，不做冲突识别
+        directive_text = _render_directive_noscan(
+            sel_devices, selection_resolved, param_modes
+        )
     inputs_dir.mkdir(parents=True, exist_ok=True)
     directive_path.write_text(directive_text, encoding="utf-8")
     _write_run_state_scene(
@@ -636,7 +864,7 @@ def main() -> int:
         {"ok": True, "scope": "subset", "directive": str(directive_path),
          "n_devices": len(sel_devices), "n_templates": n_templates,
          "n_conflicts": len(conflicts), "known_conflicts": conflicts,
-         "warnings": warnings, "scene_scan": str(scan_path)},
+         "warnings": warnings, "scene_scan": str(scan_path) if scan_path else ""},
         ensure_ascii=False,
     ))
     return 0
