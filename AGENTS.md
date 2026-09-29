@@ -296,7 +296,7 @@ runs/<operator>-<timestamp>/
 - 禁止读取 `.env`（静态 permission 强制）；允许执行流程读取 `servers.json`，但禁止修改或输出其中的秘密
 - 默认 `mode=real`；`servers.json` 缺失或不完整时停止并提示，禁止静默回退 Mock
 - 算子文档可来自项目外路径；先只读复制到 `runs/<run-id>/inputs/`，后续 Agent 只用项目内快照
-- `executer/` 与 `agent/generators/` 只读、可导入执行，禁止新增、修改或删除任何文件和子目录（静态 permission + 守卫插件双层强制）
+- `executer/` 与 `agent/generators/` 只读、可导入执行，禁止新增、修改或删除任何文件和子目录（文件工具由静态 permission 与守卫插件强制；`sed -i`、`git apply` 等命令行改文件方式由守卫插件按启发式拦截，非内核级强制）
 - 活动任务中 edit/write/删除/移动/重定向写入只能作用于当前
   `runs/<run-id>/`（guard.js 插件强制）
 - 活动任务不得读取其他 `runs/<other-run-id>/`；批次仅在前一 run 终态后切换

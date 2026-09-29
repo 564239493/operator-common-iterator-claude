@@ -6,12 +6,18 @@
 
 ## 静态 permission 规则（.opencode/opencode.json）
 
-- `edit`：默认放行；`executer/**`、`agent/generators/**`、`.git/**`、`servers.json`、
-  `run_state.json` 一律 deny（含 `**/` 前缀变体，路径形式无关）。
+- `edit`：默认 ask（改 `docs/`、`knowledge/`、`scripts/`、`src/`、`.opencode/` 等项目
+  文件需用户确认）；`runs/**` 放行（任务产物免打扰）；`executer/**`、
+  `agent/generators/**`、`.git/**`、`servers.json`、`run_state.json` 一律 deny
+  （含 `**/` 前缀变体，路径形式无关）。
 - `read`：默认放行；`.env` 与 `.env.*` deny（含 `**/` 变体）。
 - `bash`：`*: allow` 打底；依赖/环境变更（pip/uv/npm/apt 等）、curl/wget、Git 写操作、
-  sudo/chmod/kill 等系统命令统一 ask；`python -c*` / `python3 -c*`（含路径前缀变体）
-  直接 deny。
+  sudo/chmod/kill 等系统命令统一 ask；删除/移动（rm/mv/del 等）、项目外绝对路径的
+  python 入口、`git apply` / `git restore` / `rsync` 也走 ask；`python -c*` /
+  `python3 -c*`（含路径前缀变体）与 `node -e*` / `node --eval*` 直接 deny。
+- **ask 的语义**：静态 ask 由 opencode 原生确认框承担——用户批准后命令即可执行。
+  守卫插件在 `permission.ask` 钩子里对进入询问流程的命令做同一套硬规则复查，
+  命中硬规则的改判 deny（不给批准通道），其余保持询问。
 - 规则对象按插入顺序求值，**后匹配者生效**：宽规则在前、窄规则在后；新增窄规则时
   必须放在对应宽规则之后，`scripts/validate_project.py` 会校验 `*` 仍居 bash 首位。
 
@@ -23,15 +29,23 @@
    run 时，按会话绑定活动 run（绑定文件 `.opencode/runtime/task_scopes/<session-id>.json`，
    不入库）；主会话与所有子智能体共用这个绑定。
 2. 活动任务中只允许文件工具写 `runs/<run-id>/**`（edit/write/apply_patch 逐文件检查；
-   apply_patch 补丁数组内的每个目标路径都会送检）。
+   apply_patch 从补丁文本 `patchText` 的 `*** Add/Update/Delete File:` 与
+   `*** Move to:` 标记行提取全部目标路径送检）。
 3. 禁止 read/glob/grep/list 访问其他 `runs/<other-run-id>/**`。
 4. 禁止在 `runs/` 根上做宽泛 glob/grep，避免一次搜索扫入其他任务。
 5. shell 命令同时引用多个 run、显式引用其他 run、通过 `..` 跨 run、向项目外重定向、
    修改受保护目录、用变量/管道/循环包装 `generation_progress.py` 监听、或内联执行
-   Python（`python -c` / `python -` / heredoc）时，直接拒绝。
-6. 删除/移动等破坏性命令、依赖与系统变更、项目外 Python 入口、未绑定 run 时的
-   shell 写入，转「需要用户确认」（模型收到 throw 后用 question 工具征询用户）。
-7. 项目内 `.py` 入口（含 `scripts/`、`executer/`、`agent/generators/`）自动信任放行；
+   代码（`python -c` / `python -` / heredoc / `node -e` / `perl -e`）时，直接拒绝。
+6. 直接读取 `.env` / `.env.*` 的 shell 命令（cat 等）直接拒绝（`.env.example` 豁免）。
+7. 「绕过文件工具在 shell 层改文件」的命令（`sed -i`、`perl -pi`、`git apply`、
+   `tar` 解压、`unzip -d`、`dd of=`、`find -delete` 等）按启发式识别，与 rm/mv
+   走同一套写入目标检查（受保护路径 / run 隔离 / 项目外路径）。旧架构的 OS 级
+   sandbox 在 opencode 无对应配置位，此层为启发式补位而非内核强制——覆盖常见
+   变体但不承诺穷尽。
+8. 「需要用户确认」类判断不在插件内以 throw 实现（throw 没有批准通道，等于永久
+   拒绝）：高风险命令的询问全部由静态 ask 规则承担，用户在原生确认框批准后即可
+   执行；插件仅在 `permission.ask` 钩子里复查并改判硬规则命中者。
+9. 项目内 `.py` 入口（含 `scripts/`、`executer/`、`agent/generators/`）自动信任放行；
    执行受保护目录代码不等于允许修改它们。
 
 **fail-closed 语义**：守卫插件自身任何异常（正则失效、参数形态未预料）一律转
@@ -49,7 +63,7 @@
 - 允许读取 `servers.json`，但禁止修改；输出和日志不得回显密码、密钥或完整配置。
 - `executer/**` 与 `agent/generators/**` 只允许读取、导入和执行；禁止新增、修改、删除。
 - 禁止内置文件工具修改 `.git/**`。
-- 禁止读取任意位置的 `.env` 与 `.env.*`（静态 permission + 守卫双层）。
+- 禁止读取任意位置的 `.env` 与 `.env.*`（文件工具由静态 permission 拦截；shell 侧 cat 等由守卫插件拦截，启发式）。
 - 运行任务不创建一次性辅助 `.py` 后再删除；正式 JSON/Markdown 产物直接写入当前 run。
 
 ## 运行前提
@@ -65,7 +79,7 @@ Linux/macOS `.venv/bin/python`），Agent 不得先运行 `source`/`activate`。
 
 ```bash
 python3 scripts/validate_project.py
-bun test ./.opencode/plugins/guard.test.js   # 开发态本地文件，不入库
+bun test ./.opencode/plugins/guard.test.js   # 守卫回归测试（已入库）
 ```
 
 负向手工用例：尝试 edit `executer/runner.py`（应被静态 deny）、尝试 bash

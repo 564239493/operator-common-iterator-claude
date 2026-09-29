@@ -5,13 +5,15 @@ opencode 原生写入守卫，规则移植自旧版 `.claude/hooks/guard_project
 
 | 钩子 | 作用 |
 |---|---|
-| `tool.execute.before` | 对 read/glob/grep/list/edit/write/apply_patch/bash 八类工具做写入门禁：受保护源码只读 + 活动 run 写隔离 + 跨 run 访问禁止 + 高风险 shell 转 ask |
+| `tool.execute.before` | 对 read/glob/grep/list/edit/write/apply_patch/bash 八类工具做写入门禁：受保护源码只读 + 活动 run 写隔离 + 跨 run 访问禁止 + shell 改文件命令拦截 |
+| `permission.ask` | 对进入 opencode 原生询问流程的命令做硬规则复查：命中守卫硬规则的改判 deny，其余保持询问（用户批准后可执行） |
 
-deny → throw 阻断工具并给出原因；ask → throw「需要用户确认: …」。注意：插件层的
-ask **无法触发 opencode 原生确认框**，实际语义是「阻断并给出提示」——不存在批准
-后放行的通道，重试同一命令会再次被拦。模型应转述原因请用户决策；确需执行时由
-用户手动运行。静默返回 = 放行（放行兜底由 `opencode.json` 静态 permission 负责）。
-插件自身任何异常一律 fail-closed 转 ask，绝不静默放行。
+deny → throw 阻断工具并给出原因；静默返回 = 放行（放行兜底由 `opencode.json`
+静态 permission 负责）。「需要用户确认」类判断不在 `tool.execute.before` 里以
+throw 实现（throw 没有批准通道，等于永久拒绝）：高风险命令的询问由静态 ask
+规则承担，opencode 弹原生确认框、用户批准后即可执行；插件在 `permission.ask`
+钩子里复查，仅把命中硬规则的改判 deny。
+插件自身任何异常一律 fail-closed 转阻断，绝不静默放行。
 
 ---
 
@@ -44,8 +46,10 @@ ask **无法触发 opencode 原生确认框**，实际语义是「阻断并给�
 直接 deny：内联 Python（`python -c` / `python -` / heredoc 变体）、
 generation_progress.py 的变量/管道/循环包装、跨 run 遍历、重定向或写删命令
 目标在项目外或受保护路径、写删命令带未解析变量（`$VAR`）。
-转 ask：删除/移动、依赖与环境变更、curl/wget、Git 写操作、系统/进程变更、
-项目外 Python 入口、未绑定 run 时的 shell 写入。
+询问（由静态 ask 规则承担，批准后可执行）：删除/移动、依赖与环境变更、curl/wget、
+Git 写操作、系统/进程变更、项目外 Python 入口、`git apply`/`git restore`/`rsync`。
+shell 层改文件命令（sed -i / git apply / tar 解压 / unzip -d / dd of= / find -delete
+等）命中后与写删命令走同一套目标检查；直接读取 `.env`/`.env.*` 的命令拒绝。
 自动信任：项目内 `.py` 入口（容忍解释器堆叠与前缀开关；`-m` 模块模式与 stdin
 模式不自动信任）。
 

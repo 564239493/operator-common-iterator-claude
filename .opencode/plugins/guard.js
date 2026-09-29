@@ -1,9 +1,12 @@
 // opencode 原生写入守卫：受保护路径只读 + 活动 run 写隔离 + 跨 run 访问禁止
-// + 高风险 shell 转 ask。规则移植自原 .claude/hooks/guard_project_writes.py。
+// + shell 层改文件命令的启发式拦截。规则移植自原 .claude/hooks/guard_project_writes.py。
 // 设计约定：
 //   - 只观察工具入参并按需阻断；不修改任何 args/输出。
-//   - deny → throw（阻断并给出原因）；ask → throw「需要用户确认: …」，
-//     由模型转达用户决策；静默返回 = 放行（放行兜底由 opencode 静态 permission 负责）。
+//   - deny → throw（阻断并给出原因）；静默返回 = 放行。
+//   - 「需要用户确认」类判断不在 tool.execute.before 做（throw 实现的 ask 没有
+//     批准通道，等于永久拒绝）：高风险命令的询问由 opencode.json 静态 ask 规则
+//     承担（原生确认框，用户批准后可执行）；本插件在 permission.ask 钩子里对
+//     进入询问流程的命令做硬规则复查（命中改判 deny，其余保持询问）。
 //   - 记账归一：子代理会话（task 派生，sessionID 各自独立）先沿 parentID 链归一到
 //     根会话，主会话与其全部子代理共享同一份 run 绑定；父级链查询失败时退化为
 //     按会话各自记账（与不接入本机制时行为一致）。
@@ -34,6 +37,16 @@ const GENERATION_PROGRESS_REFERENCE = /generation_progress\.py/i
 const COMPLEX_GENERATION_MONITOR =
   /\$\(|(?:^|\s)(?:while|case|sleep|grep|head|tail|ps)(?:\s|$)|(?:^|\s)(?:cd|set)\s|(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=|\|/
 
+// shell 层「绕过文件工具直接改文件」的命令（sed -i / perl -pi / git apply / tar 解压等）。
+// 旧架构靠 OS sandbox 在内核层强制，opencode 无对应配置位，这里按启发式补位：
+// 命中后与 rm/mv 走同一套写入目标检查（受保护路径 / run 隔离 / 项目外路径）。
+const SHELL_FILE_MUTATORS =
+  /(?<![\w-])(?:sed\s(?:[^;&|]*\s)?--?(?:i\b|in-place\b|inplace\b)|perl\s(?:[^;&|]*\s)?--?(?:pi\b|ip\b|i\b)|g?awk\s[^;&|]*\s-i\s+inplace|dd\s[^;&|]*\bof=|install\s|rsync\s|patch\s|truncate\s|ed\s|git\s+apply\b|git\s+restore\b|tar\s+(?:-(?:[a-zA-Z]*x[a-zA-Z]*\b|--extract\b)|x[a-z]*f\b)|unzip\s[^;&|]*\s(?:-d\b|--directory\b)|find\s[^;&|]*\s-delete\b)(?![\w-])/i
+
+// 环境变量文件禁止 shell 直接读取（对齐静态 read deny；.env.example 豁免）。
+const ENV_FILE_REFERENCE =
+  /(?:^|[\s"'=:(])\.env(?!\.example\b)(?:\.\w+)?\b/
+
 const WRITE_OR_DELETE =
   /(?<![\w-])(remove-item|del(?:ete)?|erase|rm|rmdir|move-item|move|mv|copy-item|copy|cp|set-content|add-content|out-file|tee|new-item|mkdir|touch)(?![\w-])/i
 
@@ -53,7 +66,7 @@ const PROTECTED_SHELL_REFERENCE =
   /(?<![\w.-])(?:executer|agent\/generators|servers\.json|\.git)(?=$|[/\s"';&|,)])/i
 
 const INLINE_PYTHON =
-  /(?<![\w.-])(?:python(?:3(?:\.\d+)?)?|python\.exe|pythonw(?:\.exe)?|py)(?:\s+[^\s;&|]+)*\s+-(?:c(?:\s|$)|(?:\s|$))/i
+  /(?<![\w.-])(?:(?:python(?:3(?:\.\d+)?)?|python\.exe|pythonw(?:\.exe)?|py)(?:\s+[^\s;&|]+)*\s+-(?:c(?:\s|$)|(?:\s|$))|(?:node|perl|ruby)\s+(?:--eval\s+|-e(?:\s|$)))/i
 
 // Python 仅当它是 shell 段首的可执行 token 时才算执行（罗列路径不算）。
 const PYTHON_COMMAND =
@@ -317,12 +330,23 @@ function toolPaths(tool, args, root) {
     return args.filePath ? [resolvedPath(args.filePath, root)] : []
   }
   if (tool === "apply_patch") {
+    // opencode 真实入参是单个 patchText 字符串（*** Begin Patch / *** Add File: 等标记行）。
+    // 逐一提取所有涉及路径送检：Add/Update/Delete File 是写入目标；
+    // Move 场景里 Update File 的原路径（被移走）与 Move to 的新路径都算写入目标。
+    const targets = []
+    const text = typeof args.patchText === "string" ? args.patchText : ""
+    for (const m of text.matchAll(/^\*\*\*\s+(?:Add|Update|Delete) File: (.+)$/gm)) {
+      if (m[1].trim()) targets.push(resolvedPath(m[1].trim(), root))
+    }
+    for (const m of text.matchAll(/^\*\*\*\s+Move to: (.+)$/gm)) {
+      if (m[1].trim()) targets.push(resolvedPath(m[1].trim(), root))
+    }
+    // 兼容补丁数组形态（file/filePath 字段），两种入参都逐目标送检。
     const patches = Array.isArray(args.patches) ? args.patches : []
-    const targets = patches
-      .map((p) => (p && (p.file || p.filePath)) || null)
-      .filter(Boolean)
-      .map((f) => resolvedPath(f, root))
-    if (args.filePath) targets.push(resolvedPath(args.filePath, root))
+    for (const p of patches) {
+      const f = p && (p.file || p.filePath)
+      if (f) targets.push(resolvedPath(f, root))
+    }
     return targets
   }
   if (tool === "glob" || tool === "grep" || tool === "list") {
@@ -410,9 +434,15 @@ export function guardShell(command, root, scope) {
 
   if (INLINE_PYTHON.test(command)) {
     return (
-      "禁止 python -c、python - 和 heredoc 内联代码；" +
-      "请运行现有 scripts/*.py，或使用 Read/Glob/Grep 检查文件"
+      "禁止 python -c、node -e、perl -e 等内联代码；" +
+      "请运行现有 scripts/*.py，或使用 read/glob/grep 检查文件"
     )
+  }
+
+  for (const match of command.matchAll(globalize(ENV_FILE_REFERENCE))) {
+    const dotIndex = match.index + match[0].indexOf(".env")
+    if (quotedSpans(command).some(([start, end]) => dotIndex > start && dotIndex < end)) continue
+    return "环境变量文件禁止 shell 直接读取（.env / .env.*；.env.example 除外）"
   }
 
   if (RUN_TRAVERSAL.test(command)) {
@@ -460,12 +490,7 @@ export function guardShell(command, root, scope) {
   }
 
   const quoted = quotedSpans(command)
-  for (const match of command.matchAll(globalize(WRITE_OR_DELETE))) {
-    if (quoted.some(([start, end]) => match.index >= start && match.index < end)) continue
-    const keyword = match[1]
-    const segment = command
-      .slice(match.index + match[0].length)
-      .split(/&&|\|\||[;&|\n]/)[0]
+  const checkWriteKeyword = (keyword, segment) => {
     const normalized = segment.replace(/\\/g, "/").toLowerCase()
     if (PROTECTED_SHELL_REFERENCE.test(normalized)) {
       return `受保护路径只允许读取/执行，禁止 ${keyword}`
@@ -489,23 +514,23 @@ export function guardShell(command, root, scope) {
         return `任务执行期间只允许写入 runs/${bound}: ${target}`
       }
     }
+    return null
   }
-  return null
-}
-
-function shellApprovalReason(command, current, root) {
-  if (DESTRUCTIVE_COMMAND.test(command)) return "删除或移动操作需要用户确认"
-  for (const [pattern, label] of HIGH_RISK_PATTERNS) {
-    if (pattern.test(command)) return `${label}需要用户确认`
-  }
-  if (PYTHON_COMMAND.test(command) && !allPythonEntriesAreProjectFiles(command, root)) {
-    return "仅项目目录内的 Python 文件入口自动信任"
-  }
-  const persistentRedirection = extractedPaths(command, REDIRECTION).some(
-    (target) => !isNullSink(target)
-  )
-  if (current === null && (WRITE_OR_DELETE.test(command) || persistentRedirection)) {
-    return "尚未绑定当前 run，Shell 写入需要用户确认"
+  // 显式写/删命令与 shell 改写命令（sed -i / git apply / tar 解压等）共用同一套目标检查。
+  // 检查段从命中的命令名开始取到段尾：find <目录> -delete、git apply --directory=
+  // 这类「目标在选项前/中」的形式也要覆盖，不能只看关键词之后的文本。
+  for (const [pattern, fallbackKeyword] of [
+    [WRITE_OR_DELETE, null],
+    [SHELL_FILE_MUTATORS, "shell 改写命令"],
+  ]) {
+    for (const match of command.matchAll(globalize(pattern))) {
+      if (quoted.some(([start, end]) => match.index >= start && match.index < end)) continue
+      const segment = command
+        .slice(match.index)
+        .split(/&&|\|\||[;&|\n]/)[0]
+      const verdict = checkWriteKeyword(fallbackKeyword || match[1], segment)
+      if (verdict) return verdict
+    }
   }
   return null
 }
@@ -520,8 +545,10 @@ async function guard(tool, args, sessionID, root, client) {
     const command = String((args && args.command) || "")
     const denial = guardShell(command, root, scope)
     if (denial) return { decision: "deny", reason: denial }
-    const approval = shellApprovalReason(command, scope.read(), root)
-    if (approval) return { decision: "ask", reason: approval }
+    // 询问类判断不在 tool.execute.before 处理：throw 实现的「ask」没有批准通道，
+    // 等于永久拒绝（用户点了允许也执行不了）。高风险命令的询问由 opencode.json
+    // 静态 ask 规则承担（原生确认框，批准后可执行）；插件在 permission.ask
+    // 钩子里对进入询问流程的命令做硬规则复查（见 GuardPlugin）。
     return null
   }
   return null
@@ -543,9 +570,28 @@ export const GuardPlugin = async ({ directory, worktree, client }) => {
       if (result.decision === "deny") {
         throw new Error(result.reason || "操作被项目权限策略拒绝")
       }
-      if (result.decision === "ask") {
-        throw new Error(`需要用户确认: ${result.reason || ""}`)
+    },
+    // 询问流程复查：opencode 静态 ask 规则弹出原生确认框前后触发本钩子。
+    // 插件用与 tool.execute.before 同一套硬规则复查命令——命中硬规则的改判
+    // deny（不给批准通道）；其余保持 ask，用户在原生确认框批准即可执行。
+    "permission.ask": async (input, output) => {
+      const meta = (input && input.metadata) || {}
+      const metaArgs = meta.args && typeof meta.args === "object" ? meta.args : {}
+      const command =
+        typeof meta.command === "string"
+          ? meta.command
+          : typeof metaArgs.command === "string"
+            ? metaArgs.command
+            : null
+      if (!command) return
+      let denial = null
+      try {
+        const scope = new Scope(projectDir, await resolveScopeKey(client, input.sessionID))
+        denial = guardShell(command, projectDir, scope)
+      } catch {
+        return // 复查自身故障不干预，交由原生询问流程兜底（弹窗即天然拦截）
       }
+      if (denial) output.status = "deny"
     },
   }
 }
