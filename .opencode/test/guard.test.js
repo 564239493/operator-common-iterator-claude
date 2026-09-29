@@ -1,14 +1,16 @@
-// guard.js 规则回归测试：bun test ./.opencode/plugins/guard.test.js
-// （bun test 对隐藏目录不做自动发现，路径必须带 ./ 前缀；仅支持 bun 运行时。）
+// guard.js 规则回归测试：bun test ./.opencode/test/guard.test.js
+// （bun test 对隐藏目录不做自动发现，路径必须带 ./ 前缀；仅支持 bun 运行时。
+//   测试文件放在 .opencode/test/ 而非 plugins/——后者被 opencode 启动时自动加载，
+//   测试文件的 bun:test 导入会在每次启动时抛错。）
 // 只测纯函数与 guard() 决策，不启动 opencode、不做真实文件系统 scope 读写
 // （scope 文件写入 tmp 目录隔离）。
 
 import { describe, expect, test, beforeEach, afterAll } from "bun:test"
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import os from "node:os"
 
-const guardMod = await import("./guard.js")
+const guardMod = await import("../plugins/guard.js")
 
 const TMP = join(os.tmpdir(), "guard-test-root")
 const RUN = "aclnnTest-20260928-000000-000000"
@@ -43,6 +45,27 @@ describe("受保护路径", () => {
   test("write servers.json 拒绝", async () => {
     const msg = await hookGuard("write", { filePath: "servers.json", content: "x" })
     expect(msg).toContain("受保护路径")
+  })
+  test("write agent/generators 拒绝", async () => {
+    const msg = await hookGuard("write", { filePath: "agent/generators/solver.py", content: "x" })
+    expect(msg).toContain("受保护路径")
+  })
+  test("重定向写入受保护路径拒绝", async () => {
+    const msg = await hookGuard("bash", { command: "echo x > executer/runner.py" }, "s-redir1")
+    expect(msg).toContain("受保护路径")
+  })
+  test("重定向写入项目外拒绝", async () => {
+    const msg = await hookGuard("bash", { command: "echo x > /tmp/evil-out.txt" }, "s-redir2")
+    expect(msg).toContain("项目目录外")
+  })
+  test("绑定 run 后重定向写 run 外项目文件拒绝", async () => {
+    await hookGuard("read", { filePath: `runs/${RUN}/run_state.json` }, "s-redir3")
+    const msg = await hookGuard("bash", { command: "echo x > notes.md" }, "s-redir3")
+    expect(msg).toContain("只允许写入")
+  })
+  test("重定向到空设备放行（/dev/null）", async () => {
+    const msg = await hookGuard("bash", { command: "echo x > /dev/null" }, "s-redir4")
+    expect(msg).toBeNull()
   })
   test("apply_patch 补丁文本逐文件送检（真实 patchText 格式）", async () => {
     const msg = await hookGuard("apply_patch", {
@@ -319,6 +342,65 @@ describe("子代理共享主会话的 run 绑定", () => {
       )
     } catch (error) { captured = error.message }
     expect(captured).toBeNull()
+  })
+})
+
+describe("批次三守卫加固回归", () => {
+  test("pip install 参数位置的 install 不再误拦（绑定期间）", async () => {
+    await hookGuard("read", { filePath: `runs/${RUN}/run_state.json` }, "s-b3a")
+    const msg = await hookGuard("bash", { command: "pip install requests" }, "s-b3a")
+    expect(msg).toBeNull()
+  })
+  test("echo apply patch 叙述位置不误拦", () => {
+    const msg = guardMod.guardShell("echo apply patch now", TMP, new guardMod.Scope(TMP, "s-b3b"))
+    expect(msg).toBeNull()
+  })
+  test("sed -i 引号替换表达式写自己 run 不误拦（绑定后）", async () => {
+    await hookGuard("read", { filePath: `runs/${RUN}/run_state.json` }, "s-b3c")
+    const msg = await hookGuard("bash", { command: `sed -i 's/a/b/' runs/${RUN}/f.txt` }, "s-b3c")
+    expect(msg).toBeNull()
+  })
+  test("裸 install 改受保护路径拒绝（段首锚定）", () => {
+    const msg = guardMod.guardShell("install a b executer/x", TMP, new guardMod.Scope(TMP, "s-b3d"))
+    expect(msg).toContain("受保护路径")
+  })
+  test("复合段 truncate 改受保护路径拒绝", () => {
+    const msg = guardMod.guardShell("ls && truncate -s 0 executer/runner.py", TMP, new guardMod.Scope(TMP, "s-b3e"))
+    expect(msg).toContain("受保护路径")
+  })
+  test("重定向写 run_state.json 拒绝（堵自标终态换绑链）", async () => {
+    await hookGuard("read", { filePath: `runs/${RUN}/run_state.json` }, "s-b3f")
+    const msg = await hookGuard(
+      "bash",
+      { command: `echo '{"state":"SUCCESS"}' > runs/${RUN}/run_state.json` },
+      "s-b3f",
+    )
+    expect(msg).toContain("受保护路径")
+  })
+  test("rm run_state.json 拒绝", async () => {
+    await hookGuard("read", { filePath: `runs/${RUN}/run_state.json` }, "s-b3g")
+    const msg = await hookGuard("bash", { command: `rm runs/${RUN}/run_state.json` }, "s-b3g")
+    expect(msg).toContain("受保护路径")
+  })
+  test("bun -e / php -r / deno eval 内联代码拒绝", () => {
+    for (const cmd of [
+      `bun -e "require('fs').writeFileSync('x','y')"`,
+      `php -r "file_put_contents('x','y');"`,
+      `deno eval "Deno.writeTextFileSync('x','y')"`,
+    ]) {
+      const msg = guardMod.guardShell(cmd, TMP, new guardMod.Scope(TMP, "s-b3h"))
+      expect(msg).toContain("内联代码")
+    }
+  })
+  test("符号链接逃逸拒绝（经 runs/<id>/el 写 executer）", async () => {
+    try {
+      symlinkSync(join(TMP, "executer"), join(TMP, "runs", RUN, "el"))
+    } catch {
+      return // 平台不支持符号链接时跳过
+    }
+    await hookGuard("read", { filePath: `runs/${RUN}/run_state.json` }, "s-b3i")
+    const msg = await hookGuard("write", { filePath: `runs/${RUN}/el/runner.py`, content: "x" }, "s-b3i")
+    expect(msg).toContain("受保护路径")
   })
 })
 

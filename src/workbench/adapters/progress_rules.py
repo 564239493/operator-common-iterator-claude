@@ -386,10 +386,15 @@ def per_round_states(run_state, iter_views, inputs_files):
         """任务级角色按发生轮收窄：未发生轮次一律 not_involved。"""
         if entry["status"] == "not_involved":
             return dict(entry, iteration=n)
-        if acting_round is not None and n == acting_round:
+        if acting_round is None or n == acting_round:
+            # 发生轮未知（如 run_state 缺 current_iteration）时不能断言本轮未参与：
+            # 保留原结论只挂轮次，避免把 pending/unconfirmed 误吞成 not_involved。
             return dict(entry, iteration=n)
-        target = "第 %s 轮" % acting_round if acting_round is not None else "本轮"
-        return _entry("not_involved", "任务级动作：%s仅在%s发生，本轮未参与" % (what, target), n)
+        return _entry(
+            "not_involved",
+            "任务级动作：%s仅在第 %s 轮发生，本轮未参与" % (what, acting_round),
+            n,
+        )
 
     states = {}
     for view in iter_views:

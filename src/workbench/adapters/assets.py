@@ -90,17 +90,22 @@ def _files(base, pattern):
 
 def _knowledge_access(name, text):
     # Deliberately narrow, verified declarations, not a guess based on role names.
+    # 子句必须跟随 .opencode/agent/<name>.md 的现行措辞维护（改版时同步这里）；
+    # 每项多个候选子句命中任一即认定，降低文案微调导致的静默降级。
     clauses = {
-        "constraint-extractor": ("允许且必须按必载协议", "conditional"),
-        "constraint-checker": ("允许通过 skill 工具加载", "conditional"),
-        "constraint-repairer": ("知识 skill 按需加载", "conditional"),
-        "constraint-supplementer": ("知识 skill 按需加载", "conditional"),
-        "constraint-updater": ("知识 skill 按需加载", "conditional"),
-        "failure-analyst": ("知识 skill 按需加载", "conditional"),
-        "prompt-optimizer": ("knowledge/aclnn/", "reference"),
+        "constraint-extractor": (("必载知识", "允许且必须按必载协议"), "conditional"),
+        "constraint-checker": (("知识 skill 按", "允许通过 skill 工具加载"), "conditional"),
+        "constraint-repairer": (("知识 skill 按需加载",), "conditional"),
+        "constraint-supplementer": (("知识 skill 按需加载",), "conditional"),
+        "constraint-updater": (("知识 skill 按需加载",), "conditional"),
+        "failure-analyst": (("知识 skill 按需加载",), "conditional"),
+        "prompt-optimizer": (("knowledge/aclnn/",), "reference"),
     }
-    clause, access = clauses.get(name, (None, "unmentioned"))
-    return access if clause and clause in text else "unmentioned"
+    entry = clauses.get(name)
+    if not entry:
+        return "unmentioned"
+    alternatives, access = entry
+    return access if any(clause in text for clause in alternatives) else "unmentioned"
 
 
 def _agents(root, warnings):
@@ -205,7 +210,9 @@ def load_assets(root, home=None):
         entry = {"id": "skill:" + name, "name": name, "kind": "skill", "description": "", "availability": "ready"}
         try:
             text = _read(paths.resolve_asset(base, name + "/SKILL.md"))
-            if GENERATED in text or name.startswith(("aclnn-", "torch-npu-")):
+            # 知识技能的判据是生成标记（或 manifest 收录，见上方 expected 跳过）；
+            # 名字前缀单独不构成判据——aclnn- 开头的手写技能仍是手写技能。
+            if GENERATED in text:
                 knowledge.append({**entry, "kind": "knowledge", "family": "aclnn" if name.startswith("aclnn-") else "torch_npu",
                                   "module": name, "scope": "other", "availability": "unavailable"})
                 warnings.append("部分知识能力需要检查")

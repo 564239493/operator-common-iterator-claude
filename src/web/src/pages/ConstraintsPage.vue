@@ -4,14 +4,14 @@ import { ElMessage } from 'element-plus';
 import { marked } from 'marked';
 
 
-// 状态机 → 中文标签
+// 状态机 → 中文标签（与 run_state.py 的 ALLOWED_STATES 对齐，无幽灵态）
 const STATE_LABELS = {
-    PLAN: '规划', INITIAL_EXTRACT: '首轮提取', EXTRACT: '约束提取',
-    SUPPLEMENT: '约束补充', CONSTRAINT_CHECK: '检查修复', GENERATE: '用例生成',
+    PLAN: '规划', EXTRACT: '约束提取',
+    GENERATE: '用例生成',
     EXECUTE: '用例执行', GATE: '质量门禁', DIAGNOSE: '根因诊断',
     UPDATE_CONSTRAINTS: '增量更新', MIXED_FAILURE_REVIEW: '混合复核',
     NEEDS_HUMAN_EVIDENCE: '待人工证据', HUMAN_CHECKPOINT: '人工检查',
-    AWAITING_HUMAN_CONSTRAINTS: '等待人工约束', ROLLBACK_TO_ITERATION: '回退轮次',
+    AWAITING_HUMAN_CONSTRAINTS: '等待人工约束',
     SUCCESS: '成功', MAX_ITERATIONS: '轮次耗尽',
     STOP_GENERATOR_BUG: '生成器止损', STOP_EXECUTOR_BUG: '执行器止损',
     STOPPED_BY_USER: '用户终止', BLOCKED: '阻断'

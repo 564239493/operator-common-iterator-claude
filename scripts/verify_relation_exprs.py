@@ -37,12 +37,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent.generators.common_utils.data_handle_utils import DataHandleUtil
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from agent.generators.common_utils.data_handle_utils import DataHandleUtil
 from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.data_definition.constants import DataMatchMap
 from agent.generators.param_constraint_solve.expression_preprocess_utils import (

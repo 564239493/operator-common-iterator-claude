@@ -79,7 +79,7 @@ Linux/macOS `.venv/bin/python`），Agent 不得先运行 `source`/`activate`。
 
 ```bash
 python3 scripts/validate_project.py
-bun test ./.opencode/plugins/guard.test.js   # 守卫回归测试（已入库）
+bun test ./.opencode/test/guard.test.js   # 守卫回归测试（已入库；不放 plugins/ 免被启动加载）
 ```
 
 负向手工用例：尝试 edit `executer/runner.py`（应被静态 deny）、尝试 bash

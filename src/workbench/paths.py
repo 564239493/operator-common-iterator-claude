@@ -2,7 +2,9 @@
 import re
 from pathlib import Path, PurePosixPath
 
-RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# \w 含 Unicode：中文算子名的 run_id（init_run 以文档名生成）也能访问详情；
+# 结构风险（路径分隔符/控制字符/glob 元字符）由显式字符类排除，另见 .. 检查。
+RUN_ID_RE = re.compile(r"^[\w.\-]+$")
 ITER_DIR_RE = re.compile(r"^iter_(\d{3,})$")
 
 USER_SKILL_DIRS = (".config/opencode/skills", ".agents/skills", ".claude/skills")

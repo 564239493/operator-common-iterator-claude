@@ -152,8 +152,9 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
 ## 精度与 Golden 经验
 
 - `precision_tolerances` 是 `(rtol, ptol)`；`atol` 写在 `absolute_precision`。
-- 当前默认优先加载算子目录中的自主推导或源码 Golden，但不要求 manifest
-  `verified`，精度不通过只记录诊断，不阻塞 NPU 功能执行结果。
+- 默认**不加载**算子 Golden；仅当用户明确要求精度对比时显式 `--with-golden`
+  开启（加载算子目录中的自主推导或源码 Golden），不要求 manifest `verified`，
+  精度不通过只记录诊断，不阻塞 NPU 功能执行结果。
 - 内部格式运行时初始化与 Golden 插件解耦：无论是否使用 Golden，TTK 每个
   worker 都会设置 `allow_internal_format=True`。
 - Golden 签名要接收 API 全部默认属性，避免 ParamPlan 默认值造成调用失败。
@@ -161,8 +162,9 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
 
 ## Golden 推导（当前非必需）
 
-默认使用当前可用的 Golden，并将功能结果与精度结果分别统计。显式传入
-`--no-golden` 可以不加载算子 Golden，但仍保留内部格式运行时初始化。
+默认不加载算子 Golden（`--no-golden` 即默认行为），功能结果照常统计。仅当用户
+明确要求精度对比时显式传入 `--with-golden` 加载，并将功能结果与精度结果分别
+统计；无论是否使用 Golden，内部格式运行时初始化均保留。
 
 失败分类：场景违反文档回到约束迭代；JSON→CSV映射错误归 `ttk_adapter`；Golden
 UNSUPPORTED/GOLDEN_FAILURE/数值公式问题归 `golden_derivation`；SSH/CANN/TBE归

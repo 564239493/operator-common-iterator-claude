@@ -36,7 +36,7 @@ python scripts/generation_progress.py launch --output-dir <iter> \
 launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoch`/`requested`/
 `breakaway`/`state=running`）并写同名 `generation_progress.json`，然后 exit 0。
 逐条 flush 的 JSONL 断点行数由后续 `status` 轮询读出，作为真实进度写入极小的
-`generation_progress.json`（含 `state`/`per_platform.done`/`pid_alive`/`elapsed`）。
+`generation_progress.json`（含 `state`/`per_platform.done`/`pid_alive`/`elapsed_seconds`）。
 
 ### 监控纪律（关键，违反即前功尽弃或弹非业务询问）
 
@@ -54,7 +54,7 @@ launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoc
   使用变量、`cd`、管道、命令替换、`while`/`case`/`sleep`/`grep`/`head`/`ps`；否则守卫插件
   无法静态分析，向用户弹出非业务询问。
 - **查进度（无询问，主协调器适用）**：每次 `watch`/`status` 采样返回后**必须**向用户报告
-  `per_platform.done`/`total`/`elapsed`/`pid_alive`（递增即活跃），再发起下一次——每 ~60 秒给用户一次
+  `per_platform.done`/`total`/`elapsed_seconds`/`pid_alive`（递增即活跃），再发起下一次——每 ~60 秒给用户一次
   进度，**不得**用"平台名看起来不对"之类的旁支判断替换进度数字。不循环 read。
 - **轮询回合排他（强制，防进度丢失）**：`state=running` 期间主协调器每回合**只**做"跑 status → 报进度
   → 决定下回合"；禁止在轮询回合发起探查性 read/grep/平台选择调查/记忆回溯/长思考——旁支疑虑推迟到

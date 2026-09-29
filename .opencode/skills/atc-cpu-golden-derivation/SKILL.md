@@ -1,5 +1,5 @@
 ---
-name: aclnn-cpu-golden-derivation
+name: atc-cpu-golden-derivation
 description: Derive PyTorch CPU computation from ACLNN C++ operator signatures for ATK test scripts. Use when asked to replace dummy CPU output with real PyTorch computation in an ATK-generated test file, or when converting aclnn operator signatures to torch calls. The operator parameter constraints (shapes, dtypes, attr value ranges, broadcast relationships) documented throughout are REFERENCE knowledge for writing correct CPU golden code — they tell you what values the operator accepts so your code can handle them properly (defaults, None checks, clamping, dtype casting, broadcast handling). This skill does NOT instruct modifying the case JSON test data file.
 metadata:
   type: skill

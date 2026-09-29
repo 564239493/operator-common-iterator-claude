@@ -39,7 +39,10 @@ description: 串行扫描并迭代目录中的全部算子文档，支持失败�
      `--prompt <prompt>`，自动模式不得把某一 family 的 baseline 当作显式 prompt
      传给另一 family；始终透传 `--hs-scenario-mode <hs_scenario_mode>`；若
      `supplement_constraints` 非空，一并透传 `--supplement-constraints <path>`；
-     始终透传 claim 返回的
+     始终透传 claim 返回的 `--max-iterations <max_iterations>`、
+     `--case-count <case_count>`、`--mode <mode>`（批次级设定必须落到每个算子 run，
+     不得静默回落单算子默认值）；`server_config` 非空时透传
+     `--server-config <server_config>`；始终透传 claim 返回的
      `--constraint-check-rounds <constraint_check_rounds>`，使每个算子的首轮 EXTRACT 与后续
      UPDATE_CONSTRAINTS 新版本都执行同样的 check/repair 门禁；
       默认透传 `--scene all`、`--human-checkpoint-round 0`（批处理无头不能

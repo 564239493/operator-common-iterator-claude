@@ -289,7 +289,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
           `generation_progress.py status --output-dir <iter-absolute>`。
            **该命令禁止包含**变量赋值/展开、`cd`、管道、命令替换、shell
            `while`/`case`/`sleep`/`grep`/`head`/`ps`；这些结构会触发非业务安全审批询问。
-       2. **每次 `watch`/`status` 采样返回后必须向用户报告** `per_platform` 各平台 `done`/`total`/`elapsed`/
+       2. **每次 `watch`/`status` 采样返回后必须向用户报告** `per_platform` 各平台 `done`/`total`/`elapsed_seconds`/
           `pid_alive`（`done` 递增、`pid_alive=true` 即活跃）——输出这四项是**强制**，**不得**用"平台名
           看起来不对"之类的旁支判断替换进度数字。这样用户每 ~60 秒看到一次进度，而不是长时间空白。
        2a. **轮询回合排他（强制，防进度丢失）**：`state=running` 期间，主协调器每回合的**唯一**动作
@@ -514,9 +514,10 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
 - 每个 Agent 委派前读取 `run_state.json` 的 `operator_family` 与 `test_framework`。
 - `atk`：产物为每平台 compact JSON，沿用原 ACLNN 生成和 ATK executor。
 - `ttk`：先产出统一 `cases.json`，再适配为 `cases_ttk.csv`；generator 命令必须带
-  `--test-framework ttk`。`operator_family=hs` 默认加载可用的自主推导或源码 Golden，
-  但不以 Golden manifest 或精度结果阻塞流程；只有用户明确要求完全跳过 Golden 时
-  才使用 `--no-golden`。`operator_family=aclnn` 直接走原生 `ttk aclnn`。两者均不得进入
+  `--test-framework ttk`。`operator_family=hs` 默认**不**加载 Golden（`--no-golden`
+  即默认行为）；仅当用户明确要求精度对比时显式 `--with-golden` 开启（自主推导或
+  源码 Golden），且不以 Golden manifest 或精度结果阻塞流程。
+  `operator_family=aclnn` 直接走原生 `ttk aclnn`。两者均不得进入
   ATK 链。
 - `constraints`：只产出并校验 `constraints.json`，不调用任何 case/executor 命令；
   SUCCESS 必须注明 `run_scope=constraints_only`，不能表述成用例或精度闭环成功。

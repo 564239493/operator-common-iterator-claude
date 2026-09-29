@@ -21,7 +21,7 @@
 | 项 | 默认值 | 规划影响 |
 |---|---|---|
 | operator-doc | 必填；支持项目外路径 | 初始化时只读快照到 run/inputs |
-| prompt | 当前 family 数值版本最新的 vN prompt | 确定首轮提取规则；显式 `--prompt` 可固定原样快照 |
+| prompt | family 的 `base.md`（canonical，直接编辑）+ manifest 知识装配，初始化冻结为 `prompt_v1.md` | 确定首轮提取规则；显式 `--prompt` 可固定原样快照 |
 | max-iterations | 5 | 防止无界循环 |
 | constraint-check-rounds | 3 | 每个新约束版本（首轮 EXTRACT 或后续 UPDATE_CONSTRAINTS）Checker/Repairer 语义检查修复的最大轮数；通过可提前结束 |
 | case-count | 10/平台 | 控制生成与执行规模 |
@@ -391,8 +391,9 @@ Agent 注册清单可通过 `/show-workforce` 查看，运行记录见 `docs/OBS
 不会为没有 callable 的索引创建 run。
 
 默认 `continue-on-error`：`SUCCESS` 计为成功，`BLOCKED`、`MAX_ITERATIONS`、
-`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计为失败，但不会阻止后续文档执行。
-`--fail-fast` 会在首个非 SUCCESS 终态后把批次置为 STOPPED。这里的“全部执行完毕”
+`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 计为失败，`STOPPED_BY_USER`（用户手动停止）
+单列统计、不算失败；失败与手动停止均不会阻止后续文档执行。
+`--fail-fast` 会在首个失败终态后把批次置为 STOPPED。这里的“全部执行完毕”
 表示所有队列项都进入终态，不等价于全部成功。
 
 批次状态保存在 `runs/batches/<batch-id>/batch_state.json`。当前算子 run 创建后立即

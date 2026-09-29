@@ -4,6 +4,7 @@
     "edit": {
       "*": "ask",
       "runs/**": "allow",
+      "agent/**": "ask",
       "executer/**": "deny",
       "**/executer/**": "deny",
       "agent/generators/**": "deny",
@@ -19,8 +20,7 @@
       "knowledge/**": "ask",
       "scripts/**": "ask",
       "src/**": "ask",
-      "prompts/**": "ask",
-      "agent/**": "ask"
+      "prompts/**": "ask"
     },
     "read": {
       "*": "allow",

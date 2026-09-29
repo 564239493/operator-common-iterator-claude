@@ -319,6 +319,18 @@ def decide_GATE(ctx: Ctx) -> dict[str, Any]:
     if eerr or not isinstance(execution, dict):
         conditions.append(_cond("failed_count", False, eerr or "execution_result 缺失"))
         return _hold(conditions, "门禁已过但执行统计不可读")
+    # 结构复验：残缺/伪造形态的执行结果不允许仅凭 failed=0 直通 SUCCESS。
+    struct_errors = validate_execution(execution)
+    conditions.append(_cond(
+        "execution_structure_valid", not struct_errors,
+        "validate_execution 通过" if not struct_errors else "; ".join(struct_errors[:3])))
+    if struct_errors:
+        return _hold(conditions, "执行结果结构校验未过，等待补全或重跑 EXECUTE")
+    total = int(execution.get("total") or 0)
+    if total <= 0:
+        conditions.append(_cond("executed_any", False, f"execution total={total}，无任何已执行用例"))
+        return _hold(conditions, "执行结果 total=0，零用例不得直通 SUCCESS")
+    conditions.append(_cond("executed_any", True, f"execution total={total}"))
     failed = int(execution.get("failed") or 0)
     conditions.append(_cond("failed_count", True, f"execution failed={failed}"))
     check = ctx.check()

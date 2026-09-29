@@ -81,6 +81,7 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -v
 | `/api/runs/{id}/iterations/{n}/logs/tail?name=&bytes=` | 大日志尾部（白名单） |
 | `/api/runs/{id}/artifact?path=` | 原始 JSON 产物（白名单 + 截断 + sha256） |
 | `/api/agents` | 12 agent 定义（opencode 优先 / Claude 兜底 + definition_found/load_error/permission） |
+| `/api/assets` | 资产目录：手写/知识技能、agent 能力、知识库 manifest、扩展与用户技能组（资产页消费） |
 
 ## 约束审核与覆盖率
 

@@ -14,12 +14,15 @@
 //     工程术语，与 fail-open（故障即开门）相对：防线自身失效时默认拒绝，
 //     宁可误拦，不可漏放。
 
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { isAbsolute, join, normalize, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path"
 
 const PROTECTED_WRITE_DIRS = ["executer", "agent/generators", ".git"]
-const PROTECTED_WRITE_FILES = ["servers.json"]
+// run_state.json 在任意层级都只读（对齐静态 **/run_state.json deny）：
+// 状态迁移只允许经 run_state.py / flow_control.py 写入，堵死「echo 终态 > 自己的
+// run_state.json → 守卫读到终态自动解绑 → 换绑其他 run」的自标终态链。
+const PROTECTED_WRITE_FILES = ["servers.json", "run_state.json"]
 
 const TERMINAL_STATES = new Set([
   "SUCCESS",
@@ -37,15 +40,22 @@ const GENERATION_PROGRESS_REFERENCE = /generation_progress\.py/i
 const COMPLEX_GENERATION_MONITOR =
   /\$\(|(?:^|\s)(?:while|case|sleep|grep|head|tail|ps)(?:\s|$)|(?:^|\s)(?:cd|set)\s|(?:^|\s)[A-Za-z_][A-Za-z0-9_]*=|\|/
 
-// shell 层「绕过文件工具直接改文件」的命令（sed -i / perl -pi / git apply / tar 解压等）。
+// shell 层「绕过文件工具直接改文件」的命令（sed -i / perl -pi / tar 解压等形态型）。
 // 旧架构靠 OS sandbox 在内核层强制，opencode 无对应配置位，这里按启发式补位：
 // 命中后与 rm/mv 走同一套写入目标检查（受保护路径 / run 隔离 / 项目外路径）。
 const SHELL_FILE_MUTATORS =
-  /(?<![\w-])(?:sed\s(?:[^;&|]*\s)?--?(?:i\b|in-place\b|inplace\b)|perl\s(?:[^;&|]*\s)?--?(?:pi\b|ip\b|i\b)|g?awk\s[^;&|]*\s-i\s+inplace|dd\s[^;&|]*\bof=|install\s|rsync\s|patch\s|truncate\s|ed\s|git\s+apply\b|git\s+restore\b|tar\s+(?:-(?:[a-zA-Z]*x[a-zA-Z]*\b|--extract\b)|x[a-z]*f\b)|unzip\s[^;&|]*\s(?:-d\b|--directory\b)|find\s[^;&|]*\s-delete\b)(?![\w-])/i
+  /(?<![\w-])(?:sed\s(?:[^;&|]*\s)?--?(?:i\b|in-place\b|inplace\b)|perl\s(?:[^;&|]*\s)?--?(?:pi\b|ip\b|i\b)|g?awk\s[^;&|]*\s-i\s+inplace|dd\s[^;&|]*\bof=|tar\s+(?:-(?:[a-zA-Z]*x[a-zA-Z]*\b|--extract\b)|x[a-z]*f\b)|unzip\s[^;&|]*\s(?:-d\b|--directory\b)|find\s[^;&|]*\s-delete\b)(?![\w-])/i
+
+// 「裸命令词」型改写命令（install / rsync / patch / truncate / ed / git apply 等）：
+// 仅当出现在 shell 段首（命令起点）才算执行该命令，避免 pip install、
+// echo apply patch 这类参数/叙述位置的同名单词误伤。
+const SHELL_MUTATOR_COMMANDS =
+  /(?:^|&&|\|\||[;|\n])\s*(?:install|rsync|patch|truncate|ed|git\s+apply|git\s+restore)(?=\s|$)/gi
 
 // 环境变量文件禁止 shell 直接读取（对齐静态 read deny；.env.example 豁免）。
+// 边界字符集含路径分隔符，覆盖 ./.env、config/.env 等带前缀写法。
 const ENV_FILE_REFERENCE =
-  /(?:^|[\s"'=:(])\.env(?!\.example\b)(?:\.\w+)?\b/
+  /(?:^|[\s"'=:(\\/])\.env(?!\.example\b)(?:\.\w+)?\b/
 
 const WRITE_OR_DELETE =
   /(?<![\w-])(remove-item|del(?:ete)?|erase|rm|rmdir|move-item|move|mv|copy-item|copy|cp|set-content|add-content|out-file|tee|new-item|mkdir|touch)(?![\w-])/i
@@ -63,41 +73,17 @@ const RUN_TRAVERSAL =
   /(?:^|[\s"'=:(\\/])(?:\.\/|\.\\)?runs[\\/][^\\/\s"';&|,)]+[\\/]\.\.(?:[\\/]|$)/i
 
 const PROTECTED_SHELL_REFERENCE =
-  /(?<![\w.-])(?:executer|agent\/generators|servers\.json|\.git)(?=$|[/\s"';&|,)])/i
+  /(?<![\w.-])(?:executer|agent\/generators|servers\.json|run_state\.json|\.git)(?=$|[/\s"';&|,)])/i
 
 const INLINE_PYTHON =
-  /(?<![\w.-])(?:(?:python(?:3(?:\.\d+)?)?|python\.exe|pythonw(?:\.exe)?|py)(?:\s+[^\s;&|]+)*\s+-(?:c(?:\s|$)|(?:\s|$))|(?:node|perl|ruby)\s+(?:--eval\s+|-e(?:\s|$)))/i
+  /(?<![\w.-])(?:(?:python(?:3(?:\.\d+)?)?|python\.exe|pythonw(?:\.exe)?|py)(?:\s+[^\s;&|]+)*\s+-(?:c(?:\s|$)|(?:\s|$))|(?:(?:node|perl|ruby|bun|osascript)\s+(?:--eval|-e|-p)(?=\s|$)|php\s+(?:-r|-e)(?=\s|$)|deno\s+(?:eval|--eval)(?=\s|$)))/i
 
-// Python 仅当它是 shell 段首的可执行 token 时才算执行（罗列路径不算）。
-const PYTHON_COMMAND =
-  /(?:^|&&|\|\||[;|\n])\s*(?:"[^"]*[\\/]python(?:3(?:\.\d+)?)?(?:\.exe)?"|'[^']*[\\/]python(?:3(?:\.\d+)?)?(?:\.exe)?'|[^\s;&|]*(?:python(?:3(?:\.\d+)?)?|python\.exe|pythonw(?:\.exe)?|py))(?=\s)/
+// Python 仅当它是 shell 段首的可执行 token 时才算执行（罗列路径不算）——该判断
+// 属于已删除的「项目内 .py 自动信任」机制，正则一并移除（见下方历史说明）。
 
-const DESTRUCTIVE_COMMAND =
-  /(?<![\w-])(?:remove-item|del(?:ete)?|erase|rm|rmdir|move-item|move|mv)(?![\w-])/i
-
-const HIGH_RISK_PATTERNS = [
-  [
-    /(?<![\w-])(?:pip3?\s+(?:install|uninstall)|python3?(?:\.exe)?\s+-m\s+(?:pip|venv)|uv\s+(?:add|remove|sync|pip)|npm\s+(?:install|uninstall)|apt(?:-get)?\s|dnf\s|yum\s|winget\s|choco\s)/i,
-    "依赖或环境变更",
-  ],
-  [
-    /(?:^|&&|\|\||[;|\n])\s*(?:source|eval|invoke-expression|iex|bash\s+-c|sh\s+-c)(?=\s|$)|(?<![\w-])powershell(?:\.exe)?\s+(?:-encodedcommand\b|-command\s+["']?\s*(?:invoke-expression|iex)\b)/i,
-    "Shell 求值",
-  ],
-  [/(?<![\w-])(?:curl|wget)(?![\w-])/i, "外部内容下载"],
-  [
-    /(?<![\w-])git\s+(?:add|commit|push|pull|merge|rebase|reset|checkout|switch|clean|stash|tag)(?=\s|$)/i,
-    "Git 状态变更",
-  ],
-  [
-    /(?<![\w-])(?:sudo|su|chmod|chown|kill|killall|pkill|taskkill|stop-process|setx|reg\s+(?:add|delete))(?![\w-])/i,
-    "系统或进程变更",
-  ],
-]
-
-const TOKEN_RE = /^\s*(?:"(?<double>[^"]+)"|'(?<single>[^']+)'|(?<bare>[^\s;&|]+))/
-const INTERPRETER_NAME = /^(?:python3(?:\.\d+)?|python|pythonw|py)(?:\.exe)?$/
-const PY_NOARG_SWITCH = /^-[bBdEIPqSsUuVvx34Oo]+$/
+// sed/perl 替换表达式形态（s/…/…/、s#…#…#）：出现在引号参数里时不是文件路径，
+// 不参与写入目标提取（修 sed -i 's/a/b/' <自己run>/f 误拦）。
+const SED_EXPRESSION = /^s([^\w\s]).+\1/
 
 function globalize(re) {
   return re.flags.includes("g") ? re : new RegExp(re.source, re.flags + "g")
@@ -164,7 +150,19 @@ function expandVars(text) {
 function resolvedPath(text, root) {
   const expanded = nativePathText(text)
   const candidate = isAbsolute(expanded) ? expanded : join(root, expanded)
-  return normalize(candidate)
+  return resolveSymlinks(normalize(candidate))
+}
+
+// 解析符号链接后再判定边界：runs/<id>/el -> ../../../executer 这类软链逃逸必须
+// 落到真实路径受检；叶子不存在（新建文件）时解析其父目录。
+function resolveSymlinks(path) {
+  try {
+    return realpathSync(path)
+  } catch {}
+  try {
+    return join(realpathSync(dirname(path)), basename(path))
+  } catch {}
+  return path
 }
 
 function isInside(text, root) {
@@ -213,6 +211,8 @@ function isProtectedWrite(path, root) {
   if (!parts) return false
   const lowered = parts.map((p) => p.toLowerCase())
   if (lowered.length >= 1 && PROTECTED_WRITE_FILES.includes(lowered[0])) return true
+  // 受保护文件在任意层级生效（如 runs/<id>/run_state.json），对齐静态 **/ 变体。
+  if (PROTECTED_WRITE_FILES.includes(lowered[lowered.length - 1])) return true
   const joined = lowered.join("/")
   return PROTECTED_WRITE_DIRS.some(
     (name) => joined === name || joined.startsWith(name + "/")
@@ -229,7 +229,10 @@ function extractedPaths(text, pattern) {
   for (const match of text.matchAll(globalize(pattern))) {
     const groups = match.groups || {}
     const value = groups.double || groups.single || groups.bare
-    if (value) paths.push(value.replace(/[),]+$/, ""))
+    if (!value) continue
+    const candidate = value.replace(/[),]+$/, "")
+    if (SED_EXPRESSION.test(candidate)) continue
+    paths.push(candidate)
   }
   return paths
 }
@@ -356,6 +359,7 @@ function toolPaths(tool, args, root) {
 }
 
 function guardFile(tool, args, root, scope) {
+  root = resolveSymlinks(root)
   const paths = toolPaths(tool, args, root)
   const current = scope.read()
   const isWrite = FILE_WRITE_TOOLS.has(tool)
@@ -386,42 +390,13 @@ function guardFile(tool, args, root, scope) {
   return null
 }
 
-function isInterpreterToken(token) {
-  const name = token.replace(/\\/g, "/").split("/").pop().toLowerCase()
-  return INTERPRETER_NAME.test(name)
-}
-
-function pythonEntryToken(segment) {
-  let pos = 0
-  while (pos < segment.length) {
-    const m = TOKEN_RE.exec(segment.slice(pos))
-    if (!m || m.index !== 0) return null
-    const tok = m.groups.double || m.groups.single || m.groups.bare
-    if (tok === undefined || tok === null) return null
-    pos += m[0].length
-    if (isInterpreterToken(tok)) continue
-    if (PY_NOARG_SWITCH.test(tok)) continue
-    if (tok.startsWith("-")) return null
-    return tok
-  }
-  return null
-}
-
-function allPythonEntriesAreProjectFiles(command, root) {
-  const matches = [...command.matchAll(globalize(PYTHON_COMMAND))]
-  if (matches.length === 0) return true
-  for (const match of matches) {
-    const segment = command
-      .slice(match.index + match[0].length)
-      .split(/&&|\|\||[;&|\n]/)[0]
-    const entry = pythonEntryToken(segment)
-    if (entry === null) return false
-    if (!entry.toLowerCase().endsWith(".py") || !isInside(entry, root)) return false
-  }
-  return true
-}
+// 历史说明：项目外 python 入口的「自动信任」判断（allPythonEntriesAreProjectFiles、
+// PYTHON_COMMAND 及 token 解析辅助）在询问机制迁移到 opencode.json 静态规则后
+// 从未接线，已删除；项目外入口现由静态 `python /*` / `python3 /*` / `py /*` ask
+// 承担（批准后可执行）。INLINE_PYTHON 自带解释器识别，不依赖上述正则。
 
 export function guardShell(command, root, scope) {
+  root = resolveSymlinks(root)
   const current = scope.read()
 
   if (GENERATION_PROGRESS_REFERENCE.test(command) && COMPLEX_GENERATION_MONITOR.test(command)) {
@@ -519,14 +494,16 @@ export function guardShell(command, root, scope) {
   // 显式写/删命令与 shell 改写命令（sed -i / git apply / tar 解压等）共用同一套目标检查。
   // 检查段从命中的命令名开始取到段尾：find <目录> -delete、git apply --directory=
   // 这类「目标在选项前/中」的形式也要覆盖，不能只看关键词之后的文本。
-  for (const [pattern, fallbackKeyword] of [
-    [WRITE_OR_DELETE, null],
-    [SHELL_FILE_MUTATORS, "shell 改写命令"],
+  // 裸命令词型（SHELL_MUTATOR_COMMANDS）本身锚定在段首，检查段取命令词之后的参数。
+  for (const [pattern, fallbackKeyword, argsOnly] of [
+    [WRITE_OR_DELETE, null, false],
+    [SHELL_FILE_MUTATORS, "shell 改写命令", false],
+    [SHELL_MUTATOR_COMMANDS, "shell 改写命令", true],
   ]) {
     for (const match of command.matchAll(globalize(pattern))) {
       if (quoted.some(([start, end]) => match.index >= start && match.index < end)) continue
       const segment = command
-        .slice(match.index)
+        .slice(match.index + (argsOnly ? match[0].length : 0))
         .split(/&&|\|\||[;&|\n]/)[0]
       const verdict = checkWriteKeyword(fallbackKeyword || match[1], segment)
       if (verdict) return verdict

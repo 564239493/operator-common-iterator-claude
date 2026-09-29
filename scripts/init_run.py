@@ -46,6 +46,108 @@ CLOSURE_NOISE_PARTS = frozenset({
 # 闭包匹配的源码后缀（与 source_exts 一致）。
 CLOSURE_EXTS = ("cc", "cpp", "h", "hpp", "c")
 
+# run 终态集合（与 scripts/run_state.py、flow_control.py、guard.js 的 TERMINAL_STATES 同步）。
+RESUME_TERMINAL_STATES = frozenset({
+    "SUCCESS",
+    "BLOCKED",
+    "MAX_ITERATIONS",
+    "STOP_GENERATOR_BUG",
+    "STOP_EXECUTOR_BUG",
+    "STOPPED_BY_USER",
+})
+
+
+def resume_run(run_ref: str) -> int:
+    """全新会话的瘦恢复入口：只读校验 + 输出恢复上下文，不创建/复制任何文件。
+
+    接续建议与 iterate-operator 技能「全新会话恢复」节的分支一致。
+    """
+    run_dir = resolve_input_path(run_ref)
+    if not run_dir.is_dir():
+        print(json.dumps(
+            {
+                "ok": False,
+                "requires_user_action": True,
+                "code": "RUN_DIR_NOT_FOUND",
+                "message": "run 目录不存在，请提供 runs/<run-id> 或其绝对/相对路径。",
+                "run_dir": str(run_dir),
+            },
+            ensure_ascii=False,
+        ))
+        return 2
+    state_path = run_dir / "run_state.json"
+    if not state_path.is_file():
+        print(json.dumps(
+            {
+                "ok": False,
+                "requires_user_action": True,
+                "code": "RUN_STATE_NOT_FOUND",
+                "message": "run 目录缺少 run_state.json，无法恢复。",
+                "run_dir": str(run_dir),
+            },
+            ensure_ascii=False,
+        ))
+        return 2
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(json.dumps(
+            {
+                "ok": False,
+                "requires_user_action": True,
+                "code": "RUN_STATE_INVALID",
+                "message": f"run_state.json 读取/解析失败: {exc}",
+                "run_dir": str(run_dir),
+            },
+            ensure_ascii=False,
+        ))
+        return 2
+
+    run_state_name = str(state.get("state") or "")
+    iteration = state.get("current_iteration") or 0
+    if run_state_name == "AWAITING_HUMAN_CONSTRAINTS":
+        next_action = (
+            "执行 iterate-operator 第 4 步：挂 watch_constraints_copy.py 监听器，"
+            "挂起等待用户上传 constraints_copy.json 后由 apply_human_constraints.py 接入下一轮。"
+        )
+    elif run_state_name == "UPDATE_CONSTRAINTS":
+        iter_dir = run_dir / "iter_{:03d}".format(iteration)
+        has_outputs = any(
+            (iter_dir / name).is_file()
+            for name in ("cases.json", "execution_result.json")
+        )
+        next_action = (
+            "本轮已跑（iter_{:03d} 已有生成/执行产物），按正常状态机从 UPDATE_CONSTRAINTS 续跑。".format(iteration)
+            if has_outputs
+            else "接入已完成但轮次未跑（iter_{:03d} 无产物），直接从 CHECK/REPAIR 续跑。".format(iteration)
+        )
+    elif run_state_name in RESUME_TERMINAL_STATES:
+        next_action = "run 已到终态，报告状态后结束。"
+    else:
+        next_action = "按 run_state.json 的当前状态从状态机续跑（产物目录是唯一真相源，不依赖聊天历史）。"
+
+    print(json.dumps(
+        {
+            "ok": True,
+            "resumed": True,
+            "run_id": str(state.get("run_id") or run_dir.name),
+            "run_dir": str(run_dir),
+            "state": run_state_name,
+            "terminal": run_state_name in RESUME_TERMINAL_STATES,
+            "current_iteration": iteration,
+            "operator_doc_snapshot": state.get("operator_doc"),
+            "current_prompt": state.get("current_prompt"),
+            "operator_family": state.get("operator_family"),
+            "test_framework": state.get("test_framework"),
+            "mode": state.get("mode"),
+            "max_iterations": state.get("max_iterations"),
+            "next_action": next_action,
+        },
+        ensure_ascii=False,
+        indent=2,
+    ))
+    return 0
+
 
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -250,7 +352,7 @@ def main() -> int:
         default=None,
         help=(
             "约束提取提示词路径；省略时 ACLNN 使用拆分后的 active base 并路由知识，"
-            "torch_npu 使用其数值版本最大的独立基线"
+            "torch_npu 优先使用 torch_npu_constraints/base.md（缺失时回退数值版本最大的独立基线）"
         ),
     )
     parser.add_argument(
@@ -345,18 +447,46 @@ def main() -> int:
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
     parser.add_argument(
+        "--resume-run",
+        dest="resume_run",
+        default=None,
+        help=(
+            "从已有 run 目录恢复（全新会话的瘦恢复入口）：校验 run 目录与 "
+            "run_state.json 存在，不创建新 run、不复制任何快照，输出恢复上下文"
+            "（状态/轮次/接续建议）供主协调器按状态机续跑。"
+            "与 --doc/--prompt/--supplement-constraints/--src 等建 run 参数互斥。"
+        ),
+    )
+    parser.add_argument(
         "--scene",
         choices=("auto", "all", "off"),
         default="auto",
         help=(
-            "场景提取范围：auto=EXTRACT 前跑 scene-scan，文档有场景则主会话"
-            "AskUserQuestion 两级多选征询(设备类型+逐设备场景，支持全选)、无则跳过；"
+            "场景提取范围：auto=EXTRACT 前跑 scene-scan，文档有场景则主会话用"
+            "question 工具三轮多选征询（设备类型→逐设备场景，不设'全部设备/全部模板'"
+            "聚合项）、无则跳过；"
             "all=跑 scene-scan 但取全场景(不剪枝、不询问，批处理默认)；off=不跑 scene-scan。"
             "scene-scan 由 iterate-operator 在 EXTRACT 前委派 scene-scanner Agent 完成，"
             "本脚本只记录选择并在 run_state.scene 留空待回写。"
         ),
     )
     args = parser.parse_args()
+
+    if args.resume_run is not None:
+        creation_flags = {
+            "--doc": args.doc or args.doc_pos,
+            "--prompt": args.prompt,
+            "--supplement-constraints": args.supplement_constraints,
+            "--src": args.src,
+            "--source-analysis-knowledge": args.source_analysis_knowledge,
+        }
+        given = [flag for flag, value in creation_flags.items() if value]
+        if given:
+            parser.error(
+                "--resume-run 与建 run 参数互斥（恢复不创建新 run）: "
+                + ", ".join(given)
+            )
+        return resume_run(args.resume_run)
 
     if args.doc is None:
         args.doc = args.doc_pos

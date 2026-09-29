@@ -43,15 +43,19 @@ throw 实现（throw 没有批准通道，等于永久拒绝）：高风险命�
 
 ## 三、shell 分类
 
-直接 deny：内联 Python（`python -c` / `python -` / heredoc 变体）、
+直接 deny：内联代码（`python -c` / `python -` / heredoc 变体 / `node|perl|ruby|bun|osascript -e` / `php -r` / `deno eval`）、
 generation_progress.py 的变量/管道/循环包装、跨 run 遍历、重定向或写删命令
-目标在项目外或受保护路径、写删命令带未解析变量（`$VAR`）。
+目标在项目外或受保护路径（含任意层级的 `run_state.json`，堵「自标终态换绑」）、
+写删命令带未解析变量（`$VAR`）。
 询问（由静态 ask 规则承担，批准后可执行）：删除/移动、依赖与环境变更、curl/wget、
 Git 写操作、系统/进程变更、项目外 Python 入口、`git apply`/`git restore`/`rsync`。
-shell 层改文件命令（sed -i / git apply / tar 解压 / unzip -d / dd of= / find -delete
-等）命中后与写删命令走同一套目标检查；直接读取 `.env`/`.env.*` 的命令拒绝。
-自动信任：项目内 `.py` 入口（容忍解释器堆叠与前缀开关；`-m` 模块模式与 stdin
-模式不自动信任）。
+shell 层改文件命令命中后与写删命令走同一套目标检查——形态型（sed -i / tar 解压 /
+unzip -d / dd of= / find -delete 等）任意位置匹配；裸命令词型（install / rsync /
+patch / truncate / ed / git apply / git restore）仅在 shell 段首匹配，避免
+`pip install` 这类参数位置同名词误伤。直接读取 `.env`/`.env.*` 的命令拒绝。
+路径判定先解析符号链接（realpath）再比对边界，`runs/<id>/软链` 逃逸落到真实路径
+受检；sed/perl 替换表达式（`s/…/…/`）不当作写入目标。
+自动信任：项目内 `.py` 入口；项目外入口由静态 `python /*` 系 ask 承担询问。
 
 ## 四、fail-closed
 
@@ -60,16 +64,18 @@ shell 层改文件命令（sed -i / git apply / tar 解压 / unzip -d / dd of= /
 
 ## 五、测试与验证
 
-`guard.test.js` 是**开发态本地回归文件，不入库**（发布仓库不含此文件）；开发环境
-在仓库根目录运行：
+`guard.test.js` 随仓库入库；在仓库根目录运行：
 
 ```bash
-bun test ./.opencode/plugins/guard.test.js   # 28 个回归用例（仅 bun 运行时）
+bun test ./.opencode/test/guard.test.js   # 60 个回归用例（仅 bun 运行时；测试文件
+                                           # 不放 plugins/ ——该目录被启动时自动加载）
 python3 scripts/validate_project.py           # 项目级静态校验
 ```
 
-用例覆盖：受保护路径四类拒绝、apply_patch 补丁数组逐文件送检、run 隔离绑定与
-跨 run 拒绝、子代理沿 parentID 链共享根会话绑定（含查询失败退化）、内联 python
-（含 `-X utf8`/`py`/`pythonw` 变体）与包装监控拒绝、只读命令引号内关键词不误伤、
-scope run_id 格式校验（`*`/空串视为未绑定）、高风险 ask 语义、项目内 .py 放行、
-fail-closed 异常转报错。
+用例覆盖：受保护路径拒绝、apply_patch 逐文件送检（patchText 标记行与补丁数组
+两种形态、跨 run 写、Move to 目标）、run 隔离绑定与跨 run 拒绝、子代理沿
+parentID 链共享根会话绑定（含查询失败退化）、内联 python/node（含 `-X utf8`/
+`py`/`pythonw`/heredoc/`-e` 变体）与包装监控拒绝、只读命令引号内关键词不误伤、
+shell 层改文件命令（sed -i/tar 解压等）与 `.env` 读取、询问归静态规则语义、
+scope run_id 格式校验（`*`/空串视为未绑定）、项目内 .py 放行、fail-closed
+异常转报错。

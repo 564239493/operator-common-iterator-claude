@@ -9,7 +9,7 @@ depends_on: []
 
 # 模块 ffn_v3（按需加载）
 
-> 本模块原为 `knowledge/operator_patterns/ffn_v3.md` 的实战经验（含 NPU 真机测量反馈），按算子名由 `scripts/select_prompt.py` 装配到活跃提示词末尾。该规则按 `operator_name=="aclnnFFNV3"` 触发，**不**扩散到其他算子。
+> 本模块由已退役的旧位置 `knowledge/operator_patterns/ffn_v3.md` 迁入（含 NPU 真机测量反馈），现址 `knowledge/aclnn/operators/`，按算子名由 `scripts/select_prompt.py` 装配到活跃提示词末尾。该规则按 `operator_name=="aclnnFFNV3"` 触发，**不**扩散到其他算子。
 
 ## 适用判定
 

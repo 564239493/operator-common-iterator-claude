@@ -225,7 +225,6 @@ constraint-repairer 不修改报告。
 `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`
 由 constraint-checker 产出，constraint-repairer 不修改此文件。
 状态推进操作见 iterate-operator/SKILL.md 步骤 6。
-// TODO 待skill优化后调整这里
 
 ## relation_examples.json
 
@@ -340,17 +339,6 @@ patch 先通过`validate_artifacts.py constraints_patch`；
 由 `constraint-supplementer` 产出，
 `apply_supplement_constraints.py` 消费（合并写入 constraints.json），
 `constraint-checker` 消费（验证 finding 覆盖与 expected_effect）。
-
-# conflict 段拆分后完整替换内容
-
-> 替换范围：ARTIFACT_CONTRACTS.md 中从
-> `## conflict_candidates.json / conflict_resolution.json`
-> 到
-> `## scene_scan.json / scene_directive.md / run_state.scene`
-> 之前的全部内容。
-> 即删除旧的合并段，粘贴下面的两个独立段。
-
----
 
 ## conflict_candidates.json
 
@@ -631,5 +619,6 @@ continue_on_error 和有序 operators。`prompt` 只在用户显式指定原样 
 run_dir 与 terminal_state。任意时刻最多只能有一个 RUNNING 项。
 
 `batch_summary.json` 是由批次状态确定性生成的只读汇总视图，包含 total、pending、
-running、completed、success 和 failed。仅 `SUCCESS` 计入 success；`BLOCKED`、
-`MAX_ITERATIONS`、`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计入 failed。
+running、completed、success、failed 和 stopped_by_user。仅 `SUCCESS` 计入 success；
+`BLOCKED`、`MAX_ITERATIONS`、`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 计入 failed；
+`STOPPED_BY_USER`（用户手动停止）单列 stopped_by_user，不算失败。
