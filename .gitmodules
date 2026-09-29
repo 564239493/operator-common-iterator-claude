@@ -1,0 +1,3 @@
+[submodule "third_party/OperatorTestCoverage"]
+	path = third_party/OperatorTestCoverage
+	url = https://codehub-dg-g.huawei.com/y30050143/OperatorTestCoverage.git
