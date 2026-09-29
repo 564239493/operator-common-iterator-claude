@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_SOURCE = PROJECT_ROOT / "third_party" / "OperatorTestCoverage"
 DEFAULT_DEST = PROJECT_ROOT / ".opencode" / "skills"
 
-IGNORED_NAMES = {".git", "__pycache__", ".DS_Store"}
+IGNORED_NAMES = {".git", "__pycache__", ".DS_Store", "README.md"}
 
 
 def _ignore(_directory: str, names: list[str]) -> set[str]:
