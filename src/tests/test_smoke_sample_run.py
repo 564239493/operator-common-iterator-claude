@@ -42,8 +42,10 @@ class TestSampleRunSmoke(unittest.TestCase):
             self.assertTrue(agent["basis"], agent["name"])
             self.assertTrue(agent["inferred"])
         by_name = {a["name"]: a for a in agents}
+        # 当前轮（iter_006）检查首轮通过：checker passed、repairer skipped（首轮通过无修复证据，
+        # 旧版"因 iter_001 有备份故 passed"的跨轮推断已废弃——基线随规则走）
         self.assertEqual(by_name["constraint-checker"]["status"], "passed")
-        self.assertEqual(by_name["constraint-repairer"]["status"], "passed")  # iter_001 有 .pre_repair_local
+        self.assertEqual(by_name["constraint-repairer"]["status"], "skipped")
         self.assertEqual(by_name["quality-reviewer"]["status"], "passed")
         self.assertEqual(by_name["failure-analyst"]["status"], "passed")
 
@@ -79,13 +81,25 @@ class TestSampleRunSmoke(unittest.TestCase):
         from workbench import jsonutil as _jsonutil
 
         raw = _jsonutil.read_json(paths.resolve_run(ROOT, SAMPLE) / "run_state.json")
-        events = replay_adapter.build_replay(raw, self.view["iterations"])
+        events = replay_adapter.build_replay(raw, self.view["iterations"], self.view["inputs_files"])
         payload = _json.dumps({"ok": True, "data": {"view": self.view, "replay": events}},
                               ensure_ascii=False, default=str)
         self.assertGreater(len(payload), 1000)
         self.assertTrue(any(e["action"] == "terminal" for e in events))
-        self.assertTrue(any(e["agent"] == "constraint-updater" and e["action"] == "skipped"
-                            and e["iteration"] == 4 for e in events))
+        # iter_004 无 constraint_update.json（仅扩量）→ 本轮无更新实例，不生成节点事件；
+        # 更新事件只出现在有 constraint_update.json 的轮（2/3/5/6），均为 passed
+        updater_rounds = sorted({e["iteration"] for e in events if e["agent"] == "constraint-updater"})
+        self.assertEqual(updater_rounds, [2, 3, 5, 6])
+        self.assertTrue(all(e["action"] == "passed"
+                            for e in events if e["agent"] == "constraint-updater"))
+        # 因"未见产物"而待确认的角色（no_instance）不生成节点事件
+        self.assertFalse(any(e["action"] == "unconfirmed" and e["iteration"] == 4
+                             and e["agent"] in ("constraint-updater", "constraint-supplementer",
+                                                "prompt-optimizer", "scene-scanner")
+                             for e in events))
+        # 明确交接才带 to_agent；场景扫描 → 提取器的业务流箭头应存在
+        self.assertTrue(any(e["agent"] == "case-generator" and e.get("to_agent") == "case-executor"
+                            for e in events))
 
     def test_artifact_whitelist_and_escape(self):
         run_root = paths.resolve_run(ROOT, SAMPLE)

@@ -22,6 +22,7 @@ export const ARTIFACT_MAP: Record<string, ArtifactEntry[]> = {
   'source-analyst': [{ label: 'source_evidence.json', path: (n) => `iter_${pad3(n)}/source_evidence.json` }],
   'constraint-supplementer': [
     { label: 'constraints.json（合并后）', path: (n) => `iter_${pad3(n)}/constraints.json` },
+    { label: 'conflict_resolution.json（用户裁决）', path: () => 'inputs/conflict_resolution.json' },
   ],
   'constraint-checker': [
     { label: 'constraint_check.json', path: (n) => `iter_${pad3(n)}/constraint_check.json` },
@@ -38,6 +39,9 @@ export const ARTIFACT_MAP: Record<string, ArtifactEntry[]> = {
   'case-executor': [
     { label: 'execution_result.json', path: (n) => `iter_${pad3(n)}/execution_result.json` },
     { label: 'cases_expanded.json', path: (n) => `iter_${pad3(n)}/cases_expanded.json` },
+    // TTK 框架特有产物（ATK 轮次不出现，属正常缺失）
+    { label: 'ttk_conversion_audit.json（TTK）', path: (n) => `iter_${pad3(n)}/ttk_conversion_audit.json` },
+    { label: 'golden_manifest.json（TTK）', path: (n) => `iter_${pad3(n)}/golden_manifest.json` },
   ],
   'quality-reviewer': [{ label: 'quality_gate.json', path: (n) => `iter_${pad3(n)}/quality_gate.json` }],
   'failure-analyst': [{ label: 'analysis.json', path: (n) => `iter_${pad3(n)}/analysis.json` }],

@@ -14,9 +14,12 @@ RECORDS_PAGE_DEFAULT = 50
 RECORDS_PAGE_MAX = 200
 
 # 状态推导规则集版本（随规则调整递增，便于 UI 标注）
-INFERENCE_RULESET_VERSION = "v1"
+INFERENCE_RULESET_VERSION = "v2"
 
-# run_state.state 的终态集合（用于轮询降频与 history 分段）
+# run_state.state 的终态集合（用于轮询降频与 history 分段）。
+# 与生产者 scripts/flow_control.py 的 6 态对齐：MIXED_FAILURE_REVIEW /
+# NEEDS_HUMAN_EVIDENCE 是「等待用户拿主意」的挂起态（flow_control 留有后继边），
+# 不算终态——等待期间页面不得降频或显示「任务已结束」。
 TERMINAL_STATES = frozenset({
     "SUCCESS",
     "BLOCKED",
@@ -24,6 +27,10 @@ TERMINAL_STATES = frozenset({
     "STOP_GENERATOR_BUG",
     "STOP_EXECUTOR_BUG",
     "STOPPED_BY_USER",
+})
+
+# 「等待用户决定」的挂起态：非终态（用户答复后流程继续），UI 用等待样式提示
+WAITING_STATES = frozenset({
     "MIXED_FAILURE_REVIEW",
     "NEEDS_HUMAN_EVIDENCE",
 })
@@ -56,6 +63,18 @@ ARTIFACT_BASENAMES = frozenset({
     "source_raw.json",
     "conflict_candidates.json",
     "manifest.json",
+    "generation_status.json",
+    "constraints_patch.json",
+    "prompt_update_proposal.json",
+    # TTK 框架特有产物
+    "ttk_conversion_audit.json",
+    "golden_manifest.json",
+    "ttk_plugin.py",
+    "ttk_golden_fia.py",
+    # inputs 层用户裁决文件（与 prompt_update_decisions 同类）
+    "conflict_resolution.json",
+    "supplement_constraints.md",
+    "scene_directive.md",
 })
 
 # 额外允许的 basename 前缀（如 cases_Atlas A2 训练系列产品_....json）

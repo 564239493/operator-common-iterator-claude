@@ -30,6 +30,10 @@ passed/failed 无业务语义，必须阻断。另注意 mock 化后精度比对
 （NPU 结果对比的是 mock zeros），passed/failed 反映的是执行成败而非精度。
 
 写入 quality_gate.json。任何 blocking_issues 非空时 status 必须为 blocked。
+
+`quality_gate.json` 的 `status` 字段取值必须规范：通过写 `passed`，阻断写
+`blocked`，跳过写 `skip`（可视化侧按词表归一化，兼容 ok/success 等同义词；
+写词表外的值会被归为 unknown 并显示「待确认」，不默认通过）。
 质量门禁只确认阻断事实，不得跳过 failure-analyst 直接把表达式解析失败判成
 `generator_bug`。约束语义或表达式有误时，next_state 应进入 DIAGNOSE，由
 failure-analyst 判定是否为 `constraint_extraction`。

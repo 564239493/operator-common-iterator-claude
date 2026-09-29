@@ -1,6 +1,7 @@
-"""GET /api/runs/{run_id}：RunView（run_state + history 分段 + 逐轮摘要 + agent 状态）。"""
+"""GET /api/runs/{run_id}：RunView（run_state + history 分段 + 逐轮摘要 + 带轮次 agent 状态）。"""
 from .. import config, jsonutil, paths
-from . import iterations as iter_adapter
+from . import evidence as evidence_adapter
+from . import progress_rules
 from . import stage_inference
 
 
@@ -56,19 +57,17 @@ def build_segments(history):
 
 def build_run_view(root, run_id):
     # type: (...) -> dict
-    run_root = paths.resolve_run(root, run_id)
-    raw = jsonutil.read_json(run_root / "run_state.json")
-    if jsonutil.is_error(raw):
-        raise ValueError("run_state.json 解析失败：%s" % raw["_error"])
+    ev = evidence_adapter.build_evidence(root, run_id)
+    raw = ev["run_state"]
+    iter_views = ev["iterations"]
+    inputs_files = ev["inputs_files"]
+    run_root = ev["run_root"]
 
     history = raw.get("history") or []
     segments = build_segments(history)
 
-    iter_views = [
-        iter_adapter.summarize_iteration(path, n)
-        for n, path in paths.iter_dirs(run_root)
-    ]
-    agents = stage_inference.infer_agents(raw, iter_views)
+    agents = stage_inference.infer_agents(raw, iter_views, inputs_files)
+    round_states = progress_rules.per_round_states(raw, iter_views, inputs_files)
 
     last_event_at = None
     for event in history:
@@ -105,5 +104,7 @@ def build_run_view(root, run_id):
         "history": history,
         "segments": segments,
         "iterations": iter_views,
+        "inputs_files": inputs_files,
+        "round_states": round_states,
         "agents": agents,
     }

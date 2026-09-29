@@ -1,6 +1,7 @@
 <script>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { ElMessage } from 'element-plus';
+import { marked } from 'marked';
 
 
 // 状态机 → 中文标签
@@ -48,6 +49,13 @@ export default {
         const activePanels = ref(['rel', 'inputs', 'outputs']);
         const progressPolling = ref(false);
         const history = ref([]);
+        // 任务状态时间线默认折叠（占位大、非主流程信息）
+        const timelineCollapsed = ref(true);
+        // 原文弹框双模式：raw=带行号原文，rendered=markdown 渲染（均支持命中行定位）
+        const docMode = ref('rendered');
+        // 表格固定表头：el-table max-height（跟随窗口高度），表头原生吸顶
+        const tableMaxHeight = ref(420);
+        const syncTableMaxHeight = () => { tableMaxHeight.value = Math.max(320, window.innerHeight - 430); };
         const editConstraints = ref([]);
         const editMode = ref(false);
         const submitLoading = ref(false);
@@ -60,6 +68,7 @@ export default {
         const docDialogTitle = ref('原文定位');
         const docContent = ref('');
         const docSrcLines = ref([]);
+        const docMdRef = ref(null);
         const docViewerRef = ref(null);
         // 轮次对比
         const prevIterDir = ref('');
@@ -234,7 +243,8 @@ export default {
         }
 
         function goCover() {
-            window.location.href = '/coverage';
+            // 携带任务上下文：覆盖率页直达该任务内嵌的 runs/<run>/ops_cov_report/
+            window.location.href = '/coverage?run=' + encodeURIComponent(currentTaskDir.value || '');
         }
 
         function addConstraint() {
@@ -271,6 +281,24 @@ export default {
 
         // ---- 原文定位 ----
         const docLines = computed(() => docContent.value.split('\n'));
+        // markdown 渲染视图（GFM 表格支持；文档为项目内受信快照）。
+        // 命中行锚点：在源文本命中行首注入零宽注释，渲染后替换为高亮 span —— 渲染视图也能定位。
+        const docHtml = computed(() => {
+            if (!docContent.value) return '';
+            try {
+                const hits = docHitLines.value;
+                const marked2 = hits.size
+                    ? docContent.value.split('\n')
+                        .map((line, li) => (hits.has(li) ? '<!--WBHIT-->' + line : line))
+                        .join('\n')
+                    : docContent.value;
+                return marked.parse(marked2, { gfm: true, breaks: false })
+                    .replace(/<!--WBHIT-->/g, '<span class="doc-md-hit"></span>')
+                    .replace(/&lt;!--WBHIT--&gt;/g, '');
+            } catch (e) {
+                return '';
+            }
+        });
         // 高亮行号集合: src_txt_line 精确行号 (1-based)
         const docHitLines = computed(() => {
             const hits = new Set();
@@ -296,6 +324,8 @@ export default {
             docSrcLines.value = Array.isArray(row.src_txt_line)
                 ? row.src_txt_line.filter(n => Number.isInteger(n) && n > 0)
                 : [];
+            // 有定位行号 → 渲染视图也带锚点高亮；两种模式均自动滚动到首个命中行
+            docMode.value = 'rendered';
             try {
                 const res = await fetch(`/api/review/runs/${task.dir_name}/operator_doc?source=${encodeURIComponent(row.origin || 'doc')}`);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -307,9 +337,11 @@ export default {
             } finally {
                 docDialogLoading.value = false;
                 nextTick(() => {
-                    // 滚动到第一个高亮行
-                    if (docViewerRef.value && docHitLines.value.size) {
-                        const first = docViewerRef.value.querySelector('.doc-line-hit');
+                    // 滚动到第一个命中锚点（渲染视图 .doc-md-hit / 原文视图 .doc-line-hit）
+                    if (docHitLines.value.size) {
+                        const first = docMode.value === 'rendered'
+                            ? docMdRef.value?.querySelector('.doc-md-hit')
+                            : docViewerRef.value?.querySelector('.doc-line-hit');
                         if (first) first.scrollIntoView({behavior: 'smooth', block: 'center'});
                     }
                 });
@@ -726,6 +758,14 @@ export default {
             progressPolling.value = false;
         }
 
+        // 慢速兜底刷新：全部任务终态、5s 轮询停止后，每 30s 仍刷新任务列表，
+        // 让 runs/ 新出现的任务自动进入下拉（不改变当前选择）。
+        let slowTimer = null;
+        const slowRefresh = async () => {
+            if (progressTimer) return; // 快速轮询在跑时跳过，避免重复
+            try { await refreshProgress(); } catch (e) { /* 静默重试 */ }
+        };
+
         async function refreshProgress() {
             try {
                 runTasks.value = await loadRunTasks();
@@ -787,6 +827,7 @@ export default {
         }
 
         // ---- 初始化 ----
+        onMounted(() => { syncTableMaxHeight(); window.addEventListener('resize', syncTableMaxHeight); slowTimer = setInterval(slowRefresh, 30000); });
         onMounted(async () => {
             currentProduct.value = (DATA.value.product_support || [])[0] || '';
             runTasks.value = await loadRunTasks();
@@ -808,12 +849,13 @@ export default {
                 syncPollingByCurrentState();
             }
         });
-        onBeforeUnmount(() => stopProgressPolling());
+        onBeforeUnmount(() => { stopProgressPolling(); if (slowTimer) clearInterval(slowTimer); window.removeEventListener('resize', syncTableMaxHeight); });
 
         return {
             currentProduct, productOptions,
             runTasks, currentTaskDir, iterList, currentIter, taskLoading, queryLoading,
             activePanels, stateTag, progressPolling, history,
+            timelineCollapsed, docMode, docHtml, docMdRef, tableMaxHeight,
             currentTaskState, currentTaskStateType,
             stateLabel, isRunningState, fmtTime, nodeClass,
             relRows, relCount, hasDiff, relRowClass, relStatusType, relStatusLabel,
@@ -852,40 +894,45 @@ export default {
         <div><a :href="currentTaskDir ? '/run/' + encodeURIComponent(currentTaskDir) : '/'">返回工作台</a> <el-button @click="goCover">覆盖率展示</el-button></div>
     </div>
 
-    <!-- 副信息栏: 任务/迭代/状态选择器 + 产品系列 + 约束统计 -->
+    <!-- 副信息栏: 任务/轮次/产品系列 一组选择器 + 约束统计 -->
     <div class="info-bar">
-        <!-- 左侧: 任务列表 -->
         <div class="info-left">
             <span class="field-label">算子任务</span>
-            <el-select v-model="currentTaskDir" placeholder="选择任务" style="width:300px" filterable :disabled="editMode"
+            <el-select v-model="currentTaskDir" placeholder="选择任务" style="width:280px" filterable :disabled="editMode"
                        :loading="taskLoading" @change="onTaskChange">
                 <el-option v-for="t in runTasks" :key="t.dir_name" :label="t.dir_name" :value="t.dir_name"></el-option>
             </el-select>
-            <el-select v-model="currentIter" placeholder="迭代" style="width:130px" :disabled="!currentTaskDir || editMode"
+            <span class="field-label">轮次</span>
+            <el-select v-model="currentIter" placeholder="迭代" style="width:120px" :disabled="!currentTaskDir || editMode"
                        @change="onIterChange">
                 <el-option v-for="d in iterList" :key="d" :label="d" :value="d"></el-option>
+            </el-select>
+            <span class="field-label">产品系列</span>
+            <el-select v-model="currentProduct" :disabled="editMode" style="width:280px" filterable @change="syncEditConstraints">
+                <el-option v-for="p in productOptions" :key="p" :label="p" :value="p"></el-option>
             </el-select>
             <el-tag v-if="currentTaskState" :type="currentTaskStateType" effect="light" class="state-tag"
                     size="default">
                 <span v-if="isRunningState(currentTaskState)" class="spinner"></span>{{ stateLabel(currentTaskState) }}
             </el-tag>
         </div>
-        <!-- 右侧: 产品系列 + 约束统计 -->
         <div class="info-right">
-            <span class="field-label">产品系列</span>
-            <el-select v-model="currentProduct" :disabled="editMode" style="width:300px" filterable @change="syncEditConstraints">
-                <el-option v-for="p in productOptions" :key="p" :label="p" :value="p"></el-option>
-            </el-select>
-            <div class="divider-v"></div>
             <div class="stat-item stat-pass"><span class="stat-num">{{ statPass }}</span> 未关联失败</div>
             <div class="stat-item stat-fail"><span class="stat-num">{{ statFail }}</span> 关联失败</div>
-
         </div>
     </div>
 
-    <!-- 时间线: 单独一行, 位于 constraint-toolbar 上方 -->
+    <!-- 时间线: 任务状态迁移轨迹 (run_state.history), 可折叠 -->
     <div class="timeline-bar">
-        <div class="history-wrap">
+        <div class="timeline-head">
+            <span class="timeline-title">任务状态轨迹 · 共 {{ history.length }} 次状态迁移
+                <em>来自 run_state.json 的 history：本次任务从规划到终态经历过的每个阶段（含重试、止损、门禁、诊断）</em>
+            </span>
+            <button v-if="history.length" class="timeline-toggle" @click="timelineCollapsed = !timelineCollapsed">
+                {{ timelineCollapsed ? '展开 ▾' : '收起 ▴' }}
+            </button>
+        </div>
+        <div class="history-wrap" v-show="!timelineCollapsed">
             <span v-if="!history.length" class="history-empty">暂无记录</span>
             <div v-else class="timeline-scroll" ref="timelineScroll">
                 <div class="op-timeline-h">
@@ -958,7 +1005,7 @@ export default {
                                   class="diff-stat-chip none">两轮约束完全一致</span>
                             <button v-if="diffFilter" class="diff-reset-btn" @click="resetDiffFilter">重置</button>
                         </div>
-                        <el-table :data="editMode ? editConstraints : relRows" class="op-table">
+                        <el-table :data="editMode ? editConstraints : relRows" class="op-table" :max-height="tableMaxHeight">
                             <el-table-column type="index" label="#" width="40" align="center"></el-table-column>
 
                             <!-- 类型: 始终只读 -->
@@ -1081,7 +1128,7 @@ export default {
                     </div>
                     <div class="card-body" v-show="activePanels.includes('inputs')">
                         <div class="table-pad">
-                        <el-table :data="inputRows" class="op-table">
+                        <el-table :data="inputRows" class="op-table" :max-height="tableMaxHeight">
                             <el-table-column label="参数名" min-width="120" show-overflow-tooltip>
                                 <template #default="{ row }"><span class="param-name mono">{{ row.name }}</span>
                                 </template>
@@ -1135,7 +1182,7 @@ export default {
                     </div>
                     <div class="card-body" v-show="activePanels.includes('outputs')">
                         <div class="table-pad">
-                        <el-table :data="outputRows" class="op-table">
+                        <el-table :data="outputRows" class="op-table" :max-height="tableMaxHeight">
                             <el-table-column label="参数名" min-width="120" show-overflow-tooltip>
                                 <template #default="{ row }"><span class="param-name mono">{{ row.name }}</span>
                                 </template>
@@ -1186,14 +1233,30 @@ export default {
         <div v-else-if="docDialogError" style="text-align:center;padding:40px;color:var(--red)">
             {{ docDialogError }}
         </div>
-        <div v-else class="doc-viewer" ref="docViewerRef">
-            <div v-for="(line, li) in docLines" :key="li"
-                 class="doc-line"
-                 :class="{'doc-line-hit': docHitLines.has(li)}">
-                <span class="doc-line-no">{{ li + 1 }}</span>
-                <span class="doc-line-text">{{ line }}</span>
+        <template v-else>
+            <div class="doc-mode-bar">
+                <button class="doc-mode-btn" :class="{on: docMode === 'rendered'}" @click="docMode = 'rendered'">渲染视图</button>
+                <button class="doc-mode-btn" :class="{on: docMode === 'raw'}" @click="docMode = 'raw'">原文（带行号）</button>
+                <span v-if="docHitLines.size" class="doc-mode-hint">
+                    黄底为约束来源行（src_txt_line：{{ [...docHitLines].map(i => i + 1).join('、') }}），已自动滚动到首个命中处
+                </span>
+                <span v-else class="doc-mode-hint">该约束未记录来源行号，无法定位</span>
             </div>
-        </div>
+            <!-- markdown 渲染视图 -->
+            <div v-if="docMode === 'rendered'" class="doc-md" ref="docMdRef">
+                <div v-if="docHtml" v-html="docHtml"></div>
+                <div v-else class="doc-md-empty">（文档为空或渲染失败，请切到「原文」查看）</div>
+            </div>
+            <!-- 原文行号视图（可高亮定位） -->
+            <div v-else class="doc-viewer" ref="docViewerRef">
+                <div v-for="(line, li) in docLines" :key="li"
+                     class="doc-line"
+                     :class="{'doc-line-hit': docHitLines.has(li)}">
+                    <span class="doc-line-no">{{ li + 1 }}</span>
+                    <span class="doc-line-text">{{ line }}</span>
+                </div>
+            </div>
+        </template>
         <template #footer>
             <span style="margin-right:auto;font-size:12px;color:var(--text-muted)">
                 共 {{ docLines.length }} 行，高亮 {{ docHitLines.size }} 行匹配
@@ -1578,6 +1641,11 @@ export default {
     letter-spacing: 0.3px;
 }
 
+/* 固定表头: 通过 el-table max-height 启用原生固定表头（.el-table overflow:hidden 会使 CSS sticky 失效） */
+html[data-theme='dark'] .op-table .el-table__header th {
+    background: #182136 !important;
+}
+
 .op-table .cell {
     font-size: 13px;
 }
@@ -1695,6 +1763,120 @@ export default {
     border-radius: 6px;
     background: #fafbfc;
 }
+
+/* ---- 原文弹框: 模式切换 + markdown 渲染视图 ---- */
+.doc-mode-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.doc-mode-btn {
+    border: 1px solid var(--border);
+    background: var(--panel-bg);
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: 4px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.doc-mode-btn.on {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: #eff6ff;
+    font-weight: 600;
+}
+.doc-mode-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.doc-md {
+    max-height: 65vh;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-bg);
+    padding: 18px 24px;
+    font-size: 13px;
+    line-height: 1.7;
+}
+.doc-md h1, .doc-md h2, .doc-md h3, .doc-md h4 {
+    margin: 18px 0 8px;
+    color: var(--text);
+    line-height: 1.4;
+}
+.doc-md h1 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.doc-md h2 { font-size: 17px; }
+.doc-md h3 { font-size: 15px; }
+.doc-md h4 { font-size: 13.5px; }
+.doc-md p { margin: 8px 0; }
+.doc-md ul, .doc-md ol { margin: 8px 0; padding-left: 22px; }
+.doc-md li { margin: 3px 0; }
+.doc-md code {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    font-size: 12px;
+    background: var(--code-bg);
+    color: var(--code);
+    padding: 1px 5px;
+    border-radius: 4px;
+}
+.doc-md pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 10px 0;
+}
+.doc-md pre code { background: none; padding: 0; }
+.doc-md blockquote {
+    border-left: 3px solid var(--accent);
+    background: #f8faff;
+    margin: 10px 0;
+    padding: 8px 14px;
+    color: var(--text-secondary);
+}
+.doc-md table {
+    border-collapse: collapse;
+    margin: 12px 0;
+    width: 100%;
+    font-size: 12.5px;
+}
+.doc-md th, .doc-md td {
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+.doc-md th {
+    background: #f1f5f9;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.doc-md tr:nth-child(even) td { background: #fafbfc; }
+html[data-theme='dark'] .doc-md tr:nth-child(even) td { background: #141a2b; }
+html[data-theme='dark'] .doc-md th { background: #182136; }
+html[data-theme='dark'] .doc-mode-btn.on { background: #1a2440; }
+html[data-theme='dark'] .doc-md blockquote { background: #16203a; }
+.doc-md-empty {
+    text-align: center;
+    padding: 40px 0;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+/* 渲染视图中的命中行锚点：零宽 span 染色所在文本块 */
+.doc-md .doc-md-hit {
+    display: inline;
+    background: #fff3bf;
+    box-shadow: -6px 0 0 0 #fff3bf, 6px 0 0 0 #fff3bf;
+    border-radius: 2px;
+    scroll-margin-top: 80px;
+}
+html[data-theme='dark'] .doc-md .doc-md-hit {
+    background: #5c4a1e;
+    box-shadow: -6px 0 0 0 #5c4a1e, 6px 0 0 0 #5c4a1e;
+}
+
 
 .doc-line {
     display: flex;
@@ -1998,6 +2180,39 @@ export default {
     padding: 4px 0;
     margin-top: 12px;
 }
+
+/* 时间线标题行 + 折叠开关 */
+.timeline-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.timeline-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+.timeline-title em {
+    font-style: normal;
+    font-weight: 400;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: 6px;
+}
+.timeline-toggle {
+    border: 1px solid var(--border);
+    background: var(--panel-bg);
+    color: var(--accent);
+    font-size: 11px;
+    padding: 2px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.timeline-toggle:hover { background: #eff6ff; }
+html[data-theme='dark'] .timeline-toggle:hover { background: #1a2440; }
 
 /* 横向执行历史 timeline: 水平滚动 */
 .history-wrap {

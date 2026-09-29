@@ -45,6 +45,8 @@ const eyeColor = computed(() => {
     case 'skipped':
     case 'not_involved':
       return '#aab2be'
+    case 'unconfirmed':
+      return '#b0a06a'
     default:
       return '#7d90bd'
   }

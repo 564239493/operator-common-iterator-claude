@@ -1,14 +1,26 @@
 <script>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { ElMessage } from 'element-plus';
+import { useRoute } from 'vue-router';
 
 
 export default {
     setup() {
+        const route = useRoute();
         // ---- 目录列表 ----
         const coverDirs = ref([]);
         const currentCoverDir = ref('');
         const coverSearch = ref('');
+        // 入口上下文：?run=<任务目录名> → 只看该任务内嵌的 runs/<run>/ops_cov_report/，路径关联、零名称匹配
+        const runContext = ref(String(route.query.run || '').trim());
+
+        // 按上下文切换数据源：有任务上下文走任务内嵌接口，否则浏览全局目录
+        const dirsUrl = () => runContext.value
+            ? '/api/review/runs/' + encodeURIComponent(runContext.value) + '/cover/dirs'
+            : '/api/review/cover/dirs';
+        const detailUrl = (dirName, kind) => runContext.value
+            ? '/api/review/runs/' + encodeURIComponent(runContext.value) + '/cover/' + encodeURIComponent(dirName) + '/' + kind
+            : '/api/review/cover/' + encodeURIComponent(dirName) + '/' + kind;
         const detailLoading = ref(false);
         const coverData = ref(null);
         const granularity = ref('func');
@@ -266,8 +278,8 @@ export default {
             activePanels.value = ['uncovered'];
             try {
                 const [covRes, anaRes] = await Promise.all([
-                    fetch('/api/review/cover/' + encodeURIComponent(d.dir_name) + '/coverage').then(r => r.json()),
-                    fetch('/api/review/cover/' + encodeURIComponent(d.dir_name) + '/analysis').then(r => r.json()).catch(() => null),
+                    fetch(detailUrl(d.dir_name, 'coverage')).then(r => r.json()),
+                    fetch(detailUrl(d.dir_name, 'analysis')).then(r => r.json()).catch(() => null),
                 ]);
                 if (covRes && !covRes.error) {
                     coverData.value = covRes;
@@ -293,19 +305,39 @@ export default {
         }
 
         // ---- 初始化 ----
+        let dirsTimer = null;
+
+        async function loadDirs() {
+            const list = await (await fetch(dirsUrl())).json();
+            coverDirs.value = Array.isArray(list) ? list : [];
+        }
+
         onMounted(async () => {
             try {
-                const list = await (await fetch('/api/review/cover/dirs')).json();
-                coverDirs.value = Array.isArray(list) ? list : [];
+                await loadDirs();
                 if (coverDirs.value.length) {
                     await selectCoverDir(coverDirs.value[0]);
+                } else if (runContext.value) {
+                    ElMessage.info('该任务暂无覆盖报告（runs/' + runContext.value + '/ops_cov_report/ 不存在或为空）');
                 }
-
             } catch (e) {
                 ElMessage.error('加载目录列表失败: ' + e.message);
             }
-
+            // 目录列表 30s 自动刷新：新生成的覆盖报告自动出现，不改变当前选择
+            dirsTimer = setInterval(async () => {
+                try {
+                    const prev = coverDirs.value.length;
+                    await loadDirs();
+                    if (!currentCoverDir.value && coverDirs.value.length) {
+                        await selectCoverDir(coverDirs.value[0]);
+                    } else if (runContext.value && !prev && coverDirs.value.length) {
+                        await selectCoverDir(coverDirs.value[0]);
+                    }
+                } catch (e) { /* 静默重试 */ }
+            }, 30000);
         });
+
+        onBeforeUnmount(() => { if (dirsTimer) clearInterval(dirsTimer); });
 
 
 
@@ -315,6 +347,7 @@ export default {
             uncoveredReasons, coveredUncoveredLines, expandedFunc,
             coverModules, metricsOf, modCount, rateColor,
             opDomain, opDir, uncoveredRows, coveredFuncRows,
+            runContext,
 
             selectCoverDir, goBack, funcDetails, toggleFunc, coverTypeOf, normalizeCover, coverTagType,
         };
@@ -330,7 +363,11 @@ export default {
         <el-button size="small" plain @click="goBack">← 返回约束审核</el-button>
     </div>
 
-    <p class="report-note">独立覆盖报告 · 未自动关联当前测试轮次。函数、语句和分支覆盖率分别统计。</p>
+    <p class="report-note">独立覆盖报告 · 函数、语句和分支覆盖率分别统计。
+        <template v-if="runContext">正在查看任务 <b>{{ runContext }}</b> 内嵌的覆盖报告（runs/{{ runContext }}/ops_cov_report/），按路径关联，不做名称匹配。</template>
+        <template v-else>未携带任务上下文，正在浏览全局覆盖报告目录（项目根 ops_cov_report/）。</template>
+        目录列表每 30 秒自动刷新。
+    </p>
     <div class="cover-main">
         <!-- 左侧: 覆盖率数据目录列表 -->
         <div class="cover-sidebar">

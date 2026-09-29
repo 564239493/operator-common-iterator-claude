@@ -33,8 +33,15 @@ watch(() => [props.scrollLeft, props.zoom], async () => {
 })
 function onScroll() { if (bandScroller.value) emit('scroll-x', bandScroller.value.scrollLeft) }
 function clickable(eng: any): boolean {
-  // 白名单：只有实际参与流程的状态可点击；skipped/not_involved/未知一律不可点
-  return ['pending', 'running', 'passed', 'rejected'].includes(eng.runtime?.status || '')
+  // 白名单：实际参与或证据待定的状态可点击；skipped/not_involved/未知一律不可点
+  return ['pending', 'running', 'passed', 'rejected', 'unconfirmed'].includes(eng.runtime?.status || '')
+}
+
+function defBadge(eng: any): string {
+  // 定义加载情况：找不到文件 / 文件存在但解析失败
+  if (eng.definition_found === false) return '无定义'
+  if (eng.load_error) return '加载失败'
+  return ''
 }
 
 function onClick(eng: any) {
@@ -78,7 +85,11 @@ function statusText(eng: any): string {
           <div class="role">{{ eng.role || '流程外' }}</div>
           <div class="status" :data-status="eng.runtime?.status">
             {{ statusText(eng) }}
-            <span v-if="eng.runtime?.inferred" class="inferred-badge" title="由产物与 history 推导">推导</span>
+            <span v-if="eng.runtime?.inferred" class="inferred-badge" :title="'由产物与 history 推导（规则集 ' + (eng.runtime?.ruleset || '?') + '）'">推导</span>
+          </div>
+          <div v-if="defBadge(eng)" class="def-badge"
+               :title="eng.load_error ? ('定义文件解析失败：' + eng.load_error) : '未找到该角色的定义文件，以下为流程固定角色'">
+            {{ defBadge(eng) }}
           </div>
         </div>
 
@@ -130,6 +141,7 @@ function statusText(eng: any): string {
 .status[data-status='passed'] { color: var(--wb-green); }
 .status[data-status='rejected'] { color: var(--wb-red); }
 .status[data-status='running'] { color: var(--wb-orange); }
+.status[data-status='unconfirmed'] { color: #b0a06a; } /* 灰黄：证据不足 ≠ 待运行 */
 .status[data-status='pending'] { color: var(--wb-muted); }
 .status[data-status='skipped'], .status[data-status='not_involved'] { color: var(--wb-faint); }
 .inferred-badge {
@@ -142,6 +154,17 @@ function statusText(eng: any): string {
   background: var(--wb-line);
   color: var(--wb-muted);
   vertical-align: 1px;
+}
+/* 定义加载情况标记：无定义 / 加载失败（不伪装成功） */
+.def-badge {
+  margin-top: 2px;
+  padding: 0 5px;
+  font-size: 9px;
+  line-height: 14px;
+  border-radius: 6px;
+  background: var(--wb-red-soft);
+  color: var(--wb-red);
+  display: inline-block;
 }
 .arrow {
   flex: 0 0 auto;

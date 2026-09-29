@@ -60,14 +60,15 @@ watch(rounds, list => {
     selectedRound.value = list.includes(current) ? current : list[list.length - 1]
   }
 }, { immediate: true })
+// 消费后端共享判据的带轮次状态（progress_rules.per_round_states）：
+// "本轮无记录"不得解释为未参与——未执行阶段为 pending，证据不足为 unconfirmed；
+// 不在客户端另写一套规则。
 const roundEngineers = computed(() => engineers.value.map(eng => {
-  const records = (replayEvents.value || []).filter(e => e.iteration === selectedRound.value && e.agent === eng.name)
-  const last = records[records.length - 1]
-  const current = selectedRound.value === Number(runView.value?.current_iteration)
-  const status = current && eng.runtime?.status === 'running' ? 'running'
-    : last ? ({ passed: 'passed', rejected: 'rejected', skipped: 'skipped', handoff: 'passed', terminal: 'passed' }[last.action])
-    : 'not_involved'
-  return { ...eng, runtime: { ...eng.runtime, status, iteration: selectedRound.value, basis: last?.basis || '当前轮次暂无该角色的处理记录', inferred: true } }
+  const state = (runView.value?.round_states || {})[selectedRound.value]?.[eng.name]
+  const status = state?.status ?? 'pending'
+  return { ...eng, runtime: { ...eng.runtime, ...state, status,
+    iteration: selectedRound.value,
+    basis: state?.basis || '尚未执行到该阶段（推导）', inferred: true } }
 }))
 const nextRound = computed(() => {
   const index = rounds.value.indexOf(selectedRound.value ?? -1)
@@ -109,6 +110,14 @@ const metadata = computed(() => {
   return parts.join('　·　')
 })
 
+// 等待用户的挂起态：非终态（与后端 config.WAITING_STATES 对齐），用户答复后流程继续
+const WAITING_STATES = new Set([
+  'MIXED_FAILURE_REVIEW',
+  'NEEDS_HUMAN_EVIDENCE',
+  'AWAITING_HUMAN_CONSTRAINTS',
+  'HUMAN_CHECKPOINT',
+])
+
 const STATUS_CHIP: Record<string, { text: string; cls: string }> = {
   SUCCESS: { text: '✓ 流程已完成', cls: 'ok' },
   MAX_ITERATIONS: { text: '◷ 达到最大轮数', cls: 'warn' },
@@ -116,6 +125,11 @@ const STATUS_CHIP: Record<string, { text: string; cls: string }> = {
   STOPPED_BY_USER: { text: '■ 人工停止', cls: 'bad' },
   STOP_GENERATOR_BUG: { text: '■ 生成器缺陷止损', cls: 'bad' },
   STOP_EXECUTOR_BUG: { text: '■ 执行器缺陷止损', cls: 'bad' },
+  // 挂起等待态：非终态（用户答复后流程继续），页面保持正常刷新
+  MIXED_FAILURE_REVIEW: { text: '◷ 等待人工决定（成败混合评审）', cls: 'warn' },
+  NEEDS_HUMAN_EVIDENCE: { text: '◷ 等待人工补充证据', cls: 'warn' },
+  AWAITING_HUMAN_CONSTRAINTS: { text: '◷ 等待人工补充约束', cls: 'warn' },
+  HUMAN_CHECKPOINT: { text: '◷ 等待人工检查点', cls: 'warn' },
 }
 const statusChip = computed(() => {
   const s = runView.value?.state
@@ -240,7 +254,7 @@ function segStates(seg: any): string {
           {{ theme === 'dark' ? '☀ 浅色' : '☾ 深色' }}
         </button>
         <button class="text-btn" @click="historyDrawer?.open()">◷ 历史任务</button>
-        <a class="text-btn" :href="'/constraints?run=' + encodeURIComponent(runId) + '&iter=iter_' + String(selectedRound || 1).padStart(3, '0')">约束审核</a><a class="text-btn" href="/coverage">覆盖率</a>
+        <a class="text-btn" :href="'/constraints?run=' + encodeURIComponent(runId) + '&iter=iter_' + String(selectedRound || 1).padStart(3, '0')">约束审核</a><a class="text-btn" :href="'/coverage?run=' + encodeURIComponent(runId)">覆盖率</a>
       </div>
     </header>
 
@@ -318,6 +332,24 @@ function segStates(seg: any): string {
     <!-- 交接图与详情共用独立的纵向滚动区域。 -->
     <section class="screen screen-board">
       <div class="board-area">
+        <!-- run 级状态条：进行中/终态均有明确落点（不依赖终态事件的存在） -->
+        <div class="run-status-bar" :data-terminal="runView?.is_terminal">
+          <template v-if="runView?.is_terminal">
+            <span class="rsb-dot rsb-terminal"></span>
+            <b>任务已结束</b>
+            <span>{{ statusChip.text }}</span>
+          </template>
+          <template v-else-if="WAITING_STATES.has(String(runView?.state || ''))">
+            <span class="rsb-dot rsb-waiting"></span>
+            <b>{{ statusChip.text }}</b>
+            <span>用户答复后流程将继续 · 最后活动 {{ fmtTime(runView?.last_activity) }}</span>
+          </template>
+          <template v-else>
+            <span class="rsb-dot rsb-running"></span>
+            <b>任务进行中</b>
+            <span>当前阶段 {{ runView?.state || '…' }} · 最后活动 {{ fmtTime(runView?.last_activity) }}</span>
+          </template>
+        </div>
         <HandoffBoard
           ref="flowBoard"
           :scroll-left="flowScroll"
@@ -516,6 +548,14 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 @media(max-width:900px){.band-shell{padding:0 16px}.band-grid{grid-template-columns:minmax(0,1fr);gap:0}.band-actions{position:absolute;right:20px;top:-32px}.band-actions button{font-size:11px;padding:4px 10px}}
 
 .board-area { transition: transform .1s ease-out; }
+.run-status-bar { display:flex; align-items:center; gap:10px; padding:8px 16px; margin:12px 16px 0; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-card); font-size:12.5px; color:var(--wb-muted); }
+.run-status-bar b { color: var(--wb-ink); }
+.rsb-dot { width:9px; height:9px; border-radius:50%; }
+.rsb-running { background: var(--wb-orange); animation: rsbPulse 1.6s ease-in-out infinite; }
+.rsb-terminal { background: var(--wb-green); }
+.rsb-waiting { background: var(--wb-yellow, #b0a06a); animation: rsbPulse 2.4s ease-in-out infinite; }
+.run-status-bar[data-terminal="false"] b { color: var(--wb-orange); }
+@keyframes rsbPulse { 0%,100%{opacity:1} 50%{opacity:.35} }
 .screen-board { scroll-margin-top: 72px; }
 @media(prefers-reduced-motion: reduce){.board-area{transition:none}}
 /* Full-width shared table: no reserved detail column or centered max-width. */

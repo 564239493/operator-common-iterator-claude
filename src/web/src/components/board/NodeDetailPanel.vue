@@ -89,6 +89,39 @@ const summaryLines = computed(() => {
 
 const inputMaterials = computed(() => stageInputs(props.engineer?.name, round.value, props.runView))
 
+// 附加展示字段：优先取节点事件（edge），回退 run 级 runtime（supplementer/optimizer 的
+// application / origins / decisions 随共享判据附带）
+const extras = computed(() => {
+  const source = props.edge?.decisions !== undefined || props.edge?.application !== undefined
+    ? props.edge
+    : props.engineer?.runtime || {}
+  return {
+    application: source.application ?? null,
+    origins: source.origins || null,
+    decisions: source.decisions ?? null,
+  }
+})
+
+// 权限配置拍平为键值列表（原值展示；嵌套一层拍平，更深层转 JSON 字符串）
+const permissionEntries = computed(() => {
+  const perm = props.engineer?.permission
+  if (!perm || typeof perm !== 'object') return []
+  const out: { key: string; value: string }[] = []
+  for (const [key, value] of Object.entries(perm)) {
+    if (value === null || typeof value !== 'object') {
+      out.push({ key, value: String(value) })
+    } else {
+      for (const [sub, subValue] of Object.entries(value as Record<string, unknown>)) {
+        out.push({
+          key: `${key}.${sub}`,
+          value: typeof subValue === 'object' ? JSON.stringify(subValue) : String(subValue),
+        })
+      }
+    }
+  }
+  return out
+})
+
 const gate = computed(() => iterationView.value?.quality_gate || null)
 
 const artifacts = computed(() => {
@@ -173,6 +206,47 @@ function openArtifact(path: string) {
       </div>
       <p class="subtle tiny">来自角色定义，非本次实际加载日志。</p>
 
+      <!-- 定义加载状态：不伪装成功 -->
+      <div v-if="engineer.definition_found === false" class="def-notice">
+        未找到该角色的定义文件——以上为流程固定角色，描述与技能为空，不代表定义加载成功。
+      </div>
+      <div v-else-if="engineer.load_error" class="def-notice def-notice-bad">
+        定义文件解析失败：{{ engineer.load_error }}（以上信息可能不完整）
+      </div>
+
+      <!-- 权限配置：原值展示，非运行时最终授权 -->
+      <template v-if="permissionEntries.length">
+        <div class="detail-label">权限配置（配置原值，非运行时最终授权）</div>
+        <div class="perm-list">
+          <span v-for="p in permissionEntries" :key="p.key" class="perm-chip" :data-value="p.value">
+            {{ p.key }}: {{ p.value }}
+          </span>
+        </div>
+      </template>
+
+      <!-- 补充约束：补充结果与应用情况分开（合并归主协调器） -->
+      <template v-if="engineer.name === 'constraint-supplementer' && (extras.application || extras.origins)">
+        <div class="detail-label">补丁应用情况</div>
+        <p class="subtle">{{ extras.application || '—（空补丁无需应用；origin 计数仅辅助信息）' }}</p>
+        <p v-if="extras.origins" class="subtle tiny">
+          辅助计数（旧约束可能已带标记，不证明本轮已应用）：
+          <template v-for="(v, k) in extras.origins" :key="k">{{ k }}={{ v }}　</template>
+        </p>
+      </template>
+
+      <!-- 提示词优化：裁决与提案互不推翻 -->
+      <template v-if="engineer.name === 'prompt-optimizer' && extras.decisions">
+        <div class="detail-label">裁决记录</div>
+        <p v-if="extras.decisions.status === 'broken'" class="def-notice def-notice-bad">
+          裁决文件读取异常：{{ extras.decisions.error || '解析失败' }}（不推翻提案已生成的事实）
+        </p>
+        <p v-else class="subtle">
+          {{ extras.decisions.status === 'ok'
+            ? `已记录 ${extras.decisions.count ?? 0} 条裁决（批准/拒绝/暂缓以文件为准）`
+            : '未找到裁决文件' }}
+        </p>
+      </template>
+
       <details v-if="(runView?.current_prompt_modules || []).length" class="skill-record">
         <summary>装配冻结的知识模块 · {{ runView.current_prompt_modules.length }} 项</summary>
         <div class="modules">
@@ -234,6 +308,33 @@ function openArtifact(path: string) {
 </template>
 
 <style scoped>
+/* 定义加载状态 / 权限配置 / 附加字段 */
+.def-notice {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--wb-code-bg);
+  color: var(--wb-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.def-notice-bad {
+  background: var(--wb-red-soft);
+  color: var(--wb-red);
+}
+.perm-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.perm-chip {
+  font: 10px/1.5 ui-monospace, monospace;
+  padding: 3px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--wb-line);
+  background: var(--wb-code-bg);
+  color: var(--wb-ink);
+}
+.perm-chip[data-value='deny'] { color: var(--wb-red); border-color: var(--wb-red-line); }
+.perm-chip[data-value='allow'] { color: var(--wb-green); border-color: var(--wb-green-line); }
+.perm-chip[data-value='ask'] { color: var(--wb-orange); border-color: var(--wb-orange-line); }
+
 .detail {
   background: var(--wb-card);
   border: 1px solid var(--wb-line);

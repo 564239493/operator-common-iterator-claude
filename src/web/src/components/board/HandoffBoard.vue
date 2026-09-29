@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { laneWidth, laneBoundary, laneCenter } from './flow-layout'
+import { buildGraph, exitHandoffs, entrySource } from './graph'
 import NodeDetailPanel from './NodeDetailPanel.vue'
 import type { ReplayEvent } from '../../api/types'
 
@@ -40,89 +41,13 @@ const laneIndex = (name: string) => lanes.value.findIndex((e) => e.name === name
 const laneX = (i: number) => laneCenter(i, LANE_W.value)
 const canvasWidth = computed(() => LABEL_W + lanes.value.length * LANE_W.value)
 
-// ---------- 事件 → 交接边 ----------
-interface Edge {
-  from: string
-  to: string | null
-  kind: 'forward' | 'return' | 'failure' | 'pass' | 'skip'
-  round: number
-  time: string | null
-  basis: string
-  inferred: boolean
-}
+// ---------- 交接图核心：graph.ts 共享纯函数 ----------
+// 事件生成节点；只有事件中明确的 to_agent 才生成箭头——相邻排列不构成交接证据。
+// 无 to_agent 的节点按事件自身结论独立显示（passed=完成节点 / rejected=失败节点 /
+// running / unconfirmed / skipped 各自独立），节点状态不被边覆盖。
+const graph = computed(() => buildGraph(props.events.filter(e => e.iteration === props.round)))
 
-function buildEdges(list: ReplayEvent[]): Edge[] {
-  const usable = (list || []).filter((e) => e.agent !== 'run' && e.action !== 'terminal')
-  const out: Edge[] = []
-  for (let i = 0; i < usable.length; i++) {
-    const e = usable[i]
-    if (laneIndex(e.agent) < 0) continue
-    if (e.action === 'skipped') {
-      out.push({ from: e.agent, to: null, kind: 'skip', round: e.iteration || 1, time: e.at || null, basis: e.basis, inferred: e.inferred })
-      continue
-    }
-    const next = usable[i + 1]
-    const to = e.to_agent || (next ? next.agent : null)
-    if (!to || laneIndex(to) < 0) continue
-    let kind: Edge['kind'] = 'forward'
-    if (e.action === 'rejected') {
-      kind = to === 'failure-analyst' || e.agent === 'case-executor' ? 'failure' : 'return'
-    } else if (e.action === 'passed' && !e.to_agent) {
-      kind = 'pass'
-    } else if (e.action === 'passed' && e.to_agent && !next) {
-      kind = 'pass'
-    }
-    // to 节点轮次：若下一事件就是 to 角色，采用其自身轮次（跨轮交接如 analyst→updater）
-    const round = next && next.agent === to && next.iteration ? next.iteration : e.iteration || 1
-    out.push({ from: e.agent, to, kind, round, time: e.at || null, basis: e.basis, inferred: e.inferred })
-  }
-  return out
-}
-
-// ---------- 边 → 节点图（链式复用端点，同 demo buildGraph） ----------
-interface GNode {
-  id: number
-  agent: string
-  round: number
-  incoming: number | null
-  outgoing: number | null
-  skip?: boolean
-}
-
-const edges = computed(() => buildEdges(props.events.filter(e => e.iteration === props.round)))
-
-const graph = computed(() => {
-  const nodes: GNode[] = []
-  const links: { from: number; to: number; kind: Edge['kind'] }[] = []
-  edges.value.forEach((e, i) => {
-    let from = nodes[nodes.length - 1]
-    if (!from || from.agent !== e.from) {
-      from = { id: nodes.length, agent: e.from, round: e.round, incoming: null, outgoing: null }
-      nodes.push(from)
-    }
-    from.outgoing = i
-    if (e.to === null) {
-      from.skip = true
-      return
-    }
-    const to: GNode = { id: nodes.length, agent: e.to, round: e.round, incoming: i, outgoing: null }
-    nodes.push(to)
-    links.push({ from: from.id, to: to.id, kind: e.kind })
-  })
-  return { nodes, links }
-})
-
-// ---------- 轮次过滤 ----------
-const selectedRound = computed(() => props.round)
-const rounds = computed(() => {
-  const set = new Set<number>()
-  for (const n of graph.value.nodes) set.add(n.round)
-  return [...set].sort((a, b) => a - b)
-})
-
-const visibleNodes = computed(() =>
-  graph.value.nodes.filter((n) => n.round === selectedRound.value),
-)
+const visibleNodes = computed(() => graph.value.nodes)
 
 // ---------- 布局 ----------
 interface Band {
@@ -145,8 +70,34 @@ const layout = computed(() => {
     positions.set(node.id, { x: laneX(Math.max(0, laneIndex(node.agent))), y })
     y += ROW_STEP
   }
-  return { bands, positions, height: y + 12 }
+  // 跨轮交接出口：本轮末尾、目标角色泳道位置，指向下一轮开场。
+  // 用普通数组而非 Map——模板 v-for 对 Map 的遍历语义在不同构建下有歧义，
+  // 曾导致渲染崩溃（stub.stub 取不到）。
+  const stubs = exitHandoffs(props.events, props.round)
+  const stubPositions: { id: string; x: number; y: number; stub: (typeof stubs)[number]; fromX: number; fromY: number }[] = []
+  if (stubs.length) {
+    y += BAND_GAP
+    for (const stub of stubs) {
+      // 虚线起点：交接来源角色的最后一个实例节点（如本轮诊断）
+      const from = [...visibleNodes.value].reverse().find(n => n.agent === stub.fromAgent)
+      const fromPos = from ? positions.get(from.id) : null
+      stubPositions.push({
+        id: `${stub.agent}@${stub.toRound}`,
+        x: laneX(Math.max(0, laneIndex(stub.agent))),
+        y,
+        stub,
+        fromX: fromPos ? fromPos.x : laneX(Math.max(0, laneIndex(stub.fromAgent))),
+        fromY: fromPos ? fromPos.y + NODE_H : y,
+      })
+      y += ROW_STEP
+    }
+  }
+  return { bands, positions, height: y + 12, stubPositions }
 })
+
+function entryFor(node: any) {
+  return entrySource(props.events, node.round, node.agent)
+}
 
 const visibleLinks = computed(() =>
   graph.value.links.filter(
@@ -154,29 +105,23 @@ const visibleLinks = computed(() =>
   ),
 )
 
-// ---------- 节点信息 ----------
+// ---------- 节点信息（节点自带结论，状态不被边覆盖） ----------
 function shorten(text: string, max = 26): string {
   if (!text) return ''
   return text.length <= max ? text : text.slice(0, max) + '…'
 }
 
-function nodeEdge(node: GNode): Edge | null {
-  const idx = node.outgoing ?? node.incoming
-  return idx === null ? null : edges.value[idx] || null
+function nodeKind(node: any): string {
+  return node.action || 'passed'
 }
 
-function nodeKind(node: GNode): Edge['kind'] {
-  if (node.skip) return 'skip'
-  return nodeEdge(node)?.kind || 'forward'
+function nodeOutput(node: any): string {
+  return shorten(node.basis || '')
 }
 
-function nodeOutput(node: GNode): string {
-  return shorten(nodeEdge(node)?.basis || '')
-}
-
-function nodeTime(node: GNode): string {
-  const at = nodeEdge(node)?.time
-  if (!at) return '时间未记录'
+function nodeTime(node: any): string {
+  const at = node.at
+  if (!at) return `第 ${node.round} 轮`
   const d = new Date(at)
   if (isNaN(d.getTime())) return at
   const mm = String(d.getMonth() + 1).padStart(2, '0')
@@ -196,7 +141,24 @@ const activeAgentNames = computed(() => new Set(visibleNodes.value.map((n) => n.
 const detailAnchor = ref<HTMLElement>()
 const selectedId = ref<number | null>(null)
 const selectedNode = computed(() => graph.value.nodes.find((n) => n.id === selectedId.value) || null)
-const selectedEdge = computed(() => (selectedNode.value ? nodeEdge(selectedNode.value) : null))
+// 详情面板的"交接依据"来自节点自身事件（from/to/time/basis/附加字段）；
+// 接收角色的完成结论取共享判据（节点 action），不由边推断。
+const selectedEdge = computed(() => {
+  const node = selectedNode.value
+  if (!node) return null
+  const e = node.event
+  if (!e) return null
+  return {
+    from: e.agent,
+    to: e.to_agent || null,
+    time: e.at || null,
+    basis: e.basis || node.basis,
+    inferred: e.inferred !== false,
+    application: (e as any).application,
+    origins: (e as any).origins,
+    decisions: (e as any).decisions,
+  }
+})
 
 function select(id: number) {
   selectedId.value = id
@@ -212,7 +174,7 @@ watch(visibleNodes, (list) => {
 })
 
 // ---------- Tooltip ----------
-const tooltip = ref<{ x: number; y: number; node: GNode } | null>(null)
+const tooltip = ref<{ x: number; y: number; node: any } | null>(null)
 
 function hideTooltip() {
   tooltip.value = null
@@ -244,11 +206,11 @@ function scrollBy(dx: number) {
 }
 
 const KIND_TEXT: Record<string, string> = {
-  forward: '交接',
-  return: '退回',
-  failure: '异常',
-  pass: '通过',
-  skip: '跳过',
+  passed: '通过',
+  rejected: '退回',
+  running: '运行中',
+  unconfirmed: '待确认',
+  skipped: '跳过',
 }
 </script>
 
@@ -258,11 +220,12 @@ const KIND_TEXT: Record<string, string> = {
     <div v-show="false" class="controls">
       <span class="hint">{{ visibleNodes.length }} 个处理节点 · {{ activeAgentNames.size }} 个参与角色</span>
       <div class="legend">
-        <span><i class="dot dot-forward" />交接</span>
-        <span><i class="dot dot-return" />退回</span>
-        <span><i class="dot dot-failure" />异常</span>
-        <span><i class="dot dot-pass" />通过</span>
-        <span><i class="dot dot-skip" />未参与 / 无记录</span>
+        <span><i class="dot dot-handoff" />明确交接</span>
+        <span><i class="dot dot-exit" />进入下一轮（虚线）</span>
+        <span><i class="dot dot-passed" />通过</span>
+        <span><i class="dot dot-rejected" />退回</span>
+        <span><i class="dot dot-running" />运行中</span>
+        <span><i class="dot dot-unconfirmed" />待确认</span>
       </div>
     </div>
 
@@ -299,17 +262,30 @@ const KIND_TEXT: Record<string, string> = {
               <div v-for="(lane, index) in lanes" :key="lane.name" class="lane-guide" :style="{ left: laneBoundary(index, LANE_W) + 'px' }" />
               <svg class="graph-svg" :width="canvasWidth" :height="layout.height" aria-hidden="true">
                 <defs>
-                  <marker v-for="k in ['forward', 'return', 'failure', 'pass']" :id="`arrow-${k}`" :key="k"
+                  <marker id="arrow-handoff"
                     viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-                    <path d="M0 0 L10 5 L0 10" :class="`marker-${k}`" />
+                    <path d="M0 0 L10 5 L0 10" class="marker-handoff" />
+                  </marker>
+                  <marker id="arrow-exit"
+                    viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+                    <path d="M0 0 L10 5 L0 10" class="marker-exit" />
                   </marker>
                 </defs>
+                <!-- 只有事件中明确的 to_agent 才有边；相邻排列不构成交接证据 -->
                 <path
                   v-for="(l, i) in visibleLinks"
                   :key="i"
                   :d="`M${layout.positions.get(l.from)!.x} ${layout.positions.get(l.from)!.y + NODE_H} V${(layout.positions.get(l.from)!.y + NODE_H + layout.positions.get(l.to)!.y - 3) / 2} H${layout.positions.get(l.to)!.x} V${layout.positions.get(l.to)!.y - 3}`"
-                  :class="`edge edge-${l.kind}`"
-                  :marker-end="`url(#arrow-${l.kind})`"
+                  class="edge edge-handoff"
+                  marker-end="url(#arrow-handoff)"
+                />
+                <!-- 跨轮交接：来源节点 → 出口节点 的虚线（进入下一轮） -->
+                <path
+                  v-for="item in layout.stubPositions"
+                  :key="'exit-edge-' + item.id"
+                  :d="`M${item.fromX} ${item.fromY} V${(item.fromY + item.y - 3) / 2} H${item.x} V${item.y - 3}`"
+                  class="edge edge-exit"
+                  marker-end="url(#arrow-exit)"
                 />
               </svg>
 
@@ -320,6 +296,15 @@ const KIND_TEXT: Record<string, string> = {
                   :style="{ top: layout.positions.get(node.id)!.y + 9 + 'px' }"
                 >
                   <b>{{ nodeTime(node) }}</b>
+                </div>
+                <!-- 跨轮开场来源标注：承接上一轮末尾的出口交接 -->
+                <div
+                  v-if="entryFor(node)"
+                  class="entry-note"
+                  :style="{ top: layout.positions.get(node.id)!.y - 13 + 'px', left: layout.positions.get(node.id)!.x - NODE_W / 2 + 'px', width: NODE_W + 'px' }"
+                  :title="`承接第 ${entryFor(node)!.fromRound} 轮 ${entryFor(node)!.fromAgent} 的交接`"
+                >
+                  ↳ 自第 {{ entryFor(node)!.fromRound }} 轮 · {{ agentDef(entryFor(node)!.fromAgent).role || entryFor(node)!.fromAgent }}
                 </div>
                 <button
                   class="activity"
@@ -338,6 +323,18 @@ const KIND_TEXT: Record<string, string> = {
                   <small>{{ nodeOutput(node) }}</small>
                 </button>
               </template>
+
+              <!-- 跨轮交接出口：本轮末尾交给下一轮开场动作 -->
+              <div
+                v-for="item in layout.stubPositions"
+                :key="'exit-' + item.id"
+                class="activity exit-stub"
+                :style="{ left: item.x - NODE_W / 2 + 'px', top: item.y + 'px', width: NODE_W + 'px', height: NODE_H + 'px' }"
+                :title="`交给第 ${item.stub.toRound} 轮开场 · 依据：${item.stub.basis}`"
+              >
+                <strong>→ 第 {{ item.stub.toRound }} 轮 · {{ agentDef(item.stub.agent).role || item.stub.agent }}</strong>
+                <small>跨轮交接出口</small>
+              </div>
             </div>
           </div>
           </div>
@@ -372,11 +369,12 @@ const KIND_TEXT: Record<string, string> = {
 .hint { font-size: 12px; color: var(--wb-muted); }
 .legend { margin-left: auto; display: flex; gap: 16px; font-size: 12px; color: var(--wb-muted); }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
-.dot-forward { background: var(--wb-blue); }
-.dot-return { background: var(--wb-orange); }
-.dot-failure { background: var(--wb-red); }
-.dot-pass { background: var(--wb-green); }
-.dot-skip { background: var(--wb-faint); }
+.dot-handoff { background: var(--wb-blue); }
+.dot-passed { background: var(--wb-green); }
+.dot-rejected { background: var(--wb-red); }
+.dot-running { background: var(--wb-orange); }
+.dot-unconfirmed { background: #b0a06a; }
+.dot-skipped { background: var(--wb-faint); }
 
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) clamp(260px, 24vw, 330px); gap: 18px; align-items: start; }
 .board { background: var(--wb-card); border: 1px solid var(--wb-line); border-radius: 14px; overflow: hidden; }
@@ -431,14 +429,12 @@ const KIND_TEXT: Record<string, string> = {
 .lane-guide { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--wb-line); pointer-events: none; }
 .graph-svg { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
 .edge { fill: none; stroke-width: 1.6; stroke-linejoin: round; }
-.edge-forward { stroke: var(--wb-blue); }
-.edge-return { stroke: var(--wb-orange); }
-.edge-failure { stroke: var(--wb-red); }
-.edge-pass { stroke: var(--wb-green); }
-.marker-forward { fill: var(--wb-blue); }
-.marker-return { fill: var(--wb-orange); }
-.marker-failure { fill: var(--wb-red); }
-.marker-pass { fill: var(--wb-green); }
+.edge-handoff { stroke: var(--wb-blue); }
+.marker-handoff { fill: var(--wb-blue); }
+/* 跨轮交接虚线：来源节点 → 出口节点（进入下一轮） */
+.edge-exit { stroke: var(--wb-blue); stroke-dasharray: 6 4; opacity: 0.8; }
+.marker-exit { fill: var(--wb-blue); }
+.dot-exit { background: var(--wb-blue); }
 
 .round-band {
   position: absolute;
@@ -480,10 +476,42 @@ const KIND_TEXT: Record<string, string> = {
 .activity small { font-size: 10px; color: var(--wb-muted); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .activity:hover { box-shadow: 0 4px 14px rgba(39, 116, 237, 0.15); border-color: var(--wb-blue); }
 .activity.chosen { border: 2px solid var(--wb-blue); padding: 5px 8px; box-shadow: 0 0 0 3px rgba(39, 116, 237, 0.1); }
-.activity.kind-return { background: var(--wb-orange-soft); border-color: var(--wb-orange-line); }
-.activity.kind-failure { background: var(--wb-red-soft); border-color: var(--wb-red-line); }
-.activity.kind-pass { background: var(--wb-green-soft); border-color: var(--wb-green-line); }
-.activity.kind-skip { background: var(--wb-code-bg); border-color: var(--wb-line); opacity: 0.75; }
+.activity.kind-rejected { background: var(--wb-red-soft); border-color: var(--wb-red-line); }
+.activity.kind-passed { background: var(--wb-green-soft); border-color: var(--wb-green-line); }
+.activity.kind-running { background: var(--wb-orange-soft); border-color: var(--wb-orange-line); }
+.activity.kind-unconfirmed { background: #f6f1e3; border-color: #d8cba0; }
+.activity.kind-skipped { background: var(--wb-code-bg); border-color: var(--wb-line); opacity: 0.75; }
+html[data-theme='dark'] .activity.kind-unconfirmed { background: #2c2816; border-color: #575032; }
+/* 跨轮交接出口：虚线占位节点（本轮末尾 → 下一轮开场） */
+.activity.exit-stub {
+  border-style: dashed;
+  border-color: var(--wb-blue-line);
+  background: var(--wb-blue-soft);
+  color: var(--wb-blue);
+  cursor: default;
+  z-index: 2;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.activity.exit-stub small { color: var(--wb-muted); }
+/* 跨轮开场来源标注 */
+.entry-note {
+  position: absolute;
+  z-index: 2;
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
+  color: var(--wb-blue);
+  background: var(--wb-blue-soft);
+  border: 1px dashed var(--wb-blue-line);
+  border-radius: 6px;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: auto;
+}
 .activity.chosen { border-color: var(--wb-blue); }
 
 .board-foot { padding: 10px 16px; color: var(--wb-muted); font-size: 11px; background: var(--wb-card-soft); border-top: 1px solid var(--wb-line); }

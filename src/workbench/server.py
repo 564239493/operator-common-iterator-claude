@@ -13,6 +13,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from . import jsonutil, paths
 from .adapters import review
 from .adapters import agents as agents_adapter
+from .adapters import assets as assets_adapter
 from .adapters import artifacts as artifacts_adapter
 from .adapters import iterations as iter_adapter
 from .adapters import replay as replay_adapter
@@ -50,6 +51,11 @@ def _agents(ctx):
     return agents_adapter.load_agent_defs(ctx["root"])
 
 
+@route(r"/api/assets")
+def _assets(ctx):
+    return assets_adapter.load_assets(ctx["root"])
+
+
 @route(r"/api/runs/(?P<run_id>[^/]+)")
 def _run_view(ctx, run_id):
     return run_detail.build_run_view(ctx["root"], run_id)
@@ -57,9 +63,9 @@ def _run_view(ctx, run_id):
 
 @route(r"/api/runs/(?P<run_id>[^/]+)/replay")
 def _replay(ctx, run_id):
-    view = run_detail.build_run_view(ctx["root"], run_id)
-    raw = jsonutil.read_json(paths.resolve_run(ctx["root"], run_id) / "run_state.json")
-    return replay_adapter.build_replay(raw, view["iterations"])
+    from .adapters import evidence as evidence_adapter
+    ev = evidence_adapter.build_evidence(ctx["root"], run_id)
+    return replay_adapter.build_replay(ev["run_state"], ev["iterations"], ev["inputs_files"])
 
 
 @route(r"/api/runs/(?P<run_id>[^/]+)/iterations/(?P<n>\d+)")

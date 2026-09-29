@@ -92,6 +92,28 @@ class ReviewTests(unittest.TestCase):
         with self.assertRaises(PathEscapeError):
             review.get(self.root, ['cover', '..', 'analysis'], {}, '')
 
+    def test_run_embedded_coverage(self):
+        # 任务内嵌覆盖率：runs/<run>/ops_cov_report/<报告目录>/，按路径关联，不做名称匹配
+        report = self.run / 'ops_cov_report' / 'r1'
+        report.mkdir(parents=True)
+        (report / 'demo_coverage.json').write_text('{"operator":"demo","granularities":{}}')
+        (report / 'analysis.md').write_text('# Run Cov')
+        empty = self.run / 'ops_cov_report' / 'empty'
+        empty.mkdir()
+        dirs = review.get(self.root, ['runs', 'demo', 'cover', 'dirs'], {}, '')
+        self.assertEqual(len(dirs), 1)
+        self.assertEqual(dirs[0]['operator'], 'demo')
+        self.assertTrue(dirs[0]['has_analysis'])
+        self.assertEqual(review.get(self.root, ['runs', 'demo', 'cover', 'r1', 'coverage'], {}, '')['operator'], 'demo')
+        self.assertEqual(review.get(self.root, ['runs', 'demo', 'cover', 'r1', 'analysis'], {}, '')['content'], '# Run Cov')
+        # 缺报告 / 逃逸 / 不存在的报告目录
+        with self.assertRaises(FileNotFoundError):
+            review.get(self.root, ['runs', 'demo', 'cover', 'r1', 'nope'], {}, '')
+        with self.assertRaises(PathEscapeError):
+            review.get(self.root, ['runs', 'demo', 'cover', '..', 'analysis'], {}, '')
+        with self.assertRaises(FileNotFoundError):
+            review.get(self.root, ['runs', 'demo', 'cover', 'missing', 'coverage'], {}, '')
+
 if __name__ == '__main__':
     unittest.main()
 

@@ -67,6 +67,32 @@ def get(root, parts, query, token):
                     raise paths.PathEscapeError('拒绝符号链接修改副本')
                 data['_review'] = {'base_sha256': hashlib.sha256(raw_bytes).hexdigest(), 'copy_sha256': digest(copy_path), 'token': token}
             return data
+        # 任务内嵌覆盖率：runs/<run>/ops_cov_report/<报告目录>/ — 按路径关联，不做名称匹配
+        if parts[2] == 'cover':
+            base = run / 'ops_cov_report'
+            if parts[3:] == ['dirs']:
+                result = []
+                if base.is_dir():
+                    for d in sorted(base.glob('*')):
+                        if not d.is_dir() or d.is_symlink():
+                            continue
+                        files = sorted(d.glob('*_coverage.json'))
+                        if files:
+                            try:
+                                data = read(paths.resolve_within(base, d.name + '/' + files[0].name))
+                                result.append({'dir_name': d.name, 'operator': data.get('operator', d.name), 'has_analysis': (d / 'analysis.md').is_file()})
+                            except (ValueError, OSError):
+                                continue
+                return result
+            if len(parts) == 5 and parts[4] in ('coverage', 'analysis'):
+                directory = paths.resolve_within(base, parts[3])
+                if parts[4] == 'coverage':
+                    files = sorted(directory.glob('*_coverage.json'))
+                    if not files:
+                        raise FileNotFoundError('该任务暂无覆盖报告')
+                    return read(paths.resolve_within(base, parts[3] + '/' + files[0].name))
+                doc = paths.resolve_within(base, parts[3] + '/analysis.md')
+                return {'filename': doc.name, 'content': doc.read_text(encoding='utf-8')}
     if parts == ['cover', 'dirs']:
         base = root / 'ops_cov_report'
         result = []

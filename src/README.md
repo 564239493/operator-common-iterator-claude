@@ -34,23 +34,39 @@ python3 src/serve.py --port 8420
 ## 测试
 
 ```bash
-python3 -m unittest discover src/tests -v
+PYTHONPATH=src python3 -m unittest discover -s src/tests -v
 ```
 
 ## 关键设计
 
 - **页面形态**：浅色商务风（与 demo.html 统一设计令牌，顶部 ☾/☀ 可切换暗色并记忆）；
-  主视图为泳道式「轮次与交接」图（角色列 × 时间流，四色箭头=交接/退回/异常/通过），
-  点击节点 → 右侧 sticky 详情栏（关键产出/技能/知识模块/产物 JSON/门禁依据/日志 tail）。
+  主视图为泳道式「轮次与交接」图（角色列 × 时间流）——**事件生成节点，只有事件中明确的
+  交接关系才画箭头，相邻排列不构成交接证据**（核心逻辑抽为 `board/graph.ts` 纯函数，vitest 覆盖）。
+- **智能体定义来源**：优先读 `.opencode/agent/*.md`（opencode 格式，`permission` 为嵌套映射）；
+  该目录**存在但为空时不回退**；目录不存在才回退 `.claude/agents/*.md`（Claude 格式 name/skills/tools/color）。
+  单文件读取/解析失败记入 `load_error`，不伪装成功、不静默改用另一格式。
+  `definition_found=false` 表示"该角色是流程固定角色，未找到定义文件"——页面上有该智能体
+  不代表定义已加载，前端以「无定义 / 加载失败」标记明示。权限区展示**配置原值**，
+  非运行时最终授权。
 - **写入边界**：除了人工副本提交，服务仅提供读取；artifact/log 端点走白名单 + realpath 防逃逸；大 JSON 截断、大日志只读尾部。
-- **状态推导**：`run_state.state` 是粗粒度字段，agent 级状态由「history + 产物存在性 + 文件内容」推导，
-  每条结论带 `basis` 依据与 `inferred: true` 标记（规则集 `workbench/adapters/stage_inference.py`）。
+- **状态推导（共享规则集 v2）**：横条状态与交接回放共用同一份规则
+  （`workbench/adapters/progress_rules.py`），状态条目带轮次、逐角色输出，前端不再另写判据。
+  证据由 `evidence.build_evidence` 统一装配（run_state + 各轮摘要 + inputs 摘要），
+  判据模块只消费不读文件。核心原则：**"待确认"≠跳过≠完成**——
+  - 生成：`generation_status.json` 为权威状态（failed/complete/in_progress 三态；
+    in_progress 阻止旧摘要判完成但不屏蔽同次失败证据；进程存活不推翻完成/失败）；
+  - 修复：只有"结果通过 + 复检/修复证据"才算通过，检查未通过不能断言修复者已运行；
+  - 源码分析分 extract 域（初始分析：source_raw + inputs 判读文档）与 diagnose 域（source_evidence）；
+  - 补充约束：智能体只负责产出补丁（含合法空补丁），合并归主协调器，应用情况单独展示；
+  - 提示词优化按触发条件判定，提案与裁决互不推翻；
+  - 历史轮次不被任务终局状态覆盖；无记录不解释成"未参与"。
 - **已知数据边界**（适配层显式处理）：
   - quality_gate.json 的 checks 元素键逐轮漂移（result/passed/status × evidence/detail），不认识的键归 unknown、绝不默认通过；
   - regression_check 的 `ok:false` 可能是求值器不支持表达式（非真实回归），按 `kind` 区分；
   - execution_result `status="success"` ≠ 用例全通过，以派生 `verdict` 为准；
   - history 无 iteration/ended_at，轮次归属为推导；
-  - 终态后可授权续跑、STOPPED_BY_USER 后可恢复（history 分 normal/restart/continuation 段）。
+  - 终态后可授权续跑、STOPPED_BY_USER 后可恢复（history 分 normal/restart/continuation 段）；
+  - inputs/ 文件可能被后续诊断追加修改，历史归属不明的证据标注"待确认"。
 
 ## 读取 API 一览
 
@@ -64,13 +80,15 @@ python3 -m unittest discover src/tests -v
 | `/api/runs/{id}/iterations/{n}/cases?offset&limit&result=failed` | 用例记录分页 |
 | `/api/runs/{id}/iterations/{n}/logs/tail?name=&bytes=` | 大日志尾部（白名单） |
 | `/api/runs/{id}/artifact?path=` | 原始 JSON 产物（白名单 + 截断 + sha256） |
-| `/api/agents` | 12 agent 定义（frontmatter + 固定流程顺序） |
+| `/api/agents` | 12 agent 定义（opencode 优先 / Claude 兜底 + definition_found/load_error/permission） |
 
 ## 约束审核与覆盖率
 
 - 工作台顶部及节点详情提供入口；约束页面地址为 `/constraints?run=<任务目录名>&iter=iter_002`。
 - 支持产品分组、输入输出参数、原文行定位、相邻轮次参数间约束差异、修改/新增/删除参数间约束。输入输出参数卡保持只读。
-- `/coverage` 读取项目根 `ops_cov_report/`，保留文件/函数粒度、未覆盖函数原因及已覆盖函数的行详情。报告不自动绑定任务轮次，函数/行/分支指标分别展示。
+- `/coverage` 覆盖率报告按任务内嵌存放：`runs/<run-id>/ops_cov_report/<报告目录>/`（含 `*_coverage.json` 与可选 `analysis.md`）。
+  带 `?run=<任务目录名>` 进入时只列该任务内嵌报告，**按路径关联、不做名称匹配**；无任务上下文时浏览项目根 `ops_cov_report/`（兼容旧数据）。
+  保留文件/函数粒度、未覆盖函数原因及已覆盖函数的行详情。报告不自动绑定任务轮次，函数/行/分支指标分别展示。
 - 数据接口位于 `/api/review/`，兼容旧页面的原始响应结构。旧 `static/` 文件不变；迁入页面通过本地前端构建加载依赖，无外部 CDN。
 - 唯一写入接口：`POST /api/review/runs/<id>/iter_<n>/constraints_update`。必须带同源页面读取的 `X-Review-Token`，以及原约束和现有副本的内容哈希。版本变化返回 409，避免覆盖其他编辑。请求体上限 8 MB。
 - 保存时进行结构校验、唯一编号检查和原子替换。**语义校验仍由业务侧负责。保存成功不代表已接入、已创建新轮次或已执行。**

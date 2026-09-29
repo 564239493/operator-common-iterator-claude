@@ -5,6 +5,23 @@ from pathlib import Path, PurePosixPath
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 ITER_DIR_RE = re.compile(r"^iter_(\d{3,})$")
 
+USER_SKILL_DIRS = (".config/opencode/skills", ".agents/skills", ".claude/skills")
+
+
+def resolve_asset(base, relative):
+    """Resolve only within a fixed asset collection, including its root symlink."""
+    base = Path(base).absolute()
+    if base.resolve() != base:
+        raise PathEscapeError("资产目录指向其他位置")
+    return resolve_within(base, relative)
+
+
+def resolve_user_skill(home, directory, name):
+    """Independent user-level allowlist; never accepts arbitrary client paths."""
+    if directory not in USER_SKILL_DIRS or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise PathEscapeError("不支持的用户技能位置")
+    return resolve_asset(Path(home).resolve() / directory, name + "/SKILL.md")
+
 
 class PathEscapeError(ValueError):
     """路径试图逃逸出允许的根目录。"""

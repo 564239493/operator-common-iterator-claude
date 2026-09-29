@@ -80,6 +80,53 @@ class TestFrontmatter(unittest.TestCase):
     def test_no_frontmatter(self):
         self.assertEqual(parse_frontmatter("# 只有正文"), {})
 
+    def test_opencode_nested_permission(self):
+        """opencode 嵌套 permission：子键归入嵌套 dict，不污染顶层。"""
+        text = """---
+description: 执行测试用例
+mode: subagent
+color: "#e6a23c"
+permission:
+  task: deny
+  webfetch: deny
+  tools.*: allow
+---
+
+正文
+"""
+        meta = parse_frontmatter(text)
+        self.assertEqual(meta["description"], "执行测试用例")
+        self.assertEqual(meta["mode"], "subagent")
+        self.assertEqual(meta["color"], "#e6a23c")
+        self.assertEqual(meta["permission"], {"task": "deny", "webfetch": "deny", "tools.*": "allow"})
+        # 子键不得污染顶层
+        self.assertNotIn("task", meta)
+        self.assertNotIn("webfetch", meta)
+
+    def test_multilevel_nested_and_inline_list(self):
+        text = """---
+top:
+  middle:
+    leaf: 1
+tools: [read, "write", bash]
+---
+x
+"""
+        meta = parse_frontmatter(text)
+        self.assertEqual(meta["top"], {"middle": {"leaf": "1"}})
+        self.assertEqual(meta["tools"], ["read", "write", "bash"])
+
+    def test_unclosed_frontmatter_error(self):
+        """未闭合 frontmatter → 结构错误标记，非半成品。"""
+        meta = parse_frontmatter("---\nkey: value\n没有闭合")
+        self.assertIn("_error", meta)
+
+    def test_quoted_key_with_colon(self):
+        text = '---\n"weird:key": value\nnormal: "含: 冒号的值"\n---\n'
+        meta = parse_frontmatter(text)
+        self.assertEqual(meta["weird:key"], "value")
+        self.assertEqual(meta["normal"], "含: 冒号的值")
+
 
 if __name__ == "__main__":
     unittest.main()
