@@ -532,16 +532,16 @@ def main() -> int:
         action="store_true",
         dest="no_golden",
         help=(
-            "TTK 专用：不加载算子 Golden；仍加载内部格式运行时插件。"
+            "TTK 专用：不加载算子 Golden（默认）；仍加载内部格式运行时插件。"
         ),
     )
     golden_group.add_argument(
         "--with-golden",
         action="store_false",
         dest="no_golden",
-        help="TTK 专用：加载可用的自主推导或源码 Golden（默认）。",
+        help="TTK 专用：加载可用的自主推导或源码 Golden（仅用户明确要求精度对比时使用）。",
     )
-    parser.set_defaults(no_golden=False)
+    parser.set_defaults(no_golden=True)
     parser.add_argument(
         "--cases", required=True, help="cases.json 路径 (项目内或外部)。"
     )

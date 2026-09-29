@@ -74,6 +74,27 @@ def frontmatter_of(path: Path) -> dict[str, str]:
     return data
 
 
+# 中文语境里的大写工具名 = Claude 时代残留（opencode 工具名全小写：read/write/edit/
+# glob/grep/bash/task/skill）。仅检查含 CJK 字符的行：纯英文行里的祈使句动词不算。
+# 「Agent」不查——它是概念词（子 Agent/主 Agent），不是工具指名。
+_CJK_RE = re.compile(r"[一-鿿]")
+_UPPER_TOOL_RE = re.compile(r"\b(Read|Write|Edit|Glob|Grep|Bash|Skill|Task)\b")
+
+
+def validate_lowercase_tool_names() -> list[str]:
+    errors: list[str] = []
+    paths = list((ROOT / ".opencode" / "agent").glob("*.md")) + list(
+        (ROOT / ".opencode" / "skills").glob("*/SKILL.md")
+    )
+    for path in paths:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if _CJK_RE.search(line):
+                for word in _UPPER_TOOL_RE.findall(line):
+                    rel = path.relative_to(ROOT)
+                    errors.append(f"{rel}:{lineno}: 大写工具名 {word!r}（应为小写 read/edit/bash/...）")
+    return errors
+
+
 def validate_opencode_json() -> list[str]:
     errors: list[str] = []
     config_path = ROOT / ".opencode" / "opencode.json"
@@ -120,6 +141,7 @@ def validate_opencode_json() -> list[str]:
 def main() -> int:
     errors: list[str] = []
     errors.extend(validate_opencode_json())
+    errors.extend(validate_lowercase_tool_names())
 
     agents = list((ROOT / ".opencode" / "agent").glob("*.md"))
     skills = list((ROOT / ".opencode" / "skills").glob("*/SKILL.md"))

@@ -12,7 +12,7 @@ python scripts/generate_cases.py --constraints <constraints.json> --output <case
 
 上面是 `generate_cases.py` 的参数形式（仅参考参数）。**实际运行一律经
 `scripts/generation_progress.py launch` 启动，无论任务长短**：直接前台/后台调
-`generate_cases.py` 会让 `Read` 把生成器逐条 verbose stderr
+`generate_cases.py` 会让 `read` 把生成器逐条 verbose stderr
 （`logger_util.ThreadSafeLogger` 默认 `console_output=True` → `StreamHandler` → stderr）拉进 agent
 上下文撑爆窗口；更致命的是把 `generate_cases.py` 挂成**长寿命后台 bash 任务**——后台 bash 任务绑定
 所属会话生命周期，会话被中断/重启/上下文压缩时整棵进程树被杀（无 60 分钟上限，是会话生命周期杀，
@@ -55,9 +55,9 @@ launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoc
   无法静态分析，向用户弹出非业务询问。
 - **查进度（无询问，主协调器适用）**：每次 `watch`/`status` 采样返回后**必须**向用户报告
   `per_platform.done`/`total`/`elapsed`/`pid_alive`（递增即活跃），再发起下一次——每 ~60 秒给用户一次
-  进度，**不得**用"平台名看起来不对"之类的旁支判断替换进度数字。不循环 Read。
+  进度，**不得**用"平台名看起来不对"之类的旁支判断替换进度数字。不循环 read。
 - **轮询回合排他（强制，防进度丢失）**：`state=running` 期间主协调器每回合**只**做"跑 status → 报进度
-  → 决定下回合"；禁止在轮询回合发起探查性 Read/Grep/平台选择调查/记忆回溯/长思考——旁支疑虑推迟到
+  → 决定下回合"；禁止在轮询回合发起探查性 read/grep/平台选择调查/记忆回溯/长思考——旁支疑虑推迟到
   complete/failed 之后，**绝不用调查取代一次轮询**。进度一旦从某回合起长时间空白，根因几乎都是
   "本该轮询的回合被旁支调查/长考占用"——这正是"有时有进度、有时没进度"的唯一可控根因。
 - **`per_platform` 语义（防误判调查）**：running 期间 `per_platform` 列的是**正在生成的目标平台**
@@ -74,7 +74,7 @@ launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoc
   平台数小时成果；脱离进程被异常中止时（部分平台有 cases、部分没有、缺 `generation_summary.json`）
   **报告现状**让用户定夺，不自行重跑。
 - **禁止**：用 `bash` 跑 `until`/`grep`/`tail -f`/`while`/`sleep`/`ps` 循环监视任何日志
-  （弹非业务询问且是 verbose 源）；`python -c`/shell 查活；`Read` `generation_console.log` 或
+  （弹非业务询问且是 verbose 源）；`python -c`/shell 查活；`read` `generation_console.log` 或
   `logs/generate_case_*.log` 全文；重复启动仍在运行的同任务（`status` 的 `pid_alive=true` 即仍在跑）。
 - 失败时：`status` JSON 的 `error` 字段已含**有界**错误摘录（≤20 行），据此报告 `generator_bug`，
   不自行解析日志。
@@ -136,7 +136,7 @@ CSV 只是该统一中间模型的框架 adapter 产物。同时检查 `ttk_conv
 
 当前正式工作流没有独立 post-check CLI，`post_check_report.json` 也不属于产物契约。
 生成阶段只调用上述生成入口和 `validate_artifacts.py cases`。如以后正式增加复检，
-应先实现项目入口、产物契约与测试，再更新本 Skill。
+应先实现项目入口、产物契约与测试，再更新本技能。
 
 正式生成器调试日志按算子和平台分别写入
 `logs/generate_case_<operator>_<platform>.log`。同一平台的分场景生成共用该平台日志，

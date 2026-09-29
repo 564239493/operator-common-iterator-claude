@@ -84,7 +84,7 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
 场景只做"屏蔽"，不臆造文档未声明的限制；结果仍须满足 `OperatorRule` 与
 `validate_artifacts.py constraints` 校验。
 
-0. **必载知识加载**：先按「必载知识协议」逐条 Skill 加载必载清单并应用，再开始
+0. **必载知识加载**：先按「必载知识协议」逐条 skill 加载必载清单并应用，再开始
    逐节阅读；知识规则与文档冲突时以文档为准，冲突本身写入 provenance 的 reason。
 1. 逐节阅读文档，区分明确约束、示例和说明性文字。
 2. **模式判定**：先读取 `run_state.json.operator_family`。
@@ -129,7 +129,7 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
    已分配的 `id`。
    每条约束条目还必须带 `src_txt_line` 字段（整数数组，1-based、升序）：写该约束
    `src_text` 引用条款在**算子文档快照**（`inputs/` 下快照，非项目外原文）中的具体
-   行号；约束来自多行/多条款时列出全部行号。落盘前逐条用 Read/Grep 核对：行号处的
+   行号；约束来自多行/多条款时列出全部行号。落盘前逐条用 read/grep 核对：行号处的
    文档原文必须与 `src_text` 摘录一致，禁止凭记忆估算行号。补充来源条目
    （`origin != "doc"`）对应补充文档中的行号。
 7. 执行：

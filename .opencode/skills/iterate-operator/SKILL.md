@@ -69,7 +69,7 @@ description: 编排算子约束提取、用例生成、执行、诊断和提示�
    **委派 constraint-extractor 之前**，主协调器必须先运行
    `python scripts/flow_control.py advance --run-dir <run-dir>`
    （推进器裁决 PLAN→EXTRACT 并落盘；run_state.json 一律经 `scripts/run_state.py` /
-   `scripts/flow_control.py` 写入，禁止手动 Edit）。
+   `scripts/flow_control.py` 写入，禁止手动 edit）。
    extract-constraints 在写 `constraints.json` 前会校验 state 已是 `EXTRACT`，未推进会被拦截并
    空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
    最小修改上一轮约束，不再委派 constraint-extractor。
@@ -173,7 +173,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
 6. 初始化首轮按顺序委派：
    - **EXTRACT（fork-join，仅初始化首轮）**：当 `run_state.operator_src_snapshot` 非空时，
      **并行**委派 `constraint-extractor`（产 `constraints.json` +
-     `extraction_provenance.json`——必载知识清单逐条 Skill 加载的 applied/
+     `extraction_provenance.json`——必载知识清单逐条 skill 加载的 applied/
      not_applicable 记录，首轮 CHECK 用它审计"命中未应用"）与 `source-analyst`
      （extract 域：产 `<iter>/source_raw.json` + `inputs/supplementary-doc.md` +
      `inputs/uncertain-doc.md` + `inputs/conflict-doc.md` +
@@ -245,7 +245,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         列出未修复问题并终止，
         禁止进入 constraints-only SUCCESS 或 GENERATE。
      4. 报告 `needs_repair` → 委派一个与 checker **隔离的新上下文**
-        `constraint-repairer`，输入同一证据集 + constraints + report。repairer 只能 Edit
+        `constraint-repairer`，输入同一证据集 + constraints + report。repairer 只能 edit
         report 中 open/unfixed 对应约束，不得完整重提、不改 report 状态；修改后必须跑
         validate_operator_rule → normalize → validate_artifacts constraints。成功后运行
         `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --status recheck_pending`，
@@ -273,7 +273,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
      `generate_cases.py` 时原样透传 `--hs-scenario-mode`；旧 run 缺少该字段时使用
      `original`，不得自行改成 `planned`。
    - **生成的等待由主协调器负责，不由 case-generator 子 Agent 负责**（关键）：case-generator
-     是子 Agent，寿命只有 ~1-2 分钟，只能用**前台** `Bash` 跑 `scripts/generation_progress.py launch`
+     是子 Agent，寿命只有 ~1-2 分钟，只能用**前台** `bash` 跑 `scripts/generation_progress.py launch`
      （~1 秒、exit 0）后报告生成子进程 `pid`/`<iter>` 路径/cases 路径/count/platforms 后**结束本轮**
      （不等待、不"等通知"、不 read-poll；详见 case-generator 与 generate-cases skill）。该 launcher 用
      `CREATE_BREAKAWAY_FROM_JOB|CREATE_NEW_PROCESS_GROUP`（Windows）/ `start_new_session=True`（POSIX）
@@ -294,7 +294,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
           看起来不对"之类的旁支判断替换进度数字。这样用户每 ~60 秒看到一次进度，而不是长时间空白。
        2a. **轮询回合排他（强制，防进度丢失）**：`state=running` 期间，主协调器每回合的**唯一**动作
           是——跑一次 `status` → 报告进度 → 决定下一回合。**禁止**在轮询回合发起探查性
-          `Read`/`Grep`/源码或平台选择调查/记忆回溯/长思考；任何旁支疑虑推迟到 `state=complete`/`failed`
+          `read`/`grep`/源码或平台选择调查/记忆回溯/长思考；任何旁支疑虑推迟到 `state=complete`/`failed`
           之后，或先发完本次进度、下一回合再处理，**绝不可**用调查取代一次轮询。进度展示一旦从某回合起
           长时间空白，根因几乎都是"本该轮询的回合被旁支调查/长考占用"——这是"有时有进度、有时没进度"
           的唯一可控根因，必须在本层杜绝。轮询节奏由本回合主动发起 `status` 保证，不依赖模型"想起来才轮询"。
@@ -385,7 +385,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         `python scripts/constraint_update_state.py prepare --source <prev>/constraints.json --target <next>/constraints.json --analysis <prev>/analysis.json --execution-result <prev>/execution_result.json`
         创建新轮版本和 `.pre_update`，禁止原地修改上一轮。
      4. 委派 `constraint-updater`，读取上一轮全部失败簇/findings/用例/执行证据，对新轮
-        constraints 做最小 Edit，并完成 finalize 与 `constraint_update` 校验。
+        constraints 做最小 edit，并完成 finalize 与 `constraint_update` 校验。
      4a. **回归校验**：constraint-updater 完成回归校验后，若返回 exit code 3，主协调器读取 `<next>/regression_check.json`。
          - 若 `limit_reached=true`（updater 自修正 3 次后仍有回归）：主协调器必须暂停流程，
             用 `question` 工具弹框让用户选择：

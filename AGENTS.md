@@ -205,9 +205,10 @@ opencode  # 启动 opencode
 **scripts/** — 确定性 CLI 工具，不调用 LLM：
 
 - `init_run.py` — 创建 run 目录 + `run_state.json`；校验文档和 servers.json
-- `run_state.py` — `run_state.json` 唯一写入器：主协调器 CLI 子命令（set-state / set-fields / set-constraint-check）+ 供脚本 import 的落盘库函数
+- `run_state.py` — `run_state.json` 唯一写入器：主协调器 CLI 子命令（set-state / set-fields / set-constraint-check）+ 供脚本 import 的落盘库函数；其中 set-state 仅限人工调试——流程内的阶段迁移一律走 `flow_control.py advance`
 - `init_batch.py` — 初始化批次目录
 - `batch_state.py` — 批次状态迁移
+- `flow_control.py` — **阶段迁移唯一通道**：迭代流程的阶段推进（EXTRACT→GENERATE→EXECUTE→GATE→…）必须用 `python scripts/flow_control.py advance`，由其按状态机条件表裁决去向与迭代轮次递增；`run_state.py set-state` 仅限人工调试场景，流程中禁止用它做阶段迁移（iterate-operator 技能同款硬守卫）
 - `generate_cases.py` — 调 facade 生成用例
 - `execute_cases.py` — 调 executer 执行用例
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）

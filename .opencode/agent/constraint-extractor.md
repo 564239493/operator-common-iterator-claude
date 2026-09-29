@@ -3,6 +3,7 @@ description: 从 CANN 算子 Markdown 文档提取并校验结构化约束。仅
 mode: subagent
 color: "#409eff"
 permission:
+  task: deny
   webfetch: deny
   websearch: deny
   lsp: deny

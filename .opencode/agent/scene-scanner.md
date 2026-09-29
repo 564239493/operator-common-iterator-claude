@@ -20,7 +20,7 @@ permission:
 `<run-dir>/inputs/scene_scan.json`。
 
 op-scene 提取规则、设备类型划分表、特性参数筛选规则、输出格式、提取要求见
-`prompts/scan_scenes.md` 的 **op-scene 规则段**（delimited）；先 Read 该文件。本文件不
+`prompts/scan_scenes.md` 的 **op-scene 规则段**（delimited）；先 read 该文件。本文件不
 重复抄表。
 
 提取规则要点（详见上述规则段与 `scan_scenes.md` §1–§6）：

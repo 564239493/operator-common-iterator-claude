@@ -19,7 +19,7 @@ permission:
 
 按 skill 的两个域（extract / diagnose）工作：
 
-- **extract 域**（EXTRACT 阶段，与 constraint-extractor 并行）：用 Bash 调
+- **extract 域**（EXTRACT 阶段，与 constraint-extractor 并行）：用 bash 调
   `extract_source_constraints.py` 拿 `source_raw.json`，再对 raw_checks 做
   expr_type 归类与文档对照，产 `inputs/supplementary-doc.md`（constraint-
   supplementer 可读）、`inputs/uncertain-doc.md`、`inputs/conflict-doc.md`

@@ -80,13 +80,16 @@ def main() -> int:
         meta = frontmatter(path)
         print(f"  /{path.stem:<22} {clipped(meta.get('description'))}")
 
-    print("\nDispatch")
+    print("\nDispatch（与 AGENTS.md 调度表一致的 12 角色全量）")
+    print("  [SCENE_SCAN 可选] scene-scanner -> PLAN")
     print("  PLAN -> constraint-extractor -> optional constraint-supplementer")
     print("       -> constraint-checker <-> constraint-repairer -> case-generator -> case-executor")
     print("       -> quality-reviewer -> SUCCESS")
-    print("       -> failure-analyst -> UPDATE_CONSTRAINTS -> constraint-updater")
-    print("       -> constraint-checker <-> constraint-repairer -> next generation")
+    print("       -> failure-analyst(+可选 source-analyst 诊断域) -> UPDATE_CONSTRAINTS")
+    print("       -> constraint-updater -> constraint-checker <-> constraint-repairer -> next generation")
     print("       -> mixed failures -> REVIEW | generator_bug/executor_bug -> STOP")
+    print("  [终态沉淀可选] prompt-optimizer（root_cause=constraint_extraction 时提案）")
+    print("  [EXTRACT 并行可选] source-analyst 源码分析域")
     print(
         "\nLive views: /show-workforce (registry) | "
         "/iterate-operator (run) | /iterate-directory (batch)"

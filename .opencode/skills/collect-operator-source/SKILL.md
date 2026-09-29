@@ -27,7 +27,7 @@ description: 给定 operators-src 树与 aclnn 名，确定性收集算子全量
 - `source-analyst` 报告 `missing_evidence`、`raw_checks` 偏少，怀疑快照缺跨目录
   L0 实现，需扩快照重跑。
 
-## 第一步：确定性收集（Bash）
+## 第一步：确定性收集（bash）
 
 ```bash
 python scripts/collect_operator_source.py \

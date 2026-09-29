@@ -1029,7 +1029,7 @@ reduction = max(0, min(2, round(reduction)))
 reduction_str = ["none", "mean", "sum"][reduction]
 ```
 
-**General principle:** Read the valid value range from the operator doc's "使用说明" column (Step 0).
+**General principle:** read the valid value range from the operator doc's "使用说明" column (Step 0).
 Always `round()` then `clamp()` after the `None` check: `max(min_val, min(max_val, round(v)))`.
 
 ## Rule 3: Output Dtype Must Match NPU SupportInfo — Always Cast

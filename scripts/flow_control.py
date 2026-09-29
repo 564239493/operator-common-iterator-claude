@@ -64,6 +64,7 @@ EDGES: dict[str, frozenset[str]] = {
         "MAX_ITERATIONS",
         "MIXED_FAILURE_REVIEW",
         "HUMAN_CHECKPOINT",
+        "AWAITING_HUMAN_CONSTRAINTS",
         "STOP_GENERATOR_BUG",
         "STOP_EXECUTOR_BUG",
         "BLOCKED",
@@ -71,7 +72,10 @@ EDGES: dict[str, frozenset[str]] = {
     "UPDATE_CONSTRAINTS": frozenset({"GENERATE", "BLOCKED"}),
     "MIXED_FAILURE_REVIEW": frozenset({"UPDATE_CONSTRAINTS", "STOPPED_BY_USER"}),
     "NEEDS_HUMAN_EVIDENCE": frozenset({"HUMAN_CHECKPOINT"}),
-    "HUMAN_CHECKPOINT": frozenset({"DIAGNOSE", "STOPPED_BY_USER"}),
+    "HUMAN_CHECKPOINT": frozenset({"DIAGNOSE", "AWAITING_HUMAN_CONSTRAINTS", "STOPPED_BY_USER"}),
+    # 人工约束上传通道：检查点四选一选「人工修复」时挂起等待用户上传
+    # constraints_copy.json；apply_human_constraints.py 消费后进 UPDATE_CONSTRAINTS
+    "AWAITING_HUMAN_CONSTRAINTS": frozenset({"UPDATE_CONSTRAINTS", "STOPPED_BY_USER"}),
 }
 for _terminal in TERMINAL_STATES:
     EDGES[_terminal] = frozenset()

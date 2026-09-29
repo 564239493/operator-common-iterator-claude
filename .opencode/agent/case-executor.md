@@ -71,8 +71,8 @@ real 模式下按 **generate → real-run** 两子步骤执行；CPU golden 已�
 不读取 `golden_manifest.json`，不调用 `derive-ttk-golden`，不以 Golden 覆盖率、
 准确度或严格语义校验作为执行门禁；ACLNN 同样不要求 manifest，并由 CSV 的
 `api_name=aclnn*` 自动选择原生 `python3 -m ttk aclnn`。只有用户明确要求精度对比时，
-HS/E2E 默认加载可用的自主推导或源码 Golden，但精度失败不得阻塞功能流程；
-`--no-golden` 仅关闭算子 Golden，不得关闭内部格式 runtime bootstrap。
+才加 `--with-golden` 加载可用的自主推导或源码 Golden（默认不加载），精度失败
+不得阻塞功能流程；该开关仅控制算子 Golden，不得关闭内部格式 runtime bootstrap。
 
 `python scripts/execute_cases.py --test-framework ttk --generate --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json --hs-scenario-mode <run_state.hs_scenario_mode>`
 

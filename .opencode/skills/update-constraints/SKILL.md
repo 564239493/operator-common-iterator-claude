@@ -34,7 +34,7 @@ description: 根据 analysis.json 的所有约束类失败簇，对复制后的 
 `update_product_support`。无法安全修改时停止并说明，不得伪造 change。
 
 **知识 skill 按需加载**：finding 涉及量化、NZ/格式、广播、dtype 推导等主题时，先
-Skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再写
+skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再写
 修改——skill 载有该类约束的正确表达规则；修改表达与 skill 规则冲突而证据又不足以
 推翻时，停止并说明而不是硬改。
 

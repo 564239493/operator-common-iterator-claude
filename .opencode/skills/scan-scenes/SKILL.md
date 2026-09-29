@@ -14,7 +14,7 @@ description: 扫描算子文档按设备类型→量化模板→特性参数三�
 > `constraints_in_parameters`、不下 presence 依赖。constraint-extractor 后续会按你给
 > 的场景清单与 directive 做屏蔽式提取。
 
-1. Read `prompts/scan_scenes.md`，按其 **op-scene 规则段**（设备类型划分表、特性参数
+1. 读取 `prompts/scan_scenes.md`，按其 **op-scene 规则段**（设备类型划分表、特性参数
    筛选规则、输出格式、提取要求）逐节提取文档全部场景；按**设备类型 → 量化模板 →
    特性参数**三级组织；一模板一条；过滤 ACLNN_ERR_*/校验场景。
    - 量化模板 = 编码量化方式的具体模板（可细分到位宽/dtype，如 `全量化-A8W8`/

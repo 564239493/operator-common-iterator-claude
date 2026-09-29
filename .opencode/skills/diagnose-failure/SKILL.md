@@ -46,7 +46,7 @@ prompt/module 解释 torch_npu 失败，也不得反向移植 torch_npu 专项�
 
 **知识 skill 按需加载**：诊断中涉及量化（`aclnn-quantization`）、NZ/格式
 （`aclnn-nz-matmul`、`aclnn-format-cast`）、广播（`aclnn-broadcast`）、dtype
-（`aclnn-platform-dtype`）等信号时，先 Skill 加载对应 `aclnn-*` / `torch-npu-*`
+（`aclnn-platform-dtype`）等信号时，先 skill 加载对应 `aclnn-*` / `torch-npu-*`
 知识 skill 再下结论——skill 载有该类约束的正确表达规则，是判断“约束错提/遗漏 vs
 生成器 bug”的依据；不加载不得凭直觉归类。
 

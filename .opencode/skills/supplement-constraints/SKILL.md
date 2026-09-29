@@ -27,7 +27,7 @@ family 的表达规则：ACLNN 只能读 ACLNN 快照/模块；torch_npu 只能�
 已装配知识，禁止跨 family 读取另一知识根。
 
 **知识 skill 按需加载**：补充内容涉及量化、NZ/格式、广播、dtype 推导等主题时，先
-Skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再写
+skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再写
 patch——patch 表达必须符合 skill 中的规则。
 
 > 本阶段**不重新提取约束**，只对 EXTRACT 已产出的 `constraints.json` 做关系

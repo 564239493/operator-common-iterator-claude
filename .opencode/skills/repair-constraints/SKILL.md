@@ -23,13 +23,13 @@ description: 根据 constraint_check.json 对当前 constraints.json 做最小�
   必须带该字段（从 `inputs/` 快照核实），来源条款不变时保持原值。
 
 **知识 skill 按需加载**：待修复问题涉及量化、NZ/格式、广播、dtype 推导等主题时，
-先 Skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再
+先 skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再
 修复，修复表达必须符合 skill 中的规则。
 
 ## 修复和校验
 
 1. 按 issue id 逐项定位当前文件行和约束。
-2. 用 Edit 直接修改当前 `constraints.json`。
+2. 用 edit 直接修改当前 `constraints.json`。
 3. 运行 `python scripts/validate_operator_rule.py <constraints>`。
 4. 运行 `python scripts/normalize_constraints.py <constraints>`。
 5. 运行 `python scripts/validate_artifacts.py constraints <constraints>`。

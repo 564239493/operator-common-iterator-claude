@@ -11,7 +11,7 @@ description: 串行扫描并迭代目录中的全部算子文档，支持失败�
 
 1. 解析参数。默认 glob=`*.md`、不递归；未传 `--prompt` 时保持逐文档 family 自动
    选择：ACLNN 使用 `operator_constraints/base.md` + `knowledge/aclnn`，torch_npu 使用
-   `torch_npu_constraints_extract_vN.md`，并各自装配隔离知识；
+   `torch_npu_constraints/base.md`，并各自装配隔离知识；
    max-iterations、constraint-check-rounds、case-count、mode、server-config 和 hs-scenario-mode 与
    `/iterate-operator` 相同；
    默认 `--continue-on-error`。
@@ -47,7 +47,7 @@ description: 串行扫描并迭代目录中的全部算子文档，支持失败�
    - `action=resume`：若已有 `run_dir`，读取其 `run_state.json`，按
      `/iterate-operator` 的恢复协议从最后完成状态继续；若尚无 `run_dir`，按 start 处理。
    - `action=complete`：停止循环并展示 `batch_summary.json`。
-5. 每个算子必须串行完成，禁止同时启动多个 `/iterate-operator`。内层 Skill 会在
+5. 每个算子必须串行完成，禁止同时启动多个 `/iterate-operator`。内层 skill 会在
    run 创建后关联批次，并在算子到达终态后更新批次。
 6. 单算子返回后再次执行 claim。默认策略下，`BLOCKED`、`MAX_ITERATIONS`、
    `STOP_GENERATOR_BUG` 和 `STOP_EXECUTOR_BUG` 只记入失败并继续下一个；

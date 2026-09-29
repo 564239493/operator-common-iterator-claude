@@ -1,3 +1,5 @@
+import type { Catalog } from '../components/assets/model'
+
 const BASE = ''
 
 async function get<T>(path: string): Promise<T> {
@@ -13,6 +15,7 @@ async function get<T>(path: string): Promise<T> {
 export const api = {
   runs: () => get<any[]>('/api/runs'),
   agents: () => get<any[]>('/api/agents'),
+  assets: () => get<Catalog>('/api/assets'),
   runView: (runId: string) => get<any>(`/api/runs/${encodeURIComponent(runId)}`),
   replay: (runId: string) => get<any[]>(`/api/runs/${encodeURIComponent(runId)}/replay`),
   iteration: (runId: string, n: number) =>

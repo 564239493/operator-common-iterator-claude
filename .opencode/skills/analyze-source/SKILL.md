@@ -15,7 +15,7 @@ markdown 落盘，下游 `constraint-supplementer` / `failure-analyst` 仍"只�
 
 ## 第一步：确定性提取（两域共用）
 
-用 Bash 执行（snapshot 路径取自 `run_state.operator_src_snapshot`）：
+用 bash 执行（snapshot 路径取自 `run_state.operator_src_snapshot`）：
 ```
 python scripts/extract_source_constraints.py \
   --snapshot <operator_src_snapshot> --out <iter-dir>/source_raw.json
@@ -108,7 +108,7 @@ uncertain-doc.md 标 `missing_evidence`。
      }]
      ```
    - `doc_expr` 必须从 `constraints.json` 对应平台桶**精确复制**（不得改写），
-     否则 `apply_conflict_resolution.py` 精确匹配失败。先用 Grep 工具确认存在。
+     否则 `apply_conflict_resolution.py` 精确匹配失败。先用 grep 工具确认存在。
 
 ### 自校
 

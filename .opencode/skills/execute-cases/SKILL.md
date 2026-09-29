@@ -111,9 +111,10 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
   --hs-scenario-mode <run_state.hs_scenario_mode>
 ```
 
-默认允许使用自主推导或源码 Golden，但精度失败只记录、不阻塞功能执行。
-只有明确要求完全跳过 Golden 时，才在命令中追加 `--no-golden`；该选项不得
-关闭 TTK worker 的内部格式运行时初始化。
+默认不加载算子 Golden（与 case-executor 契约一致：仅用户明确要求精度对比时
+才用）。用户明确要求时在命令中追加 `--with-golden`；精度失败只记录、不阻塞
+功能执行。`--no-golden` 为默认行为，两者都不得关闭 TTK worker 的内部格式
+运行时初始化。
 
 远端目录由 `servers.json.ttk.remote_root` 控制，单次目录名为算子名_时间点；结果与日志
 HS/E2E 结果下载到 `<iter>/ttk_artifacts/`；ACLNN 结果下载到

@@ -56,7 +56,7 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
    且行号处的文档快照原文与该条目 `src_text` 摘录一致；缺失、行号错位或摘录与原文
    不符都记为 issue（`src_txt_line` 缺失/错位按普通 issue 报告，由 repairer 补正）。
 4. `validate_artifacts.py constraints` 通过只说明结构/确定性规则合法，不能替代本检查。
-5. 使用 Read 显示的实际行号记录错误；`line` 必须指向当前约束中最直接的错误行。
+5. 使用 read 显示的实际行号记录错误；`line` 必须指向当前约束中最直接的错误行。
 6. 第 2 轮起逐条复核原有 open/unfixed：已正确则 fixed，仍错误则 unfixed 并更新
    `last_checked_round`。新问题追加新 id，不能复用旧 id。
 7. fixed 历史项保留在同一个报告中，不删除。
