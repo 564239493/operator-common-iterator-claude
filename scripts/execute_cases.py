@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Project-local CLI entry point for the EXECUTE stage.
 
-Driven by the ``case-executor`` agent (see ``.claude/agents/case-executor.md``)
+Driven by the ``case-executor`` agent (see ``.opencode/agent/case-executor.md``)
 through the ``execute-cases`` skill.  This script is the single CLI glue
 between the deterministic executer (`executer.runner`) and the
 ``runs/<run-id>/iter_*/execution_result.json`` artifact contract.
@@ -22,7 +22,7 @@ This rewrite keeps everything inside this project:
 * No ``sys.path`` reach-around to ``D:\\operator_project\\operator-common-iterator``
   (reference) or ``D:\\operator_project\\operator-agent`` (the old consumer).
 * No ``langchain_openai.ChatOpenAI`` / ``Settings(active_api_key=...)``
-  imports — the CLI itself is the LLM (per ``CLAUDE.md``).
+  imports — the CLI itself is the LLM (per ``AGENTS.md``).
 * Real execution still goes through SSH / asyncssh against the host
   declared in ``servers.json`` — we just hand control to the
   project-local ``executer.runner.RunRequest`` path.

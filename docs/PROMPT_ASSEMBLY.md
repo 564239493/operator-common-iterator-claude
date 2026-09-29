@@ -3,7 +3,7 @@
 默认 ACLNN 流程为：算子文档快照 → 文档预分析 → 知识路由 → 适用性判断 →
 `base 核心层 + 必载知识清单` → 冻结 `prompt_v1.md` 与组装记录。知识模块正文
 **不进快照**：每个 manifest 模块由 `scripts/build_knowledge_skills.py` 生成为
-`.claude/skills/aclnn-*/SKILL.md` 注册 skill，提取时按必载清单用 Skill 工具逐一
+`.opencode/skills/aclnn-*/SKILL.md` 注册 skill，提取时按必载清单用 skill 工具逐一
 加载（其他阶段按 description 信号自然触发），实现按需加载而非全量拼接。
 
 ## 事实源与分层
@@ -31,7 +31,7 @@ ACLNN run 初始化会写：
 ## 知识 skill 生成与同步
 
 `scripts/build_knowledge_skills.py` 读两 family manifest，把每个模块渲染为
-`.claude/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 生成物（frontmatter 在文件首行；
+`.opencode/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 生成物（frontmatter 在文件首行；
 description 由模块 `description` + 触发器关键词 + 阶段信号合成；正文为 canonical
 拷贝，尾部标注依赖模块）。**canonical 保持在 `knowledge/<family>/**`，生成物禁止
 手改**；模块退场后重跑生成脚本会清理残留 skill 目录。
@@ -40,7 +40,7 @@ description 由模块 `description` + 触发器关键词 + 阶段信号合成；
 （manifest 模块 ↔ skill 一一对应、内容与渲染结果逐字节一致、无跨 family 残留），
 init_run 预校验自动执行——canonical 变更后忘跑生成脚本会在 run 启动时被拦截。
 
-提取侧协议见 `.claude/skills/extract-constraints/SKILL.md` 的「必载知识协议」：
+提取侧协议见 `.opencode/skills/extract-constraints/SKILL.md` 的「必载知识协议」：
 必载清单逐条 Skill 加载并应用，产出 `<iter>/extraction_provenance.json`；
 constraint-checker 对照路由命中集审计"命中未应用"（check-constraints skill 第 9 条）。
 

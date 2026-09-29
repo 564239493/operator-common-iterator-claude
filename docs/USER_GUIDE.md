@@ -1,8 +1,8 @@
 # OPCI 使用说明书
 
 > ⚠️ **存档文档**：本文描述的是已被替代的 MCP Server + Agent Pack 架构
-> （`opci` 包、22 个 MCP 工具、`opci setup`）。当前项目为 Claude Code CLI
-> 原生编排架构，见 [CLAUDE.md](../CLAUDE.md) 与 [WORKFLOW.md](WORKFLOW.md)。
+> （`opci` 包、22 个 MCP 工具、`opci setup`）。当前项目为 opencode
+> 原生编排架构，见 [AGENTS.md](../AGENTS.md) 与 [WORKFLOW.md](WORKFLOW.md)。
 > 本文保留仅作历史参考，不再维护。
 
 ---

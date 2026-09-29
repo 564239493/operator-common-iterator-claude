@@ -1,5 +1,9 @@
 # 从旧项目迁移到 Claude Code CLI 模式
 
+> ⚠️ **存档文档**：本文记录的是「原 Python 项目 → Claude Code CLI」这一次历史迁移。
+> 其后项目已再度迁移到 opencode（`CLAUDE.md` → `AGENTS.md`，`.claude/` → `.opencode/`）。
+> 本文保留仅作历史参考，不再维护。
+
 保留了原项目的确定性用例生成逻辑，并将其迁移到 `agent/generators/`；同时保留
 算子文档和初始提示词。被替代的部分：
 

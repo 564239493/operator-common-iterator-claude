@@ -7,7 +7,6 @@ __pycache__/
 servers.json
 logs/
 runs/
-.claude/runtime/
 .idea/
 .vscode/
 /node_modules
@@ -16,12 +15,13 @@ runs/
 runs/
 logs/
 execution_results/
-tests/
+/tests/
+
+# 本机用 Claude Code 开发时产生的本地文件（权限记忆等），不得入库
+/.claude/
 
 /operators-src/
 /op-plugin-7.3.0/
-/.claude/settings.local.json
-/.claude/worktrees/
 /.ttk-deps/
 /.ttk-reference/
 /cli_report_*.html

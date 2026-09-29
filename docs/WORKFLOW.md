@@ -1,8 +1,8 @@
-# Claude Code CLI 流程规划与执行设计
+# opencode 流程规划与执行设计
 
 ## 1. 设计目标
 
-本项目把 Claude Code 作为顶层运行时。规划、专家选择、上下文隔离、阶段调度和循环
+本项目把 opencode 作为顶层运行时。规划、专家选择、上下文隔离、阶段调度和循环
 判断都在 CLI 中可见；Python 不再创建隐藏 LLM session，只执行可重复的确定性动作。
 
 核心原则：
@@ -10,7 +10,7 @@
 1. **先规划再执行**：每次 run 先固化参数、阶段、Agent 和终止条件。
 2. **角色隔离**：提取、生成、执行、诊断、优化由不同 Agent 独立完成。
 3. **文件交接**：Agent 之间只认已校验的落盘产物。
-4. **调度可见**：委派文本、CLI Agent 面板、Hooks 和 JSONL 四层观测。
+4. **调度可见**：委派文本与 task 工具调用记录两层观测。
 5. **失败按簇分流**：分析全部失败簇；只有全部属于约束问题时才自动增量更新约束，
    生成器/执行器问题立即止损，混合根因默认转人工复核。
 
@@ -123,7 +123,7 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
 执行者：scene-scanner（调度消息显式传入 `<run-dir>` 绝对路径，产
 `<run-dir>/inputs/scene_scan.json`；禁止按仓库 cwd 解析相对 `inputs/`。按**设备类型
 → 量化模板 → 特性参数**三级提取，不设"通用"组、特性参数只提取枚举/分档可选项）+ 主
-协调器（AskUserQuestion **Q1→Q2→Q3 三轮顺序征询**，每轮一次调用、其内问题并行作答；
+协调器（question 工具 **Q1→Q2→Q3 三轮顺序征询**，每轮一次调用、其内问题并行作答；
 必须分三轮而非一次：Q2 问题集依赖 Q1 选中设备、Q3 问题集依赖 Q2 选中模板，同调用内
 拿不到前轮答案且预枚举 (设备,模板) 全组合会爆炸。Q1 设备类型（multiSelect 真实设备、
 **不设"全部设备"**聚合项；`device_types` 仅 1 个时直接默认选中、跳过 Q1 进 Q2）→ Q2 逐设备
@@ -227,25 +227,21 @@ ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生
 完成条件：`cases.json` 非空；TTK 还要求 CSV 与 audit 结构合法。
 失败策略：不让 LLM 手工“补齐”用例，保留 generator_bug 证据。
 
-长时间生成由脱离会话的 `generation_progress.py launch` 启动。主协调器用 Monitor
-执行单条 `generation_progress.py watch --output-dir <iter-absolute> --interval 60`
-持续读取结构化进度；Monitor 命令不得包含变量、管道或 shell
-`while`/`grep`/`sleep` 循环，避免触发与业务无关的安全审批。Monitor 中断不影响已经
-脱离会话的生成进程，之后可重新运行 `watch` 或单次运行 `status` 继续观察。
+长时间生成由脱离会话的 `generation_progress.py launch` 启动。主协调器用 bash 工具
+前台阻塞执行单条 `generation_progress.py watch --output-dir <iter-absolute> --interval 60`
+（给足 timeout）持续读取结构化进度；该命令不得包含变量、管道或 shell
+`while`/`grep`/`sleep` 循环，避免触发与业务无关的安全审批。命令超时中断不影响已经
+脱离会话的生成进程，原样重跑 `watch` 或单次运行 `status` 继续观察。
 
-> **长时间监听脚本必须写成一条裸命令（Claude Code 与 opencode 通用）**：
+> **长时间监听脚本必须写成一条裸命令**：
 > 所有长时间监听命令（`generation_progress.py watch`、`watch_constraints_copy.py` 等）
-> 一律写成单条裸命令 `<venv-python> <repo>/scripts/<script>.py <args>`——即 python
+> 一律写成单条裸命令 `<python> <repo>/scripts/<script>.py <args>`——即 python
 > 解释器直接跟一个项目内 `.py` 脚本，**不要**用 `Start-Process -FilePath $py -ArgumentList @(...)`、
 > `Start-Job`、`& { }` 等 shell/PowerShell 包装。原因：项目的写入守卫
-> （`guard_project_writes.py`）只对"python 直接跑项目内 .py"这种裸命令自动放行；
+> （`.opencode/plugins/guard.js`）只对"python 直接跑项目内 .py"这种裸命令自动放行；
 > 一旦用 shell/PowerShell 包装，守卫认不出其中的 .py 入口，会弹用户确认。
-> - **Claude Code**：用 `Monitor` 工具（`persistent: true`）挂这条裸命令。**不要改用
->   `run_in_background`**——`run_in_background` 虽也自动放行，但它不会在文件事件出现时
->   唤醒空闲会话；只有 Monitor 能在监听脚本输出事件后把会话唤醒。
-> - **opencode**：用 `bash` 工具直接跑同一条裸命令（前台阻塞，给足 `timeout`；超时未出
->   事件就重跑同一条，不轮询、不 kill）。
-> - 两种运行时共享同一自动放行规则，命令写法完全一样。
+> 用 `bash` 工具直接跑这条裸命令（前台阻塞，给足 `timeout`；超时未出
+> 事件就原样重跑同一条，不轮询、不 kill）。
 
 ### EXECUTE
 
@@ -303,7 +299,7 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 `init_run.py --human-constraints-upload` 置 `run_state.human_constraints_upload=true`。**前
 `human_checkpoint_round` 轮纯自动迭代**（走 UPDATE_CONSTRAINTS 自动更新分支，不挂起）。到达
 检查点（`current_iteration >= human_checkpoint_round` 且本轮以 constraint_extraction 失败、
-本轮未弹过、`< max_iterations`）时，弹 AskUserQuestion **四选一**：
+本轮未弹过、`< max_iterations`）时，弹 question 工具**四选一**：
 
 1. **人工修复**（constraints_copy.json + 监听）→ 进入下方挂起流程；
 2. **人工补充**（用户补充事实/证据，append 到 `supplement_constraints.md`，重新诊断）→ 回自动更新；
@@ -320,12 +316,12 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
    `<iter_N>/constraints.json`；用户据此（或经 web 页面）编辑后把修改后的约束**上传**到
    `<iter_N>/constraints_copy.json`。文件出现 = 已上传、待开启下一轮；文件未出现 = 仍在修改/
    尚未上传，继续等待。
-3. **挂监听器**：Monitor 工具（`persistent: true`，单条绝对路径命令、无变量/管道/shell
-   循环）挂 `python scripts/watch_constraints_copy.py --run-dir <run-dir>`。监听器轮询
+3. **挂监听器**：bash 工具前台阻塞（单条绝对路径命令、无变量/管道/shell
+   循环，给足 timeout）挂 `python scripts/watch_constraints_copy.py --run-dir <run-dir>`。监听器轮询
    `iter_<N>/constraints_copy.json` 的**出现 + 稳定性**：启动时文件应缺席——缺席时**继续
    等待、不退出**（缺席 = 未上传）；文件出现后连续两次轮询 mtime/size 不变（≈ interval×2，
    默认 10 秒，防部分写入竞态）才判定上传完成，输出一行 JSON 后**退出**（单次触发后退出：只报告一个事件即结束），
-   由 Monitor 把事件送回空闲会话。向用户提示上传目标路径与「上传完成后自动开启下一轮」。
+   命令返回即会话收到事件。向用户提示上传目标路径与「上传完成后自动开启下一轮」；超时未出事件就原样重跑同一条监听命令。
 4. **唤醒与接入**：会话被唤醒后运行 `python scripts/apply_human_constraints.py --run-dir <run-dir>`
    （可选 `--max-iterations N` 提升上限，须 > 当前轮次）。该脚本三阶段：
    - 预检（不写盘）：`human_constraints_upload==true`、状态门禁（`AWAITING_HUMAN_CONSTRAINTS`；
@@ -342,7 +338,7 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
    GENERATE → EXECUTE → GATE → DIAGNOSE。若再次以 constraint_extraction 失败且
    `current_iteration >= human_checkpoint_round` → 回到检查点重新弹四选一。终态不变，问环自然结束。
 
-断开恢复：监听器随会话死亡即失效；`claude --continue`（同对话，重新执行第 3 步挂监听器）或
+断开恢复：监听器随会话死亡即失效；opencode 恢复同会话（重新执行第 3 步挂监听器）或
 `/iterate-operator --resume-run <run-dir>`（纯文件驱动：`AWAITING`→第 3 步挂监听器等待上传；
 `UPDATE_CONSTRAINTS` 且 iter 无生成产物→从 CHECK/REPAIR 续跑）。
 
@@ -359,7 +355,7 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 主链路有严格数据依赖，EXTRACT、GENERATE、EXECUTE、GATE 必须串行。质量门禁内部的
 只读结构检查可以并行，但只能由主协调器发起，且不得让多个 Agent 写同一文件。
 
-在 Claude Code 中可通过 `/agents` 查看正在运行和最近完成的 Agent。若未来把同一算子
+Agent 注册清单可通过 `/show-workforce` 查看，运行记录见 `docs/OBSERVABILITY.md`。若未来把同一算子
 的多个平台拆成并行执行，应为每个平台分配独立目录，汇总前执行一次统一门禁。
 
 ## 6. 循环与终止
@@ -376,7 +372,7 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 
 ## 7. 恢复执行
 
-会话中断后，使用 `claude --continue` 或重新启动 Claude，读取 run_state.json，从最后一个
+会话中断后，恢复 opencode 会话或重新启动 opencode，读取 run_state.json，从最后一个
 完成状态继续。任何 Agent 都不得依赖聊天历史恢复事实；产物目录是唯一真相源。
 `/iterate-operator --resume-run <run-dir>` 提供全新会话的瘦恢复入口：不创建新 run，
 直接读 `<run-dir>/run_state.json` 与 iter 产物判定续跑点（含人工约束上传通道的
