@@ -1,0 +1,1171 @@
+// 资产页面唯一内容源 / 发版维护提示词
+// 
+// 把本注释连同本文件交给模型，要求它按以下流程更新；页面运行时不调用模型，
+// 不扫描资产目录，也不从自然语言、关键词或正则推断关系。
+// 
+// 你的任务：核对本次版本的真实资产，更新本文件所有页面内容和明确关联。
+// 1. 只读核对 .opencode/agent/*.md、对应的 .opencode/skills/*/SKILL.md、
+//    knowledge/aclnn/manifest.json、knowledge/torch_npu/manifest.json 及其模块。
+//    仅当 .opencode/agent 目录不存在时核对 .claude/agents；目录为空不得回退。
+//    扩展能力已从页面移除，不再核对与收录。禁止读取凭据或 .env。
+//    不修改上述源文件，不启动任何业务，不提交、不部署。
+// 2. 逐个理解角色与技能完整上下文、条件、否定和职责边界；“禁止加载 X”、示例、
+//    引用另一个角色和仅对齐规范，都不能变成 required。不要用正则或关键词代替语义核实。
+// 3. 所有智能体名称、显示顺序、角色名称、用途、使用时机、产出、颜色、可用状态、
+//    技能/知识的标题说明、分类、页面用语和关系标签均在本文件维护。
+//    以面向使用人员的中文概括 description：说明做什么、何时需要、得到什么。
+//    不把文件路径、行号、内部字段、权限配置和模型调度指令写入页面文案。
+// 4. 知识身份以两个 manifest 与生成物对应关系确认，不能只凭名称前缀分类。
+//    更新 skills、knowledge；同一能力只列一次。知识族/分类使用 families、scopes。
+//    删除旧资产时同步清理所有引用。新增类别需更新清单，不改前后端硬编码。
+// 5. agents[].relations 逐条以资产 id 为键；只填写确认的关系：
+//    required=明确要求开工加载；conditional=明确许可且满足相应条件时使用；
+//    reference=明确允许参考；denied=明确禁止。未确认则省略或写 unmentioned。
+//    不得因没提及而写 denied，不得因目录里存在而写 conditional。
+//    若规则明确允许当前知识族的知识按需加载，可逐项写 conditional；这不是已命中清单。
+//    必须检查例外：源码知识需条件启用，另一知识族不可混用。前端并列展示两种知识族，各列按真实关联显示。
+//    避免把上一版已存在的关系当作本版证据；重新核实后保留、调整或省略。
+// 6. availability 仅表示本文件记录是否可展示（ready/missing/unavailable），不是在线状态。
+// 7. 保持现有 id 稳定，relations 不支持通配符，禁止生成孤立引用或重复 id/key。
+//    family、scope、default_agent、default_family 必须引用本文件已有条目。
+//    relations 的值仅限 required/conditional/reference/denied/unmentioned；
+//    out_of_scope/unavailable 仅供展示逻辑使用。关系不能从标题或 description 自动生成。
+// 8. 更新 content_version 为本次发布标识，保留本注释。遇到证据不足的变更，
+//    保持未关联并在你的交付说明列出待确认项，不要虚构。输出新增/删除/变更摘要。
+// 9. 文件格式：UTF-8 JSONC，支持 // 和块注释；不允许尾随逗号、重复键。
+//    完成后执行：.venv/bin/python -m unittest discover -s src/tests -p test_assets.py
+//    以及在 src/web 下执行 npm test、npm exec -- tsc --noEmit、npm run build。
+//    测试会检查本文件本身。前端内容编辑无需重建：刷新页面或点击“刷新内容”即重新读取。
+// 
+// 页面内容由发布者审核后生效；本文件只是展示资料，不改变智能体真实权限或执行流程。
+{
+  "schema_version": 1,
+  "content_version": "2026-09-29",
+  "default_agent": "constraint-extractor",
+  "default_family": "aclnn",
+  "ui": {
+    "brand": "算子自主测试智能体工作台",
+    "nav_assets": "智能体资产",
+    "nav_runtime": "工作台",
+    "theme_light": "☀ 浅色",
+    "theme_dark": "☾ 深色",
+    "theme_to_light": "切换到浅色主题",
+    "theme_to_dark": "切换到深色主题",
+    "title": "智能体列表",
+    "subtitle": "职责独立，按需加载技能与知识的智能体",
+    "refresh": "刷新",
+    "refreshing": "正在刷新…",
+    "refresh_failed": "内容刷新失败，当前显示上次加载的内容。",
+    "agents_unit": "个智能体",
+    "skills_unit": "项技能",
+    "knowledge_unit": "项知识",
+    "item_unit": "项",
+    "select_agent": "选择智能体",
+    "viewing": "正在查看",
+    "view_capability": "查看能力",
+    "agent_unavailable": "信息暂不可用",
+    "current_agent": "职责",
+    "when_to_use": "何时参与",
+    "outcome": "你会得到",
+    "legend_required": "必备",
+    "legend_allowed": "按需使用",
+    "legend_unknown": "明确禁止使用",
+    "legend_note": "「明确禁止使用」表示该能力与智能体的本职工作或权限范围明确冲突",
+    "skills_title": "技能",
+    "skills_empty": "此版本尚未收录流程技能。",
+    "knowledge_title": "知识库",
+    "family_label": "算子类型",
+    "knowledge_intro": "知识帮助智能体理解算子规则；根据任务类型和问题按需使用。",
+    "knowledge_empty": "此版本尚未收录该类知识。",
+    "detail_label": "能力详情",
+    "detail_knowledge": "知识说明",
+    "detail_skill": "能力说明",
+    "purpose": "能做什么",
+    "relation_heading": "与{agent}的关系",
+    "scope": "适用范围",
+    "scope_note": "具体规则是否适用，仍以当前算子文档和测试场景为准。",
+    "back": "返回智能体概览",
+    "overview": "能力概览",
+    "choose_agent": "请选择智能体",
+    "related_unit": "项已装配能力",
+    "how_to_view": "如何查看",
+    "how_to_view_description": "点击技能或知识，查看它的用途与适用范围。",
+    "unknown_note": "灰色能力也可以查看；没有固定搭配不代表禁止使用，需要时同样可以按需装配。",
+    "unavailable_description": "该智能体的信息暂不可用，请在内容更新后重试。",
+    "no_description": "暂无用途说明"
+  },
+  "relation_labels": {
+    "required": {
+      "label": "必备",
+      "description": "开工时一定装配的基础能力，随时可用。"
+    },
+    "conditional": {
+      "label": "按需使用",
+      "description": "任务涉及相关问题时才会装配使用，是否使用取决于当前任务。"
+    },
+    "reference": {
+      "label": "可参考",
+      "description": "不直接参与执行，供形成分析和改进建议时参考。"
+    },
+    "denied": {
+      "label": "不可使用",
+      "description": "与该智能体的职责或权限明确冲突，被明确禁止使用。"
+    },
+    "unmentioned": {
+      "label": "按需装配",
+      "description": "没有为该智能体固定搭配；需要时同样可以装配使用，不代表被禁止。"
+    },
+    "out_of_scope": {
+      "label": "其他知识类型",
+      "description": "这项知识属于另一种算子类型的任务范畴。"
+    },
+    "unavailable": {
+      "label": "暂不可用",
+      "description": "这项能力的信息暂时不完整，无法确认是否可用。"
+    }
+  },
+  "families": [
+    {
+      "id": "aclnn",
+      "title": "ACLNN",
+      "description": "ACLNN 算子",
+      "expanded_scopes": [
+        "common"
+      ]
+    },
+    {
+      "id": "torch_npu",
+      "title": "torch_npu",
+      "description": "torch_npu 算子",
+      "expanded_scopes": [
+        "foundation"
+      ]
+    }
+  ],
+  "scopes": {
+    "foundation": "基础知识",
+    "common": "通用约束",
+    "feature": "特性与运算模式",
+    "operator": "算子专用",
+    "reference": "参考知识",
+    "source_analysis": "源码知识",
+    "other": "其他知识"
+  },
+  "agents": [
+    {
+      "name": "scene-scanner",
+      "role": "场景扫描",
+      "color": "#f1c40f",
+      "description": "识别设备、量化方案和可选参数，帮助你确定本次测试范围。",
+      "when_to_use": "确定测试范围时",
+      "outcome": "可供选择的设备、量化方案与特性参数",
+      "availability": "ready",
+      "relations": {
+        "skill:scan-scenes": "required"
+      }
+    },
+    {
+      "name": "constraint-extractor",
+      "role": "约束提取",
+      "color": "#409eff",
+      "description": "从算子文档中整理输入输出、取值范围及参数之间的限制，为生成测试用例提供依据。",
+      "when_to_use": "开始测试、需要从文档建立约束时",
+      "outcome": "用于生成测试用例的结构化约束",
+      "availability": "ready",
+      "relations": {
+        "skill:extract-constraints": "required",
+        "knowledge:aclnn:official_basics": "conditional",
+        "knowledge:aclnn:dimensions": "conditional",
+        "knowledge:aclnn:allowed_range": "conditional",
+        "knowledge:aclnn:implicit_parameters": "conditional",
+        "knowledge:aclnn:platform_dtype": "conditional",
+        "knowledge:aclnn:expression_language": "conditional",
+        "knowledge:aclnn:broadcast_relation": "conditional",
+        "knowledge:aclnn:sparse_mode_foundation": "conditional",
+        "knowledge:aclnn:type_derivation": "conditional",
+        "knowledge:aclnn:type_conversion_foundation": "conditional",
+        "knowledge:aclnn:quantization_intro": "conditional",
+        "knowledge:aclnn:nz_matmul": "conditional",
+        "knowledge:aclnn:backward_partial": "conditional",
+        "knowledge:aclnn:format_cast": "conditional",
+        "knowledge:aclnn:implicit_pos": "conditional",
+        "knowledge:aclnn:broadcast": "conditional",
+        "knowledge:aclnn:type_conversion": "conditional",
+        "knowledge:aclnn:quantization": "conditional",
+        "knowledge:aclnn:sparse_mode": "conditional",
+        "knowledge:aclnn:transpose_shape": "conditional",
+        "knowledge:aclnn:acl_format_enum": "conditional",
+        "knowledge:aclnn:source_analysis_grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:batch_matmul_weight_nz": "conditional",
+        "knowledge:aclnn:ffn_v3": "conditional",
+        "knowledge:aclnn:swin_transformer_ln_qkv_quant": "conditional",
+        "knowledge:aclnn:scatter_pa_kv_cache": "conditional",
+        "knowledge:torch_npu:documentation_conventions": "conditional",
+        "knowledge:torch_npu:collections_and_grouped_ops": "conditional",
+        "knowledge:torch_npu:matrix_product_family": "conditional",
+        "knowledge:torch_npu:distributed_collectives": "conditional",
+        "knowledge:torch_npu:indexed_access_and_update": "conditional",
+        "knowledge:torch_npu:normalization_family": "conditional",
+        "knowledge:torch_npu:selection_reduction_sampling": "conditional",
+        "knowledge:torch_npu:attention_family": "conditional",
+        "knowledge:torch_npu:quantization": "conditional",
+        "knowledge:torch_npu:inplace_and_stateful_ops": "conditional",
+        "knowledge:torch_npu:npu_fused_infer_attention_score": "conditional",
+        "knowledge:torch_npu:npu_kv_quant_sparse_flash_attention": "conditional",
+        "knowledge:torch_npu:npu_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_mla_prolog_v3": "conditional",
+        "knowledge:torch_npu:npu_quant_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_sparse_flash_attention": "conditional"
+      }
+    },
+    {
+      "name": "source-analyst",
+      "role": "源码分析",
+      "color": "#20c997",
+      "description": "从算子源码中整理约束事实，区分已确认信息、待确认信息和与文档冲突的信息。",
+      "when_to_use": "启用源码分析、需要补充文档证据时",
+      "outcome": "已确认事实、待确认问题与冲突说明",
+      "availability": "ready",
+      "relations": {
+        "skill:analyze-source": "required"
+      }
+    },
+    {
+      "name": "constraint-supplementer",
+      "role": "约束补充",
+      "color": "#67c23a",
+      "description": "将已确认的补充说明纳入现有约束，补足遗漏的测试条件。",
+      "when_to_use": "获得已确认的补充说明时",
+      "outcome": "对现有约束的补充建议",
+      "availability": "ready",
+      "relations": {
+        "skill:supplement-constraints": "required",
+        "knowledge:aclnn:official_basics": "conditional",
+        "knowledge:aclnn:dimensions": "conditional",
+        "knowledge:aclnn:allowed_range": "conditional",
+        "knowledge:aclnn:implicit_parameters": "conditional",
+        "knowledge:aclnn:platform_dtype": "conditional",
+        "knowledge:aclnn:expression_language": "conditional",
+        "knowledge:aclnn:broadcast_relation": "conditional",
+        "knowledge:aclnn:sparse_mode_foundation": "conditional",
+        "knowledge:aclnn:type_derivation": "conditional",
+        "knowledge:aclnn:type_conversion_foundation": "conditional",
+        "knowledge:aclnn:quantization_intro": "conditional",
+        "knowledge:aclnn:nz_matmul": "conditional",
+        "knowledge:aclnn:backward_partial": "conditional",
+        "knowledge:aclnn:format_cast": "conditional",
+        "knowledge:aclnn:implicit_pos": "conditional",
+        "knowledge:aclnn:broadcast": "conditional",
+        "knowledge:aclnn:type_conversion": "conditional",
+        "knowledge:aclnn:quantization": "conditional",
+        "knowledge:aclnn:sparse_mode": "conditional",
+        "knowledge:aclnn:transpose_shape": "conditional",
+        "knowledge:aclnn:acl_format_enum": "conditional",
+        "knowledge:aclnn:source_analysis_grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:batch_matmul_weight_nz": "conditional",
+        "knowledge:aclnn:ffn_v3": "conditional",
+        "knowledge:aclnn:swin_transformer_ln_qkv_quant": "conditional",
+        "knowledge:aclnn:scatter_pa_kv_cache": "conditional",
+        "knowledge:torch_npu:documentation_conventions": "conditional",
+        "knowledge:torch_npu:collections_and_grouped_ops": "conditional",
+        "knowledge:torch_npu:matrix_product_family": "conditional",
+        "knowledge:torch_npu:distributed_collectives": "conditional",
+        "knowledge:torch_npu:indexed_access_and_update": "conditional",
+        "knowledge:torch_npu:normalization_family": "conditional",
+        "knowledge:torch_npu:selection_reduction_sampling": "conditional",
+        "knowledge:torch_npu:attention_family": "conditional",
+        "knowledge:torch_npu:quantization": "conditional",
+        "knowledge:torch_npu:inplace_and_stateful_ops": "conditional",
+        "knowledge:torch_npu:npu_fused_infer_attention_score": "conditional",
+        "knowledge:torch_npu:npu_kv_quant_sparse_flash_attention": "conditional",
+        "knowledge:torch_npu:npu_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_mla_prolog_v3": "conditional",
+        "knowledge:torch_npu:npu_quant_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_sparse_flash_attention": "conditional"
+      }
+    },
+    {
+      "name": "constraint-checker",
+      "role": "约束检查",
+      "color": "#17a2b8",
+      "description": "对照算子文档检查约束是否完整、准确，发现错误并给出修复建议。",
+      "when_to_use": "每个新约束版本完成后",
+      "outcome": "检查结论、问题清单与修复建议",
+      "availability": "ready",
+      "relations": {
+        "skill:check-constraints": "required",
+        "knowledge:aclnn:official_basics": "conditional",
+        "knowledge:aclnn:dimensions": "conditional",
+        "knowledge:aclnn:allowed_range": "conditional",
+        "knowledge:aclnn:implicit_parameters": "conditional",
+        "knowledge:aclnn:platform_dtype": "conditional",
+        "knowledge:aclnn:expression_language": "conditional",
+        "knowledge:aclnn:broadcast_relation": "conditional",
+        "knowledge:aclnn:sparse_mode_foundation": "conditional",
+        "knowledge:aclnn:type_derivation": "conditional",
+        "knowledge:aclnn:type_conversion_foundation": "conditional",
+        "knowledge:aclnn:quantization_intro": "conditional",
+        "knowledge:aclnn:nz_matmul": "conditional",
+        "knowledge:aclnn:backward_partial": "conditional",
+        "knowledge:aclnn:format_cast": "conditional",
+        "knowledge:aclnn:implicit_pos": "conditional",
+        "knowledge:aclnn:broadcast": "conditional",
+        "knowledge:aclnn:type_conversion": "conditional",
+        "knowledge:aclnn:quantization": "conditional",
+        "knowledge:aclnn:sparse_mode": "conditional",
+        "knowledge:aclnn:transpose_shape": "conditional",
+        "knowledge:aclnn:acl_format_enum": "conditional",
+        "knowledge:aclnn:source_analysis_grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:batch_matmul_weight_nz": "conditional",
+        "knowledge:aclnn:ffn_v3": "conditional",
+        "knowledge:aclnn:swin_transformer_ln_qkv_quant": "conditional",
+        "knowledge:aclnn:scatter_pa_kv_cache": "conditional",
+        "knowledge:torch_npu:documentation_conventions": "conditional",
+        "knowledge:torch_npu:collections_and_grouped_ops": "conditional",
+        "knowledge:torch_npu:matrix_product_family": "conditional",
+        "knowledge:torch_npu:distributed_collectives": "conditional",
+        "knowledge:torch_npu:indexed_access_and_update": "conditional",
+        "knowledge:torch_npu:normalization_family": "conditional",
+        "knowledge:torch_npu:selection_reduction_sampling": "conditional",
+        "knowledge:torch_npu:attention_family": "conditional",
+        "knowledge:torch_npu:quantization": "conditional",
+        "knowledge:torch_npu:inplace_and_stateful_ops": "conditional",
+        "knowledge:torch_npu:npu_fused_infer_attention_score": "conditional",
+        "knowledge:torch_npu:npu_kv_quant_sparse_flash_attention": "conditional",
+        "knowledge:torch_npu:npu_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_mla_prolog_v3": "conditional",
+        "knowledge:torch_npu:npu_quant_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_sparse_flash_attention": "conditional"
+      }
+    },
+    {
+      "name": "constraint-repairer",
+      "role": "约束修复",
+      "color": "#f1c40f",
+      "description": "针对检查发现的问题修复约束，并交由独立检查确认修复效果。",
+      "when_to_use": "约束检查发现问题时",
+      "outcome": "针对问题修复后的约束，等待独立复检",
+      "availability": "ready",
+      "relations": {
+        "skill:repair-constraints": "required",
+        "knowledge:aclnn:official_basics": "conditional",
+        "knowledge:aclnn:dimensions": "conditional",
+        "knowledge:aclnn:allowed_range": "conditional",
+        "knowledge:aclnn:implicit_parameters": "conditional",
+        "knowledge:aclnn:platform_dtype": "conditional",
+        "knowledge:aclnn:expression_language": "conditional",
+        "knowledge:aclnn:broadcast_relation": "conditional",
+        "knowledge:aclnn:sparse_mode_foundation": "conditional",
+        "knowledge:aclnn:type_derivation": "conditional",
+        "knowledge:aclnn:type_conversion_foundation": "conditional",
+        "knowledge:aclnn:quantization_intro": "conditional",
+        "knowledge:aclnn:nz_matmul": "conditional",
+        "knowledge:aclnn:backward_partial": "conditional",
+        "knowledge:aclnn:format_cast": "conditional",
+        "knowledge:aclnn:implicit_pos": "conditional",
+        "knowledge:aclnn:broadcast": "conditional",
+        "knowledge:aclnn:type_conversion": "conditional",
+        "knowledge:aclnn:quantization": "conditional",
+        "knowledge:aclnn:sparse_mode": "conditional",
+        "knowledge:aclnn:transpose_shape": "conditional",
+        "knowledge:aclnn:acl_format_enum": "conditional",
+        "knowledge:aclnn:source_analysis_grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:batch_matmul_weight_nz": "conditional",
+        "knowledge:aclnn:ffn_v3": "conditional",
+        "knowledge:aclnn:swin_transformer_ln_qkv_quant": "conditional",
+        "knowledge:aclnn:scatter_pa_kv_cache": "conditional",
+        "knowledge:torch_npu:documentation_conventions": "conditional",
+        "knowledge:torch_npu:collections_and_grouped_ops": "conditional",
+        "knowledge:torch_npu:matrix_product_family": "conditional",
+        "knowledge:torch_npu:distributed_collectives": "conditional",
+        "knowledge:torch_npu:indexed_access_and_update": "conditional",
+        "knowledge:torch_npu:normalization_family": "conditional",
+        "knowledge:torch_npu:selection_reduction_sampling": "conditional",
+        "knowledge:torch_npu:attention_family": "conditional",
+        "knowledge:torch_npu:quantization": "conditional",
+        "knowledge:torch_npu:inplace_and_stateful_ops": "conditional",
+        "knowledge:torch_npu:npu_fused_infer_attention_score": "conditional",
+        "knowledge:torch_npu:npu_kv_quant_sparse_flash_attention": "conditional",
+        "knowledge:torch_npu:npu_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_mla_prolog_v3": "conditional",
+        "knowledge:torch_npu:npu_quant_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_sparse_flash_attention": "conditional"
+      }
+    },
+    {
+      "name": "case-generator",
+      "role": "用例生成",
+      "color": "#67c23a",
+      "description": "根据已校验的约束生成测试用例，覆盖不同参数和设备组合。",
+      "when_to_use": "约束通过检查后",
+      "outcome": "覆盖参数组合的测试用例",
+      "availability": "ready",
+      "relations": {
+        "skill:generate-cases": "required"
+      }
+    },
+    {
+      "name": "case-executor",
+      "role": "用例执行",
+      "color": "#e6a23c",
+      "description": "执行已生成的测试用例，收集通过、失败及执行环境异常信息。",
+      "when_to_use": "测试用例准备完成后",
+      "outcome": "测试结果及失败日志",
+      "availability": "ready",
+      "relations": {
+        "skill:execute-cases": "required"
+      }
+    },
+    {
+      "name": "quality-reviewer",
+      "role": "质量门禁",
+      "color": "#17a2b8",
+      "description": "检查本轮结果是否完整、可信，判断流程可以继续还是需要处理问题。",
+      "when_to_use": "评审本轮测试结果时",
+      "outcome": "是否可以继续的判断与待处理问题",
+      "availability": "ready",
+      "relations": {
+        "skill:validate-run": "required"
+      }
+    },
+    {
+      "name": "failure-analyst",
+      "role": "失败诊断",
+      "color": "#9b59b6",
+      "description": "结合文档、测试用例和执行日志，区分约束、用例生成及执行环节的问题。",
+      "when_to_use": "测试发生失败、需要定位原因时",
+      "outcome": "失败原因分类与后续处理建议",
+      "availability": "ready",
+      "relations": {
+        "skill:diagnose-failure": "required",
+        "knowledge:aclnn:official_basics": "conditional",
+        "knowledge:aclnn:dimensions": "conditional",
+        "knowledge:aclnn:allowed_range": "conditional",
+        "knowledge:aclnn:implicit_parameters": "conditional",
+        "knowledge:aclnn:platform_dtype": "conditional",
+        "knowledge:aclnn:expression_language": "conditional",
+        "knowledge:aclnn:broadcast_relation": "conditional",
+        "knowledge:aclnn:sparse_mode_foundation": "conditional",
+        "knowledge:aclnn:type_derivation": "conditional",
+        "knowledge:aclnn:type_conversion_foundation": "conditional",
+        "knowledge:aclnn:quantization_intro": "conditional",
+        "knowledge:aclnn:nz_matmul": "conditional",
+        "knowledge:aclnn:backward_partial": "conditional",
+        "knowledge:aclnn:format_cast": "conditional",
+        "knowledge:aclnn:implicit_pos": "conditional",
+        "knowledge:aclnn:broadcast": "conditional",
+        "knowledge:aclnn:type_conversion": "conditional",
+        "knowledge:aclnn:quantization": "conditional",
+        "knowledge:aclnn:sparse_mode": "conditional",
+        "knowledge:aclnn:transpose_shape": "conditional",
+        "knowledge:aclnn:acl_format_enum": "conditional",
+        "knowledge:aclnn:source_analysis_grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:batch_matmul_weight_nz": "conditional",
+        "knowledge:aclnn:ffn_v3": "conditional",
+        "knowledge:aclnn:swin_transformer_ln_qkv_quant": "conditional",
+        "knowledge:aclnn:scatter_pa_kv_cache": "conditional",
+        "knowledge:torch_npu:documentation_conventions": "conditional",
+        "knowledge:torch_npu:collections_and_grouped_ops": "conditional",
+        "knowledge:torch_npu:matrix_product_family": "conditional",
+        "knowledge:torch_npu:distributed_collectives": "conditional",
+        "knowledge:torch_npu:indexed_access_and_update": "conditional",
+        "knowledge:torch_npu:normalization_family": "conditional",
+        "knowledge:torch_npu:selection_reduction_sampling": "conditional",
+        "knowledge:torch_npu:attention_family": "conditional",
+        "knowledge:torch_npu:quantization": "conditional",
+        "knowledge:torch_npu:inplace_and_stateful_ops": "conditional",
+        "knowledge:torch_npu:npu_fused_infer_attention_score": "conditional",
+        "knowledge:torch_npu:npu_kv_quant_sparse_flash_attention": "conditional",
+        "knowledge:torch_npu:npu_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_mla_prolog_v3": "conditional",
+        "knowledge:torch_npu:npu_quant_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_sparse_flash_attention": "conditional"
+      }
+    },
+    {
+      "name": "constraint-updater",
+      "role": "约束更新",
+      "color": "#e6a23c",
+      "description": "根据失败诊断对现有约束作针对性修改，为下一轮验证准备条件。",
+      "when_to_use": "失败诊断确认需要修改约束时",
+      "outcome": "供下一轮验证的更新约束",
+      "availability": "ready",
+      "relations": {
+        "skill:update-constraints": "required",
+        "knowledge:aclnn:official_basics": "conditional",
+        "knowledge:aclnn:dimensions": "conditional",
+        "knowledge:aclnn:allowed_range": "conditional",
+        "knowledge:aclnn:implicit_parameters": "conditional",
+        "knowledge:aclnn:platform_dtype": "conditional",
+        "knowledge:aclnn:expression_language": "conditional",
+        "knowledge:aclnn:broadcast_relation": "conditional",
+        "knowledge:aclnn:sparse_mode_foundation": "conditional",
+        "knowledge:aclnn:type_derivation": "conditional",
+        "knowledge:aclnn:type_conversion_foundation": "conditional",
+        "knowledge:aclnn:quantization_intro": "conditional",
+        "knowledge:aclnn:nz_matmul": "conditional",
+        "knowledge:aclnn:backward_partial": "conditional",
+        "knowledge:aclnn:format_cast": "conditional",
+        "knowledge:aclnn:implicit_pos": "conditional",
+        "knowledge:aclnn:broadcast": "conditional",
+        "knowledge:aclnn:type_conversion": "conditional",
+        "knowledge:aclnn:quantization": "conditional",
+        "knowledge:aclnn:sparse_mode": "conditional",
+        "knowledge:aclnn:transpose_shape": "conditional",
+        "knowledge:aclnn:acl_format_enum": "conditional",
+        "knowledge:aclnn:source_analysis_grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:grouped_matmul_v5": "conditional",
+        "knowledge:aclnn:batch_matmul_weight_nz": "conditional",
+        "knowledge:aclnn:ffn_v3": "conditional",
+        "knowledge:aclnn:swin_transformer_ln_qkv_quant": "conditional",
+        "knowledge:aclnn:scatter_pa_kv_cache": "conditional",
+        "knowledge:torch_npu:documentation_conventions": "conditional",
+        "knowledge:torch_npu:collections_and_grouped_ops": "conditional",
+        "knowledge:torch_npu:matrix_product_family": "conditional",
+        "knowledge:torch_npu:distributed_collectives": "conditional",
+        "knowledge:torch_npu:indexed_access_and_update": "conditional",
+        "knowledge:torch_npu:normalization_family": "conditional",
+        "knowledge:torch_npu:selection_reduction_sampling": "conditional",
+        "knowledge:torch_npu:attention_family": "conditional",
+        "knowledge:torch_npu:quantization": "conditional",
+        "knowledge:torch_npu:inplace_and_stateful_ops": "conditional",
+        "knowledge:torch_npu:npu_fused_infer_attention_score": "conditional",
+        "knowledge:torch_npu:npu_kv_quant_sparse_flash_attention": "conditional",
+        "knowledge:torch_npu:npu_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_mla_prolog_v3": "conditional",
+        "knowledge:torch_npu:npu_quant_lightning_indexer": "conditional",
+        "knowledge:torch_npu:npu_sparse_flash_attention": "conditional"
+      }
+    },
+    {
+      "name": "prompt-optimizer",
+      "role": "提示词优化",
+      "color": "#e84393",
+      "description": "将反复出现的约束提取问题整理为规则改进建议，经确认后再应用。",
+      "when_to_use": "需要沉淀约束提取经验时",
+      "outcome": "有证据支持的规则改进提案",
+      "availability": "ready",
+      "relations": {
+        "skill:optimize-prompt": "required",
+        "knowledge:aclnn:official_basics": "reference",
+        "knowledge:aclnn:dimensions": "reference",
+        "knowledge:aclnn:allowed_range": "reference",
+        "knowledge:aclnn:implicit_parameters": "reference",
+        "knowledge:aclnn:platform_dtype": "reference",
+        "knowledge:aclnn:expression_language": "reference",
+        "knowledge:aclnn:broadcast_relation": "reference",
+        "knowledge:aclnn:sparse_mode_foundation": "reference",
+        "knowledge:aclnn:type_derivation": "reference",
+        "knowledge:aclnn:type_conversion_foundation": "reference",
+        "knowledge:aclnn:quantization_intro": "reference",
+        "knowledge:aclnn:nz_matmul": "reference",
+        "knowledge:aclnn:backward_partial": "reference",
+        "knowledge:aclnn:format_cast": "reference",
+        "knowledge:aclnn:implicit_pos": "reference",
+        "knowledge:aclnn:broadcast": "reference",
+        "knowledge:aclnn:type_conversion": "reference",
+        "knowledge:aclnn:quantization": "reference",
+        "knowledge:aclnn:sparse_mode": "reference",
+        "knowledge:aclnn:transpose_shape": "reference",
+        "knowledge:aclnn:acl_format_enum": "reference",
+        "knowledge:aclnn:source_analysis_grouped_matmul_v5": "reference",
+        "knowledge:aclnn:grouped_matmul_v5": "reference",
+        "knowledge:aclnn:batch_matmul_weight_nz": "reference",
+        "knowledge:aclnn:ffn_v3": "reference",
+        "knowledge:aclnn:swin_transformer_ln_qkv_quant": "reference",
+        "knowledge:aclnn:scatter_pa_kv_cache": "reference",
+        "knowledge:torch_npu:documentation_conventions": "reference",
+        "knowledge:torch_npu:collections_and_grouped_ops": "reference",
+        "knowledge:torch_npu:matrix_product_family": "reference",
+        "knowledge:torch_npu:distributed_collectives": "reference",
+        "knowledge:torch_npu:indexed_access_and_update": "reference",
+        "knowledge:torch_npu:normalization_family": "reference",
+        "knowledge:torch_npu:selection_reduction_sampling": "reference",
+        "knowledge:torch_npu:attention_family": "reference",
+        "knowledge:torch_npu:quantization": "reference",
+        "knowledge:torch_npu:inplace_and_stateful_ops": "reference",
+        "knowledge:torch_npu:npu_fused_infer_attention_score": "reference",
+        "knowledge:torch_npu:npu_kv_quant_sparse_flash_attention": "reference",
+        "knowledge:torch_npu:npu_lightning_indexer": "reference",
+        "knowledge:torch_npu:npu_mla_prolog_v3": "reference",
+        "knowledge:torch_npu:npu_quant_lightning_indexer": "reference",
+        "knowledge:torch_npu:npu_sparse_flash_attention": "reference"
+      }
+    }
+  ],
+  "skills": [
+    {
+      "id": "skill:analyze-source",
+      "name": "analyze-source",
+      "title": "分析源码规则",
+      "description": "从算子源码中整理约束事实，区分已确认信息、待确认信息和与文档冲突的信息。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:atc-cpu-golden-derivation",
+      "name": "atc-cpu-golden-derivation",
+      "title": "推导 CPU 参考结果",
+      "description": "依据算子定义推导 CPU 参考实现，用于比较算子的计算结果。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:check-constraints",
+      "name": "check-constraints",
+      "title": "检查约束",
+      "description": "对照算子文档检查约束是否完整、准确，发现错误并给出修复建议。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:collect-operator-source",
+      "name": "collect-operator-source",
+      "title": "收集算子源码",
+      "description": "收集分析一个算子所需的源码及相关依赖，为源码分析准备材料。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:derive-ttk-golden",
+      "name": "derive-ttk-golden",
+      "title": "推导 TTK 参考结果",
+      "description": "为 torch_npu 算子的 TTK 测试推导并验证 CPU 参考结果，辅助精度比较。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:diagnose-failure",
+      "name": "diagnose-failure",
+      "title": "诊断失败原因",
+      "description": "结合文档、测试用例和执行日志，区分约束、用例生成及执行环节的问题。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:execute-cases",
+      "name": "execute-cases",
+      "title": "执行测试用例",
+      "description": "执行已生成的测试用例，收集通过、失败及执行环境异常信息。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:extract-constraints",
+      "name": "extract-constraints",
+      "title": "提取算子约束",
+      "description": "从算子文档中整理输入输出、取值范围及参数之间的限制，为生成测试用例提供依据。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:generate-cases",
+      "name": "generate-cases",
+      "title": "生成测试用例",
+      "description": "根据已校验的约束生成测试用例，覆盖不同参数和设备组合。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:iterate-directory",
+      "name": "iterate-directory",
+      "title": "批量测试算子",
+      "description": "依次测试目录中的多个算子，并支持继续未完成的批次。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:iterate-operator",
+      "name": "iterate-operator",
+      "title": "运行单算子测试",
+      "description": "组织一个算子的完整测试过程，包括约束提取、生成、执行、检查和失败后的迭代。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:optimize-prompt",
+      "name": "optimize-prompt",
+      "title": "改进提取规则",
+      "description": "将反复出现的约束提取问题整理为规则改进建议，经确认后再应用。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:repair-constraints",
+      "name": "repair-constraints",
+      "title": "修复约束",
+      "description": "针对检查发现的问题修复约束，并交由独立检查确认修复效果。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:scan-scenes",
+      "name": "scan-scenes",
+      "title": "识别测试场景",
+      "description": "识别设备、量化方案和可选参数，帮助你确定本次测试范围。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:supplement-constraints",
+      "name": "supplement-constraints",
+      "title": "补充约束",
+      "description": "将已确认的补充说明纳入现有约束，补足遗漏的测试条件。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:update-constraints",
+      "name": "update-constraints",
+      "title": "更新约束",
+      "description": "根据失败诊断对现有约束作针对性修改，为下一轮验证准备条件。",
+      "kind": "skill",
+      "availability": "ready"
+    },
+    {
+      "id": "skill:validate-run",
+      "name": "validate-run",
+      "title": "评审测试结果",
+      "description": "检查本轮结果是否完整、可信，判断流程可以继续还是需要处理问题。",
+      "kind": "skill",
+      "availability": "ready"
+    }
+  ],
+  "knowledge": [
+    {
+      "id": "knowledge:aclnn:official_basics",
+      "name": "aclnn-official-basics",
+      "title": "基础约定",
+      "description": "解释 ACLNN 的数据结构、数据类型、数据格式及非连续张量等基础概念。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "foundation"
+    },
+    {
+      "id": "knowledge:aclnn:dimensions",
+      "name": "aclnn-dimensions",
+      "title": "维度与形状",
+      "description": "区分张量的维数、各维长度和列表长度，帮助理解文档中的形状限制。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "common"
+    },
+    {
+      "id": "knowledge:aclnn:allowed_range",
+      "name": "aclnn-allowed-range",
+      "title": "参数取值范围",
+      "description": "将文档描述的可选值和数值区间整理为明确的参数取值范围。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "common"
+    },
+    {
+      "id": "knowledge:aclnn:implicit_parameters",
+      "name": "aclnn-implicit-parameters",
+      "title": "隐式参数",
+      "description": "识别文档中隐含的维度变量和常量，补全理解参数关系所需的信息。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "common"
+    },
+    {
+      "id": "knowledge:aclnn:platform_dtype",
+      "name": "aclnn-platform-dtype",
+      "title": "设备与数据类型",
+      "description": "统一设备、数据类型和数据格式的名称，避免同一含义被误认为不同条件。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "common"
+    },
+    {
+      "id": "knowledge:aclnn:expression_language",
+      "name": "aclnn-expression-language",
+      "title": "约束表达规则",
+      "description": "将参数之间的关系写成可检查的约束，减少规则表达歧义。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "common"
+    },
+    {
+      "id": "knowledge:aclnn:broadcast_relation",
+      "name": "aclnn-broadcast-relation",
+      "title": "广播基础",
+      "description": "解释张量广播的基础规则，帮助判断不同形状是否能够参与同一运算。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "foundation"
+    },
+    {
+      "id": "knowledge:aclnn:sparse_mode_foundation",
+      "name": "aclnn-sparse-mode-foundation",
+      "title": "稀疏模式基础",
+      "description": "解释注意力计算中的稀疏模式及其参数含义。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "foundation"
+    },
+    {
+      "id": "knowledge:aclnn:type_derivation",
+      "name": "aclnn-type-derivation",
+      "title": "类型推导",
+      "description": "解释多个输入的数据类型如何共同决定计算所用的数据类型。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "foundation"
+    },
+    {
+      "id": "knowledge:aclnn:type_conversion_foundation",
+      "name": "aclnn-type-conversion-foundation",
+      "title": "类型转换基础",
+      "description": "解释张量数据类型之间可以进行哪些转换。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "foundation"
+    },
+    {
+      "id": "knowledge:aclnn:quantization_intro",
+      "name": "aclnn-quantization-intro",
+      "title": "量化基础",
+      "description": "解释量化的基本概念和粒度，帮助理解量化参数的作用。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "foundation"
+    },
+    {
+      "id": "knowledge:aclnn:nz_matmul",
+      "name": "aclnn-nz-matmul",
+      "title": "NZ 格式矩阵乘",
+      "description": "检查 NZ 格式的张量布局与分块尺寸要求。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:backward_partial",
+      "name": "aclnn-backward-partial",
+      "title": "反向计算约束",
+      "description": "检查反向计算中的形状如何跟随前向计算结果。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:format_cast",
+      "name": "aclnn-format-cast",
+      "title": "格式转换",
+      "description": "检查格式转换对维数、输出形状、数据类型和设备支持的要求。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:implicit_pos",
+      "name": "aclnn-implicit-pos",
+      "title": "隐式位置约束",
+      "description": "识别表示大小、数量等参数时隐含的正数限制。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:broadcast",
+      "name": "aclnn-broadcast",
+      "title": "广播与类型互推导",
+      "description": "将广播规则和输入类型之间的关系展开为明确的约束。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:type_conversion",
+      "name": "aclnn-type-conversion",
+      "title": "类型转换",
+      "description": "检查输入之间的类型推导，以及输出类型转换的规则。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:quantization",
+      "name": "aclnn-quantization",
+      "title": "量化",
+      "description": "检查量化方式、量化参数形状及相关参数之间的组合限制。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:sparse_mode",
+      "name": "aclnn-sparse-mode",
+      "title": "稀疏模式",
+      "description": "区分注意力计算的不同稀疏场景，避免把某一模式的限制应用到所有模式。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:transpose_shape",
+      "name": "aclnn-transpose-shape",
+      "title": "转置与形状",
+      "description": "区分转置前后的形状，检查参数所描述的逻辑维度是否一致。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:aclnn:acl_format_enum",
+      "name": "aclnn-acl-format-enum",
+      "title": "数据格式枚举",
+      "description": "对应数据格式的名称与编号，帮助正确理解格式转换参数。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "reference"
+    },
+    {
+      "id": "knowledge:aclnn:source_analysis_grouped_matmul_v5",
+      "name": "aclnn-source-analysis-grouped-matmul-v5",
+      "title": "分组矩阵乘源码知识",
+      "description": "根据已锁定版本的源码，补充分组矩阵乘的有效输入条件及需避免的组合。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "source_analysis"
+    },
+    {
+      "id": "knowledge:aclnn:grouped_matmul_v5",
+      "name": "aclnn-grouped-matmul-v5",
+      "title": "分组矩阵乘 V5",
+      "description": "检查分组矩阵乘 V5 支持的场景及其维数限制。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:aclnn:batch_matmul_weight_nz",
+      "name": "aclnn-batch-matmul-weight-nz",
+      "title": "NZ 权重批量矩阵乘",
+      "description": "检查 NZ 权重批量矩阵乘在不同转置场景下的形状关系。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:aclnn:ffn_v3",
+      "name": "aclnn-ffn-v3",
+      "title": "前馈网络 V3",
+      "description": "检查前馈网络 V3 的专家模式、量化方式及偏置等参数的形状组合。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:aclnn:swin_transformer_ln_qkv_quant",
+      "name": "aclnn-swin-transformer-ln-qkv-quant",
+      "title": "Swin 归一化与 QKV 量化",
+      "description": "检查 Swin 归一化与 QKV 量化的输入尺寸及输出形状关系。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:aclnn:scatter_pa_kv_cache",
+      "name": "aclnn-scatter-pa-kv-cache",
+      "title": "分页注意力缓存写入",
+      "description": "检查分页注意力缓存写入的数据类型、布局与形状组合。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "aclnn",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:torch_npu:documentation_conventions",
+      "name": "torch-npu-documentation-conventions",
+      "title": "文档约定",
+      "description": "统一理解 torch_npu 文档中的参数约定和常见限制。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "foundation"
+    },
+    {
+      "id": "knowledge:torch_npu:collections_and_grouped_ops",
+      "name": "torch-npu-collections-and-grouped-ops",
+      "title": "集合与分组运算",
+      "description": "检查张量列表、整数序列以及分组运算的参数关系。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:matrix_product_family",
+      "name": "torch-npu-matrix-product-family",
+      "title": "矩阵乘法",
+      "description": "检查矩阵乘、线性层和分组矩阵乘中的维度含义与量化限制。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:distributed_collectives",
+      "name": "torch-npu-distributed-collectives",
+      "title": "分布式通信",
+      "description": "检查分布式通信中的进程、通信组和元素数量要求。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:indexed_access_and_update",
+      "name": "torch-npu-indexed-access-and-update",
+      "title": "索引访问与更新",
+      "description": "检查索引、切片、收集和写入操作中的轴与更新规则。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:normalization_family",
+      "name": "torch-npu-normalization-family",
+      "title": "归一化",
+      "description": "检查归一化计算的轴、参数形状及输出要求。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:selection_reduction_sampling",
+      "name": "torch-npu-selection-reduction-sampling",
+      "title": "选择、归约与采样",
+      "description": "检查排序、采样、归约等运算中的轴、状态和条件输出。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:attention_family",
+      "name": "torch-npu-attention-family",
+      "title": "注意力",
+      "description": "按不同注意力场景检查布局、稀疏模式及相关参数组合。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:quantization",
+      "name": "torch-npu-quantization",
+      "title": "量化",
+      "description": "检查量化方式、量化参数形状及相关参数之间的组合限制。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:inplace_and_stateful_ops",
+      "name": "torch-npu-inplace-and-stateful-ops",
+      "title": "原位与有状态运算",
+      "description": "检查原位更新和缓存写入等会改变已有数据的操作。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "feature"
+    },
+    {
+      "id": "knowledge:torch_npu:npu_fused_infer_attention_score",
+      "name": "torch-npu-npu-fused-infer-attention-score",
+      "title": "融合推理注意力",
+      "description": "检查融合推理注意力的多种场景组合与输出要求。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:torch_npu:npu_kv_quant_sparse_flash_attention",
+      "name": "torch-npu-npu-kv-quant-sparse-flash-attention",
+      "title": "量化稀疏注意力",
+      "description": "检查量化稀疏注意力的场景完整性和参数冲突。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:torch_npu:npu_lightning_indexer",
+      "name": "torch-npu-npu-lightning-indexer",
+      "title": "闪电索引",
+      "description": "检查闪电索引的布局、稀疏数量与返回值要求。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:torch_npu:npu_mla_prolog_v3",
+      "name": "torch-npu-npu-mla-prolog-v3",
+      "title": "MLA 前处理 V3",
+      "description": "检查 MLA 前处理 V3 的场景、缓存要求及文档中的冲突。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:torch_npu:npu_quant_lightning_indexer",
+      "name": "torch-npu-npu-quant-lightning-indexer",
+      "title": "量化闪电索引",
+      "description": "检查量化闪电索引的量化场景与接口描述冲突。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "operator"
+    },
+    {
+      "id": "knowledge:torch_npu:npu_sparse_flash_attention",
+      "name": "torch-npu-npu-sparse-flash-attention",
+      "title": "稀疏注意力",
+      "description": "检查稀疏注意力的场景组合及返回值要求。",
+      "kind": "knowledge",
+      "availability": "ready",
+      "family": "torch_npu",
+      "scope": "operator"
+    }
+  ]
+}

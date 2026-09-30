@@ -83,12 +83,17 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -v
 | `/api/agents` | 12 agent 定义（opencode 优先 / Claude 兜底 + definition_found/load_error/permission） |
 | `/api/assets` | 资产目录：手写/知识技能、agent 能力、知识库 manifest、扩展与用户技能组（资产页消费） |
 
+## 页面地址与任务选择
+
+- 页面地址按视图固定：`/run`（运行时）、`/constraints`（约束审核）、`/coverage`（覆盖率）、`/assets`（资产）。任务身份（runs/ 目录 = 算子名 + 测试运行时间）**不进 URL**，由页面内全站统一的任务选择器切换：按算子名分组、组内按运行创建时间列出每次测试，跨页与刷新经 localStorage 保持。
+- 兼容入口：`?run=<任务目录名>`（约束页可加 `&iter=iter_002`）为**一次性引导参数**，种入共享选择后即失效（raise_dashboard.py 拉起的 `/?run=&iter=` 深链同样有效）；旧地址 `/run/<任务目录名>` 经 redirect 跳到 `/run` 并自动选中该任务。
+
 ## 约束审核与覆盖率
 
-- 工作台顶部及节点详情提供入口；约束页面地址为 `/constraints?run=<任务目录名>&iter=iter_002`。
+- 工作台顶部及节点详情提供入口；约束页固定地址 `/constraints`（任务经页面选择器或 `?run=&iter=` 引导）。
 - 支持产品分组、输入输出参数、原文行定位、相邻轮次参数间约束差异、修改/新增/删除参数间约束。输入输出参数卡保持只读。
 - `/coverage` 覆盖率报告按任务内嵌存放：`runs/<run-id>/ops_cov_report/<报告目录>/`（含 `*_coverage.json` 与可选 `analysis.md`）。
-  带 `?run=<任务目录名>` 进入时只列该任务内嵌报告，**按路径关联、不做名称匹配**；无任务上下文时浏览项目根 `ops_cov_report/`（兼容旧数据）。
+  选中任务时只列该任务内嵌报告，**按路径关联、不做名称匹配**；未选任务时浏览项目根 `ops_cov_report/`（兼容旧数据）。
   保留文件/函数粒度、未覆盖函数原因及已覆盖函数的行详情。报告不自动绑定任务轮次，函数/行/分支指标分别展示。
 - 数据接口位于 `/api/review/`，兼容旧页面的原始响应结构。旧 `static/` 文件不变；迁入页面通过本地前端构建加载依赖，无外部 CDN。
 - 唯一写入接口：`POST /api/review/runs/<id>/iter_<n>/constraints_update`。必须带同源页面读取的 `X-Review-Token`，以及原约束和现有副本的内容哈希。版本变化返回 409，避免覆盖其他编辑。请求体上限 8 MB。
@@ -97,3 +102,28 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -v
 - 本地使用建议绑定回环地址；不要把无登录控制的审核服务作为共享服务暴露。
 
 测试：`PYTHONPATH=src <虚拟环境解释器> -m unittest discover -s src/tests -v`。浏览器写入验证必须使用运行目录的临时副本。
+
+## 资产页面内容维护
+
+`/api/assets` 与 `/assets` 的唯一内容源为 `src/contents.jsonc`。文件支持行注释和块注释，
+不支持尾随逗号、重复键。所有角色、标题、用途、使用时机、产出、技能、知识、扩展能力、
+分类、页面用语以及明确关联都在此维护；代码只负责校验和展示，不扫描项目或用户技能目录，
+也不调用模型、不用正则或关键词理解首载关系。运行时页面的 `/api/agents` 不受此改动影响。
+
+发版时，将文件顶部的更新提示词与本文件交给模型，核对源资产后更新。关联必须逐条明确
+填写，未确认则省略或写 `unmentioned`；不存在的资产引用、重复编号和非法状态会被拒绝。
+扩展列表是随版本维护的内容，不表示当前机器已经安装或连接了这些服务。
+
+修改内容后点击页面“刷新内容”或刷新浏览器即可，无需重新构建前端或重启服务。
+首次部署这次后端代码改动时需重启服务。内容读取或校验失败时不回退扫描；页面刷新失败
+会明确提示并保留上一次有效内容。首次加载失败则显示错误与重试入口。
+
+校验内容与页面：
+
+```sh
+.venv/bin/python -m unittest discover -s src/tests -p test_assets.py
+cd src/web
+npm test
+npm exec -- tsc --noEmit
+npm run build
+```

@@ -2,6 +2,8 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { marked } from 'marked';
+import { useTask } from '../composables/useTask';
+import TaskPicker from '../components/task/TaskPicker.vue';
 
 
 // 状态机 → 中文标签（与 run_state.py 的 ALLOWED_STATES 对齐，无幽灵态）
@@ -37,11 +39,25 @@ function relStatusLabel(st) {
 }
 
 export default {
+    components: { TaskPicker },
     setup() {
         const DATA = ref({});
         const currentProduct = ref('');
-        const runTasks = ref([]);
-        const currentTaskDir = ref('');
+        // 任务身份来自全站共享选择（算子名 × 测试运行），不再本页拉任务列表
+        const { runs, selectedRunId, selectedRun, waitForReady } = useTask();
+        // 当前任务执行进度：本页 5s 轮询只取当前任务（原实现扇出全部任务，但 UI 仅展示当前任务数字）
+        const progressExtra = ref(null);
+        const currentTask = computed(() => {
+            if (!selectedRunId.value) return null;
+            const r = selectedRun.value;
+            const p = progressExtra.value || {};
+            return {
+                dir_name: selectedRunId.value,
+                state: r ? (r.state ?? null) : null,
+                current_iteration: r ? r.current_iteration : undefined,
+                passed: p.passed || 0, failed: p.failed || 0, total: p.total || 0, detail: p.detail || ''
+            };
+        });
         const currentIter = ref('');
         const iterList = ref([]);
         const taskLoading = ref(false);
@@ -243,8 +259,8 @@ export default {
         }
 
         function goCover() {
-            // 携带任务上下文：覆盖率页直达该任务内嵌的 runs/<run>/ops_cov_report/
-            window.location.href = '/coverage?run=' + encodeURIComponent(currentTaskDir.value || '');
+            // 任务上下文由全站共享选择携带，覆盖率页直达该任务内嵌的 runs/<run>/ops_cov_report/
+            window.location.href = '/coverage';
         }
 
         function addConstraint() {
@@ -311,7 +327,7 @@ export default {
         });
 
         async function showSrcInDoc(row) {
-            const task = runTasks.value.find(t => t.dir_name === currentTaskDir.value);
+            const task = currentTask.value;
             if (!task) {
                 ElMessage.warning('请先选择任务');
                 return;
@@ -366,7 +382,7 @@ export default {
         }
 
         async function submitConstraints() {
-            const task = runTasks.value.find(t => t.dir_name === currentTaskDir.value);
+            const task = currentTask.value;
             if (!task) {
                 ElMessage.warning('请先选择任务');
                 return;
@@ -391,7 +407,7 @@ export default {
                 const payload = {constraints: {constraints_in_parameters: Array.isArray(original) ? newCnp[currentProduct.value || '未分组'] : newCnp}, base_sha256: DATA.value._review?.base_sha256, copy_sha256: DATA.value._review?.copy_sha256};
                 const iterDir = iterDirOf(currentIter.value);
                 const resp = await fetch(
-                    '/api/review/runs/' + encodeURIComponent(currentTaskDir.value) + '/' + iterDir + '/constraints_update',
+                    '/api/review/runs/' + encodeURIComponent(task.dir_name) + '/' + iterDir + '/constraints_update',
                     {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Review-Token': DATA.value._review?.token || ''}, body: JSON.stringify(payload)}
                 );
                 const result = await resp.json();
@@ -416,21 +432,19 @@ export default {
         const statFail = computed(() => relRowsAll.value.filter(r => r._pflErrors.length).length);
         const statWarn = computed(() => 0);
 
-        // ---- 任务情况统计 (跨所有 runs) ----
+        // ---- 任务情况统计 (跨所有 runs, 共享任务列表) ----
         const taskStats = computed(() => {
-            const tasks = runTasks.value;
+            const tasks = runs.value.filter(r => !r.parse_error);
             const total = tasks.length;
-            let succ = 0, failed = 0, running = 0, passed = 0, failedCase = 0;
+            let succ = 0, failed = 0, running = 0;
             tasks.forEach(t => {
                 const s = t.state;
                 if (s === 'SUCCESS') succ++;
                 else if (s == null) { /* 未查询, 不计 */
                 } else if (TERMINAL_STATES.has(s)) failed++;
                 else running++;
-                passed += (t.passed || 0);
-                failedCase += (t.failed || 0);
             });
-            return {total, succ, failed, running, passed, failedCase};
+            return {total, succ, failed, running};
         });
 
         // ---- 执行历史 ----
@@ -484,10 +498,7 @@ export default {
         });
 
         // ---- 当前任务状态 (run_state.json 的 state 字段) ----
-        const currentTaskState = computed(() => {
-            const task = runTasks.value.find(t => t.dir_name === currentTaskDir.value);
-            return task ? task.state : null;
-        });
+        const currentTaskState = computed(() => currentTask.value ? currentTask.value.state : null);
         const currentTaskStateType = computed(() => {
             const s = currentTaskState.value;
             if (s == null) return 'info';
@@ -498,7 +509,7 @@ export default {
 
         // ---- 状态标签 ----
         const stateTag = computed(() => {
-            const task = runTasks.value.find(t => t.dir_name === currentTaskDir.value);
+            const task = currentTask.value;
             if (!task) return null;
             const state = task.state;
             if (state == null) return {text: '未查询', type: 'info', spinner: false, title: '点击按钮查询任务状态'};
@@ -522,15 +533,6 @@ export default {
         });
 
         // ---- 任务 / 迭代加载 ----
-        async function loadRunTasks() {
-            try {
-                const list = await (await fetch('/api/review/runs')).json();
-                return Array.isArray(list) ? list : [];
-            } catch (e) {
-                return [];
-            }
-        }
-
         function iterDirOf(iter) {
             return /^iter_\d+$/.test(iter) ? iter : 'iter_' + String(iter).padStart(3, '0');
         }
@@ -594,16 +596,17 @@ export default {
             }
         }
 
-        async function onTaskChange(dir) {
-            const task = runTasks.value.find(t => t.dir_name === dir);
+        // 任务切换/装载：iters → 默认最新轮（可被 iterHint 覆盖）→ 约束/分析/对比 → 历史 → 按状态轮询
+        async function loadTask(iterHint) {
+            const task = currentTask.value;
             if (!task) return;
-            currentTaskDir.value = dir;
             taskLoading.value = true;
             try {
                 DATA.value = {}; pflMap.value = {}; diffResult.value = null;
                 const iters = await loadIterList(task);
                 iterList.value = iters;
-                const defaultIter = iters.length ? iters[iters.length - 1] : String(task.current_iteration || 1);
+                let defaultIter = iters.length ? iters[iters.length - 1] : String(task.current_iteration || 1);
+                if (iterHint && iters.includes(iterHint)) defaultIter = iterHint;
                 await applyTaskData(task, defaultIter);
                 await loadHistory(task);
                 syncPollingByCurrentState();
@@ -612,13 +615,28 @@ export default {
             }
         }
 
+        // 共享选择变化 → 装载新任务。immediate 让首次装载也走同一条路
+        // （持久化选择立即装载；列表就绪后校验性自动选择同样触发），
+        // 编辑态选择器已禁用，防御外部种子；深链 ?iter= 仅首轮生效。
+        const qIterDeepLink = new URLSearchParams(window.location.search).get('iter');
+        let firstTaskLoad = true;
+        watch(selectedRunId, async (dir, prev) => {
+            if (!dir) return;
+            if (prev && editMode.value) return;
+            const hint = firstTaskLoad ? (qIterDeepLink || undefined) : undefined;
+            firstTaskLoad = false;
+            await loadTask(hint);
+        }, { immediate: true });
+        // 共享列表刷新后任务状态变化（如外部续跑）→ 同步轮询启停
+        watch(() => selectedRun.value?.state, () => syncPollingByCurrentState());
+
         async function onIterChange(iter) {
-            const task = runTasks.value.find(t => t.dir_name === currentTaskDir.value);
+            const task = currentTask.value;
             if (!task) return;
             await applyTaskData(task, iter);
         }
 
-        watch(currentProduct, () => { const task = runTasks.value.find(t => t.dir_name === currentTaskDir.value); if (task) loadDiff(task); });
+        watch(currentProduct, () => { const task = currentTask.value; if (task) loadDiff(task); });
         // ---- 轮次对比: 当前轮 vs 上一轮 ----
         function flattenCnp(cnp) {
             // 把 constraints_in_parameters (dict-by-product 或 array) 拍平为条目数组
@@ -758,46 +776,38 @@ export default {
             progressPolling.value = false;
         }
 
-        // 慢速兜底刷新：全部任务终态、5s 轮询停止后，每 30s 仍刷新任务列表，
-        // 让 runs/ 新出现的任务自动进入下拉（不改变当前选择）。
-        let slowTimer = null;
-        const slowRefresh = async () => {
-            if (progressTimer) return; // 快速轮询在跑时跳过，避免重复
-            try { await refreshProgress(); } catch (e) { /* 静默重试 */ }
-        };
+        // 注：任务列表由全站共享状态 15s 轮询（useTask），新任务自动进入选择器、
+        // 状态变化经 watch 同步轮询启停，本页不再维护 30s 慢速列表刷新。
 
         async function refreshProgress() {
             try {
-                runTasks.value = await loadRunTasks();
-                await Promise.all(runTasks.value.map(async (t) => {
+                const task = currentTask.value;
+                if (task && selectedRun.value) {
+                    // 执行进度：只取当前任务当前轮（UI 仅展示当前任务数字）
                     try {
-                        const er = await (await fetch('/api/review/runs/' + encodeURIComponent(t.dir_name) +
-                            '/' + iterDirOf(t.current_iteration) + '/execution_result')).json();
-                        t.passed = er.passed || 0;
-                        t.failed = er.failed || 0;
-                        t.total = er.total || (t.passed + t.failed);
-                        t.detail = er.engine_error || (er.status === 'generate' ? '已生成执行产物，未连远端' : '');
+                        const er = await (await fetch('/api/review/runs/' + encodeURIComponent(task.dir_name) +
+                            '/' + iterDirOf(selectedRun.value.current_iteration) + '/execution_result')).json();
+                        progressExtra.value = {
+                            passed: er.passed || 0,
+                            failed: er.failed || 0,
+                            total: er.total || ((er.passed || 0) + (er.failed || 0)),
+                            detail: er.engine_error || (er.status === 'generate' ? '已生成执行产物，未连远端' : '')
+                        };
                     } catch (e) {
-                        t.passed = 0;
-                        t.failed = 0;
-                        t.total = 0;
-                        t.detail = '';
+                        progressExtra.value = null;
                     }
-                }));
-                // 刷新当前任务的执行历史
-                const currentTask = runTasks.value.find(t => t.dir_name === currentTaskDir.value);
-                if (currentTask) {
-                    await loadHistory(currentTask);
+                    // 刷新当前任务的执行历史
+                    await loadHistory(task);
                     // 非编辑态: 同步刷新当前轮次表格数据(约束/输入/输出/PFL错误)
                     if (!editMode.value && currentIter.value) {
                         try {
-                            const c = await (await fetch('/api/review/runs/' + encodeURIComponent(currentTask.dir_name) +
+                            const c = await (await fetch('/api/review/runs/' + encodeURIComponent(task.dir_name) +
                                 '/' + iterDirOf(currentIter.value) + '/constraints')).json();
                             if (c && !c.error) {
                                 DATA.value = c;
                             }
-                            await loadAnalysis(currentTask, currentIter.value);
-                            await loadDiff(currentTask);
+                            await loadAnalysis(task, currentIter.value);
+                            await loadDiff(task);
                         } catch (e) { /* 单次表格刷新失败不中断 */
                         }
                     }
@@ -811,49 +821,25 @@ export default {
         async function queryProgress() {
             queryLoading.value = true;
             try {
-                if (!runTasks.value.length) runTasks.value = await loadRunTasks();
-                if (!runTasks.value.length) {
-                    // API 不可用: 无任务可查
+                await waitForReady();
+                if (!selectedRunId.value) {
+                    // API 不可用或无任务可查
                     return;
                 }
                 await refreshProgress();
-                // refreshProgress 末尾已按当前任务状态同步轮询, 此处补查列表级启停
-                if (runTasks.value.some(r => !TERMINAL_STATES.has(r.state))) {
-                    startProgressPolling();
-                }
             } finally {
                 queryLoading.value = false;
             }
         }
 
         // ---- 初始化 ----
-        onMounted(() => { syncTableMaxHeight(); window.addEventListener('resize', syncTableMaxHeight); slowTimer = setInterval(slowRefresh, 30000); });
-        onMounted(async () => {
-            currentProduct.value = (DATA.value.product_support || [])[0] || '';
-            runTasks.value = await loadRunTasks();
-            if (runTasks.value.length) {
-                // 深链: ?run=<dir>&iter=<iter> 定位到指定 run/iter (raise_dashboard.py 拉起时使用)
-                const qp = new URLSearchParams(window.location.search);
-                const qRun = qp.get('run');
-                const qIter = qp.get('iter');
-                const match = qRun ? runTasks.value.find(t => t.dir_name === qRun) : null;
-                const first = match || runTasks.value[0];
-                currentTaskDir.value = first.dir_name;
-                const iters = await loadIterList(first);
-                iterList.value = iters;
-                let defaultIter = iters.length ? iters[iters.length - 1] : String(first.current_iteration || 1);
-                if (qIter && iters.includes(qIter)) defaultIter = qIter;
-                await applyTaskData(first, defaultIter);
-                await loadHistory(first);
-                // 当前任务非终止态: 自动每 5 秒轮询
-                syncPollingByCurrentState();
-            }
-        });
-        onBeforeUnmount(() => { stopProgressPolling(); if (slowTimer) clearInterval(slowTimer); window.removeEventListener('resize', syncTableMaxHeight); });
+        // 任务装载由上方 watch(selectedRunId, {immediate}) 统一负责
+        onMounted(() => { syncTableMaxHeight(); window.addEventListener('resize', syncTableMaxHeight); });
+        onBeforeUnmount(() => { stopProgressPolling(); window.removeEventListener('resize', syncTableMaxHeight); });
 
         return {
             currentProduct, productOptions,
-            runTasks, currentTaskDir, iterList, currentIter, taskLoading, queryLoading,
+            selectedRunId, iterList, currentIter, taskLoading, queryLoading,
             activePanels, stateTag, progressPolling, history,
             timelineCollapsed, docMode, docHtml, docMdRef, tableMaxHeight,
             currentTaskState, currentTaskStateType,
@@ -862,7 +848,7 @@ export default {
             statusFilterOptions,
             inputRows, outputRows, cellText, boolText,
             statPass, statFail, statWarn, taskStats,
-            onTaskChange, onIterChange, queryProgress, goCover,
+            onIterChange, queryProgress, goCover,
             editConstraints, editMode, submitLoading, exprTypeOptions,
             enterEditMode, cancelEdit,
             addConstraint, removeConstraint, addParam, removeParam,
@@ -891,19 +877,16 @@ export default {
                 <div class="stat-item stat-running"><span class="stat-num">{{ taskStats.running }}</span> 运行中</div>
             </template>
         </div>
-        <div><a :href="currentTaskDir ? '/run/' + encodeURIComponent(currentTaskDir) : '/'">返回工作台</a> <el-button @click="goCover">覆盖率展示</el-button></div>
+        <div><a :href="selectedRunId ? '/run/' + encodeURIComponent(selectedRunId) : '/'">返回工作台</a> <el-button @click="goCover">覆盖率展示</el-button></div>
     </div>
 
     <!-- 副信息栏: 任务/轮次/产品系列 一组选择器 + 约束统计 -->
     <div class="info-bar">
         <div class="info-left">
             <span class="field-label">算子任务</span>
-            <el-select v-model="currentTaskDir" placeholder="选择任务" style="width:280px" filterable :disabled="editMode"
-                       :loading="taskLoading" @change="onTaskChange">
-                <el-option v-for="t in runTasks" :key="t.dir_name" :label="t.dir_name" :value="t.dir_name"></el-option>
-            </el-select>
+            <TaskPicker :disabled="editMode" />
             <span class="field-label">轮次</span>
-            <el-select v-model="currentIter" placeholder="迭代" style="width:120px" :disabled="!currentTaskDir || editMode"
+            <el-select v-model="currentIter" placeholder="迭代" style="width:120px" :disabled="!selectedRunId || editMode"
                        @change="onIterChange">
                 <el-option v-for="d in iterList" :key="d" :label="d" :value="d"></el-option>
             </el-select>

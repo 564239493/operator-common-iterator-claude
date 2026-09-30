@@ -27,7 +27,7 @@ function setup(){
  let fetchCount=0;
  let code=page.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm,'');
  code+='\nglobalThis.result={runView,selectedRound,rounds,roundEngineers,outcomes,metrics,nextRound,iterFor};';
- const context=vm.createContext({...vue,defineProps:()=>({runId:'fixture'}),useRouter:()=>({}),useTheme:()=>({theme:vue.ref('light'),toggle(){}}),usePolling:()=>({data:fetchCount++===0?run:replay,error:vue.ref(null)}),useEngineers:()=>({engineers:vue.ref([{name:'constraint-extractor',runtime:{status:'passed'}},{name:'constraint-updater',runtime:{status:'passed'}}])}),onBeforeUnmount(){},setTimeout:()=>1,clearTimeout(){},Date,api:{}});
+ const context=vm.createContext({...vue,defineProps:()=>({runId:'fixture'}),useRouter:()=>({}),useTheme:()=>({theme:vue.ref('light'),toggle(){}}),usePolling:()=>({data:fetchCount++===0?run:replay,error:vue.ref(null),refresh(){},start(){},stop(){}}),useTask:()=>({loadError:vue.ref(null),ready:vue.ref(true),selectedRunId:vue.ref('fixture-run')}),useEngineers:()=>({engineers:vue.ref([{name:'constraint-extractor',runtime:{status:'passed'}},{name:'constraint-updater',runtime:{status:'passed'}}])}),onBeforeUnmount(){},setTimeout:()=>1,clearTimeout(){},Date,api:{}});
  vm.runInContext(transformSync(code,{loader:'ts',format:'cjs'}).code,context);
  return {s:context.result};
 }

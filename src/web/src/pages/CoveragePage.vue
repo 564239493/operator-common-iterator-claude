@@ -1,18 +1,21 @@
 <script>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { useRoute } from 'vue-router';
+import { useTask } from '../composables/useTask';
+import TaskPicker from '../components/task/TaskPicker.vue';
 
 
 export default {
+    components: { TaskPicker },
     setup() {
-        const route = useRoute();
         // ---- 目录列表 ----
         const coverDirs = ref([]);
         const currentCoverDir = ref('');
         const coverSearch = ref('');
-        // 入口上下文：?run=<任务目录名> → 只看该任务内嵌的 runs/<run>/ops_cov_report/，路径关联、零名称匹配
-        const runContext = ref(String(route.query.run || '').trim());
+        // 任务上下文：全站共享选择（?run= 已由路由守卫种入），空串 = 未选任务，浏览全局目录；
+        // 只看所选任务内嵌的 runs/<run>/ops_cov_report/，路径关联、零名称匹配
+        const { selectedRunId } = useTask();
+        const runContext = computed(() => selectedRunId.value.trim());
 
         // 按上下文切换数据源：有任务上下文走任务内嵌接口，否则浏览全局目录
         const dirsUrl = () => runContext.value
@@ -312,7 +315,13 @@ export default {
             coverDirs.value = Array.isArray(list) ? list : [];
         }
 
-        onMounted(async () => {
+        // 上下文变化（含初始装载）统一重载目录列表并重置当前选择
+        watch(runContext, async () => {
+            currentCoverDir.value = '';
+            coverData.value = null;
+            uncoveredReasons.value = {};
+            coveredUncoveredLines.value = {};
+            expandedFunc.value = '';
             try {
                 await loadDirs();
                 if (coverDirs.value.length) {
@@ -323,6 +332,9 @@ export default {
             } catch (e) {
                 ElMessage.error('加载目录列表失败: ' + e.message);
             }
+        }, { immediate: true });
+
+        onMounted(async () => {
             // 目录列表 30s 自动刷新：新生成的覆盖报告自动出现，不改变当前选择
             dirsTimer = setInterval(async () => {
                 try {
@@ -360,6 +372,7 @@ export default {
     <div class="topbar">
         <div class="topbar-title">算子覆盖率展示</div>
         <div class="divider-v"></div>
+        <TaskPicker />
         <el-button size="small" plain @click="goBack">← 返回约束审核</el-button>
     </div>
 

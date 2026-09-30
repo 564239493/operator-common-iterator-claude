@@ -5,15 +5,17 @@ import { api } from '../api/client'
 import { usePolling } from '../composables/usePolling'
 import { useEngineers } from '../composables/useEngineers'
 import { useTheme } from '../composables/useTheme'
+import { useTask } from '../composables/useTask'
 import AgentBand from '../components/band/AgentBand.vue'
 import HandoffBoard from '../components/board/HandoffBoard.vue'
 import HistoryDrawer from '../components/history/HistoryDrawer.vue'
+import TaskPicker from '../components/task/TaskPicker.vue'
 import type { ReplayEvent } from '../api/types'
 
-/** 单页：顶部轮次汇总、角色队列、交接图及统一详情。 */
-const props = defineProps<{ runId: string }>()
+/** 单页：顶部轮次汇总、角色队列、交接图及统一详情。任务身份来自全站共享选择（不进 URL）。 */
 const router = useRouter()
 const { theme, toggle } = useTheme()
+const { loadError, ready, selectedRunId } = useTask()
 const historyDrawer = ref<InstanceType<typeof HistoryDrawer>>()
 const flowBoard = ref<InstanceType<typeof HandoffBoard>>()
 const flowScroll = ref(0)
@@ -24,12 +26,13 @@ const selectedRound = ref<number | null>(null)
 
 const selectedAgent = ref<string | null>(null)
 
-const { data: runView, error } = usePolling<any>(
-  () => api.runView(props.runId),
+const { data: runView, error, refresh: refreshRunView } = usePolling<any>(
+  // 无选中（列表未就绪/无任务）时不发请求，避免持久化的过期 id 闪 404
+  () => (ready.value && selectedRunId.value ? api.runView(selectedRunId.value) : Promise.resolve(null)),
   (data) => (data?.is_terminal ? 10000 : 2000),
 )
-const { data: replayEvents } = usePolling<ReplayEvent[]>(
-  () => api.replay(props.runId),
+const { data: replayEvents, refresh: refreshReplay } = usePolling<ReplayEvent[]>(
+  () => (ready.value && selectedRunId.value ? api.replay(selectedRunId.value) : Promise.resolve(null)),
   () => (runView.value?.is_terminal ? 15000 : 5000),
 )
 
@@ -37,11 +40,13 @@ const { engineers } = useEngineers(runView)
 
 
 watch(
-  () => props.runId,
+  [selectedRunId, ready],
   () => {
     selectedAgent.value = null
     snapRef.value?.scrollTo({ top: 0, behavior: 'instant' })
     selectedRound.value = null
+    refreshRunView()
+    refreshReplay()
   },
 )
 
@@ -97,7 +102,7 @@ watch(selectedRound, () => { selectedAgent.value = null })
 const operatorName = computed(() => {
   const doc = runView.value?.operator_doc || ''
   const base = doc.replace(/\\/g, '/').split('/').pop() || ''
-  return base.replace(/\.md$/i, '') || props.runId
+  return base.replace(/\.md$/i, '') || selectedRunId.value
 })
 
 const metadata = computed(() => {
@@ -253,8 +258,9 @@ function segStates(seg: any): string {
         <button class="text-btn" title="切换明暗主题" @click="toggle">
           {{ theme === 'dark' ? '☀ 浅色' : '☾ 深色' }}
         </button>
+        <TaskPicker />
         <button class="text-btn" @click="historyDrawer?.open()">◷ 历史任务</button>
-        <a class="text-btn" :href="'/constraints?run=' + encodeURIComponent(runId) + '&iter=iter_' + String(selectedRound || 1).padStart(3, '0')">约束审核</a><a class="text-btn" :href="'/coverage?run=' + encodeURIComponent(runId)">覆盖率</a>
+        <a class="text-btn" :href="'/constraints?run=' + encodeURIComponent(selectedRunId) + '&iter=iter_' + String(selectedRound || 1).padStart(3, '0')">约束审核</a><a class="text-btn" :href="'/coverage?run=' + encodeURIComponent(selectedRunId)">覆盖率</a>
       </div>
     </header>
 
@@ -282,13 +288,17 @@ function segStates(seg: any): string {
     <!-- ============ 第一屏：概览 + 分列详情 + 工程师带 ============ -->
     <section class="screen screen-main">
       <main class="main-area">
-        <el-alert v-if="error" type="error" :title="`加载失败：${error}`" :closable="false" style="margin-bottom: 14px" />
+        <el-alert v-if="loadError && !selectedRunId" type="error" :title="`任务列表加载失败：${loadError}`" :closable="false" style="margin-bottom: 14px" />
+        <el-empty v-else-if="ready && !selectedRunId" description="runs/ 目录下没有可解析的任务" />
+        <!-- 无选中且列表未就绪：首次拉取任务列表中 -->
+        <div v-else-if="!selectedRunId" v-loading="true" style="height: 300px" />
+        <el-alert v-else-if="error" type="error" :title="`加载失败：${error}`" :closable="false" style="margin-bottom: 14px" />
 
-        <template v-if="runView">
+        <template v-else-if="runView">
           <div class="heading">
             <div>
               <h1>{{ operatorName }}</h1>
-              <div class="metadata">{{ metadata || runId }}</div>
+              <div class="metadata">{{ metadata || selectedRunId }}</div>
             </div>
             <span class="status" :class="statusChip.cls">{{ statusChip.text }}</span>
           </div>
@@ -308,13 +318,13 @@ function segStates(seg: any): string {
             <div v-for="(c, i) in outcomes" :key="i" class="outcome" :class="c.tone"><strong>{{ c.title }}</strong><span>{{ c.text }}</span></div>
           </div>
           <details class="run-context"><summary>任务背景与状态历史</summary>
-            <p>{{ metadata }} · {{ runId }}</p><p>文档：{{ runView.operator_doc }}</p>
+            <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
             <p>提示词快照：{{ runView.current_prompt || '—' }} · 用例预算：{{ runView.case_count ?? '—' }} · 装配知识：{{ (runView.current_prompt_modules || []).length }} 项</p>
             <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
             <p v-for="(seg, i) in runView.segments || []" :key="i">{{ fmtTime(seg.from_at) }} → {{ fmtTime(seg.to_at) }} · {{ segStates(seg) }}</p>
           </details>
         </template>
-        <div v-else-if="!error" v-loading="true" style="height: 300px" />
+        <div v-else v-loading="true" style="height: 300px" />
       </main>
 
     </section>
@@ -359,7 +369,7 @@ function segStates(seg: any): string {
           @update:zoom="flowZoom = $event"
           @select-agent="selectedAgent = $event"
           v-if="runView"
-          :run-id="runId"
+          :run-id="selectedRunId"
           :run-view="runView"
           :engineers="roundEngineers"
           :events="replayEvents || []"
@@ -372,13 +382,13 @@ function segStates(seg: any): string {
           <button :disabled="nextRound === null" @click="nextRound !== null && (selectedRound = nextRound)">下一轮 →</button>
         </div>
         <footer class="page-foot">
-          <span>数据来自 {{ runId }} 的落盘产物</span>
+          <span>数据来自 {{ selectedRunId }} 的落盘产物</span>
           <span>状态与交接由产物推导（页面以「推导」标记）· 时间来自 history 与文件修改时间 · 最后活动 {{ fmtTime(runView?.last_activity) }}</span>
         </footer>
       </div>
     </section>
 
-    <HistoryDrawer ref="historyDrawer" :current-run-id="runId" />
+    <HistoryDrawer ref="historyDrawer" :current-run-id="selectedRunId" />
   </div>
 </template>
 

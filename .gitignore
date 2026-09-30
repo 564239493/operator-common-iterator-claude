@@ -36,3 +36,5 @@ ops-test-kit-master/
 
 # vim 交换文件
 *.swp
+.vite/
+tmp/

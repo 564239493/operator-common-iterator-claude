@@ -5,11 +5,13 @@ import { onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
  * - setTimeout 链（非 setInterval，防重入）
  * - 页面隐藏时暂停
  * - interval 可为函数，按最新数据动态决定下次间隔
+ * - manual: true 供组件外（模块级单例）使用：跳过 onMounted/onBeforeUnmount 注册
+ *   （无组件实例时 onMounted 不触发，轮询会静默不启动），由调用方自行 start/stop
  */
 export function usePolling<T>(
   fetcher: () => Promise<T>,
   interval: number | ((data: T | null) => number),
-  options: { immediate?: boolean } = {},
+  options: { immediate?: boolean; manual?: boolean } = {},
 ) {
   const data: Ref<T | null> = ref(null)
   const error: Ref<string | null> = ref(null)
@@ -59,14 +61,16 @@ export function usePolling<T>(
     }
   }
 
-  onMounted(() => {
-    document.addEventListener('visibilitychange', onVisibility)
-    if (options.immediate !== false) start()
-  })
-  onBeforeUnmount(() => {
-    stop()
-    document.removeEventListener('visibilitychange', onVisibility)
-  })
+  if (!options.manual) {
+    onMounted(() => {
+      document.addEventListener('visibilitychange', onVisibility)
+      if (options.immediate !== false) start()
+    })
+    onBeforeUnmount(() => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    })
+  }
 
   return { data, error, loading, start, stop, refresh: tick }
 }

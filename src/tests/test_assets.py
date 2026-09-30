@@ -1,4 +1,5 @@
-"""Asset catalog: identity, conservative relations, and bounded read-only scanning."""
+"""The asset page reads one reviewed content file; never infers text relations."""
+import copy
 import json
 import sys
 import tempfile
@@ -8,96 +9,122 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from workbench.adapters import assets
 
+SOURCE = Path(__file__).resolve().parents[1] / 'contents.jsonc'
+
 
 class TestAssets(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name) / "project"
-        self.home = Path(self.tmp.name) / "home"
-        self.root.mkdir()
-        self.home.mkdir()
+        self.root = Path(self.tmp.name)
+        (self.root / 'src').mkdir()
+        # Independent fixture parse: the committed header uses full-line comments.
+        self.data = json.loads('\n'.join(line for line in SOURCE.read_text().splitlines()
+                                         if not line.startswith('//')))
+        self.path = self.root / 'src/contents.jsonc'
+        self.save()
 
-    def write(self, rel, value, home=False):
-        p = (self.home if home else self.root) / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(value, encoding="utf-8")
-        return p
+    def save(self):
+        self.path.write_text('// release notes\n' + json.dumps(self.data, ensure_ascii=False), encoding='utf-8')
 
-    def catalog(self):
-        return assets.load_assets(self.root, home=self.home)
+    def test_real_content_is_valid_and_complete(self):
+        catalog = assets.load_assets(SOURCE.parent.parent)
+        self.assertEqual(catalog, self.data)
+        self.assertTrue(catalog['agents'])
+        self.assertTrue(catalog['knowledge'])
 
-    def manifest(self, path="common/rule.md"):
-        self.write("knowledge/aclnn/manifest.json", json.dumps({"family": "aclnn", "modules": [
-            {"id": "rule", "path": path, "scope": "common", "default_load": True}]}))
-        self.write("knowledge/aclnn/common/rule.md", "---\nmodule: rule\ndescription: 解释维度规则\n---\n# 维度规则\n")
+    def test_edits_are_read_without_restarting_or_rebuilding(self):
+        assets.load_assets(self.root)
+        self.data['skills'][0]['description'] = '本次发布的新说明'
+        self.data['ui']['title'] = '新的页面标题'
+        self.data['agents'][0]['relations'] = {}
+        self.save()
+        result = assets.load_assets(self.root)
+        self.assertEqual(result['skills'][0]['description'], '本次发布的新说明')
+        self.assertEqual(result['ui']['title'], '新的页面标题')
+        self.assertEqual(result['agents'][0]['relations'], {})
 
-    def agent(self, extra=""):
-        self.write(".opencode/agent/constraint-extractor.md", "---\ndescription: 提取约束\n---\n"
-                   "开工第一步：立即用 skill 工具加载 `extract-constraints` 技能。\n" + extra)
-        self.write(".opencode/skills/extract-constraints/SKILL.md", "---\ndescription: 从文档提取约束\n---\n")
+    def test_prose_and_directories_cannot_invent_relations(self):
+        self.data['agents'][0]['relations'] = {}
+        self.data['agents'][0]['description'] = '禁止加载 `extract-constraints` 技能。必载知识。'
+        self.save()
+        outside = self.root / '.opencode/agent'
+        outside.mkdir(parents=True)
+        (outside / 'new-agent.md').write_text('立即用 skill 工具加载 `unknown` 技能。')
+        result = assets.load_assets(self.root)
+        self.assertEqual(result['agents'][0]['relations'], {})
+        self.assertEqual(len(result['agents']), len(self.data['agents']))
 
-    def test_absent_user_dirs_keep_project_assets(self):
-        self.agent()
-        result = self.catalog()
-        self.assertEqual(len(result["skills"]), 1)
-        self.assertTrue(all(g["status"] == "missing" for g in result["user_groups"]))
+    def test_new_agent_asset_and_family_need_no_code_mapping(self):
+        item = {'id': 'new:rule', 'name': 'rule', 'title': '新增知识', 'description': '新增说明',
+                'kind': 'knowledge', 'availability': 'ready', 'family': 'third', 'scope': 'other'}
+        self.data['families'].append({'id': 'third', 'title': '第三类', 'description': '第三类算子', 'expanded_scopes': []})
+        self.data['knowledge'].append(item)
+        self.data['agents'].append({'name': 'new-agent', 'role': '新角色', 'color': '#123456',
+            'description': '新职责', 'when_to_use': '需要时', 'outcome': '分析结果', 'availability': 'ready',
+            'relations': {'new:rule': 'conditional'}})
+        self.save()
+        result = assets.load_assets(self.root)
+        self.assertEqual(result['agents'][-1]['relations'], {'new:rule': 'conditional'})
+        self.assertEqual(result['knowledge'][-1], item)
 
-    def test_manifest_wins_over_missing_generated_marker(self):
-        self.manifest()
-        self.write(".opencode/skills/aclnn-rule/SKILL.md", "---\ndescription: 生成技能\n---\n")
-        result = self.catalog()
-        self.assertEqual(result["skills"], [])
-        self.assertEqual(result["knowledge"][0]["description"], "解释维度规则")
+    def test_comments_do_not_corrupt_urls_or_comment_like_strings(self):
+        self.data['ui']['subtitle'] = 'https://example.test/a // 字符串 /* 原样保留 */'
+        self.path.write_text('/* 注释 */\n' + json.dumps(self.data) + '\n// end\n')
+        self.assertEqual(assets.load_assets(self.root)['ui']['subtitle'], self.data['ui']['subtitle'])
 
-    def test_orphan_generated_skill_not_classified_as_handwritten(self):
-        self.write(".opencode/skills/aclnn-old/SKILL.md", "---\ndescription: 旧知识\n---\n<!-- GENERATED by scripts/build_knowledge_skills.py -->")
-        result = self.catalog()
-        self.assertEqual(result["skills"], [])
-        self.assertEqual(result["knowledge"][0]["availability"], "unavailable")
+    def test_missing_file_does_not_fall_back_to_scanning(self):
+        self.path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            assets.load_assets(self.root)
 
-    def test_knowledge_permission_requires_current_text(self):
-        self.agent("知识 skill（aclnn→`aclnn-*`，hs→`torch-npu-*`）允许且必须按必载协议加载。")
-        result = self.catalog()
-        self.assertEqual(result["agents"][1]["knowledge_access"], "conditional")
-        self.agent()
-        self.assertEqual(self.catalog()["agents"][1]["knowledge_access"], "unmentioned")
+    def test_duplicate_json_keys_are_rejected(self):
+        self.path.write_text('{"schema_version":1,"schema_version":1}')
+        with self.assertRaisesRegex(ValueError, '重复'):
+            assets.load_assets(self.root)
 
-    def test_user_duplicates_keep_installations_but_one_capability(self):
-        for directory in (".agents/skills", ".claude/skills"):
-            self.write(directory + "/arkcli-test/SKILL.md", "---\nname: arkcli-test\ndescription: >\n  查询模型\n  和服务状态\n---\nSECRET BODY", home=True)
-        result = self.catalog()
-        self.assertEqual(len(result["extensions"]), 1)
-        self.assertEqual(len(result["extensions"][0]["installations"]), 2)
-        self.assertIn("查询模型", result["extensions"][0]["description"])
-        self.assertNotIn("SECRET BODY", json.dumps(result))
-        self.assertNotIn(str(self.home), json.dumps(result))
+    def test_bad_references_and_states_fail_closed(self):
+        original = copy.deepcopy(self.data)
+        mutations = [
+            lambda d: d['agents'][0]['relations'].update({'missing:skill': 'required'}),
+            lambda d: d['agents'][0]['relations'].update({d['skills'][0]['id']: 'maybe'}),
+            lambda d: d['knowledge'][0].update(family='nonexistent'),
+            lambda d: d['knowledge'][0].update(scope='nonexistent'),
+            lambda d: d.update(default_agent='nonexistent'),
+            lambda d: d.update(default_family='nonexistent'),
+            lambda d: d['skills'].append(copy.deepcopy(d['skills'][0])),
+            lambda d: d['agents'].append(copy.deepcopy(d['agents'][0])),
+            lambda d: d['skills'][0].update(availability='installed'),
+            lambda d: d['ui'].pop('title'),
+            lambda d: d['skills'][0].update(description=None),
+            lambda d: d['families'][0].update(expanded_scopes=['nonexistent']),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                self.data = copy.deepcopy(original)
+                mutate(self.data)
+                self.save()
+                with self.assertRaises(ValueError):
+                    assets.load_assets(self.root)
 
-    def test_user_symlink_outside_whitelist_is_not_read(self):
-        secret = self.write("secret/SKILL.md", "---\ndescription: MUST NOT LEAK\n---")
-        directory = self.home / ".agents/skills/arkcli-escape"
-        directory.parent.mkdir(parents=True)
-        directory.symlink_to(secret.parent, target_is_directory=True)
-        result = self.catalog()
-        self.assertNotIn("MUST NOT LEAK", json.dumps(result))
-        self.assertEqual(result["user_groups"][1]["status"], "partial")
+    def test_content_symlink_outside_src_is_rejected(self):
+        other = self.root / 'outside.jsonc'
+        other.write_text(json.dumps(self.data))
+        self.path.unlink()
+        self.path.symlink_to(other)
+        with self.assertRaises(ValueError):
+            assets.load_assets(self.root)
 
-    def test_project_symlink_and_manifest_escape_are_rejected(self):
-        secret = self.write("private.md", "---\ndescription: DO NOT EXPOSE\n---")
-        directory = self.root / ".opencode/skills/escape"
-        directory.mkdir(parents=True)
-        (directory / "SKILL.md").symlink_to(secret)
-        self.manifest("../../private.md")
-        result = self.catalog()
-        self.assertNotIn("DO NOT EXPOSE", json.dumps(result))
-        self.assertTrue(result["warnings"])
+    def test_unclosed_comment_is_rejected(self):
+        self.path.write_text('/* unfinished')
+        with self.assertRaises(ValueError):
+            assets.load_assets(self.root)
 
-    def test_malformed_description_is_not_an_empty_success(self):
-        self.write(".opencode/skills/broken/SKILL.md", "---\ndescription: unfinished")
-        result = self.catalog()
-        self.assertEqual(result["skills"][0]["availability"], "unavailable")
-        self.assertTrue(result["warnings"])
+    def test_non_json_numbers_are_rejected_even_in_extra_fields(self):
+        self.path.write_text(json.dumps(self.data)[:-1] + ',"extra": NaN}')
+        with self.assertRaises(ValueError):
+            assets.load_assets(self.root)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
