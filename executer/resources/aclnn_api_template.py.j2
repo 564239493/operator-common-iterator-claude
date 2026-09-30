@@ -682,12 +682,6 @@ class {{ class_name }}(AclnnBaseApi):
 class {{ cpu_class_name }}(BaseApi):
     """Auto-generated CPU reference class for {{ op_name }}."""
 
-    _OP_NAME = "{{ op_name }}"
-    _SIG_STR = """{{ signature }}"""
-    _INPUT_PARAM_NAMES = {{ input_sig_names }}
-    _OUTPUT_PARAM_NAMES_OUTPUT_PARAM_NAMES = {{ output_param_names }}
-    _REQUIRED_TENSOR_NAMES = {{ required_tensor_names }}
-
     def __call__(self, input_data: InputDataset, with_output: bool = False):
         """CPU golden: MOCKED（确定性零输出，cpu 标杆执行 100% 通过）。
 
