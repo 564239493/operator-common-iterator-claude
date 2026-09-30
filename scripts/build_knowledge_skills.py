@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Generate .claude/skills wrappers for every manifest knowledge module.
+"""Generate .opencode/skills wrappers for every manifest knowledge module.
 
 canonical 保持在 ``knowledge/<family>/**``（唯一编辑源，prompt 演进流程不变）；
-本脚本把每个 manifest 模块渲染成 ``.claude/skills/<prefix><id>/SKILL.md``
+本脚本把每个 manifest 模块渲染成 ``.opencode/skills/<prefix><id>/SKILL.md``
 生成物，供任意阶段、任意 Agent 通过 Skill 工具按需加载。
 
 - 生成物禁止手改；validator（validate_*_knowledge.py）逐字节比对生成物与
@@ -29,7 +29,7 @@ except ModuleNotFoundError:  # pragma: no cover - alternate package path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILLS_ROOT = ROOT / ".claude" / "skills"
+SKILLS_ROOT = ROOT / ".opencode" / "skills"
 FAMILY_KNOWLEDGE = {
     "aclnn": ROOT / "knowledge" / "aclnn",
     "torch_npu": ROOT / "knowledge" / "torch_npu",
@@ -233,7 +233,7 @@ def required_list_entries(result: dict, knowledge: Path | None = None, family: s
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate .claude/skills wrappers from knowledge manifests."
+        description="Generate .opencode/skills wrappers from knowledge manifests."
     )
     parser.add_argument("--family", choices=["aclnn", "torch_npu", "all"], default="all")
     parser.add_argument(

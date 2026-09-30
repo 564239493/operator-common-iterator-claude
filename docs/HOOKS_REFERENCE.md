@@ -1,6 +1,7 @@
 # Hooks 参考手册
 
-项目 `.claude/hooks/` 下两个正式注册的 hook 脚本，配置在 `.claude/settings.json`：
+项目 `.opencode/hooks/` 下两个 hook 脚本，由 `.opencode/plugins/guard-project-writes.js` /
+`.opencode/plugins/trace-hook.js` 显式调用（opencode 原生不自带 hook 目录）：
 
 | 事件 | matcher | 脚本 | 一句话总结 |
 |---|---|---|---|
@@ -15,7 +16,7 @@
 
 ## 一、`trace_hook.py`
 
-**职责**：会话/子 Agent 启停事件的可观测性留痕。展示给主会话 + append 到 `.claude/runtime/schedule.jsonl`（不入库）。写日志失败只降级注释，绝不阻断流程。
+**职责**：会话/子 Agent 启停事件的可观测性留痕。展示给主会话 + append 到 `.opencode/runtime/schedule.jsonl`（不入库）。写日志失败只降级注释，绝不阻断流程。
 
 ### 常量
 
@@ -26,7 +27,7 @@
 | 方法 | 作用 |
 |---|---|
 | `project_dir(payload) -> Path` | 定项目根：`CLAUDE_PROJECT_DIR` 环境变量 → payload `cwd` → `.`，`.resolve()` |
-| `registry_summary(root) -> str` | 扫 `.claude/skills/*/SKILL.md` 与 `.claude/agents/*.md`，拼 `[WORKFORCE] skills=N [...] \| agents=M [...]` 一行；仅 SessionStart 输出 |
+| `registry_summary(root) -> str` | 扫 `.opencode/skills/*/SKILL.md` 与 `.opencode/agents/*.md`，拼 `[WORKFORCE] skills=N [...] \| agents=M [...]` 一行；仅 SessionStart 输出 |
 | `message_for(payload, root) -> str` | 按事件生成展示文本：SessionStart→workforce 清单；SubagentStart→`[SCHEDULER] START agent=.. id=..`；SubagentStop→`[SCHEDULER] STOP ...` |
 | `main() -> int` | 读 stdin JSON → 组 event dict → append 写 `schedule.jsonl`（失败降级注释不抛错）→ `print({"systemMessage": ...})` 回会话 → 返回 0 |
 
@@ -75,7 +76,7 @@
 
 ### 2.3 会话 scope 绑定（per-run 隔离核心）
 
-会话（含全部子 Agent，按 `session_id` 聚合）绑定到一个 run_id，存 `.claude/runtime/task_scopes/<session>.json`。
+会话（含全部子 Agent，按 `session_id` 聚合）绑定到一个 run_id，存 `.opencode/runtime/task_scopes/<session>.json`。
 
 | 方法 | 作用 |
 |---|---|
@@ -110,4 +111,4 @@
 
 ## 附：`test_guard_project_writes.py`
 
-未在 settings.json 注册，是 `guard_project_writes.py` 的单元测试（跨 run 访问、受保护路径、内联 python、重定向、终态释放 scope 等用例），不影响线上流程。
+未在 opencode.json 注册，是 `guard_project_writes.py` 的单元测试（跨 run 访问、受保护路径、内联 python、重定向、终态释放 scope 等用例），不影响线上流程。

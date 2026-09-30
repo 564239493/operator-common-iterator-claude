@@ -261,7 +261,7 @@ weight2.shape[-2] < 65536
 3. **expert 模式 shape 变体必须带 `if len(weight.shape) == 3`** 分支，否则无 expert 的常见路径会被错误约束到 expert 形态。
 4. **量化互斥** 是 C.1，必须用一条 OR 表达式覆盖两组同时为 `None` 的合法空白情形，不要写成"必须有 quant"或"必须有 pseudo-quant"。
 5. **不替代通用 dtype 互推导 / 类型提升 / broadcast 规则**：本模块专注 FFNV3 算子内特异性，公共规则仍由 `knowledge/aclnn/features/broadcast.md` 承载。
-6. **.claude/settings.json / guard_project_writes.py**：本模块不引入新的硬编码常量或平台枚举；新增平台时按 v4 §5.1 流程扩展。
+6. **.opencode/opencode.json / .opencode/hooks/guard_project_writes.py**：本模块不引入新的硬编码常量或平台枚举；新增平台时按 v4 §5.1 流程扩展。
 7. **两级 MatMul 轴完整性**：反扫必须同时看到 `x.shape[-1] == weight1.shape[-2]`、
    `K1 == N2` 的真实轴等式以及 activation 对 `N1/K2` 的分支约束；缺少任一项都视为
    约束提取不完整。

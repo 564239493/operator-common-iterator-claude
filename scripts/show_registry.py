@@ -41,10 +41,10 @@ def clipped(value: object, width: int = 52) -> str:
 
 
 def main() -> int:
-    print("=== Claude Code Workforce ===")
+    print("=== opencode Workforce ===")
     flow_skills: list[tuple[str, object]] = []
     knowledge_skills: list[tuple[str, object]] = []
-    for path in sorted((ROOT / ".claude" / "skills").glob("*/SKILL.md")):
+    for path in sorted((ROOT / ".opencode" / "skills").glob("*/SKILL.md")):
         meta = frontmatter(path)
         head = path.read_text(encoding="utf-8", errors="replace").splitlines()[:8]
         entry = (path.parent.name, meta.get("description"))
@@ -62,11 +62,11 @@ def main() -> int:
         print(f"  *{name:<28} {clipped(description, 60)}")
 
     print("\nAgents")
-    for path in sorted((ROOT / ".claude" / "agents").glob("*.md")):
+    for path in sorted((ROOT / ".opencode" / "agents").glob("*.md")):
         meta = frontmatter(path)
         name = str(meta.get("name") or path.stem)
-        skills = str(meta.get("skills") or "-")
-        print(f"  @{name:<22} skill={skills:<22} {clipped(meta.get('description'), 44)}")
+        mode = str(meta.get("mode") or "all")
+        print(f"  @{name:<22} mode={mode:<10} {clipped(meta.get('description'), 48)}")
 
     print("\nDispatch")
     print("  PLAN -> constraint-extractor -> optional constraint-supplementer")

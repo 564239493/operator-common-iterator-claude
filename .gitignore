@@ -7,7 +7,7 @@ __pycache__/
 servers.json
 logs/
 runs/
-.claude/runtime/
+.opencode/runtime/
 .idea/
 .vscode/
 /node_modules
@@ -20,8 +20,6 @@ tests/
 
 /operators-src/
 /op-plugin-7.3.0/
-/.claude/settings.local.json
-/.claude/worktrees/
 /.ttk-deps/
 /.ttk-reference/
 /cli_report_*.html

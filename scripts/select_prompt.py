@@ -60,7 +60,7 @@ def assemble(
     base = base_path.read_text(encoding="utf-8").rstrip()
     entries = required_list_entries(result, knowledge_path, family="aclnn")
     load_list = render_required_list("aclnn", entries).rstrip()
-    # 知识模块正文不再拼接进冻结快照：正文以 .claude/skills/aclnn-* 生成物
+    # 知识模块正文不再拼接进冻结快照：正文以 .opencode/skills/aclnn-* 生成物
     # 形式按需加载（Skill 工具），快照只冻结核心层 + 必载清单。可复现性由
     # prompt_assembly.json 的模块 sha256 全集冻结保证（单 run 内 canonical 不变）。
     snapshot = "\n".join([base, "", "---", "", load_list, ""])

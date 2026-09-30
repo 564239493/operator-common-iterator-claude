@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Post-generation Python-side constraint re-check for aclnnGroupedMatmulV5.
 
-Per .claude/skills/generate-cases/SKILL.md: catch Z3 pseudo-SAT / unmodeled
+Per .opencode/skills/generate-cases/SKILL.md: catch Z3 pseudo-SAT / unmodeled
 value_dependencies by eval'ing each constraints_in_parameters[].expr against
 each case. Namespace wraps every param in an object exposing .format/.dtype/
 .shape/.range_value with __len__ (tensorList length, None->1 per executor

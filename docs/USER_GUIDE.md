@@ -167,11 +167,13 @@ opci setup --target D:\my-operator-project
 
 | 操作 | 目标路径 | 说明 |
 |---|---|---|
-| 复制 Agent 定义 | `.claude/agents/*.md` | 12 个专职 Agent |
-| 复制 Skill 定义 | `.claude/skills/*/SKILL.md` | 18 个流程 Skill |
-| 复制 Hooks | `.claude/hooks/*.py` | trace_hook.py + guard_project_writes.py |
-| 生成 settings.json | `.claude/settings.json` | 权限 + Hooks + sandbox 配置 |
-| 复制 .mcp.json | `.mcp.json` | MCP server 注册（Claude Code 自动发现） |
+| 复制 Agent 定义 | `.opencode/agents/*.md` | 专职 Agent |
+| 复制 Skill 定义 | `.opencode/skills/*/SKILL.md` | 流程 + 知识 Skill |
+| 复制命令 | `.opencode/commands/*.md` | 斜杠命令（iterate-operator 等） |
+| 复制 Hooks | `.opencode/hooks/*.py` | trace_hook.py + guard_project_writes.py |
+| 复制插件 | `.opencode/plugins/*.js` | guard-project-writes + trace-hook |
+| 生成 opencode.json | `.opencode/opencode.json` | 插件加载 + permission 配置 |
+| 复制 .mcp.json | `.mcp.json` | MCP server 注册（opencode 自动发现） |
 | 复制提示词 | `prompts/` | 约束提取 prompt v1~v3 |
 | 复制文档 | `docs/` | 设计文档 |
 | 复制知识库 | `knowledge/` | 算子模式参考 |
@@ -243,9 +245,9 @@ cd D:\my-operator-project
 claude
 ```
 
-Claude Code 启动时会自动：
+opencode 启动时会自动：
 1. 读取 `.mcp.json` → 发现并启动 `opci mcp-server`
-2. 读取 `.claude/settings.json` → 加载权限、Hooks、Agent/Skill 配置
+2. 读取 `.opencode/opencode.json` 与 `.opencode/` → 加载插件、Agents、Skills、命令
 3. MCP server warmup → 预加载 Z3/numpy/torch 等重型依赖（stderr 可见进度）
 
 ---
@@ -387,11 +389,13 @@ settings.json 使用默认询问模式；只预授权正常工作流所需的低
 <project-root>/
   .mcp.json                  # MCP server 注册
   .opci_project_root         # 项目根绝对路径标记
-  .claude/
-    settings.json            # 权限 + Hooks + sandbox
-    agents/*.md              # 12 个 Agent 定义
-    skills/*/SKILL.md        # 18 个 Skill 定义
+  .opencode/
+    opencode.json            # 插件加载 + permission
+    agents/*.md              # 专职 Agent 定义
+    skills/*/SKILL.md        # 流程 + 知识 Skill 定义
+    commands/*.md            # 斜杠命令
     hooks/*.py               # trace_hook + guard_project_writes
+    plugins/*.js             # guard + trace 插件
   prompts/                   # 约束提取提示词
     operator_constraints/      # ACLNN canonical base.md（直接编辑）
     torch_npu_constraints/     # torch_npu canonical base.md（直接编辑）
@@ -616,10 +620,10 @@ opci mcp-server   # warmup 日志应为 14 OK, 0 FAIL
 
 ### Q: MCP 工具权限怎么配置？
 
-`opci setup` 生成的 `.claude/settings.json` 使用默认询问模式和最小预授权。工具名
+`opci setup` 生成的 `.opencode/opencode.json` 使用默认允许模式（无静态收紧）。工具名
 格式为 `mcp__opci__<Python函数名>`，如 `mcp__opci__validate_constraints`。只应把
-经过审计、正常流程必需的工具加入 `permissions.allow`；其他命令不配置通用 allow，
-由 `default` 模式在实际调用时询问，不应恢复 `dontAsk` + 全工具放行。
+经过审计、正常流程必需的工具加入 `permission` 的 allow 白名单；其他命令不配置通用
+allow，由运行时守卫插件（guard）在实际调用时分类。
 
 ### Q: 如何查看 MCP server 的 warmup 日志？
 

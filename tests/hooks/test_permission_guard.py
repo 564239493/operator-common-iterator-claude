@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def _load_guard():
     spec = importlib.util.spec_from_file_location(
         "guard_project_writes_under_test",
-        ROOT / ".claude" / "hooks" / "guard_project_writes.py",
+        ROOT / ".opencode" / "hooks" / "guard_project_writes.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -143,7 +143,7 @@ def test_shell_pythonw_c_blocked():
 
 @pytest.fixture
 def scope_payload(tmp_path, monkeypatch):
-    """把 scope 文件重定向到临时目录，避免污染 .claude/runtime/。"""
+    """把 scope 文件重定向到临时目录，避免污染 .opencode/runtime/。"""
 
     def _fake_scope_file(payload, root):
         session = str(payload.get("session_id") or "unknown")

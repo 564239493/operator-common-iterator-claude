@@ -70,7 +70,7 @@ function withTimeout(promise, ms, onTimeout) {
 
 async function runGuard(payload, projectDir, client) {
   const exe = pythonExe(projectDir)
-  const script = join(projectDir, ".claude", "hooks", "guard_project_writes.py")
+  const script = join(projectDir, ".opencode", "hooks", "guard_project_writes.py")
   if (!exe || !existsSync(script)) {
     try {
       await client.app.log({

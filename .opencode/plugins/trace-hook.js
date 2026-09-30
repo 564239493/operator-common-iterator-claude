@@ -15,7 +15,7 @@ function pythonExe(projectDir) {
 
 async function runTrace(payload, projectDir) {
   const exe = pythonExe(projectDir)
-  const script = join(projectDir, ".claude", "hooks", "trace_hook.py")
+  const script = join(projectDir, ".opencode", "hooks", "trace_hook.py")
   if (!exe || !existsSync(script)) return
   try {
     const proc = Bun.spawn([exe, "-X", "utf8", script], {

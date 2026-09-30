@@ -1,7 +1,13 @@
 # 权限与任务隔离
 
-项目级配置位于 `.claude/settings.json`。权限采用“静态规则 + 动态 Hook + OS
-sandbox”三层控制；`CLAUDE.md` 中的文字约定只负责引导，不作为安全边界。
+项目级配置位于 `.opencode/opencode.json`（插件加载 + 默认 `permission`），运行时
+守卫由 `.opencode/plugins/guard-project-writes.js` → `.opencode/hooks/guard_project_writes.py`
+承担；`CLAUDE.md` 中的文字约定只负责引导，不作为安全边界。
+
+> 迁移说明：已移除 `.claude/settings.json`。下文凡提及“静态规则 / settings.json”的
+> 兜底描述，静态部分现由 `.opencode/opencode.json` 的 `permission` 表达（当前未收紧，
+> 等价默认 allow），动态部分仍是 guard 插件；`sandbox` 段为 Claude Code 遗留，opencode
+> 下由宿主进程与 guard 插件共同兜底。
 
 ## 权限模式
 
@@ -46,14 +52,11 @@ sandbox”三层控制；`CLAUDE.md` 中的文字约定只负责引导，不作�
 - 禁止读取任意位置的 `.env` 与 `.env.*`。
 - 文件路径权限统一使用 `Read(...)` 与 `Edit(...)`；新版本 Claude Code 不使用
   `Write(path)`、`NotebookEdit(path)`、`Glob(path)` 做路径权限判断。
-- **已知失效场景**：`settings.json` 的静态 `Edit(/runs/**)` 放行是"钩子未运行时的
-  兜底"——当 guard_project_writes 钩子进程启动失败（如 Python 环境损坏）时，
-  静态放行生效，跨 run 目录隔离将失效（可写任意 `runs/<run-id>/`）。真正的隔离
-  依赖钩子运行时绑定；此失效场景无法通过静态配置消除，维护时需确保钩子可执行。
+- **已知失效场景**：`.opencode/opencode.json` 默认 `permission` 为 allow，是"守卫未运行时的兜底"——当 guard 插件或 `guard_project_writes.py` 启动失败（如 Python 环境损坏）时，无静态 deny 拦截，跨 run 目录隔离将失效（可写任意 `runs/<run-id>/`）。真正的隔离依赖插件 + 钩子运行时绑定；维护时需确保 `.venv` 与钩子可执行。
 
 ## 当前任务目录隔离
 
-`.claude/hooks/guard_project_writes.py` 挂到 `PreToolUse`：
+`.opencode/hooks/guard_project_writes.py` 经 guard 插件挂到 opencode `tool.execute.before`：
 
 1. 首次通过文件工具访问任意 `runs/<run-id>/**`，或首次 Shell 命令明确引用唯一一个
    run 时，按 Claude session 绑定活动 run；主 Agent 和所有子 Agent 共用这个绑定。
@@ -67,7 +70,7 @@ sandbox”三层控制；`CLAUDE.md` 中的文字约定只负责引导，不作�
 `runs/batches/<batch-id>/` 是目录批次的调度状态，不视为某个算子的业务任务目录；
 只有 `init_batch.py` / `batch_state.py` 可按工作流更新它。
 
-Hook 状态保存在 `.claude/runtime/task_scopes/<session-id>.json`，属于权限审计元数据，
+Hook 状态保存在 `.opencode/runtime/task_scopes/<session-id>.json`，属于权限审计元数据，
 不属于业务产物。
 
 这里的隔离是“同一工作树内按当前 run 路径隔离”，不是 Git worktree 隔离。流水线
@@ -89,33 +92,33 @@ Agent 必须共享当前工作树；配置与 Hook 会拒绝 `EnterWorktree` 和
 
 ## Windows / Linux 一致用法
 
-用户启动 Claude Code 前应创建有效的项目虚拟环境：
+用户启动 opencode 前应创建有效的项目虚拟环境：
 
 ```powershell
 # Windows PowerShell
 .\.venv\Scripts\Activate.ps1
 python --version
-claude
+opencode
 ```
 
 ```bash
 # Linux / macOS / WSL2
 source .venv/bin/activate
 python --version
-claude
+opencode
 ```
 
 Hook 直接通过 `python -X utf8` 运行，不依赖 Node、Bash、盘符或固定 Python 安装目录。
 项目唯一的启动前置条件是 Python 3 已加入 `PATH`，且 `python --version` 可正常执行；
 UTF-8 模式用于避免 Windows 中文输出乱码。Hook 只使用 Python 标准库，不要求此时已安装
 项目业务依赖。
-业务脚本允许 Claude Code 常用的显式虚拟环境入口：
+业务脚本允许 opencode 常用的显式虚拟环境入口：
 `./.venv/Scripts/python.exe` / `.venv/Scripts/python.exe`（Windows）和
 `./.venv/bin/python` / `.venv/bin/python`（Linux/macOS/WSL2）；可执行项目内任意
 `.py`，是否允许修改仍由路径保护规则独立决定。
 
 Agent 执行项目脚本时不得先运行 `source`/`activate`；应直接使用上面的虚拟环境
-Python 路径。只要系统 `python` 命令可用，用户进入项目后即可直接运行 `claude`，
+Python 路径。只要系统 `python` 命令可用，用户进入项目后即可直接运行 `opencode`，
 无需为了 Hook 手工激活 `.venv`。
 
 Hook 将 `/dev/null`、Windows `NUL`、PowerShell `$null` 和 `2>&1` 视为非持久化
@@ -123,12 +126,10 @@ Hook 将 `/dev/null`、Windows `NUL`、PowerShell `$null` 和 `2>&1` 视为非�
 
 ## 验证
 
-重启 Claude Code 后运行：
+重启 opencode 后运行：
 
 ```text
-/status
-/permissions
-/hooks
+/help
 ```
 
 并执行：

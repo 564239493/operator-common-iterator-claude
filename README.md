@@ -1,7 +1,7 @@
 # operator-common-iterator-claude
 
-这是 `operator-common-iterator` 的全新 Claude Code CLI 原生版本。原项目保持不变；
-这里不再由 Python 编排器嵌套调用 LLM，而是让 Claude Code 直接发现并调度
+这是 `operator-common-iterator` 的全新 opencode 原生版本。原项目保持不变；
+这里不再由 Python 编排器嵌套调用 LLM，而是让 opencode 直接发现并调度
 Skills 与 Subagents，Python 只承担确定性业务工具。
 
 ## 你能直接看到什么
@@ -10,7 +10,7 @@ Skills 与 Subagents，Python 只承担确定性业务工具。
 - 运行时：每次 Agent 的 `START / STOP` 终端消息。
 - 会话内：`/agents` 查看正在运行及已完成的 Agent。
 - 配置层：`/hooks` 查看调度观测 Hooks。
-- 文件层：`.claude/runtime/schedule.jsonl` 保存完整调度事件。
+- 文件层：`.opencode/runtime/schedule.jsonl` 保存完整调度事件。
 - 产物层：`runs/<run-id>/run_state.json` 和各轮目录保存状态与交接文件。
 
 ## 快速开始
@@ -121,21 +121,23 @@ claude -p "/iterate-operator D:\operator_docs\aclnnFoo.md --max-iterations 3" `
 
 | 维度 | 旧项目 | 本项目 |
 |---|---|---|
-| 顶层编排 | `orchestrator.py` | Claude Code 主会话 + `/iterate-operator` |
-| LLM 调用 | Python backend/API/CLI 子进程 | Claude Code Agent 原生上下文 |
-| 专家隔离 | 手写 Session A/B | `.claude/agents/*.md` 独立上下文 |
-| 流程能力 | Python 函数 | `.claude/skills/*/SKILL.md` |
+| 顶层编排 | `orchestrator.py` | opencode 主会话 + `/iterate-operator` |
+| LLM 调用 | Python backend/API/CLI 子进程 | opencode Agent 原生上下文 |
+| 专家隔离 | 手写 Session A/B | `.opencode/agents/*.md` 独立上下文 |
+| 流程能力 | Python 函数 | `.opencode/skills/*/SKILL.md` |
 | 调度观察 | 日志中推断 | CLI Agent 面板 + Hooks + JSONL |
 | 阶段交接 | Python 内存对象为主 | 明确的 JSON/Markdown 产物契约 |
 
 ## 目录
 
 ```text
-.claude/
+.opencode/
   agents/              # 专职 Agent（含独立约束 Checker/Repairer）
   skills/              # 主流程及阶段 Skills
-  hooks/               # CLI 生命周期调度观测
-  settings.json        # 项目级权限与 Hooks
+  commands/            # 斜杠命令（iterate-operator 等）
+  hooks/               # 生命周期调度观测（由 plugins/*.js 调用）
+  plugins/             # guard-project-writes + trace-hook
+  opencode.json        # 项目级 opencode 配置
 docs/                  # 流程、观测和产物契约
 agent/
   generators/          # 原项目确定性用例生成逻辑

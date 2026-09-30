@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Static validation for the Claude Code native project scaffold."""
+"""Static validation for the opencode native project scaffold.
+
+校验 `.opencode` 原生布局（agents/commands/hooks/skills）与运行护栏：
+- 桥接插件已移除（`opencode.json` 不再引用 `@sjawhar/opencode-claude-bridge`）；
+- 插件脚本引用 `.opencode/hooks/*.py`，hooks 持久化到 `.opencode/runtime`；
+- 必需 agents / skills / commands 齐全，frontmatter 合法（skill name == 目录名）；
+- CPU golden 指南存在且只引用当前 run 快照。
+"""
 
 from __future__ import annotations
 
@@ -8,16 +15,10 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED_ALLOW_RULES = {
-    "Read",
-    "Glob",
-    "Grep",
-    "Edit(/runs/**)",
-    "Agent",
-    "Skill",
-}
+OPENCODE = ROOT / ".opencode"
+BRIDGE_PLUGIN = "@sjawhar/opencode-claude-bridge"
 CPU_GOLDEN_GUIDES = (
-    ROOT / ".claude" / "skills" / "atc-cpu-golden-derivation" / "SKILL.md",
+    OPENCODE / "skills" / "atc-cpu-golden-derivation" / "SKILL.md",
     ROOT / "executer" / "resources" / "aclnn-cpu-golden-derivation.md",
 )
 RUN_DOC_SNAPSHOT = "runs/<current-run>/inputs/<operator-doc>.md"
@@ -39,69 +40,92 @@ REQUIRED_SKILLS = {
     "repair-constraints", "scan-scenes", "show-workforce",
     "supplement-constraints", "update-constraints", "validate-run",
 }
+REQUIRED_COMMANDS = {"iterate-directory", "iterate-operator", "show-workforce"}
+
+
+def frontmatter_block(path: Path) -> str | None:
+    text = path.read_text(encoding="utf-8")
+    match = re.match(r"^---\s*\n(.*?)\n---", text, re.S)
+    return match.group(1) if match else None
 
 
 def has_frontmatter(path: Path, required: tuple[str, ...]) -> list[str]:
-    text = path.read_text(encoding="utf-8")
-    match = re.match(r"^---\s*\n(.*?)\n---", text, re.S)
-    if not match:
+    block = frontmatter_block(path)
+    if block is None:
         return [f"{path}: missing YAML frontmatter"]
-    block = match.group(1)
     return [f"{path}: missing {key}" for key in required if not re.search(rf"^{key}:", block, re.M)]
+
+
+def skill_name_matches_dir(path: Path) -> list[str]:
+    block = frontmatter_block(path)
+    if block is None:
+        return []
+    match = re.search(r"^name:\s*(.+)$", block, re.M)
+    if not match:
+        return [f"{path}: missing name（opencode 要求 name == 目录名）"]
+    name = match.group(1).strip().strip("'\"")
+    if name != path.parent.name:
+        return [
+            f"{path}: frontmatter name '{name}' != directory '{path.parent.name}'"
+            "（opencode 要求一致）"
+        ]
+    return []
+
+
+def check_opencode_json(errors: list[str]) -> None:
+    config = OPENCODE / "opencode.json"
+    if not config.is_file():
+        errors.append("missing .opencode/opencode.json")
+        return
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except Exception as exc:
+        errors.append(f"invalid .opencode/opencode.json: {exc}")
+        return
+    plugins = data.get("plugin") or []
+    if isinstance(plugins, str):
+        plugins = [plugins]
+    if BRIDGE_PLUGIN in plugins:
+        errors.append(f"opencode.json must not reference the removed bridge plugin: {BRIDGE_PLUGIN}")
 
 
 def main() -> int:
     errors: list[str] = []
-    settings = ROOT / ".claude" / "settings.json"
-    try:
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        for event in ("PreToolUse", "SessionStart", "SubagentStart", "SubagentStop"):
-            if event not in data.get("hooks", {}):
-                errors.append(f"settings missing hook: {event}")
-        permissions = data.get("permissions", {})
-        if permissions.get("defaultMode") != "default":
-            errors.append("permissions.defaultMode must be default")
-        allow_rules = permissions.get("allow", [])
-        missing_allow = REQUIRED_ALLOW_RULES - set(allow_rules)
-        if missing_allow:
-            errors.append(f"permissions missing required allow rules: {sorted(missing_allow)}")
-        for forbidden in ("Bash", "Bash(*)", "PowerShell", "PowerShell(*)"):
-            if forbidden in allow_rules:
-                errors.append(f"permissions has overly broad allow rule: {forbidden}")
-        if permissions.get("ask"):
-            errors.append("permissions.ask should be omitted; default mode handles non-runtime commands")
-        for rule in (
-            "Edit(/executer/**)",
-            "Edit(/agent/generators/**)",
-            "Edit(/servers.json)",
-        ):
-            if rule not in permissions.get("deny", []):
-                errors.append(f"permissions missing deny rule: {rule}")
-        pre_hooks = data.get("hooks", {}).get("PreToolUse", [])
-        if "guard_project_writes.py" not in json.dumps(pre_hooks):
-            errors.append("PreToolUse must invoke guard_project_writes.py")
-        hook_config = json.dumps(data.get("hooks", {}))
-        if "python -X utf8" not in hook_config:
-            errors.append("hooks must invoke Python directly in UTF-8 mode")
-        if "run_python_hook" in hook_config or '"command": "bash ' in hook_config:
-            errors.append("hooks must not depend on a Node/Bash launcher")
-        if not data.get("sandbox", {}).get("enabled"):
-            errors.append("sandbox must be enabled")
-    except Exception as exc:
-        errors.append(f"invalid settings.json: {exc}")
+    check_opencode_json(errors)
 
-    agents = list((ROOT / ".claude" / "agents").glob("*.md"))
-    skills = list((ROOT / ".claude" / "skills").glob("*/SKILL.md"))
+    agents = sorted((OPENCODE / "agents").glob("*.md"))
+    skills = sorted((OPENCODE / "skills").glob("*/SKILL.md"))
+    commands = sorted((OPENCODE / "commands").glob("*.md"))
+
     missing_agents = REQUIRED_AGENTS - {path.stem for path in agents}
     missing_skills = REQUIRED_SKILLS - {path.parent.name for path in skills}
+    missing_commands = REQUIRED_COMMANDS - {path.stem for path in commands}
     if missing_agents:
         errors.append(f"missing required project agents: {sorted(missing_agents)}")
     if missing_skills:
         errors.append(f"missing required project skills: {sorted(missing_skills)}")
+    if missing_commands:
+        errors.append(f"missing required project commands: {sorted(missing_commands)}")
+
     for path in agents:
         errors.extend(has_frontmatter(path, ("name", "description")))
     for path in skills:
+        errors.extend(has_frontmatter(path, ("name", "description")))
+        errors.extend(skill_name_matches_dir(path))
+    for path in commands:
         errors.extend(has_frontmatter(path, ("description",)))
+
+    for hook in ("guard_project_writes.py", "trace_hook.py"):
+        if not (OPENCODE / "hooks" / hook).is_file():
+            errors.append(f"missing hook: .opencode/hooks/{hook}")
+
+    for plugin in ("guard-project-writes.js", "trace-hook.js"):
+        path = OPENCODE / "plugins" / plugin
+        if not path.is_file():
+            errors.append(f"missing plugin: .opencode/plugins/{plugin}")
+        elif '".opencode"' not in path.read_text(encoding="utf-8"):
+            errors.append(f"{path}: plugin must reference the .opencode hooks path")
+
     for path in CPU_GOLDEN_GUIDES:
         if not path.is_file():
             errors.append(f"missing CPU golden guide: {path}")
@@ -120,12 +144,14 @@ def main() -> int:
             )
         if "CANN-aclnn-api-reference" in text:
             errors.append(f"{path}: contains the retired external documentation location")
+
     for path in ("CLAUDE.md", "docs/WORKFLOW.md", "docs/OBSERVABILITY.md", "docs/ARTIFACT_CONTRACTS.md"):
         if not (ROOT / path).is_file():
             errors.append(f"missing {path}")
 
     print(json.dumps(
-        {"valid": not errors, "agents": len(agents), "skills": len(skills), "errors": errors},
+        {"valid": not errors, "agents": len(agents), "skills": len(skills),
+         "commands": len(commands), "errors": errors},
         ensure_ascii=False,
         indent=2,
     ))

@@ -179,20 +179,21 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 
 ## 架构分层
 
-### Claude Code 编排层（.claude/）
-- `.claude/agents/*.md` — 专职 Agent 定义（WHO：角色身份、输入隔离安全边界、返回契约；流程细节一律在各阶段 SKILL.md，不重复抄写）
-- `.claude/skills/*/SKILL.md` — 流程和阶段 Skill（HOW：可执行规则、输入清单、校验命令；`iterate-operator`、`iterate-directory`、各阶段 Skill）
-- `.claude/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫）
-- `.claude/settings.json` — default 回退模式 + Hook 动态授权 + sandbox 配置
-- `.claude/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
+### opencode 编排层（.opencode/）
+- `.opencode/agents/*.md` — 专职 Agent 定义（WHO：角色身份、输入隔离安全边界、返回契约；流程细节一律在各阶段 SKILL.md，不重复抄写）
+- `.opencode/skills/*/SKILL.md` — 流程和阶段 Skill（HOW：可执行规则、输入清单、校验命令；`iterate-operator`、`iterate-directory`、各阶段 Skill）
+- `.opencode/commands/*.md` — 斜杠命令（`iterate-operator`、`iterate-directory`、`show-workforce`）
+- `.opencode/hooks/` — `trace_hook.py`（调度事件 JSONL）、`guard_project_writes.py`（Bash 写入守卫），由 `.opencode/plugins/*.js` 调用
+- `.opencode/opencode.json` — 项目级 opencode 配置（插件加载；provider/模型走全局配置）
+- `.opencode/runtime/schedule.jsonl` — 运行时调度事件审计（不入库）
 
-### opencode 原生层（.opencode/）
+### opencode 插件层（.opencode/plugins/）
 
 - `.opencode/plugins/guard-project-writes.js` — 直接以 `.venv` python 调用
-  `guard_project_writes.py` 做 PreToolUse 守卫：deny → throw 阻断工具，ask → 以「需要用户确认」
+  `.opencode/hooks/guard_project_writes.py` 做 PreToolUse 守卫：deny → throw 阻断工具，ask → 以「需要用户确认」
   错误反馈（模型可用 question 工具征询用户），allow → 放行
 - `.opencode/plugins/trace-hook.js` — `session.created`→SessionStart、`task` 工具
-  before/after→SubagentStart/Stop，写 `.claude/runtime/schedule.jsonl`
+  before/after→SubagentStart/Stop，写 `.opencode/runtime/schedule.jsonl`
 - opencode 工具名小写映射：`read/glob/grep/edit/write/apply_patch/bash/task` → 守卫脚本的
   `Read/Glob/Grep/Edit/Write/Bash/Agent`；脚本仍复用，不复制逻辑
 
@@ -249,7 +250,7 @@ Agent 时不得设置 `isolation: worktree`，也不得使用 `EnterWorktree`；
 - `check_scene_conflicts.py` — Q3 组装 selection.json 后、渲染 directive 前做特性参数取值冲突识别（advisory、exit 0；判据 `scene_scan.params[].value_conflicts`；产 `inputs/scene_conflicts.json`，render_scene_directive 据此标注 `known_conflicts`）
 - `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 → 冻结 `prompt_v1.md`（base 核心层 + **必载知识清单**，模块正文不进快照）+`prompt_preanalysis.json`+`prompt_assembly.json`
 - `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
-- `build_knowledge_skills.py` — 把两 family manifest 知识模块生成 `.claude/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 注册 skill（生成物禁止手改；canonical 变更后必须重跑，`--check` 只校验同步）
+- `build_knowledge_skills.py` — 把两 family manifest 知识模块生成 `.opencode/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 注册 skill（生成物禁止手改；canonical 变更后必须重跑，`--check` 只校验同步）
 - `route_aclnn_knowledge.py` / `route_torch_npu_knowledge.py` — manifest 驱动知识路由（正向 trigger + `reject_on` 负向否决 + `depends_on` 依赖闭包）
 - `validate_aclnn_knowledge.py` / `validate_torch_npu_knowledge.py` — 知识完整性预校验（manifest 字段、默认集、依赖闭包、跨 family 隔离、`reject_on` 合法性）
 - `validate_prompt_assembly.py` — 校验冻结装配记录的全部 sha256 与模块顺序标记
@@ -281,7 +282,7 @@ ACLNN 与 torch_npu 现同构：`prompts/<family>_constraints/base.md` 为 **can
 再由 manifest 驱动的知识路由在 run
 初始化（PLAN）阶段装配 `base 核心层 + 必载知识清单`，并冻结为 `prompt_v1.md` +
 `prompt_preanalysis.json` + `prompt_assembly.json`（含模块 sha256 全集）。知识模块
-正文不进快照，由 `build_knowledge_skills.py` 生成为 `.claude/skills/` 下注册 skill
+正文不进快照，由 `build_knowledge_skills.py` 生成为 `.opencode/skills/` 下注册 skill
 （`aclnn-*` / `torch-npu-*`，生成物禁止手改）：extractor 按必载清单逐一 Skill 加载
 并写 `extraction_provenance.json`，checker 对照路由命中集审计"命中未应用"；其余
 Agent（failure-analyst / constraint-updater / repairer / supplementer）按 description
@@ -336,7 +337,7 @@ runs/<operator>-<timestamp>/
   `record_prompt_update_decision.py` 记裁决、`record_prompt_update_application.py` 记应用
   与重跑校验，随后重跑 `validate_*_knowledge` + `init_run` +
   `validate_prompt_assembly.py --record`。用户沉默、运行成功或批处理模式均不构成批准
-  （详见 `docs/PROMPT_EVOLUTION.md` 与 `.claude/skills/iterate-operator/SKILL.md` 第 10 步）
+  （详见 `docs/PROMPT_EVOLUTION.md` 与 `.opencode/skills/iterate-operator/SKILL.md` 第 10 步）
 - 不自动提交、推送或删除文件
 - 约束、用例、执行结果和分析结果必须先过 `scripts/validate_artifacts.py`
 
@@ -349,7 +350,7 @@ runs/<operator>-<timestamp>/
 
 - `/agents` — 查看运行中和最近完成的 Agent
 - `/hooks` — 查看 Hooks 配置
-- `.claude/runtime/schedule.jsonl` — 每行一个调度事件 JSON
+- `.opencode/runtime/schedule.jsonl` — 每行一个调度事件 JSON
 
 ## 重要约定
 

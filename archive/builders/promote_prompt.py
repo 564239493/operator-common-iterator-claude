@@ -35,7 +35,7 @@ OPERATOR_PROMPT_PATTERN = re.compile(
     r"^operator_constraints_extract_v(?P<version>\d+)\.md$"
 )
 
-# 与 .claude/hooks/guard_project_writes.py TERMINAL_STATES (L25-31) 同步。
+# 与 .opencode/hooks/guard_project_writes.py TERMINAL_STATES (L25-31) 同步。
 TERMINAL_STATES = {
     "SUCCESS",
     "BLOCKED",

@@ -31,7 +31,7 @@ Claude Code 原生入口：
 
 ## 文件化审计
 
-`.claude/runtime/schedule.jsonl` 每行一个事件：
+`.opencode/runtime/schedule.jsonl` 每行一个事件：
 
 ```json
 {
