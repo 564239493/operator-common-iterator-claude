@@ -1,6 +1,7 @@
 ---
 description: 对每轮产物执行只读质量门禁并决定是否允许状态迁移。每轮必须使用。
 mode: subagent
+model: glm/glm-5.3-flash
 color: "#17a2b8"
 permission:
   edit: deny

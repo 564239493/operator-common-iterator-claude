@@ -1,4 +1,5 @@
 ---
+name: repair-constraints
 description: 根据 constraint_check.json 对当前 constraints.json 做最小范围修复，供 constraint-repairer 使用。
 ---
 

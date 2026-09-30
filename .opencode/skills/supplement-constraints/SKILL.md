@@ -1,4 +1,5 @@
 ---
+name: supplement-constraints
 description: 从补充约束 Markdown 与已提取 constraints.json 产出结构化 constraints_patch.json（op=add/replace），供 constraint-supplementer 使用。
 ---
 

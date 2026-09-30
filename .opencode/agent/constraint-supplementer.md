@@ -1,6 +1,7 @@
 ---
 description: 读补充约束 Markdown 与已提取的 constraints.json，产出结构化 constraints_patch.json（op=add/replace），仅在迭代流程的 SUPPLEMENT 步骤使用。
 mode: subagent
+model: glm/glm-5.3-flash
 color: "#67c23a"
 permission:
   task: deny

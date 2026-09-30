@@ -1,4 +1,5 @@
 ---
+name: check-constraints
 description: 对照算子文档及本轮明确补充证据检查最终 constraints.json，维护简洁的 constraint_check.json，供 constraint-checker 使用。
 ---
 

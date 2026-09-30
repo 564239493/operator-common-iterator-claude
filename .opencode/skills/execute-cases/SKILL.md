@@ -1,4 +1,5 @@
 ---
+name: execute-cases
 description: 以 ATK 或 TTK 模式准备/执行用例，并输出 execution_result.json。
 ---
 

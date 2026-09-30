@@ -1,4 +1,5 @@
 ---
+name: diagnose-failure
 description: 基于落盘证据将失败分类为 constraint_extraction、generator_bug 或 executor_bug。
 ---
 

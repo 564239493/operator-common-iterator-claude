@@ -1,6 +1,7 @@
 ---
 description: 执行生成的测试用例并规范化执行结果。仅在 EXECUTE 阶段使用。
 mode: subagent
+model: glm/glm-5.3-flash
 color: "#e6a23c"
 permission:
   task: deny

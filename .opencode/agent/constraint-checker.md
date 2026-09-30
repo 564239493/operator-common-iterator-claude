@@ -1,6 +1,7 @@
 ---
 description: 对照算子文档与本轮补充证据检查最终 constraints.json，记录错误位置、问题、修复建议和复检状态；只检查不修改约束。
 mode: subagent
+model: glm/glm-5.3-flash
 color: "#17a2b8"
 permission:
   glob: deny

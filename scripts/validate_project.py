@@ -266,7 +266,22 @@ def main() -> int:
                 f"{path}: color must be #RRGGBB hex or theme enum, got: {color}"
             )
     for path in skills:
-        errors.extend(has_frontmatter(path, ("description",)))
+        errors.extend(has_frontmatter(path, ("name", "description")))
+        # opencode 约定：frontmatter 的 name 必填且必须等于目录名，
+        # 缺失/不一致的技能不会出现在 skill 工具的注册列表里（模型只能退化为直接读文件）。
+        block = re.match(r"^---\s*\n(.*?)\n---", path.read_text(encoding="utf-8"), re.S)
+        name = ""
+        if block:
+            name = next(
+                (ln.split(":", 1)[1].strip().strip("'\"")
+                 for ln in block.group(1).splitlines() if ln.startswith("name:")),
+                "",
+            )
+        if name != path.parent.name:
+            errors.append(
+                f"{path}: skill frontmatter name 必须等于目录名 "
+                f"(got: {name!r}, want: {path.parent.name!r})"
+            )
     for path in CPU_GOLDEN_GUIDES:
         if not path.is_file():
             errors.append(f"missing CPU golden guide: {path}")

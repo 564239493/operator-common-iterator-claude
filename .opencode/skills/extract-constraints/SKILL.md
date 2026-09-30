@@ -1,4 +1,5 @@
 ---
+name: extract-constraints
 description: 从算子 Markdown 提取符合生成器模型的 constraints.json，供 constraint-extractor 使用。
 ---
 

@@ -1,4 +1,5 @@
 ---
+name: iterate-directory
 description: 串行扫描并迭代目录中的全部算子文档，支持失败后继续、批次汇总和中断恢复。
 ---
 

@@ -1,4 +1,5 @@
 ---
+name: collect-operator-source
 description: 给定 operators-src 树与 aclnn 名，确定性收集算子全量源码（aclnn 接口/L0 host 实现/op_host/op_kernel/aicpu/fusion/tiling/binary/tbe/声明头）。include 不动点闭包 + canndev 多层 + 后缀变体 + L0 反查，产快照+manifest+报告。仅项目内 operators-src 树，只读；外部 SDK 头标 external/missing 不假装拉到。
 ---
 

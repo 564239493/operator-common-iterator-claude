@@ -1,6 +1,7 @@
 ---
 description: 依据 constraint_check.json 仅修复其中 open/unfixed 的约束问题，不重提整份约束、不改问题状态。
 mode: subagent
+model: glm/glm-5.3-flash
 color: "#f1c40f"
 permission:
   write: deny

@@ -1,4 +1,5 @@
 ---
+name: generate-cases
 description: 从 constraints.json 生成 ATK JSON、TTK ACLNN CSV 或 torch_npu TTK E2E CSV。
 ---
 

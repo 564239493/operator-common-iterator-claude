@@ -1,4 +1,5 @@
 ---
+name: validate-run
 description: 对单轮 constraints、constraint_check、cases、execution 和 analysis 产物执行独立质量门禁。
 ---
 

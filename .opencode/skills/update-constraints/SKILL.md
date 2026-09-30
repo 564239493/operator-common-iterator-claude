@@ -1,4 +1,5 @@
 ---
+name: update-constraints
 description: 根据 analysis.json 的所有约束类失败簇，对复制后的 constraints.json 做最小增量更新并记录 constraint_update.json。
 ---
 

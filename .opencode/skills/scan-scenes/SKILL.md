@@ -1,4 +1,5 @@
 ---
+name: scan-scenes
 description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 <run-dir>/inputs/scene_scan.json 供 scene-scanner 使用。
 ---
 

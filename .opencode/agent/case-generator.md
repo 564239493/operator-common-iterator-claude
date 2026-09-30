@@ -1,6 +1,7 @@
 ---
 description: 基于已校验约束生成 ATK JSON、TTK ACLNN CSV 或 TTK E2E CSV。仅在 GENERATE 阶段使用。
 mode: subagent
+model: glm/glm-5.3-flash
 color: "#67c23a"
 permission:
   edit: deny

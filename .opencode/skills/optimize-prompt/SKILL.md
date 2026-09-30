@@ -1,4 +1,5 @@
 ---
+name: optimize-prompt
 description: 根据 constraint_extraction 失败生成 run-local 候选和分层知识沉淀提案，不自动修改 canonical 文件。
 ---
 

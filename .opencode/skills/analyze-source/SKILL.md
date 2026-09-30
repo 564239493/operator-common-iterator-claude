@@ -1,4 +1,5 @@
 ---
+name: analyze-source
 description: 从算子源码快照提取确定性约束事实并判读为 supplementary/uncertain/conflict 三 markdown，供约束补充与失败反向推导。仅在源码快照存在时使用。
 ---
 
