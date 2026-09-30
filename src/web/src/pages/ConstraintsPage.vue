@@ -868,7 +868,7 @@ export default {
     <!-- 顶栏: 标题 + 任务情况汇总 + 覆盖率展示按钮 -->
     <div class="topbar">
         <div class="topbar-right">
-            <div class="topbar-title">算子自主测试智能体-约束审核工具</div>
+            <div class="topbar-title">算子自主测试智能体工作台 · 约束审核</div>
             <div class="divider-v"></div>
             <template v-if="taskStats.total">
                 <div class="stat-item stat-total"><span class="stat-num">{{ taskStats.total }}</span> 任务</div>

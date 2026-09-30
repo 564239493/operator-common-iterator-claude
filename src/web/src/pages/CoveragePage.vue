@@ -370,7 +370,7 @@ export default {
 <div class="legacy-review">
     <!-- 顶栏 -->
     <div class="topbar">
-        <div class="topbar-title">算子覆盖率展示</div>
+        <div class="topbar-title">算子自主测试智能体工作台 · 覆盖率展示</div>
         <div class="divider-v"></div>
         <TaskPicker />
         <el-button size="small" plain @click="goBack">← 返回约束审核</el-button>

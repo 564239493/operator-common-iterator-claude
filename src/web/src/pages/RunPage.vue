@@ -249,10 +249,10 @@ function segStates(seg: any): string {
 <template>
   <div ref="snapRef" class="snap-container">
     <header class="topbar">
-      <div class="brand"><span class="logo"><i /><i /><i /><i /></span>算子测试工作台</div>
+      <div class="brand"><span class="logo"><i /><i /><i /><i /></span>算子自主测试智能体工作台</div>
       <nav aria-label="页面">
-        <span @click="router.push('/assets')">资产</span>
-        <span class="active">运行时</span>
+        <span @click="router.push('/assets')">智能体资产</span>
+        <span class="active">工作台</span>
       </nav>
       <div class="top-right">
         <button class="text-btn" title="切换明暗主题" @click="toggle">

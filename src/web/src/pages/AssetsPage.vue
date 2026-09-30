@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import { useTheme } from '../composables/useTheme'
 import RobotHead from '../components/band/RobotHead.vue'
 import AssetCard from '../components/assets/AssetCard.vue'
-import { assetTitle, chooseAgent, describeAsset, isRelated, relationDescription, relationFor, relationText, revealDetails, type Asset, type Catalog } from '../components/assets/model'
+import { assetTitle, chooseAgent, describeAsset, isRelated, relationDescription, relationFor, relationText, revealDetails, type Asset, type Catalog, type Relation } from '../components/assets/model'
 
 const router = useRouter()
 const { theme, toggle } = useTheme()
@@ -36,7 +36,16 @@ const allAssets = computed(() => catalog.value ? [...catalog.value.skills, ...ca
 const detail = computed(() => allAssets.value.find(a => a.id === selectedAsset.value))
 const summary = computed(() => !agent.value ? '' : agent.value.availability === 'ready' ? agent.value.description : ui.value.unavailable_description)
 function relation(item: Asset) { return relationFor(agent.value, item) }
-const relatedCount = computed(() => allAssets.value.filter(a => isRelated(relation(a))).length)
+// 关联计数按关系分类展示（必备 / 按需使用 / 可参考），避免 44 这类无区分度的总数
+const relatedSummary = computed(() => {
+  const labels = catalog.value?.relation_labels
+  if (!labels) return ''
+  return (['required', 'conditional', 'reference'] as Relation[])
+    .map(kind => ({ kind, n: allAssets.value.filter(a => relation(a) === kind).length }))
+    .filter(c => c.n > 0)
+    .map(c => `${relationText(c.kind, labels)} ${c.n}`)
+    .join(' · ')
+})
 const families = computed(() => (catalog.value?.families || []).map(f => {
   const items = catalog.value?.knowledge.filter(a => a.family === f.id) || []
   return { ...f, count: items.length, groups: Object.entries(catalog.value?.scopes || {})
@@ -110,7 +119,7 @@ onMounted(load)
               <template v-if="detail.kind === 'knowledge'"><h3>{{ ui.scope }}</h3><p>{{ detailFamily?.description }} · {{ catalog.scopes[detail.scope || ''] }}</p><p class="subtle">{{ ui.scope_note }}</p></template>
               <button class="back-detail" @click="closeDetail">{{ ui.back }}</button>
             </template>
-            <template v-else><span class="eyebrow">{{ ui.overview }}</span><h2>{{ agent?.role || ui.choose_agent }}</h2><div class="relation-badge">{{ relatedCount }} {{ ui.related_unit }}</div><p>{{ summary }}</p><h3>{{ ui.how_to_view }}</h3><p>{{ ui.how_to_view_description }}</p><p class="subtle">{{ ui.unknown_note }}</p></template>
+            <template v-else><span class="eyebrow">{{ ui.overview }}</span><h2>{{ agent?.role || ui.choose_agent }}</h2><div class="relation-badge">{{ relatedSummary }}</div><p>{{ summary }}</p><h3>{{ ui.how_to_view }}</h3><p>{{ ui.how_to_view_description }}</p><p class="subtle">{{ ui.unknown_note }}</p></template>
           </aside>
         </div>
       </main>

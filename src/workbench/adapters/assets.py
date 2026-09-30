@@ -18,7 +18,7 @@ UI_KEYS = set('''brand nav_assets nav_runtime theme_light theme_dark theme_to_li
     legend_required legend_allowed legend_unknown legend_note skills_title skills_empty knowledge_title
     family_label knowledge_intro knowledge_empty
     detail_label detail_knowledge detail_skill purpose relation_heading scope scope_note back overview
-    choose_agent related_unit how_to_view how_to_view_description unknown_note unavailable_description
+    choose_agent how_to_view how_to_view_description unknown_note unavailable_description
     no_description'''.split())
 
 
