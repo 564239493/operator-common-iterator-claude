@@ -3,6 +3,8 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
+  // 相对路径 + hash 路由：任意子路径零配置部署（nginx 挂任意前缀都可用），无需按部署位置重新构建
+  base: './',
   build: {
     outDir: 'dist',
     chunkSizeWarningLimit: 1500,

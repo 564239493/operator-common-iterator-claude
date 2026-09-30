@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { usePolling } from '../composables/usePolling'
 import { useEngineers } from '../composables/useEngineers'
@@ -11,6 +12,7 @@ import TopBar from '../components/shell/TopBar.vue'
 import type { ReplayEvent } from '../api/types'
 
 /** 单页：顶部轮次汇总、角色队列、交接图及统一详情。任务身份来自全站共享选择（不进 URL）。 */
+const router = useRouter()
 const { loadError, ready, selectedRunId } = useTask()
 const flowBoard = ref<InstanceType<typeof HandoffBoard>>()
 const flowScroll = ref(0)
@@ -175,10 +177,15 @@ const outcomes = computed(() => {
   const v = runView.value
   if (!v) return []
   const cards: { tone: string; title: string; text: string; link?: { label: string; href: string } }[] = []
-  // 约束深链：定位当前选中轮（约束页 ?iter= 一次性引导）
+  // 约束深链：hash 路由内跳转（无整页刷新），定位当前选中轮（约束页 ?iter= 一次性引导）
   const constraintsHref = () =>
-    '/constraints?run=' + encodeURIComponent(selectedRunId.value) +
-    '&iter=iter_' + String(selectedRound.value || 1).padStart(3, '0')
+    router.resolve({
+      path: '/constraints',
+      query: {
+        run: selectedRunId.value,
+        iter: 'iter_' + String(selectedRound.value || 1).padStart(3, '0'),
+      },
+    }).href
   const exeIt = iterFor('execution')
   if (exeIt?.execution) {
     const e = exeIt.execution
@@ -192,8 +199,8 @@ const outcomes = computed(() => {
         e.verdict === 'engine_error'
           ? `engine_error：${e.engine_error || '详见执行结果'}`
           : `execution_result.status=${e.status_raw} 仅指执行器完成，不代表用例全通过；以 ${e.passed}/${e.total} 为准。`,
-      // 覆盖率是本轮执行的产物：入口随执行结果卡（任务上下文由共享选择携带）
-      link: { label: '查看覆盖率', href: '/coverage' },
+      // 覆盖率是本轮执行的产物：入口随执行结果卡（hash 路由内跳转，任务上下文由共享选择携带）
+      link: { label: '查看覆盖率', href: router.resolve({ path: '/coverage' }).href },
     })
   }
   const regIt = iterFor('regression')

@@ -85,8 +85,9 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -v
 
 ## 页面地址与任务选择
 
-- 页面地址按视图固定：`/run`（工作台）、`/constraints`（约束审核）、`/coverage`（覆盖率展示）、`/assets`（智能体资产）。任务身份（runs/ 目录 = 算子名 + 测试运行时间）**不进 URL**，由页面内全站统一的任务选择器切换：按算子名分组、组内按运行创建时间列出每次测试，跨页与刷新经 localStorage 保持。
-- 兼容入口：`?run=<任务目录名>`（约束页可加 `&iter=iter_002`）为**一次性引导参数**，种入共享选择后即失效（raise_dashboard.py 拉起的 `/?run=&iter=` 深链同样有效）；旧地址 `/run/<任务目录名>` 经 redirect 跳到 `/run` 并自动选中该任务。
+- 前端为**相对资源路径 + hash 路由**：`npm run build` 产物可挂在 nginx 任意子路径下（`location /xxx/ { proxy_pass http://…:8420/; }`，注意 `proxy_pass` 结尾带 `/`），**无需按部署位置重新构建**；根路径部署行为不变。页面地址形如 `#/run`（工作台）、`#/constraints`（约束审核）、`#/coverage`（覆盖率展示）、`#/assets`（智能体资产）。
+- 任务身份（runs/ 目录 = 算子名 + 测试运行时间）**不进 URL**，由页面内全站统一的任务选择器切换：按算子名分组、组内按运行创建时间列出每次测试，跨页与刷新经 localStorage 保持。
+- 深链：`#/constraints?run=<任务目录名>&iter=iter_002` 中的参数为**一次性引导**，种入共享选择后即失效；旧式文档级地址 `/?run=<id>` 同样兼容（进入后自动选中该任务）。
 
 ## 约束审核与覆盖率
 

@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 import RunPage from '../pages/RunPage.vue'
 import AssetsPage from '../pages/AssetsPage.vue'
 import { useTask } from '../composables/useTask'
@@ -10,7 +10,8 @@ function seedFromQuery(to: { query: Record<string, unknown> }) {
 }
 
 export const router = createRouter({
-  history: createWebHistory(),
+  // hash 路由：与部署前缀完全解耦（子路径/根路径零配置），页面 URL 形如 /前缀/#/run
+  history: createWebHashHistory(),
   routes: [
     // 字符串 redirect 保留查询参数：/?run=X&iter=Y → /run?run=X&iter=Y，再由 seedFromQuery 引导
     { path: '/', redirect: '/run' },

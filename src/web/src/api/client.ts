@@ -1,9 +1,8 @@
 import type { Catalog } from '../components/assets/model'
-
-const BASE = ''
+import { withBase } from '../paths'
 
 async function get<T>(path: string): Promise<T> {
-  const resp = await fetch(BASE + path)
+  const resp = await fetch(withBase(path))
   const body = await resp.json().catch(() => null)
   if (!resp.ok || !body || body.ok === false) {
     const msg = body && body.error ? body.error : `HTTP ${resp.status}`

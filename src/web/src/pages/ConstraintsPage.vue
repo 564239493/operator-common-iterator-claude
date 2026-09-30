@@ -1,6 +1,7 @@
 <script>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { ElMessage } from 'element-plus';
+import { useRoute } from 'vue-router';
 import { marked } from 'marked';
 import { useTask } from '../composables/useTask';
 import TaskPicker from '../components/task/TaskPicker.vue';
@@ -613,8 +614,8 @@ export default {
 
         // 共享选择变化 → 装载新任务。immediate 让首次装载也走同一条路
         // （持久化选择立即装载；列表就绪后校验性自动选择同样触发），
-        // 编辑态选择器已禁用，防御外部种子；深链 ?iter= 仅首轮生效。
-        const qIterDeepLink = new URLSearchParams(window.location.search).get('iter');
+        // 编辑态选择器已禁用，防御外部种子；深链 ?iter= 仅首轮生效（hash 路由读 route.query）。
+        const qIterDeepLink = String(useRoute().query.iter || '');
         let firstTaskLoad = true;
         watch(selectedRunId, async (dir, prev) => {
             if (!dir) return;
