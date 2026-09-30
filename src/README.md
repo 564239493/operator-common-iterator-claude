@@ -90,7 +90,7 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -v
 
 ## 约束审核与覆盖率
 
-- 工作台顶部及节点详情提供入口；约束页固定地址 `/constraints`（任务经页面选择器或 `?run=&iter=` 引导）。
+- 入口随工作台轮次汇总卡：执行结果卡下方「查看覆盖率」进 `/coverage`；约束更新卡「查看约束情况」进 `/constraints`（带 `iter` 深链直达当前轮）。顶栏与节点详情不再放跳转按钮。
 - 支持产品分组、输入输出参数、原文行定位、相邻轮次参数间约束差异、修改/新增/删除参数间约束。输入输出参数卡保持只读。
 - `/coverage` 覆盖率报告按任务内嵌存放：`runs/<run-id>/ops_cov_report/<报告目录>/`（含 `*_coverage.json` 与可选 `analysis.md`）。
   选中任务时只列该任务内嵌报告，**按路径关联、不做名称匹配**；未选任务时浏览项目根 `ops_cov_report/`（兼容旧数据）。

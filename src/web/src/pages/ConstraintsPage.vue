@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus';
 import { marked } from 'marked';
 import { useTask } from '../composables/useTask';
 import TaskPicker from '../components/task/TaskPicker.vue';
+import TopBar from '../components/shell/TopBar.vue';
 
 
 // 状态机 → 中文标签（与 run_state.py 的 ALLOWED_STATES 对齐，无幽灵态）
@@ -39,7 +40,7 @@ function relStatusLabel(st) {
 }
 
 export default {
-    components: { TaskPicker },
+    components: { TaskPicker, TopBar },
     setup() {
         const DATA = ref({});
         const currentProduct = ref('');
@@ -256,11 +257,6 @@ export default {
 
         function cancelEdit() {
             editMode.value = false;
-        }
-
-        function goCover() {
-            // 任务上下文由全站共享选择携带，覆盖率页直达该任务内嵌的 runs/<run>/ops_cov_report/
-            window.location.href = '/coverage';
         }
 
         function addConstraint() {
@@ -848,7 +844,7 @@ export default {
             statusFilterOptions,
             inputRows, outputRows, cellText, boolText,
             statPass, statFail, statWarn, taskStats,
-            onIterChange, queryProgress, goCover,
+            onIterChange, queryProgress,
             editConstraints, editMode, submitLoading, exprTypeOptions,
             enterEditMode, cancelEdit,
             addConstraint, removeConstraint, addParam, removeParam,
@@ -865,20 +861,15 @@ export default {
 </script>
 <template>
 <div class="legacy-review">
-    <!-- 顶栏: 标题 + 任务情况汇总 + 覆盖率展示按钮 -->
-    <div class="topbar">
-        <div class="topbar-right">
-            <div class="topbar-title">算子自主测试智能体工作台 · 约束审核</div>
-            <div class="divider-v"></div>
-            <template v-if="taskStats.total">
-                <div class="stat-item stat-total"><span class="stat-num">{{ taskStats.total }}</span> 任务</div>
-                <div class="stat-item stat-succ"><span class="stat-num">{{ taskStats.succ }}</span> 成功</div>
-                <div class="stat-item stat-bad"><span class="stat-num">{{ taskStats.failed }}</span> 失败/阻断</div>
-                <div class="stat-item stat-running"><span class="stat-num">{{ taskStats.running }}</span> 运行中</div>
-            </template>
-        </div>
-        <div><a :href="selectedRunId ? '/run/' + encodeURIComponent(selectedRunId) : '/'">返回工作台</a> <el-button @click="goCover">覆盖率展示</el-button></div>
-    </div>
+    <!-- 顶栏: 共享 TopBar（品牌/导航/主题）+ 任务情况汇总 + 覆盖率展示入口 -->
+    <TopBar view="constraints">
+        <template v-if="taskStats.total">
+            <div class="stat-item stat-total"><span class="stat-num">{{ taskStats.total }}</span> 任务</div>
+            <div class="stat-item stat-succ"><span class="stat-num">{{ taskStats.succ }}</span> 成功</div>
+            <div class="stat-item stat-bad"><span class="stat-num">{{ taskStats.failed }}</span> 失败/阻断</div>
+            <div class="stat-item stat-running"><span class="stat-num">{{ taskStats.running }}</span> 运行中</div>
+        </template>
+    </TopBar>
 
     <!-- 副信息栏: 任务/轮次/产品系列 一组选择器 + 约束统计 -->
     <div class="info-bar">
@@ -1258,18 +1249,19 @@ export default {
 }
 
 .legacy-review {
-    --bg: #f4f6f9;
-    --panel-bg: #ffffff;
-    --border: #e2e8f0;
-    --text: #1e293b;
-    --text-secondary: #64748b;
-    --text-muted: #94a3b8;
-    --accent: #3b82f6;
-    --green: #10b981;
-    --red: #ef4444;
-    --orange: #f59e0b;
-    --code-bg: #f8fafc;
-    --code: #475569;
+    /* 旧静态页遗留变量统一映射到全站设计令牌（--wb-*），暗色主题随之生效 */
+    --bg: var(--wb-bg);
+    --panel-bg: var(--wb-card);
+    --border: var(--wb-line);
+    --text: var(--wb-ink);
+    --text-secondary: var(--wb-muted);
+    --text-muted: var(--wb-faint);
+    --accent: var(--wb-blue);
+    --green: var(--wb-green);
+    --red: var(--wb-red);
+    --orange: var(--wb-orange);
+    --code-bg: var(--wb-code-bg);
+    --code: var(--wb-muted);
 }
 
 .legacy-review {
@@ -1290,32 +1282,7 @@ export default {
     overflow: hidden;
 }
 
-/* ===== 顶栏 ===== */
-.topbar {
-    background: var(--panel-bg);
-    border-bottom: 1px solid var(--border);
-    padding: 0 24px;
-    height: 56px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-shrink: 0;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-    flex-wrap: wrap;
-    min-height: 56px;
-}
-
-.topbar-title {
-    font-size: 15px;
-    font-weight: 600;
-}
-
-.topbar-right {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
-}
+/* ===== 顶栏由共享 TopBar 提供，此处仅保留槽内统计项样式 ===== */
 
 /* ===== 副信息栏 ===== */
 .info-bar {
@@ -1346,13 +1313,6 @@ export default {
     flex-wrap: wrap;
     min-width: 0;
     margin-left: auto;
-}
-
-.divider-v {
-    width: 1px;
-    height: 20px;
-    background: var(--border);
-    flex-shrink: 0;
 }
 
 .stat-item {
@@ -1532,7 +1492,7 @@ export default {
 }
 
 .card-header:hover {
-    background: #fafbfc;
+    background: var(--wb-hover);
 }
 
 .card-toggle {
@@ -1590,15 +1550,15 @@ export default {
 }
 
 .icon-constraint {
-    background: #ede9fe;
+    background: rgba(139, 92, 246, 0.14);
 }
 
 .icon-input {
-    background: #dbeafe;
+    background: rgba(59, 130, 246, 0.14);
 }
 
 .icon-output {
-    background: #ccfbf1;
+    background: rgba(20, 184, 166, 0.14);
 }
 
 .card-count {
@@ -1616,7 +1576,7 @@ export default {
 }
 
 .op-table .el-table__header th {
-    background: #fafbfc !important;
+    background: var(--wb-card-soft) !important;
     color: var(--text-secondary);
     font-size: 12px;
     font-weight: 600;
@@ -1625,9 +1585,6 @@ export default {
 }
 
 /* 固定表头: 通过 el-table max-height 启用原生固定表头（.el-table overflow:hidden 会使 CSS sticky 失效） */
-html[data-theme='dark'] .op-table .el-table__header th {
-    background: #182136 !important;
-}
 
 .op-table .cell {
     font-size: 13px;
@@ -1653,7 +1610,7 @@ html[data-theme='dark'] .op-table .el-table__header th {
     border-radius: 6px;
     word-break: break-all;
     line-height: 1.5;
-    border: 1px solid #f1f5f9;
+    border: 1px solid var(--wb-line-soft);
 }
 
 .src-block {
@@ -1731,7 +1688,7 @@ html[data-theme='dark'] .op-table .el-table__header th {
 }
 
 .c-src-link:hover {
-    color: #2563eb;
+    color: var(--wb-blue);
     text-decoration-style: solid;
 }
 

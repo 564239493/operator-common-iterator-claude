@@ -44,13 +44,6 @@
   "default_agent": "constraint-extractor",
   "default_family": "aclnn",
   "ui": {
-    "brand": "算子自主测试智能体工作台",
-    "nav_assets": "智能体资产",
-    "nav_runtime": "工作台",
-    "theme_light": "☀ 浅色",
-    "theme_dark": "☾ 深色",
-    "theme_to_light": "切换到浅色主题",
-    "theme_to_dark": "切换到深色主题",
     "title": "智能体列表",
     "subtitle": "职责独立，按需加载技能与知识的智能体",
     "refresh": "刷新",

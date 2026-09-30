@@ -3,10 +3,11 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus';
 import { useTask } from '../composables/useTask';
 import TaskPicker from '../components/task/TaskPicker.vue';
+import TopBar from '../components/shell/TopBar.vue';
 
 
 export default {
-    components: { TaskPicker },
+    components: { TaskPicker, TopBar },
     setup() {
         // ---- 目录列表 ----
         const coverDirs = ref([]);
@@ -42,9 +43,6 @@ export default {
             );
         });
 
-        function goBack() {
-            window.location.href = '/constraints';
-        }
 
         // ---- 模块与指标 ----
         const coverModules = ['host', 'kernel', 'tiling', 'op'];
@@ -361,20 +359,17 @@ export default {
             opDomain, opDir, uncoveredRows, coveredFuncRows,
             runContext,
 
-            selectCoverDir, goBack, funcDetails, toggleFunc, coverTypeOf, normalizeCover, coverTagType,
+            selectCoverDir, funcDetails, toggleFunc, coverTypeOf, normalizeCover, coverTagType,
         };
     }
 };
 </script>
 <template>
 <div class="legacy-review">
-    <!-- 顶栏 -->
-    <div class="topbar">
-        <div class="topbar-title">算子自主测试智能体工作台 · 覆盖率展示</div>
-        <div class="divider-v"></div>
+    <!-- 顶栏: 共享 TopBar（品牌/导航/主题）+ 任务选择 -->
+    <TopBar view="coverage">
         <TaskPicker />
-        <el-button size="small" plain @click="goBack">← 返回约束审核</el-button>
-    </div>
+    </TopBar>
 
     <p class="report-note">独立覆盖报告 · 函数、语句和分支覆盖率分别统计。
         <template v-if="runContext">正在查看任务 <b>{{ runContext }}</b> 内嵌的覆盖报告（runs/{{ runContext }}/ops_cov_report/），按路径关联，不做名称匹配。</template>
@@ -538,20 +533,21 @@ export default {
 }
 
 .legacy-review {
-    --bg: #f4f6f9;
-    --panel-bg: #ffffff;
-    --border: #e2e8f0;
-    --border-light: #eef2f7;
-    --text: #1e293b;
-    --text-secondary: #64748b;
-    --text-muted: #94a3b8;
-    --accent: #3b82f6;
-    --accent-light: #eff6ff;
-    --green: #10b981;
-    --red: #ef4444;
-    --orange: #f59e0b;
-    --code-bg: #f8fafc;
-    --code: #475569;
+    /* 旧静态页遗留变量统一映射到全站设计令牌（--wb-*），暗色主题随之生效 */
+    --bg: var(--wb-bg);
+    --panel-bg: var(--wb-card);
+    --border: var(--wb-line);
+    --border-light: var(--wb-line-soft);
+    --text: var(--wb-ink);
+    --text-secondary: var(--wb-muted);
+    --text-muted: var(--wb-faint);
+    --accent: var(--wb-blue);
+    --accent-light: var(--wb-blue-soft);
+    --green: var(--wb-green);
+    --red: var(--wb-red);
+    --orange: var(--wb-orange);
+    --code-bg: var(--wb-code-bg);
+    --code: var(--wb-muted);
 }
 
 .legacy-review {
@@ -578,29 +574,7 @@ export default {
     font-family: "JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace;
 }
 
-/* ===== 顶栏 ===== */
-.topbar {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 0 24px;
-    height: 52px;
-    background: var(--panel-bg);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-}
-
-.topbar-title {
-    font-size: 15px;
-    font-weight: 600;
-}
-
-.divider-v {
-    width: 1px;
-    height: 18px;
-    background: var(--border);
-}
+/* ===== 顶栏由共享 TopBar 提供 ===== */
 
 /* ===== 主体: 左右分栏 ===== */
 .cover-main {
@@ -663,7 +637,7 @@ export default {
 
 .sidebar-item.active {
     background: var(--accent-light);
-    border-color: #c7dbf7;
+    border-color: var(--wb-blue-line);
 }
 
 .sidebar-item.active .si-name {

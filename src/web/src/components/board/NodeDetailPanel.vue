@@ -263,7 +263,7 @@ function openArtifact(path: string) {
         </ul>
       </details>
 
-      <div class="review-links"><a :href="'/constraints?run=' + encodeURIComponent(runId) + '&iter=iter_' + String(round).padStart(3, '0')">约束表格、轮次对比与修改 ↗</a><a href="/coverage">覆盖率报告 ↗</a></div><div class="detail-label">产物 / 证据来源</div>
+      <div class="detail-label">产物 / 证据来源</div>
       <div v-if="artifacts.length" class="files">
         <div v-for="a in artifacts" :key="a.fullPath" class="file-line">
           <span class="file-path">{{ a.fullPath }}</span>
@@ -446,5 +446,5 @@ h3 { font-size: 15px; margin: 0 0 14px; }
 .detail { position:static; max-height:none; overflow:visible; }
 .merged-kv { display:grid; grid-template-columns:minmax(110px,160px) minmax(0,1fr); gap:8px 16px; font-size:12px; }
 .merged-kv dt { color:var(--wb-muted); }.merged-kv dd { margin:0; overflow-wrap:anywhere; }.merged-kv small { display:block; margin-top:4px; color:var(--wb-muted); }
-.review-links{display:flex;gap:20px;flex-wrap:wrap;margin:16px 0}.review-links a{color:var(--wb-blue);font-size:12px}
+
 </style>

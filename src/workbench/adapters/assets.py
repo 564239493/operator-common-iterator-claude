@@ -12,8 +12,7 @@ MAX_CONTENT_BYTES = 4 * 1024 * 1024
 RELATIONS = {'required', 'conditional', 'reference', 'denied', 'unmentioned'}
 DISPLAY_RELATIONS = RELATIONS | {'out_of_scope', 'unavailable'}
 AVAILABILITY = {'ready', 'missing', 'unavailable'}
-UI_KEYS = set('''brand nav_assets nav_runtime theme_light theme_dark theme_to_light theme_to_dark
-    title subtitle refresh refreshing refresh_failed agents_unit skills_unit knowledge_unit item_unit
+UI_KEYS = set('''title subtitle refresh refreshing refresh_failed agents_unit skills_unit knowledge_unit item_unit
     select_agent viewing view_capability agent_unavailable current_agent when_to_use outcome
     legend_required legend_allowed legend_unknown legend_note skills_title skills_empty knowledge_title
     family_label knowledge_intro knowledge_empty

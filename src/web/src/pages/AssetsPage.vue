@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { api } from '../api/client'
-import { useTheme } from '../composables/useTheme'
 import RobotHead from '../components/band/RobotHead.vue'
 import AssetCard from '../components/assets/AssetCard.vue'
+import TopBar from '../components/shell/TopBar.vue'
 import { assetTitle, chooseAgent, describeAsset, isRelated, relationDescription, relationFor, relationText, revealDetails, type Asset, type Catalog, type Relation } from '../components/assets/model'
 
-const router = useRouter()
-const { theme, toggle } = useTheme()
 const catalog = ref<Catalog | null>(null)
 const ui = computed(() => catalog.value?.ui || {})
 const loading = ref(true)
@@ -75,12 +72,9 @@ onMounted(load)
     <div v-if="!catalog && loading" class="empty-state" role="status">正在加载页面内容…</div>
     <div v-else-if="!catalog && error" class="empty-state" role="alert"><p>暂时无法加载页面内容，请稍后重试。</p><button class="action" @click="load">重试</button></div>
     <template v-if="catalog">
-      <header class="topbar">
-        <div class="brand"><span class="logo" aria-hidden="true"><i /><i /><i /><i /></span>{{ ui.brand }}</div>
-        <nav :aria-label="ui.brand"><span class="active" aria-current="page">{{ ui.nav_assets }}</span><button @click="router.push('/')">{{ ui.nav_runtime }}</button></nav>
+      <TopBar view="assets">
         <button class="refresh-content" :disabled="loading" @click="load">{{ loading ? ui.refreshing : ui.refresh }}</button>
-        <button class="theme-toggle" @click="toggle" :aria-label="theme === 'dark' ? ui.theme_to_light : ui.theme_to_dark">{{ theme === 'dark' ? ui.theme_light : ui.theme_dark }}</button>
-      </header>
+      </TopBar>
       <div class="page-heading"><div><h1>{{ ui.title }}</h1><p>{{ ui.subtitle }}</p></div><div class="totals"><b>{{ catalog.agents.length }}</b> {{ ui.agents_unit }} · <b>{{ catalog.skills.length }}</b> {{ ui.skills_unit }} · <b>{{ catalog.knowledge.length }}</b> {{ ui.knowledge_unit }}</div></div>
       <div v-if="error" class="notice" role="alert">{{ ui.refresh_failed }}</div>
       <div class="agent-band" role="group" :aria-label="ui.select_agent">

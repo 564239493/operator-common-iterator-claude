@@ -1,22 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { usePolling } from '../composables/usePolling'
 import { useEngineers } from '../composables/useEngineers'
-import { useTheme } from '../composables/useTheme'
 import { useTask } from '../composables/useTask'
 import AgentBand from '../components/band/AgentBand.vue'
 import HandoffBoard from '../components/board/HandoffBoard.vue'
-import HistoryDrawer from '../components/history/HistoryDrawer.vue'
 import TaskPicker from '../components/task/TaskPicker.vue'
+import TopBar from '../components/shell/TopBar.vue'
 import type { ReplayEvent } from '../api/types'
 
 /** 单页：顶部轮次汇总、角色队列、交接图及统一详情。任务身份来自全站共享选择（不进 URL）。 */
-const router = useRouter()
-const { theme, toggle } = useTheme()
 const { loadError, ready, selectedRunId } = useTask()
-const historyDrawer = ref<InstanceType<typeof HistoryDrawer>>()
 const flowBoard = ref<InstanceType<typeof HandoffBoard>>()
 const flowScroll = ref(0)
 const flowZoom = ref(1)
@@ -179,7 +174,11 @@ function iterFor(key: string) { return (runView.value?.iterations || []).find((v
 const outcomes = computed(() => {
   const v = runView.value
   if (!v) return []
-  const cards: { tone: string; title: string; text: string }[] = []
+  const cards: { tone: string; title: string; text: string; link?: { label: string; href: string } }[] = []
+  // 约束深链：定位当前选中轮（约束页 ?iter= 一次性引导）
+  const constraintsHref = () =>
+    '/constraints?run=' + encodeURIComponent(selectedRunId.value) +
+    '&iter=iter_' + String(selectedRound.value || 1).padStart(3, '0')
   const exeIt = iterFor('execution')
   if (exeIt?.execution) {
     const e = exeIt.execution
@@ -193,6 +192,8 @@ const outcomes = computed(() => {
         e.verdict === 'engine_error'
           ? `engine_error：${e.engine_error || '详见执行结果'}`
           : `execution_result.status=${e.status_raw} 仅指执行器完成，不代表用例全通过；以 ${e.passed}/${e.total} 为准。`,
+      // 覆盖率是本轮执行的产物：入口随执行结果卡（任务上下文由共享选择携带）
+      link: { label: '查看覆盖率', href: '/coverage' },
     })
   }
   const regIt = iterFor('regression')
@@ -217,12 +218,14 @@ const outcomes = computed(() => {
       tone: 'info',
       title: '▤ 约束更新',
       text: `${updIt.constraint_update.change_count} 处最小修改，依据 ${(updIt.constraint_update.finding_ids || []).length} 项诊断发现。`,
+      link: { label: '查看约束情况', href: constraintsHref() },
     })
   } else if (iterFor('analysis')) {
     cards.push({
       tone: 'info',
       title: '▤ 未找到约束更新记录',
       text: '当前选择的轮次没有约束更新报告，暂无法确认是否修改。',
+      link: { label: '查看约束情况', href: constraintsHref() },
     })
   }
   return cards.slice(0, 3)
@@ -248,21 +251,9 @@ function segStates(seg: any): string {
 
 <template>
   <div ref="snapRef" class="snap-container">
-    <header class="topbar">
-      <div class="brand"><span class="logo"><i /><i /><i /><i /></span>算子自主测试智能体工作台</div>
-      <nav aria-label="页面">
-        <span @click="router.push('/assets')">智能体资产</span>
-        <span class="active">工作台</span>
-      </nav>
-      <div class="top-right">
-        <button class="text-btn" title="切换明暗主题" @click="toggle">
-          {{ theme === 'dark' ? '☀ 浅色' : '☾ 深色' }}
-        </button>
-        <TaskPicker />
-        <button class="text-btn" @click="historyDrawer?.open()">◷ 历史任务</button>
-        <a class="text-btn" :href="'/constraints?run=' + encodeURIComponent(selectedRunId) + '&iter=iter_' + String(selectedRound || 1).padStart(3, '0')">约束审核</a><a class="text-btn" :href="'/coverage?run=' + encodeURIComponent(selectedRunId)">覆盖率</a>
-      </div>
-    </header>
+    <TopBar view="workbench">
+      <TaskPicker />
+    </TopBar>
 
     <aside class="round-rail" aria-label="测试轮次">
       <div class="rail-heading">测试轮次 <span>{{ rounds.length }}</span></div>
@@ -315,7 +306,7 @@ function segStates(seg: any): string {
           </div>
 
           <div v-if="outcomes.length" class="outcomes">
-            <div v-for="(c, i) in outcomes" :key="i" class="outcome" :class="c.tone"><strong>{{ c.title }}</strong><span>{{ c.text }}</span></div>
+            <div v-for="(c, i) in outcomes" :key="i" class="outcome" :class="c.tone"><strong>{{ c.title }}</strong><span>{{ c.text }}</span><a v-if="c.link" class="outcome-link" :href="c.link.href">{{ c.link.label }} →</a></div>
           </div>
           <details class="run-context"><summary>任务背景与状态历史</summary>
             <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
@@ -388,7 +379,6 @@ function segStates(seg: any): string {
       </div>
     </section>
 
-    <HistoryDrawer ref="historyDrawer" :current-run-id="selectedRunId" />
   </div>
 </template>
 
@@ -397,26 +387,7 @@ function segStates(seg: any): string {
 .screen {
   padding-bottom: 0; min-height: 100vh; min-height: 100dvh; scroll-snap-align: start; display: flex; flex-direction: column; }
 
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  height: 72px;
-  background: var(--wb-card);
-  border-bottom: 1px solid var(--wb-line);
-  display: flex;
-  align-items: center;
-  padding: 0 36px;
-  gap: 42px;
-}
-.brand { font-size: 20px; font-weight: 750; letter-spacing: 0.5px; display: flex; align-items: center; }
-.logo { display: inline-grid; grid-template-columns: repeat(2, 9px); gap: 3px; margin-right: 12px; }
-.logo i { width: 9px; height: 9px; border-radius: 2px; background: var(--wb-blue); }
-.topbar nav { height: 100%; display: flex; align-items: center; gap: 30px; }
-.topbar nav span { height: 100%; padding-top: 24px; color: var(--wb-muted); cursor: pointer; }
-.topbar nav .active { color: var(--wb-blue); border-bottom: 3px solid var(--wb-blue); font-weight: 650; }
-.top-right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
-.tag { font-size: 12px; border-radius: 6px; padding: 4px 9px; background: var(--wb-blue-soft); color: var(--wb-blue); }
+/* 顶栏由共享 TopBar 组件提供；.text-btn 供顶栏动作槽里的链接复用 */
 .text-btn { border: 0; background: none; color: var(--wb-muted); font-size: 12px; }
 .text-btn:hover { color: var(--wb-blue); }
 
@@ -516,6 +487,8 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .outcome { background: var(--wb-card); border: 1px solid var(--wb-line); border-radius: 10px; padding: 15px 18px; }
 .outcome strong { display: block; font-size: 13px; margin-bottom: 5px; }
 .outcome span { font-size: 12px; color: var(--wb-muted); line-height: 1.6; }
+.outcome .outcome-link { display: inline-block; margin-top: 8px; font-size: 12px; color: var(--wb-blue); text-decoration: none; }
+.outcome .outcome-link:hover { text-decoration: underline; }
 .outcome.ok strong { color: var(--wb-green); }
 .outcome.warn strong { color: var(--wb-orange); }
 .outcome.bad strong { color: var(--wb-red); }
@@ -533,13 +506,8 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 
 @media (max-width: 900px) {
   .main-area, .board-area { padding-left: 16px; padding-right: 16px; }
-  .topbar { padding: 0 16px; gap: 20px; }
-  .brand { font-size: 15px; }
-  .top-right .tag { display: none; }
-  .topbar nav { gap: 14px; }
 }
 @media (max-width: 600px) {
-  .top-right { gap: 10px; }
   .heading { flex-direction: column; align-items: flex-start; gap: 8px; }
   .status { align-self: flex-start; }
   .metric { padding: 10px 14px; }
