@@ -105,6 +105,10 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
         ast.Div: operator.truediv, ast.Mod: operator.mod,
     }
+    # --- 序比较算符反转（标量在左的Seq比较折叠使用） ---
+    _REVERSED_ORDER_OPS = {
+        ast.Lt: ast.Gt, ast.LtE: ast.GtE, ast.Gt: ast.Lt, ast.GtE: ast.LtE,
+    }
     # --- 函数调用 ---
     _CALL_DISPATCH_TABLE = {
         'len': '_handle_len', 'all': '_handle_all', 'any': '_handle_any',
@@ -113,6 +117,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
     }
     def __init__(self, builder):
         self.builder = builder
+        self._dtype_compare_context = False
 
     def visit(self, node):
         method = 'visit_' + node.__class__.__name__
@@ -152,6 +157,13 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
     # --- 节点访问 ---
     def visit_Constant(self, node):
+        if (isinstance(node.value, str) and self._dtype_compare_context
+                and node.value in DTYPE_MAP):
+            # dtype 比较上下文中的字符串字面量归一为 DType 枚举常量：
+            # `biasOptional.dtype == ('fp32' if x.dtype == 'bf16' else 'fp16')`
+            # 的 IfExp 分支经 z3.If 产生 String sort，与 DType 比较 sort
+            # mismatch（aclnnGroupedMatmulV5 Mode A 表达式之二）
+            return DTYPE_MAP[node.value]
         return node.value
 
     def visit_Name(self, node):
@@ -271,7 +283,17 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             left = left._scalar()
 
         ops = node.ops
-        comps = [self.visit(c) for c in node.comparators]
+        # dtype 比较上下文：左侧为 DType-sort 时，比较数子树中的 dtype 字符串
+        # 字面量（含 IfExp 分支，如 'fp32' if x.dtype == 'bf16' else 'fp16'）
+        # 在 visit_Constant 处归一为 DType 枚举常量，避免 z3.If 产生 String
+        # sort 与 DType 比较 sort mismatch；嵌套比较按各自左侧 sort 重置、
+        # 结束后恢复（format 等 String 上下文不受影响）
+        prev_dtype_ctx = self._dtype_compare_context
+        self._dtype_compare_context = z3.is_expr(left) and left.sort().name() == 'DType'
+        try:
+            comps = [self.visit(c) for c in node.comparators]
+        finally:
+            self._dtype_compare_context = prev_dtype_ctx
 
         res = []
         cur_left = left
@@ -354,6 +376,18 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
             elif z3.is_array(cur_left) and not z3.is_array(right):
                 res.append(self._handle_array_scalar_compare(cur_left, op, right))
+            elif (isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE))
+                  and z3.is_seq(cur_left) and not z3.is_seq(right)
+                  and not isinstance(right, (list, tuple))):
+                # 处理ListVar.range_value（Seq sort）与标量的序比较的情况，转化为序列中的每个元素都和标量比较，此处为标量在右的场景
+                res.append(self._handle_seq_scalar_compare(cur_left, op, right))
+            elif (isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE))
+                  and z3.is_seq(right) and not z3.is_seq(cur_left)
+                  and not isinstance(cur_left, (list, tuple))
+                  and not z3.is_array(cur_left)):
+                # 处理ListVar.range_value（Seq sort）与标量的序比较的情况，转化为序列中的每个元素都和标量比较，此处为标量在左的场景
+                res.append(self._handle_seq_scalar_compare(
+                    right, self._REVERSED_ORDER_OPS[type(op)](), cur_left))
             else:
                 cur_left, right = self._promote_numeric_types(cur_left, right)
                 if isinstance(op, ast.Eq):
@@ -423,6 +457,31 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             cond = elem != scalar
         else:
             raise NotImplementedError
+        return z3.ForAll([idx], z3.Implies(bounds, cond))
+
+    def _handle_seq_scalar_compare(self, seq, op, scalar):
+        """Seq（ListVar.z3_var）与标量的序比较：全元素 ForAll 语义。
+
+        与 _handle_array_scalar_compare（TensorListVar._range_value_arr 的
+        Array 形态）保持一致：`0 <= A.range_value <= x.shape[0]` 中 ListVar
+        裸 .range_value 返回 Seq sort，通用分支构造 `标量 op Seq` 触发
+        sort mismatch；此处展开为对全部元素的一致性约束。
+        """
+        idx = z3.Int('idx')
+        elem = seq[idx]
+        elem, scalar = self._promote_numeric_types(elem, scalar)
+        if isinstance(op, ast.Lt):
+            cond = elem < scalar
+        elif isinstance(op, ast.LtE):
+            cond = elem <= scalar
+        elif isinstance(op, ast.Gt):
+            cond = elem > scalar
+        elif isinstance(op, ast.GtE):
+            cond = elem >= scalar
+        else:
+            raise NotImplementedError(
+                f"Unsupported op for seq-scalar compare: {type(op).__name__}")
+        bounds = z3.And(idx >= 0, idx < z3.Length(seq))
         return z3.ForAll([idx], z3.Implies(bounds, cond))
 
     def visit_BinOp(self, node):
