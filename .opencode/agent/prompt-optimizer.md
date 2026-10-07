@@ -1,7 +1,6 @@
 ---
 description: 仅在根因为 constraint_extraction 时精准优化约束提取提示词。
 mode: subagent
-model: glm/glm-5.3-flash
 color: "#e84393"
 permission:
   bash: deny

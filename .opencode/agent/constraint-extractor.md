@@ -1,7 +1,6 @@
 ---
 description: 从 CANN 算子 Markdown 文档提取并校验结构化约束。仅在迭代流程的 EXTRACT 阶段使用。
 mode: subagent
-model: glm/glm-5.3-flash
 color: "#409eff"
 permission:
   task: deny

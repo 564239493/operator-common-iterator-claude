@@ -1,7 +1,6 @@
 ---
 description: 对照文档、约束、用例与执行结果诊断失败根因。仅在 DIAGNOSE 阶段使用。
 mode: subagent
-model: glm/glm-5.3-flash
 color: "#9b59b6"
 permission:
   edit: deny

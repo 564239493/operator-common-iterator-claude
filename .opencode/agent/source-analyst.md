@@ -1,7 +1,6 @@
 ---
 description: 从算子源码快照提取确定性约束事实并判读为 3 个 markdown（supplementary/uncertain/conflict），供约束补充与失败反向推导。仅在 run_state.operator_src_snapshot 非空时使用。
 mode: subagent
-model: glm/glm-5.3-flash
 color: "#20c997"
 permission:
   task: deny

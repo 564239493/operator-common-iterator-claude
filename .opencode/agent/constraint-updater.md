@@ -1,7 +1,6 @@
 ---
 description: 根据执行失败的结构化 constraint_findings 对复制后的 constraints.json 做最小增量更新，不重新提取整份约束。
 mode: subagent
-model: glm/glm-5.3-flash
 color: "#e6a23c"
 permission:
   glob: deny

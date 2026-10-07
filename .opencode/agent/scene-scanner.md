@@ -1,7 +1,6 @@
 ---
 description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 <run-dir>/inputs/scene_scan.json 供主协调器向用户征询三级场景选择。仅在 EXTRACT 前的 SCENE_SCAN 子步骤使用。
 mode: subagent
-model: glm/glm-5.3-flash
 color: "#f1c40f"
 permission:
   task: deny
