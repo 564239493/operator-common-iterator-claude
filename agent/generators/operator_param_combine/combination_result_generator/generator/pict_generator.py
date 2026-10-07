@@ -826,6 +826,23 @@ def _format_constraint_value(v: Any) -> Optional[str]:
         return repr(v)
     return None
 
+
+def _format_domain_value(v: Any) -> Optional[str]:
+    """按值域中的原始类型格式化 PICT 约束字面量。
+
+    标量（bool/int/float/str）直接走 _format_constraint_value：int/float
+    不加引号，与 model 值列表的数字 token 一致（修复引号类型不匹配）；
+    token 编码值（None / list）无法按原始类型表达，回退按其 PICT token
+    格式化（字符串 token 加引号，与 model 值列表的编码 token 一致）。
+    """
+    fv = _format_constraint_value(v)
+    if fv is not None:
+        return fv
+    token = encode_pict_value(v, "_constraint_fallback_", {})
+    if token is None:
+        return None
+    return '"{}"'.format(token)
+
 def encode_pict_value(raw_value, pict_column_name, column_token_map):
     """把（可能是非标量的）值编码为 PICT token；标量值原样返回其格式化结果。
 
@@ -1018,7 +1035,7 @@ def _expand_cross_equality(left_col: str, right_col: str,
         return None
     lines: List[str] = []
     for v in common:
-        fv = _format_constraint_value(v)
+        fv = _format_domain_value(v)
         if fv is None:
             continue
         lines.append("IF [{}] = {} THEN [{}] = {};".format(left_col, fv, right_col, fv))
@@ -1242,7 +1259,7 @@ def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
                 "cross-parameter equality '[{}] = [{}]' has no common value, dropped".format(left_col, right_col))
             continue
         for v in common:
-            fv = _format_constraint_value(v)
+            fv = _format_domain_value(v)
             if fv is None:
                 continue
             lines.append("IF {} AND [{}] = {} THEN [{}] = {};".format(
@@ -1404,6 +1421,7 @@ def convert_domain_json_to_pict_model(operator_name: str,
         raise ValueError("'{}' has no 'parameters' dict".format(operator_name))
 
     parameters: Dict[str, List[Any]] = {}
+    typed_domains: Dict[str, List[Any]] = {}
     col_map: Dict[str, Tuple[str, str]] = {}
     columns: List[str] = []
     warnings: List[str] = []
@@ -1417,6 +1435,7 @@ def convert_domain_json_to_pict_model(operator_name: str,
             if not isinstance(attribute_values, list):
                 continue
             pict_column_name = "{}_{}".format(param, attr)
+            column_typed_values: List[Any] = []
             column_token_values: List[str] = []
             for raw_value in attribute_values:
                 pict_token = encode_pict_value(raw_value, pict_column_name, token_map)
@@ -1427,8 +1446,10 @@ def convert_domain_json_to_pict_model(operator_name: str,
                     continue
                 if pict_token not in column_token_values:
                     column_token_values.append(pict_token)
+                    column_typed_values.append(raw_value)
             if column_token_values:
                 parameters[pict_column_name] = column_token_values
+                typed_domains[pict_column_name] = column_typed_values
                 col_map[pict_column_name] = (param, attr)
                 columns.append(pict_column_name)
             else:
@@ -1443,7 +1464,7 @@ def convert_domain_json_to_pict_model(operator_name: str,
     dropped_constraints: List[str] = []
     col_set = set(columns)
     for c in constraints:
-        translated, ws = _translate_constraint(c, col_set, parameters)
+        translated, ws = _translate_constraint(c, col_set, typed_domains)
         if translated is None:
             dropped_constraints.append(c)
             warnings.extend(ws or ["untranslatable constraint dropped: {}".format(c[:80])])

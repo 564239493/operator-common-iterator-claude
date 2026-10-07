@@ -1,9 +1,15 @@
 ---
 name: scan-scenes
-description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 <run-dir>/inputs/scene_scan.json 供 scene-scanner 使用。
+description: 【legacy 已隐藏】扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 scene_scan.json。现行场景流程为 iterate-operator 的文本直输模式，不再委派 scene-scanner；本技能保留供旧 run 恢复与回放。
 ---
 
-# 场景扫描规范
+# 场景扫描规范（legacy）
+
+> **注意**：现行流程已改为场景文本直输（`--scenes` 参数或建议面板 + 文字匹配 + 回显
+> 确认，见 `iterate-operator` 技能 SCENE_SCAN 节），主协调器**不再委派 scene-scanner**，
+> 正常 run 不产出 `scene_scan.json`。本技能与 `check_scene_conflicts.py` 仅为旧 run
+> 恢复/回放保留。
+
 
 输入必须包含：算子文档快照（`<run-dir>/inputs/<doc>.md`，只读）、工作提示词
 （`prompts/scan_scenes.md`，含 op-scene 规则段）、当前 run 的绝对路径 `<run-dir>`（只写

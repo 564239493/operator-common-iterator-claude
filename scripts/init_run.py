@@ -395,6 +395,17 @@ def main() -> int:
     )
     parser.add_argument("--case-count", type=int, default=10)
     parser.add_argument(
+        "--scenes",
+        dest="scenes",
+        default="",
+        help=(
+            "场景描述直输（文本）：如 \"A2非量化groupListType等于2\"。提供时跳过"
+            "scene-scanner 与 Q1→Q2→Q3 征询，由主协调器做简单文字匹配（设备/量化"
+            "场景/参数取值）对齐文档后写 selection.json；原文存 run_state.scenes。"
+            "未提供时进入手动输入模式（先展示文档设备/量化场景/执行机建议再让用户输入）。"
+        ),
+    )
+    parser.add_argument(
         "--human-constraints-upload",
         dest="human_constraints_upload",
         action="store_true",
@@ -479,6 +490,7 @@ def main() -> int:
             "--supplement-constraints": args.supplement_constraints,
             "--src": args.src,
             "--source-analysis-knowledge": args.source_analysis_knowledge,
+            "--scenes": args.scenes,
         }
         given = [flag for flag, value in creation_flags.items() if value]
         if given:
@@ -735,6 +747,7 @@ def main() -> int:
             "report": "",
         },
         "case_count": args.case_count,
+        "scenes": args.scenes or "",  # 用户场景描述直输（--scenes 原文；空 = 手动输入/legacy 模式）
         "human_constraints_upload": args.human_constraints_upload,  # 人工约束上传通道：检查点选「人工修复」后挂起等用户上传 constraints_copy.json
         "human_checkpoint_round": args.human_checkpoint_round,  # 0=禁用；>=1 时第 N 轮 constraint_extraction 失败触发人工补充检查点
         "human_checkpoint_resolved_iteration": 0,  # 已决断到的最大轮次；防上下文压缩后对同一轮重复询问

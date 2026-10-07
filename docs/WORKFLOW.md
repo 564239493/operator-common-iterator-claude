@@ -119,33 +119,32 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
 
 ### SCENE_SCAN（条件触发，非独立状态）
 
-输入：`inputs/<doc>.md`（只读）。
-执行者：scene-scanner（调度消息显式传入 `<run-dir>` 绝对路径，产
-`<run-dir>/inputs/scene_scan.json`；禁止按仓库 cwd 解析相对 `inputs/`。按**设备类型
-→ 量化模板 → 特性参数**三级提取，不设"通用"组、特性参数只提取枚举/分档可选项）+ 主
-协调器（question 工具 **Q1→Q2→Q3 三轮顺序征询**，每轮一次调用、其内问题并行作答；
-必须分三轮而非一次：Q2 问题集依赖 Q1 选中设备、Q3 问题集依赖 Q2 选中模板，同调用内
-拿不到前轮答案且预枚举 (设备,模板) 全组合会爆炸。Q1 设备类型（multiSelect 真实设备、
-**不设"全部设备"**聚合项；`device_types` 仅 1 个时直接默认选中、跳过 Q1 进 Q2）→ Q2 逐设备
-量化模板（multiSelect 真实模板、**不设"全部模板"**聚合项、批量 ≤4 问/次；某设备仅 1 模板
-自动选中、跳过该设备 Q2）→ Q3 逐（设备,模板）特性参数（**single-select**，批量 ≤4 问/次，
-每问固定 2 预设 + Other：选项1「保持自动/继承文档约束（未填写）」→`null`、选项2「全部固定
-默认值」→`"fix_all_default"`、Other→值级 JSON 如 `{"groupType":[-1,0],"splitItem":[3]}`
-（单值→fix、多值→expand 子集、未列参数→按文档和已选场景自动适配）；question 文本含完整 feature_params 编号表
-+ 提示语「明确填写（Other 输 JSON）→ 按用户值限制；选保持自动（未填写）→ 保持自动/继承文档
-约束」），写 `selection.json={"device_types":[...],"selection":{device:{template:<tpl_value>}}}`
-（`<tpl_value>` ∈ `null|"fix_all_default"|{param:[values]}`）+
-`scripts/render_scene_directive.py`（校验设备/模板/param 名/值 ∈ scan、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`
-（含机读块 `{device_types, selection, param_modes, selection_policy}`；`selection` 保留
-逐设备选中模板，确保“保持自动”时仍可机器判定场景）、回写 `run_state.scene`）。
-`--scene off` 跳过；`--scene auto`（默认）文档有场景则征询、无则跳过；`--scene all` 取
-全设备全模板全特性参数不剪枝（批处理默认）。文档无场景（`has_scenarios=false`）跳过，
-退回纯文档驱动；仅有量化参数信号而未提取到模板时只写 `scan_notes`
-（`quant_signal_no_template`）警告，不补造。
-完成条件：`scene_scan.json` 过 `validate_artifacts.py scene_scan`；选定场景落
-`run_state.scene` + `inputs/scene_directive.md`（仅 subset）。
-失败策略：scene-scanner 自修正最多三次；`render_scene_directive.py` 对非法选择 exit 2
-阻断，提示重选，不静默回退。为独立子步骤而非新状态，空即跳过。
+输入：`inputs/<doc>.md`（只读）、`servers.json`（只读，取执行机平台并集）。
+执行者：主协调器（**文本直输模式，不再委派 scene-scanner**）。场景信息二选一：
+- `--scenes "<场景描述>"` 已传入：直接以该文本为场景描述（原文存 `run_state.scenes`）；
+- 未传：先组装【建议面板】展示给用户（文档"产品支持情况"设备全称 / servers.json 各
+  服务器 `platforms` 并集及覆盖标注 / 文中出现的量化关键词），再请用户**文本输入**
+  场景描述（建议格式：设备类型（必要）+ 量化场景 + 参数取值，如 `A2非量化groupListType等于2`）。
+主协调器对文本做简单文字匹配：设备对齐文档设备全称（对不上追问重输，不得自行猜测）；
+量化关键词匹配（匹配不上展示清单让用户挑选，非量化算子允许不填）；参数取值解析支持
+大白话（等值"等于2"→`fix [2]`、枚举"取0和3"→`expand [0,3]`、闭区间"2-6之间"→展开为
+整数序列、展开超 32 个值提示收窄、开区间话术要求用户给出确定上下界；参数名对不上
+文档参数表则回报修正）。解析结果以表格（设备全称/量化场景/参数取值，区间须展示完整
+展开清单）回显，question 工具**确认一次**后才落盘
+`selection.json={"device_types":[...],"selection":{设备:{量化场景:null|{param:[values]}}}}`
+（"保持自动"→`null`；显式参数→`{param:[values]}`；文本模式**不支持** `fix_all_default`，
+需固定全部默认值时显式列出各参数）。
+渲染：`scripts/render_scene_directive.py --selection ... --scope subset`（**不带 `--scan`**：
+文本直输模式仅做结构校验，跳过枚举交叉校验；exit 2 阻断并按 `errors` 提示修正）。
+无执行机的设备仅警示不阻断（约束仍可提取，real 执行阶段自然失败）。产出
+`inputs/scene_directive.md`（机读块 `{device_types, selection, param_modes, selection_policy}`）
+并回写 `run_state.scene`（`scene.source` = scenes_param / interactive_input）。
+完成条件：选定场景落 `run_state.scene` + `inputs/scene_directive.md`（仅 subset）。
+失败策略：设备/参数名对不上 → 追问重输；非法 selection（render exit 2）阻断，不静默回退。
+为独立子步骤而非新状态，空即跳过。
+> legacy 三级扫描（scene-scanner 子代理 + Q1→Q2→Q3 三轮征询 + `check_scene_conflicts.py`
+> 预判）已被文本直输模式取代并隐藏；skill/脚本/产物 schema 文件保留未删，完整原流程见
+> git 历史与 `prompts/scan_scenes.md`。
 
 ### EXTRACT
 

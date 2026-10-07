@@ -10,7 +10,7 @@ Differences from the reference:
 * The LLM ``exec_generate_atk`` step that *produced* the ATK executor
   file is replaced by the deterministic ``executer/resources/generator.py``.
   Both the operator signature
-  table (``aclnn_extracted.txt``) and the code-generation script
+  constraints.json function_signature and the code-generation script
   (``generator.py``) live next to the executer.
 * The LLM ``exec_cpu_derivation`` step is dropped from Python entirely.
   The CPU golden derivation prompt from the reference has been promoted
@@ -158,7 +158,6 @@ def _resolve_plog_config(server_info: dict[str, Any]) -> tuple[bool, str]:
 
 _RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
 _GENERATOR_SCRIPT = _RESOURCES_DIR / "generator.py"
-_SIGNATURES_FILE = _RESOURCES_DIR / "aclnn_extracted.txt"
 
 _GENERATOR_TIMEOUT = 60.0
 
@@ -539,12 +538,36 @@ async def _generate_atk_executor(
         raise SSHEngineError(
             f"executor generator script missing: {_GENERATOR_SCRIPT}"
         )
-    if not _SIGNATURES_FILE.is_file():
+    # 签名来源：constraints.json 的 function_signature（不再查 aclnn_extracted.txt）
+    constraints_path = (req.iter_dir or req.cases_path.parent) / "constraints.json"
+    if not constraints_path.is_file():
         raise SSHEngineError(
-            f"signature table missing: {_SIGNATURES_FILE}"
+            f"constraints.json not found: {constraints_path} — "
+            "无法获取算子接口定义（function_signature）"
+        )
+    try:
+        constraints_data = json.loads(
+            constraints_path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise SSHEngineError(
+            f"constraints.json unreadable: {constraints_path} ({exc})"
+        )
+    function_signature = str(
+        (constraints_data or {}).get("function_signature") or ""
+    ).strip()
+    if not function_signature:
+        raise SSHEngineError(
+            f"constraints.json 缺少 function_signature 字段: {constraints_path}"
         )
 
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    # mini 签名表（generator.py --signatures 表格式: <算子名> <完整签名>）
+    signatures_file = work_dir / "signatures_from_constraints.txt"
+    signatures_file.write_text(
+        f"{req.operator_name} {function_signature}\n", encoding="utf-8"
+    )
 
     # Generator uses the cases.json basename for its outputs (e.g.
     # cases.json → cases_expanded.json + cases_<op>.py).  Stage the
@@ -563,7 +586,7 @@ async def _generate_atk_executor(
         "-o",
         str(output_target),
         "--signatures",
-        str(_SIGNATURES_FILE),
+        str(signatures_file),
         "--acc-config",
         str(_RESOURCES_DIR / "acc_config.txt"),
     ]
@@ -586,7 +609,7 @@ async def _generate_atk_executor(
     if not executor_files:
         raise SSHEngineError(
             "generator.py 未生成任何 executor .py 文件 — "
-            "请确认 cases.json 含 aclnn_name 且在 aclnn_extracted.txt 中能查到签名。"
+            "请确认 cases.json 含 aclnn_name 且 constraints.json 提供 function_signature。"
         )
 
     expanded = work_dir / f"{stem}_expanded.json"

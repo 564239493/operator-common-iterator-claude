@@ -62,6 +62,10 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
 其中 `selection` 是逐设备选中的模板及显式值配置；即使 `param_modes` 为空，也必须先按
 `selection` 限定模板范围，不得回退到未选模板的参数域。
 
+**独占提取**（directive 存在时）：仅提取所选设备与所选场景可达的约束——未选设备、
+未选量化场景专属的条目不产出；与所选场景共用的基础约束（dtype 合法域、通用 shape
+关系等）照常保留。
+
 **设备→`product_support` 规则**（同一 directive 存在条件下，覆盖提示词 §4.3 的
 "仅取 √ 行"为"按选定设备收窄"）：先读文档"产品支持情况"表得到 √ 行全集 `D`；再按
 机读块 `device_types` 决定本次 `product_support`——将 `device_types` 与 `D` 取交集
@@ -154,7 +158,8 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
     **无关**的通用约束（shape/维度/groupType 等）未被误删。
     确认 `product_support` 已按机读块 `device_types` 收窄并与文档 √ 行取交集
     （直接交集，无"通用"展开），`inputs`/
-    `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。自检不通过则回到步骤 1
+    `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。确认**独占提取**已执行：
+    未选设备、未选量化场景专属的约束条目未产出。自检不通过则回到步骤 1
     重提，不放过半屏蔽的 constraints.json。
 
 ## 维度委派提取

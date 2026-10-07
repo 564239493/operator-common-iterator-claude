@@ -34,40 +34,28 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
-> EXTRACT 前可选触发场景扫描（`--scene auto` 默认；`all`/`off` 可选）：
-> `scene-scanner` 读文档按**设备类型 → 量化模板 → 特性参数**三级提取（**不设"通用"组**，
-> 无设备标注内容合并到每个具体设备组下；特性参数只提取枚举/分档可选项），产
-> `<run-dir>/inputs/scene_scan.json`（委派时必须把 `<run-dir>` 绝对路径和该唯一写入目标
-> 显式传给 scene-scanner，禁止按仓库 cwd 解析相对 `inputs/`）；主协调器据此用 question 工具
-> **Q1→Q2→Q3 三轮顺序征询**（每轮一次调用，必须分三轮：Q2 问题集依赖 Q1 选中设备、
-> Q3 问题集依赖 Q2 选中模板，同调用内并行作答拿不到前轮答案）——Q1 设备类型
-> （multiSelect 真实设备、不设"全部设备"聚合项；`device_types` 仅 1 个时直接默认选中、
-> 跳过 Q1 进 Q2）→ Q2 逐设备量化模板（multiSelect 真实模板、不设"全部模板"聚合项；
-> 某设备仅 1 模板自动选中、跳过该设备 Q2）→ Q3 逐（设备,模板）特性参数（**single-select**，
-> 每问 2 预设 + Other：选项1「保持自动/继承文档约束（未填写）」→`null`、选项2「全部固定
-> 默认值」→`"fix_all_default"`、Other（可自定义输入参数特性配置）→**任意格式**输入
-> （值级 JSON / `param=value` 串 / 自然语言均可，如 `groupType=-1,0; splitItem=0~3`），
-> 主协调器按 scene_scan feature_params 表识别+组装为标准 `{param:[values]}` dict 写入
-> `selection.json`（识别不了的参数/取值当场提示用户澄清）；单值→fix、多值→expand 子集、
-> 未列参数→按文档和已选场景自动适配；question 文本含完整 feature_params 编号表 + Other 提示语「Other
-> （可自定义输入参数特性配置）= 贴入任意格式配置，主协调器识别组装；选保持自动（未填写）
-> → 保持自动/继承文档约束」），`scripts/check_scene_conflicts.py` 先做**特性参数冲突识别**
-> （advisory、exit 0；判据 = `scene_scan.params[].value_conflicts` 结构化规则，仅当冲突双方
-> 参数都被用户显式选择时才判；`n_conflicts>0` 时 question 工具三选一：返回修改特性参数
-> 重选 / 已知冲突强制继续（标注进 directive 交下游）/ 贴修改说明；冲突不阻断，仅值合法性非法
-> exit 2 才阻断重输），随后 `scripts/render_scene_directive.py` 做最终严格校验、
-> 解析用户明确选择的参数为每设备每参数的 `param_modes`（`{"expand": [取值清单]}`
-> 清单=用户明确选择的子集 / `{"fix": X}` 单值=
-> 用户单值输入或 values[0]）；缺键参数继续按算子文档和已选场景提取适配，已选场景
-> 明确禁止的 Optional 参数必须显式生成 `param is None`。随后渲染
-> `inputs/scene_directive.md`（含机读块 `device_types`/`selection`/`param_modes`/`selection_policy`/`known_conflicts`；
-> `selection` 保留逐设备选中的模板，避免"保持自动"时场景信息丢失）
-> 并回写 `run_state.scene`，constraint-extractor 据此按 `param_modes` 收窄并按
-> `device_types` 收窄 `product_support`——设备类型为"产品支持情况"具体设备名，
-> 直接与 √ 行取交集（无"通用"展开）；`product_support` 随后驱动用例生成
-> （`generate_cases.py` 按 `product_support` 逐平台生成，不读场景）。为独立子步骤而非
-> 新状态，文档无场景即跳过（零回归）；仅有量化参数信号而未提取到模板时只写
-> `scan_notes`（`quant_signal_no_template`）警告，不补造。
+> EXTRACT 前可选触发场景选择（**文本直输模式，不再委派 scene-scanner**）：
+> 场景信息二选一——`--scenes "<场景描述>"` 已传入则直接使用（原文存 `run_state.scenes`）；
+> 未传则主协调器先组装【建议面板】（文档"产品支持情况"设备全称 / servers.json 各服务器
+> `platforms` 并集及覆盖标注 / 文中量化关键词，全部来自落盘文件），再请用户文本输入
+> （建议格式：设备类型（必要）+ 量化场景 + 参数取值，如 `A2非量化groupListType等于2`）。
+> 主协调器做简单文字匹配：设备对齐文档设备全称（对不上追问重输，不得自行猜测）；量化
+> 关键词匹配（匹配不上展示清单让用户挑选）；参数取值支持大白话（等值→`fix [v]`、枚举→
+> `expand [v,...]`、闭区间"2-6之间"→展开为整数序列、超 32 值提示收窄、开区间话术要求
+> 用户给确定上下界；参数名对不上文档参数表则回报修正）。解析结果表格回显（区间须展示
+> 完整展开清单）、question 工具**确认一次**后写 `selection.json`（值级形态
+> `{device_types, selection:{设备:{量化场景:null|{param:[values]}}}}`；文本模式不支持
+> `fix_all_default`）。随后 `scripts/render_scene_directive.py --selection ... --scope subset`
+> （**不带 `--scan`**：仅结构校验，exit 2 阻断；无执行机的设备仅警示不阻断）渲染
+> `inputs/scene_directive.md`（含机读块 `device_types`/`selection`/`param_modes`/`selection_policy`）
+> 并回写 `run_state.scene`（`scene.source` = scenes_param / interactive_input），
+> constraint-extractor 据此按 `param_modes` 收窄并按 `device_types` 收窄
+> `product_support`（设备类型为"产品支持情况"具体设备名，直接与 √ 行取交集，无"通用"
+> 展开；**仅提取所选设备/所选场景的约束**，未选设备/未选场景专属条目不产出，共用基础
+> 约束保留）；`product_support` 随后驱动用例生成（`generate_cases.py` 按
+> `product_support` 逐平台生成，不读场景）。为独立子步骤而非新状态，无场景即跳过。
+> legacy 三级扫描 + Q1→Q2→Q3 三轮征询 + `check_scene_conflicts.py` 预判已被该模式取代
+> 并隐藏，skill/脚本文件保留未删，完整原流程见 git 历史与 `prompts/scan_scenes.md`。
 
 ## 常用命令
 
@@ -153,7 +141,7 @@ opencode  # 启动 opencode
 
 | 阶段 | 子智能体 | 开工首载技能 | 主要产物 |
 |---|---|---|---|
-| 场景扫描（条件，EXTRACT 前） | `scene-scanner` | `scan-scenes` | `<run-dir>/inputs/scene_scan.json` |
+| 场景选择（条件，EXTRACT 前；文本直输） | 主协调器直接处理（不委派子智能体） | — | `<run-dir>/inputs/selection.json` + `scene_directive.md`（legacy：`scene-scanner`+`scan-scenes` 产 `scene_scan.json`，已隐藏） |
 | 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` + `extraction_provenance.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
@@ -218,8 +206,8 @@ opencode  # 启动 opencode
 - `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
-- `render_scene_directive.py` — 校验三级场景选择、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
-- `check_scene_conflicts.py` — Q3 组装 selection.json 后、渲染 directive 前做特性参数取值冲突识别（advisory、exit 0；判据 `scene_scan.params[].value_conflicts`；产 `inputs/scene_conflicts.json`，render_scene_directive 据此标注 `known_conflicts`）
+- `render_scene_directive.py` — 校验场景选择（文本直输模式不带 `--scan` 仅结构校验；legacy `--scan` 三级交叉校验）、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`、回写 `run_state.scene`
+- `check_scene_conflicts.py` — （legacy，文本直输模式不再调用）Q3 组装 selection.json 后、渲染 directive 前做特性参数取值冲突识别（advisory、exit 0；判据 `scene_scan.params[].value_conflicts`；产 `inputs/scene_conflicts.json`，render_scene_directive 据此标注 `known_conflicts`）
 - `select_prompt.py` — ACLNN 提示词装配入口：manifest 路由 → 冻结 `prompt_v1.md`（base 核心层 + **必载知识清单**，模块正文不进快照）+`prompt_preanalysis.json`+`prompt_assembly.json`
 - `select_torch_npu_prompt.py` — torch_npu 装配入口，镜像 `select_prompt.py`（manifest 路由 + 冻结三产物 + 平台契约校验）
 - `build_knowledge_skills.py` — 把两 family manifest 知识模块生成 `.opencode/skills/{aclnn-,torch-npu-}<id>/SKILL.md` 注册技能（生成物禁止手改；canonical 变更后必须重跑，`--check` 只校验同步）

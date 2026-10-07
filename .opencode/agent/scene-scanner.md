@@ -1,5 +1,5 @@
 ---
-description: 扫描算子文档按设备类型→量化模板→特性参数三级提取场景，产 <run-dir>/inputs/scene_scan.json 供主协调器向用户征询三级场景选择。仅在 EXTRACT 前的 SCENE_SCAN 子步骤使用。
+description: 【legacy 已隐藏】三级场景扫描（设备→量化模板→特性参数）产 scene_scan.json。现行流程已改为文本直输场景模式（见 iterate-operator 技能 SCENE_SCAN 节），主协调器不再委派本代理；仅旧 run 恢复/回放时可能用到。
 mode: subagent
 color: "#f1c40f"
 permission:

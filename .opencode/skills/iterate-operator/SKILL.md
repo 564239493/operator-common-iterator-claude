@@ -35,6 +35,11 @@ description: 编排算子约束提取、用例生成、执行、诊断和提示�
    前 `human_checkpoint_round` 轮仍纯自动迭代，检查点之后每个失败轮都重新弹该四选一 （可逐轮切换）。 
    未开启`human-constraints-upload`时检查点退化为三选一（人工修复不可选）。详见下方「挂起、监听与唤醒」节。
 
+   `--scenes "<场景描述>"` 可选；提供时跳过 scene-scanner 与 Q1→Q2→Q3 征询，由主协调器
+   对该文本做简单文字匹配（设备/量化场景/参数取值）对齐文档后写 selection.json
+   （原文存 `run_state.scenes`）。未提供时进入手动输入模式（先展示文档设备/量化场景/
+   执行机建议面板，再让用户文本输入场景描述）。详见 SCENE_SCAN 子步骤。
+
    `hs-scenario-mode=original`；只有用户显式传入
    `--hs-scenario-mode planned` 时，torch_npu + TTK 才启用 TND/BSND/
    paged-attention 场景拆分和投影。该参数对 ACLNN/ATK 不生效。
@@ -46,7 +51,8 @@ description: 编排算子约束提取、用例生成、执行、诊断和提示�
    `--prompt` 同用，也不得用于 torch_npu。
 2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
    `--supplement-constraints`、`--source-analysis-knowledge`、`--operator-family`、`--test-framework`、
-   `--hs-scenario-mode`、`--constraint-check-rounds` 等参数，
+   `--hs-scenario-mode`、`--constraint-check-rounds`、`--scenes "<场景描述>"` 等参数，
+   `--scenes` 原文存 `run_state.scenes`（场景直输模式标记），
    `--batch-dir` 是目录批次内部参数不传）。该命令把外部文档只读复制到 run 的 `inputs/` 目录，
    后续 Agent 必须使用返回的 `operator_doc_snapshot`。若传入 `--src`，把算子
    源码关键文件浅快照到 `inputs/src_snapshot/`，写入 `run_state.operator_src_snapshot`
@@ -75,98 +81,66 @@ description: 编排算子约束提取、用例生成、执行、诊断和提示�
    空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
    最小修改上一轮约束，不再委派 constraint-extractor。
 
-**SCENE_SCAN 子步骤**（EXTRACT 前，仅首轮；`--scene off` 跳过）：委派
-`scene-scanner`。委派消息必须显式传入当前 run 的绝对路径 `<run-dir>`、只读输入
-`<run-dir>/inputs/<doc>.md` 和唯一写入目标 `<run-dir>/inputs/scene_scan.json`；禁止只传
-`inputs/scene_scan.json` 让子 Agent 按仓库 cwd 解析。scene-scanner 读取
-`prompts/scan_scenes.md`，按**设备类型 → 量化模板 → 特性参数**三级提取，并自跑
-`python scripts/validate_artifacts.py scene_scan <run-dir>/inputs/scene_scan.json`）。
-完成后主协调器读 `scene_scan.json`：
-- `has_scenarios=false` → 跳过（无 directive，按全场景提取，行为不变）。`scan_notes`
-  含 `quant_signal_no_template` warning 时仅记录性提示用户"文档含量化参数信号但未提取到
-  模板，可能遗漏剪枝"，**不**置 `has_scenarios`、**不**阻断、**不**补造场景。
-- `has_scenarios=true` 且 `--scene all` → 跑
-  `python scripts/render_scene_directive.py --scan <run-dir>/inputs/scene_scan.json --run-dir <run-dir> --scope all`
-  （scope=all：全部设备全部模板全部特性参数取值分支全展开，不剪枝、不弹窗）。
-- `has_scenarios=true` 且 `--scene auto`（默认）→ 主会话按 **Q1 → Q2 → Q3 三轮顺序
-  征询**，每轮一次 question 工具调用、其内问题并行作答（每问选项≤4，超出部分在
-  question body 编号列全；支持 Other 自定义输入，Other 输入须落在已识别列表内，否则
-  提示重新输入符合的）。**必须分三轮而非一次调用**：question 同次调用内所有
-  问题并行作答，后问拿不到前问答案；Q2 的问题集（逐设备）依赖 Q1 选中的设备、Q3 的
-  问题集（逐 (设备,模板) 对）依赖 Q2 选中的模板，且预枚举全部 (设备,模板) 组合会组合
-  爆炸并超每调用≤4 问上限，故只能逐级等上轮答案回来再发起下轮。
-  - **Q1 设备类型**（1 个 multiSelect 问题）：选项 = `scene_scan.device_types`
-    全部（≤4 个直接列全；>4 个列前 3 + Other 自定义，question body 按编号列出全部
-    `device_types`，用户可按编号 Other 输入选中列表外的设备）。**不设"全部设备"聚合项**
-    ——要全选就逐个勾选（multiSelect）。`device_types` 为文档"产品支持情况"具体设备名，
-    **无"通用"通配符**。**若 `device_types` 仅 1 个设备 → 直接默认选中该设备、跳过 Q1
-    征询，直接进 Q2**（无选择意义时不打扰用户）。question 正文首行须含 Other 提示语：
-    『Other（自定义）= 按下方编号表输入列表外的设备类型名』（无"通用"通配符，须给真实设备名）。
-  - **Q2 逐设备量化模板**（对 Q1 选中的每个设备各 1 个 multiSelect 问题，**批量 ≤4 问/
-    次**，超出分多次调用）：选项 = 该设备 `devices[].templates` 全部（≤4 直接列全；>4
-    前 3 + Other，body 编号列全）。**不设"全部模板"聚合项**——要全选就逐个勾选。各设备
-    模板可不同（v3 无"通用"组，无标注内容已合并到各具体设备组下）。模板名编码量化方式
-    （如 `非量化`/`全量化-A8W8`/`全量化-GQA`）。**某设备仅 1 个模板 → 自动选中该模板、
-    跳过该设备 Q2**（与 Q1 单设备跳过同原则）。等 Q1 答案回来确定选中设备后再发起本轮。
-    question 正文首行须含 Other 提示语：『Other（自定义）= 按下方编号表输入列表外的
-    量化模板名』。
-  - **Q3 逐（设备,模板）特性参数**（对 Q2 选中的每个 (device,template) 各 1 个
-    **single-select** 问题，**批量 ≤4 问/次**，超出分多次调用）。每问固定 2 个预设选项 +
-    Other 自定义输入（question 工具契约 ≥2 选项且自动提供 Other，无法零选项）：
-    - 选项 1「保持自动 / 继承文档约束（未填写）」→ 该模板 `null`（全展开不剪枝）
-    - 选项 2「全部固定默认值（最小覆盖）」→ 该模板 `"fix_all_default"`（每参数取 `values[0]`）
-    - **Other（可自定义输入参数特性配置）** → 接受**任意格式**输入，不限于 JSON 对象。合法示例：
-      值级 JSON `{"groupType":[-1,0],"splitItem":[0,1,2,3]}`；`param=value` 串
-      `groupType=-1,0; splitItem=0~3`；自然语言「groupType 取 -1 和 0，splitItem 取 0/1/2/3」。
-    question 文本必须包含：(a) Other 提示语「Other（可自定义输入参数特性配置）= 贴入任意
-      格式的参数取值配置，主协调器会识别并组装成取值清单；选保持自动（未填写）→ 保持自动/
-      继承文档约束」；(b) 该 (device,template) **完整 feature_params 编号表**（从
-      `scene_scan.json` 读出，每参数列出 `name / 取值 values / description / constraint`，
-      由主协调器现场渲染，不新造脚本）；(c) 多格式示例 + 说明「未列参数=继承文档约束（全展开）；
-      单值如 `[-1]`=固定该值；多值如 `[-1,0]`=展开该子集」。
-    答案→selection：选项1→`null`；选项2→`"fix_all_default"`；Other→主协调器**按 scene_scan
-      feature_params 表把任意格式输入识别+组装为标准 `{param:[values]}` dict**（参数名与取值
-      须落在 scan 的 `values` 内、类型感知；识别不了的参数或取值当场提示用户澄清，不静默丢弃）。
-      组装后的 dict 写入 `selection.json`，由 `render_scene_directive.py` 做最终严格校验（非法
-      exit 2 阻断、提示重输）。等 Q2 答案
-    回来确定选中 (device,template) 对后再发起本轮。
-  - 汇总答案写入 `selection.json`（**值级**形态）
-    `{"device_types": [<...>], "selection": {<device>: {<template>: <tpl_value>}}}`
-    其中 `<tpl_value>` ∈ `null`（选项1/未填写，按文档和已选场景自动适配）| `"fix_all_default"`（选项2）|
-    `{<param>: [<values>]}`（Other 任意格式，主协调器组装为该 dict：单值→fix、多值→expand 子集、未列参数→按文档和已选场景自动适配）；
-    缺模板键 = 该模板未选（Q2 未选）。
-  - **特性参数冲突识别（Q3 组装后、渲染 directive 前）**：`selection.json` 落盘后先跑
-    `python scripts/check_scene_conflicts.py --scan <run-dir>/inputs/scene_scan.json --selection <run-dir>/inputs/selection.json --run-dir <run-dir>`
-    （确定性、advisory、**exit 0**；判据 = `scene_scan.params[].value_conflicts` 结构化规则，
-    见 `prompts/scan_scenes.md` §4/§5；仅当冲突涉及的**两个参数都被用户显式选择**时才判，
-    任一方为自动/继承文档则跳过——下游 extractor 会自适应兼容值；产物
-    `<run-dir>/inputs/scene_conflicts.json` + stdout `{ok,n_conflicts,conflicts,warnings}`）。
-    读 stdout `n_conflicts`：
-    `n_conflicts > 0` → question 工具（单问，2 预设 + Other），question 正文逐条列出冲突
-    （device/template/参数→target/kind：forbidden 禁止取值|required 必须取值/当前取值/原因）：
-    - 选项1「返回修改特性参数」→ 对受影响 (device,template) 重发 Q3、更新 selection.json、重跑
-      check，直至 `n_conflicts==0`；
-    - 选项2「已知冲突强制继续」→ 进 render_scene_directive.py（directive 标注
-      `known_conflicts` 交下游 EXTRACT/GENERATE 处理，不阻断流程）；
-    - Other→用户贴修改说明，主协调器据此改 selection.json 后重跑 check。
-    `n_conflicts == 0` → 直接进 render_scene_directive.py。**冲突不阻断**（allow-continue）；
-    仅 selection 值合法性非法（check 返回 exit 2 `INVALID_SELECTION`/`EMPTY_SCENE`）才阻断、提示重输。
-  - 跑
-    `python scripts/render_scene_directive.py --scan <run-dir>/inputs/scene_scan.json --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
-    （校验设备/模板/param 名/值 ∈ scan、解析用户明确选择参数的 `param_modes`、写
-    `inputs/scene_directive.md`（含机读块
-    `<!-- scene: {device_types, selection, param_modes, selection_policy} -->`，其中
-    `selection` 保留逐设备选中的模板，使“保持自动”且 `param_modes` 为空时仍能机器判定场景，
-    `param_modes[device][param]` ∈ `{"expand": [用户明确选择的取值子集]}` |
-    `{"fix": X}`；缺键按文档和已选场景自动适配，已选场景禁止的 Optional 参数显式
-    生成 `param is None`）、
-    回写 `run_state.scene`；非法选择 exit 2 阻断，提示用户重选，不静默回退）。
-    EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`
-    （设备类型为具体设备名，直接与文档 √ 行取交集，无"通用"展开）；按 `param_modes`
-    产 `allowed_range_value`（`expand` 用机读块取值清单、`fix` 单值、缺键按文档和已选
-    场景适配）。已选场景禁止的 Optional 参数必须产出 `param is None`。该
-    `product_support` 随后驱动 `generate_cases.py` 逐平台
-    生成——**设备选择经约束提取驱动生成，不直接改生成逻辑**。
+**SCENE_SCAN 子步骤（文本直输模式）**：场景信息不再走 scene-scanner + Q1→Q2→Q3
+征询（该 legacy 流程已隐藏，完整原流程见 git 历史中本文件旧版本与
+`prompts/scan_scenes.md`），改为**用户文本输入 + 简单文字匹配**。场景信息二选一：
+
+- `--scenes "<场景描述>"` 已传入：直接以该文本为场景描述（原文已存 `run_state.scenes`）；
+- 未传：主协调器先组装【建议面板】展示给用户（全部来自落盘文件/配置，非模型记忆），
+  然后请用户**文本输入**场景描述。建议面板内容：
+  1. 文档支持的设备：读 `<run-dir>/inputs/<doc>.md` "产品支持情况"章节，列出设备全称；
+  2. 执行机支持的平台：读 `servers.json` 各服务器 `platforms` 并集，标注哪些文档设备有执行机；
+  3. 文中出现的量化场景关键词（非量化/全量化-xx/伪量化…，按文档实际内容列举）。
+  用户输入格式建议：**设备类型（必要）+ 量化场景 + 参数取值**，如
+  `A2非量化groupListType等于2`。
+
+**文字匹配与回显确认**（两种入口合流，逐项执行）：
+- **设备（必要项）**：用户文本包含设备关键字（"A2"/"A3"/"910B" 或设备名子串）→ 对齐到
+  文档"产品支持情况"的**设备全称**；**对不上任何设备 → 追问重输**，并列出文档支持的
+  设备全称清单作为提示（不得自行猜测或放行）。对齐后与 servers.json `platforms` 并集
+  比对：无执行机 → 警示"该设备无执行机，real 执行无法进行"（**不阻断**，约束提取仍可
+  进行）。
+- **量化场景**：文本命中文档中出现的量化关键词（非量化/全量化-xx/伪量化…）；匹配不上 →
+  展示关键词清单让用户挑选；非量化算子允许不填。
+- **参数取值（含大白话区间，解析细则）**：
+  - 等值："等于2" / "=2" / "取2" → 单值 → `fix [2]`；
+  - 枚举："取0和3" / "=0,3" / "0,1,2" → 多值 → `expand [0,3]`；
+  - **闭区间大白话**："x的shape为2-6维" / "grouplist取值为4-6之间" / "2~6" /
+    "2到6" / "2-6之间" / "介于2和6之间" → **展开为整数序列**（expand，步进 1，
+    仅支持整数区间）：`2-6` → `[2,3,4,5,6]`；"维"/"之间"等是语义标注，不进值清单；
+  - **跨度上限**：展开超过 32 个值时不静默处理——向用户提示区间过大，请收窄范围，
+    或经用户明确确认后改为只取区间边界值 `[lo, hi]`；
+  - **开区间话术**（"以上"/"以内"/"不超过"/"大于"）：param_modes 仅支持有限取值
+    集合，必须向用户说明并请其给出确定上下界（或列出具体候选），不得自行截断；
+  - 参数名对不上文档参数表 → 回报用户修正。
+- **回显补充**：凡区间解析出的 expand 清单，必须在确认表中显示**完整展开结果**
+  （如 `x: [2,3,4,5,6]（维度数）`、`groupList: [4,5,6]`），用户确认后才写入
+  selection.json。
+- **回显确认（强制一次）**：把解析结果以表格（设备全称 / 量化场景 / 参数取值列表）展示，
+  question 工具（单问，2 预设 + Other）让用户【确认/修改】；确认后才允许落盘。
+
+**落盘**：确认后写 `<run-dir>/inputs/selection.json`（**值级形态，与旧格式一致**）：
+`{"device_types": [<设备全称>], "selection": {<设备全称>: {<量化场景>: null | {参数: [值...]}}}}`
+（"保持自动" → `null`；显式参数 → `{param: [values]}`；文本模式**不支持** `fix_all_default`
+——无 scan 参数枚举，需要固定全部默认值时请显式列出各参数）。
+
+**渲染**：
+`python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
+（**不带 `--scan`**：文本直输模式，跳过枚举交叉校验、仅做结构校验；exit 2 阻断并按
+`errors` 提示修正。设备支撑：无执行机的设备仅警示不阻断——约束仍可提取，real 执行阶段
+自然失败。）渲染产出 `inputs/scene_directive.md`（机读块
+`<!-- scene: {device_types, selection, param_modes, selection_policy} -->`）并回写
+`run_state.scene`（`scene.source` = scenes_param / interactive_input）。
+EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`
+（与文档 √ 行取交集，无"通用"展开）；按 `param_modes` 产 `allowed_range_value`
+（`expand` 用取值清单、`fix` 单值、缺键按文档和已选场景适配）；已选场景禁止的 Optional
+参数必须产出 `param is None`；**仅提取所选设备/所选场景的约束**——未选设备、未选
+模板/场景专属条目不产出（与所选场景共用的基础约束保留）。该 `product_support` 随后
+驱动 `generate_cases.py` 逐平台生成——**设备选择经约束提取驱动生成，不直接改生成逻辑**。
+
+> 附录：legacy 场景征询（scene-scanner 三级扫描 + Q1→Q2→Q3 逐级问询 +
+> check_scene_conflicts 预判）已被上述文本直输模式取代并隐藏；skill/脚本文件保留在
+> 仓库中未删除，完整原流程见 git 历史中本文件旧版本。
 EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入
 constraint-extractor；执行反馈轮不重写 prompt 或 directive，constraint-updater 继续读取
 同一场景指令，保持跨轮稳定。

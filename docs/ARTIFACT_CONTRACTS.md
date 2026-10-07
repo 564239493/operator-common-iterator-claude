@@ -15,10 +15,10 @@ runs/<operator>-<timestamp>/
     conflict_candidates.json           # 可选：source-analyst 产，结构化冲突候选（机读）
     conflict_resolution.json           # 可选：用户裁决 [{conflict_id, winner}]
     supplement_constraints.md          # 可选：--supplement-constraints 手写快照
-    scene_scan.json                    # 可选：scene-scanner 产，设备→量化模板→特性参数三级嵌套
+    scene_scan.json                    # 可选（legacy，已隐藏）：scene-scanner 产，设备→量化模板→特性参数三级嵌套
     scene_directive.md                 # 可选：render_scene_directive.py 渲染（含 param_modes/selection_policy/known_conflicts 机读块），extractor 据此适配
-    scene_conflicts.json               # 可选：check_scene_conflicts.py 产，Q3 后特性参数冲突识别报告（advisory，allow-continue）
-    selection.json                     # 可选：主协调器 Q1/Q2/Q3 答案汇总（值级），render_scene_directive.py 据此渲染 directive
+    scene_conflicts.json               # 可选（legacy，已隐藏）：check_scene_conflicts.py 产，Q3 后特性参数冲突识别报告（advisory，allow-continue）
+    selection.json                     # 可选：主协调器场景文本解析结果（值级；legacy 为 Q1/Q2/Q3 答案汇总），render_scene_directive.py 据此渲染 directive
   iter_001/
     constraints.json
     extraction_provenance.json         # 必载知识清单逐模块 applied/not_applicable 记录（首轮 EXTRACT 产，checker 审计用）
@@ -382,6 +382,9 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 
 ## scene_scan.json
 
+> **legacy 产物**：文本直输场景模式（`--scenes` / 建议面板输入）不再产出本文件；scene-scanner
+> 子代理与三级扫描流程已隐藏。schema 与校验保留供旧 run 恢复与回放使用。
+
 `scene-scanner` 产 `<run-dir>/inputs/scene_scan.json`（调度时必须显式传入 `<run-dir>`，不得按仓库 cwd 解析相对 `inputs/`）。
 按**设备类型 → 量化模板 → 特性参数**三级嵌套提取文档中有测试需求的场景，**禁止输出"通用"设备类型**
 （无明确设备标注的内容，需要分别记录到每个具体设备组下）。
@@ -396,16 +399,18 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 
 被 `validate_artifacts.py scene_scan` 校验（该函数是 schema 的唯一强制真相源，校验 `has_scenarios`/`device_types`/
 `devices[].device` 派生一致性/`value_conflicts` 结构合法性）；
-由 `scene-scanner` 产出；主协调器消费（据此 Q1→Q2→Q3 三轮征询，征询协议见 `iterate-operator/SKILL.md` 步骤 5）。
+由 `scene-scanner` 产出；主协调器消费（legacy：据此 Q1→Q2→Q3 三轮征询；现行文本直输模式不产出/不消费本文件）。
 
 ## selection.json
 
-主协调器 Q1→Q2→Q3 答案汇总落地到 `<run-dir>/inputs/selection.json`。
+主协调器场景解析结果落地到 `<run-dir>/inputs/selection.json`（现行来源：场景文本
+`--scenes` 或建议面板输入的文字匹配结果，经回显确认；legacy 来源：Q1→Q2→Q3 答案汇总）。
 形态 `{device_types, selection}`，
 `selection` 为`{device: {template: <tpl_value>}}`，
-`<tpl_value>` ∈ `null`（保持自动）| `"fix_all_default"` | `{param:[values]}`（Other 用户输入，主协调器识别组装）。
+`<tpl_value>` ∈ `null`（保持自动）| `"fix_all_default"`（仅 legacy；文本模式不支持） | `{param:[values]}`（用户取值，主协调器解析组装）。
 
-供 `render_scene_directive.py` 解析 `param_modes` 和 `check_scene_conflicts.py` 做冲突识别。
+供 `render_scene_directive.py` 解析 `param_modes`（文本直输模式仅结构校验）和
+`check_scene_conflicts.py` 做冲突识别（legacy）。
 无独立结构校验命令——`render_scene_directive.py` 和 `check_scene_conflicts.py` 对其内容的解析是唯一门禁。由主协调器产出。
 
 ## scene_directive.md

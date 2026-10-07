@@ -24,11 +24,11 @@ from agent.generators.data_definition.constants import ParamModelConfig, DataMat
 from agent.generators.data_definition.param_models_def import ParameterPropertyData, ParamRangeValueType
 from agent.generators.operator_param_combine.combination_result_generator.constraint.remover import \
     remove_missing_param_exprs
+from agent.generators.operator_param_combine.generate_combination_input.combination_constraint_generate import \
+    CombinationConstraintGenerate
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
-from agent.generators.operator_param_combine.combination_result_generator.constraint.remover import \
-    remove_missing_param_exprs
 
 logger = LazyLogger()
 
@@ -71,6 +71,7 @@ class ParamConstraintUtils(CommonDispatcher):
                                                                    param_combinations=param_combinations,
                                                                    is_generate_real_data=is_generate_real_data)
         self.dtype_domain_data, self.format_domain_data = self.get_param_domain_value()
+        self._LEN_REF_RE = re.compile(r"\blen\(\s*([A-Za-z_]\w*)\s*\)")
 
     def get_param_domain_value(self) -> tuple[Dict[str, List], Dict[str, List]]:
         """
@@ -500,6 +501,77 @@ class ParamConstraintUtils(CommonDispatcher):
         else:
             constraint_exprs.extend(static_range_value_expr_list)
 
+    def build_param_range_value_seed_constraint(self, constraint_exprs: List[str],
+                                                builder: Z3ConstraintBuilder, check: bool = True) -> None:
+        """把 list 型参数（attrs/scalars/tensors）的 per-row 取值钉入 Z3 求解。
+
+        背景（aclnnAffineGrid theta.shape[0]==1 实证）：PICT 给 size.range_value
+        分配的标量（如 128）传入 ListVar 后仅存入 _range_spec —— 既不构成约束
+        （_add_initial_range_constraints 已禁用），也不参与求解。导致 size 元素
+        仅剩 JSON 表达式约束，size[0] 贴 '0<x' 下界取 1，theta.shape[0] 恒为 1，
+        per-row 多样性全链路丢失。dtype/format/shape/length 四个静态通道都读
+        per-row 值，唯独 range_value 缺失 —— 本方法补上这条通道。
+
+        种子表达式形态（per-row 值的两种形态）：
+        - list（如 [-2,-1]）  -> "{param}.range_value == [-2, -1]"
+          整数组取值钉住（Seq==List 比较，转换器 334-344 行支持）
+        - 标量（如 128）      -> "{param}.range_value[0] == 128"
+          维度代表值钉住首元素，其余元素仍由 JSON 约束（如 0<x<=100000）限定
+
+        安全性：走偏好静态通道（choice_core 冲突消解），种子与 JSON 约束冲突时
+        丢弃种子保 JSON 约束，不会整 case UNSAT —— 与 dtype/length 通道同模式。
+        """
+        seed_static_value_expr_list = []
+        relation_param = list(self.case_input_map.keys())
+        for param in relation_param:
+            case_input = self.case_input_map.get(param)
+            # 仅处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
+            # 自己的取值通道（tensor 的 range_value 是数据内容区间，scalar 的
+            # build_param_range_value_constraint 已按源 JSON 域处理）
+            if case_input.type not in ParamModelConfig.LIST_ATK_TYPE:
+                continue
+            # tensorList类参数的取值范围如果是区间[-1,1]，不适合使用x.range_value = [-1,1]来表达，表达式左边是数组变量，后边是数值变量，
+            # Z3无法将[-1,1]识别为数组，这类表达式不要加入求解模型，scalars/attrs 类型（如 tuningConfigOptional）不受影响，照常生成
+            if DataMatchMap.Z3_VAR_TYPE_MAP.get(case_input.type) == "tensor_list":
+                logger.debug(
+                    f"Range value seed skipped, tensor_list param does not support "
+                    f"'equal to list' form, param name : '{param}', "
+                    f"seed : '{case_input.range_values}'")
+                continue
+            range_value_seed = case_input.range_values
+            if range_value_seed is None:
+                continue
+            if isinstance(range_value_seed, list):
+                if not range_value_seed:
+                    continue
+                # list 形态：整个数组的取值即 per-row 选择（如 alltoAllAxes 的
+                # [-2,-1]）。元素需为数值字面量，profile 名（如 'Pos'）跳过
+                if not all(isinstance(element, (int, float, bool)) for element in range_value_seed):
+                    logger.debug(
+                        f"Range value seed skipped, non-numeric elements, param name : '{param}', "
+                        f"seed : '{range_value_seed}'")
+                    continue
+                seed_expr = "{param_name}.range_value == {seed_value}".format(
+                    param_name=param, seed_value=range_value_seed)
+            elif isinstance(range_value_seed, (int, float)):
+                # 标量形态：维度代表值（如 SHAPE_DIM_VALUES 的 128），钉住首元素
+                seed_expr = "{param_name}.range_value[0] == {seed_value}".format(
+                    param_name=param, seed_value=range_value_seed)
+            else:
+                # profile 名（'Pos'/'Max' 等）或其他形态：无对应 Z3 钉住语义，跳过
+                logger.debug(
+                    f"Range value seed skipped, unsupported seed form, param name : '{param}', "
+                    f"seed : '{range_value_seed}'")
+                continue
+            logger.debug(
+                f"Range value seed constraint, param name : '{param}', seed expr : '{seed_expr}'")
+            seed_static_value_expr_list.append(seed_expr)
+        if check:
+            self.choice_no_conflicts_expr(builder=builder, param_union_expr=constraint_exprs,
+                                          param_static_expr_list=seed_static_value_expr_list)
+        else:
+            constraint_exprs.extend(seed_static_value_expr_list)
+
     def build_param_shape_len_constraint(self, constraint_exprs: List[str], builder: Z3ConstraintBuilder,
                                          check: bool = True) -> None:
         """
@@ -640,14 +712,53 @@ class ParamConstraintUtils(CommonDispatcher):
             constraint_after_solve_none.append(constraint_solve_none)
         return constraint_after_solve_none
 
-    def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False):
+    def _length_coupled_params(self, z3_constraints) -> set:
+        """返回"长度被跨参数约束引用"的参数名集合。
+
+        这些参数的长度若在变量声明期被硬钉（TensorListVar 的
+        solver.add(self.length == 组合值) / ListVar 的
+        solver.add(z3.Length(z3_var) == 组合值)），则约束中跨参数长度等式
+        （如 len(x) == len(weight) == len(out)）退化为常数间算术 → 必然
+        UNSAT；而组合阶段的长度偏好走 choice_no_conflicts_expr_core 的
+        【软】约束通道，无权剔除 base 中的硬钉。将此类参数置 length=None
+        交 Z3 自由求解；PICT 组合值仍由 build_param_length_constraint 以
+        软静态保留，一致时优先、冲突时自动放宽。
+
+        参数引用提取复用 CombinationConstraintGenerate._FACTOR_REF_RE
+        （param.attr 形态）并上 len(P) 直接引用的并集，避免裸标识符正则
+        把 len/shape/min 等函数名与属性名误计为参数。
+        """
+        operator_params = set(self.case_input_map.keys())
+        coupled: set = set()
+        for constraint in z3_constraints or []:
+            expr = getattr(constraint, "expr", "") or ""
+            if not expr:
+                continue
+            params_in_expr = {
+                match.group("prev")
+                for match in CombinationConstraintGenerate._FACTOR_REF_RE.finditer(expr)
+                if match.group("prev")
+            }
+            params_in_expr |= set(self._LEN_REF_RE.findall(expr))
+            params_in_expr &= operator_params
+            if len(params_in_expr) < 2:  # 只认跨参数表达式
+                continue
+            for param_name in self._LEN_REF_RE.findall(expr):
+                if param_name in operator_params and (params_in_expr - {param_name}):
+                    coupled.add(param_name)
+        return coupled
+
+    def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False, free_length_params=None):
         """
         声明每个变量，指定变量的type(Tensor, scalar，list)，以及数据类型(float, int, string, bool)
         :param is_print_log: 日志中是否打印详细信息
         :param builder: z3求解器实例
-
+        :param free_length_params: 长度交由Z3自由求解的参数名集合（长度被跨参数
+            约束引用的参数）。这些参数声明期不硬性设置length属性值，PICT 组合值仍经
+            build_param_length_constraint 以软静态偏好保留，一致时优先、冲突时放宽。
         :return: None
         """
+        free_length_params = free_length_params or set()
         for param_name in self.case_input_map.keys():
             param_info = self.case_input_map.get(param_name)
             if not param_info:
@@ -664,13 +775,24 @@ class ParamConstraintUtils(CommonDispatcher):
             if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
                 dtype_domain = self.dtype_domain_data.get(param_name)
                 format_domain = self.format_domain_data.get(param_name)
+                # tensor 分支：仅 tensor_list 接受 length；被跨参数长度关系引用的
+                # 参数（free_length_params）不硬钉，交 Z3 求解（普通 tensor 维持
+                # 原语义传 None）
+                length_arg = (None if z3_param_type != "tensor_list" or param_name in free_length_params
+                              else param_length)
                 builder.declare_var(param_name, type_hint=z3_param_type, dtype=param_dtype, allowed_dtypes=dtype_domain,
                                     allowed_formats=format_domain, range_value=range_values,
-                                    length=param_length if z3_param_type == "tensor_list" else None,
-                                    is_print_log=is_print_log)
+                                    length=length_arg, is_print_log=is_print_log)
             else:
+                # 非 tensor 分支：list 类型（scalars/attrs，aclIntArray 等）的
+                # ListVar 构造期同样 z3.Length(z3_var) == length 硬钉，存在与
+                # tensor_list 同构的跨参数 UNSAT 风险，按同一规则释放；scalar
+                # 类型不接收 length（declare_var 工厂截断），显式传 None 消除误导
+                length_arg = (None
+                              if z3_param_type != "list" or param_name in free_length_params
+                              else param_length)
                 builder.declare_var(param_name, z3_param_type, dtype=param_dtype, range_value=range_values,
-                                    length=param_length, is_print_log=is_print_log)
+                                    length=length_arg, is_print_log=is_print_log)
 
         self.set_param_is_present(builder)
 
@@ -682,7 +804,13 @@ class ParamConstraintUtils(CommonDispatcher):
 
         logger.info(f"Start solving solution of constraints by Z3, operator name : {self.operator_name}")
         builder = Z3ConstraintBuilder()
-        self.declare_param_in_z3(builder=builder, is_print_log=True)
+        # 长度被跨参数约束引用的参数：声明期不硬性设置length，交 Z3 统筹求解。
+        # 否则PICT 逐参数独立采样的长度值（如 len(x)=1/len(weight)=128）与
+        # len(x)==len(weight)==len(out) 类关系在 base 硬钉下必然 UNSAT
+        free_len = self._length_coupled_params(z3_constraints)
+        if free_len:
+            logger.info(f"Free (Z3-solved) lengths for cross-parameter coupled params : '{sorted(free_len)}'")
+        self.declare_param_in_z3(builder=builder, is_print_log=True, free_length_params=free_len)
         constraint_after_solve_no = self.solve_no_present_param_in_constraint(z3_constraints)
         expr_list = []
         for constraint_expr in constraint_after_solve_no:
@@ -724,6 +852,7 @@ class ParamConstraintUtils(CommonDispatcher):
         self.build_param_shape_constraint(all_static, builder, check=False)
         self.build_param_range_value_constraint(all_static, builder, check=False,
                                                 hard_static_expr_list=domain_static)
+        self.build_param_range_value_seed_constraint(all_static, builder, check=False)
         self.build_param_shape_len_constraint(all_static, builder, check=False)
         self.build_param_length_constraint(all_static, builder, check=False)
 
