@@ -17,7 +17,7 @@ _DTYPE_ALIASES = {
     "fp16": "float16",
     "fp32": "float32",
 }
-_ALLOWED_CALLS = {"len"}
+_ALLOWED_CALLS = {"len", "all"}
 _ALLOWED_ATTRIBUTES = {"shape", "dtype", "format", "range_value", "is_present"}
 _ALLOWED_NODES = (
     ast.Expression, ast.BoolOp, ast.BinOp, ast.UnaryOp, ast.Compare, ast.IfExp,
@@ -26,6 +26,7 @@ _ALLOWED_NODES = (
     ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod,
     ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
     ast.In, ast.NotIn, ast.Is, ast.IsNot, ast.USub, ast.UAdd,
+    ast.GeneratorExp, ast.comprehension, ast.Store
 )
 
 
@@ -121,11 +122,25 @@ def case_environment(case: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_tree(tree: ast.AST, known_names: set[str]) -> None:
+    # GeneratorExp 的循环变量（如 all(d > 0 for d in x.shape) 的 d）是局部
+    # 绑定，不属于 environment，单独收集后豁免 Name 检查。
+    gen_targets = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.GeneratorExp)
+        for gen in node.generators
+        for target in ast.walk(gen.target)
+        if isinstance(target, ast.Name)
+    }
     for node in ast.walk(tree):
         if not isinstance(node, _ALLOWED_NODES):
             raise ValueError(f"unsupported expression node: {type(node).__name__}")
         if isinstance(node, ast.Name):
-            if node.id not in known_names and node.id not in _ALLOWED_CALLS:
+            if (
+                node.id not in known_names
+                and node.id not in _ALLOWED_CALLS
+                and node.id not in gen_targets
+            ):
                 raise ValueError(f"unknown expression name: {node.id}")
         elif isinstance(node, ast.Attribute):
             if node.attr not in _ALLOWED_ATTRIBUTES:
@@ -169,10 +184,12 @@ def evaluate_expression(expression: str, environment: Mapping[str, Any]) -> bool
         normalized,
     )
     tree = ast.parse(normalized, mode="eval")
+    tree = _DtypeLiteralNormalizer().visit(tree)
+    ast.fix_missing_locations(tree)
     _validate_tree(tree, set(environment))
     result = eval(  # noqa: S307 - AST is strictly whitelisted above.
         compile(tree, "<hs-constraint>", "eval"),
-        {"__builtins__": {}, "len": len},
+        {"__builtins__": {}, "len": len, "all": all},
         dict(environment),
     )
     if not isinstance(result, bool):
@@ -230,3 +247,24 @@ def evaluate_case_relations(
         if not satisfied:
             issues.append(f"constraint[{index}] is false: {expression}")
     return issues
+def _norm_const(node: ast.AST) -> ast.AST:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        node.value = _normal_dtype(node.value)
+    elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        for elt in node.elts:
+            _norm_const(elt)
+    return node
+
+
+class _DtypeLiteralNormalizer(ast.NodeTransformer):
+    """把与 `.dtype` 直接比较的字符串字面量归一到环境侧小写规范。"""
+
+    def visit_Compare(self, node):
+        self.generic_visit(node)
+        if isinstance(node.left, ast.Attribute) and node.left.attr == "dtype":
+            for comp in node.comparators:
+                _norm_const(comp)
+        for comp in node.comparators:
+            if isinstance(comp, ast.Attribute) and comp.attr == "dtype":
+                _norm_const(node.left)
+        return node
