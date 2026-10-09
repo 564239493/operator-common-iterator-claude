@@ -341,6 +341,14 @@ class ParamConstraintUtils(CommonDispatcher):
         # static_expr -> 软约束 tag（仅对可成功构建的表达式建 tag）
         tag_of: Dict[str, z3.BoolRef] = {}
 
+        # 输出/派生侧参数优先于顺序参数丢弃，避免原版先丢输入致 Z3 凭空重造 shape 而超时。
+        param_of_tag: Dict[z3.BoolRef, str] = {}
+        output_param_names = set(self.operator_rule_data.outputs.keys()) \
+            if getattr(self.operator_rule_data, "outputs", None) else set()
+        # 派生侧参数自动识别
+        derived_param_names = self._detect_derived_params(
+            self.inter_param_constraints, set(self.case_input_map.keys()))
+
         for idx, static_expr in enumerate(param_static_expr_list):
             try:
                 z3_constraint = _build_constraint(static_expr)
@@ -349,6 +357,10 @@ class ParamConstraintUtils(CommonDispatcher):
                     tag = z3.Bool(f"chk_core:{idx}:{static_expr[:40]}")
                     builder.solver.add(z3.Implies(tag, z3_constraint))
                     tag_of[static_expr] = tag
+                    # 从静态表达式反解所属参数名，建立 tag→参数名映射供丢选择判别输出/派生侧。
+                    name_match = re.match(r"^(?:len\()?(\w+)[.\)]", static_expr)
+                    if name_match:
+                        param_of_tag[tag] = name_match.group(1)
             except Exception as e:
                 logger.error(f"choice_no_conflicts_expr_core, failed , expr : '{static_expr}', err msg : {str(e)}")
 
@@ -371,14 +383,32 @@ class ParamConstraintUtils(CommonDispatcher):
                 logger.warning("[choice_core] empty unsat_core on UNSAT — base infeasible?")
                 break
             core_set = set(core_list)
-            to_remove = None
-            for tag in assume:
-                if tag in core_set:
-                    to_remove = tag
-                    break
-            if to_remove is None:
+            # 按输出 > 派生 > 原版序三级优先级丢弃
+            candidates = [tag for tag in assume if tag in core_set]
+            if not candidates:
                 logger.warning("[choice_core] unsat_core contains no static tag — base infeasible?")
                 break
+            # 三级丢弃优先级：输出 > 派生 > 原版顺序；但（`len(X.shape) in/== N`）从输出优先豁免、降为保底。
+            def _is_rank_pin(expr_str):
+                return bool(re.match(r'^len\(\w+(\.shape)?\)\s*(in\b|==)', expr_str or ''))
+            output_candidates = [t for t in candidates
+                                 if param_of_tag.get(t) in output_param_names
+                                 and not _is_rank_pin(
+                                     next((e for e, tg in tag_of.items() if tg is t), ''))]
+            derived_candidates = [t for t in candidates
+                                  if param_of_tag.get(t) in derived_param_names]
+            if output_candidates:
+                to_remove = output_candidates[0]
+                logger.info(
+                    f"[choice_core] drop-priority: output-side static preferred, "
+                    f"param : '{param_of_tag.get(to_remove)}'")
+            elif derived_candidates:
+                to_remove = derived_candidates[0]
+                logger.info(
+                    f"[choice_core] drop-priority: derived-side static preferred, "
+                    f"param : '{param_of_tag.get(to_remove)}'")
+            else:
+                to_remove = candidates[0]
             assume.remove(to_remove)
             dropped_expr = next(
                 (expr for expr, tag in tag_of.items() if tag is to_remove), None)
@@ -396,6 +426,89 @@ class ParamConstraintUtils(CommonDispatcher):
                 z3_constraint = _build_constraint(static_expr)
                 if z3_constraint is not None:
                     builder.solver.assert_and_track(z3_constraint, f"perm_core:{static_expr[:50]}")
+
+    @staticmethod
+    def _detect_derived_params(inter_param_constraints, param_universe) -> set:
+        """从约束表达式的比较结构自动识别"派生侧"参数（被其他参数决定的一方）。
+
+        识别规则（保守，只取无歧义信号）：
+        - 遍历每条约束表达式 AST 中的比较节点（==/!=/>/>=/</<=）；
+        - 若某比较的左右两侧参数集**不相交**、且一侧恰为**单参数**、另一侧含
+          **≥2 个参数**，则单参数侧判定为派生侧。典型形态：
+          ``len(result.shape) == max(len(self.shape), len(target.shape))``
+          → result 是被 self/target 决定的一方；
+        - 单参数 vs 单参数（如 ``a.shape[i] == b.shape[i]``）视为对称约束，
+          不判向；与常量比较（``beta.range_value >= 0``）无参数对方，跳过。
+
+        仅影响丢弃优先级（第 2 级，介于输出参数与原版顺序之间），不影响约束
+        语义与求解正确性；误判的代价只是丢了一个本不该优先丢的静态，Z3 仍会
+        求解出合法解。
+
+        :param inter_param_constraints: 约束列表（InterParamConstraint 或含 expr 键的 dict）
+        :param param_universe: 参数名全集（case 输入输出），用于过滤循环变量等噪音
+        :return: 派生侧参数名集合
+        """
+        derived = set()
+        if not param_universe:
+            return derived
+        for constraint in inter_param_constraints or []:
+            expr = getattr(constraint, "expr", None)
+            if isinstance(constraint, dict):
+                expr = constraint.get("expr")
+            if not expr or not isinstance(expr, str):
+                continue
+            try:
+                replaced = ExpressionPreprocessor.apply_keyword_replace(expr)
+                if not ExpressionPreprocessor.validate_expression(replaced):
+                    continue
+                tree = ast.parse(replaced, mode="eval")
+            except Exception:
+                continue
+            # comprehension 循环变量（i/idx 等）不是参数，排除
+            loop_vars = {n.target.id for n in ast.walk(tree)
+                         if isinstance(n, ast.comprehension)
+                         and isinstance(n.target, ast.Name)}
+
+            def _params(node):
+                return {n.id for n in ast.walk(node)
+                        if isinstance(n, ast.Name)
+                        and n.id in param_universe
+                        and n.id not in loop_vars}
+
+            def _is_bare_attr(node):
+                """裸属性链（Name/Attribute/Subscript，无 Call/运算/条件表达式）。"""
+                return not any(isinstance(n, (ast.Call, ast.BinOp, ast.UnaryOp,
+                                              ast.BoolOp, ast.IfExp))
+                               for n in ast.walk(node))
+
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Compare) and len(node.ops) == 1
+                        and isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.Gt,
+                                                     ast.GtE, ast.Lt, ast.LtE))):
+                    continue
+                left_params = _params(node.left)
+                right_params = _params(node.comparators[0])
+                if not left_params or not right_params:
+                    continue
+                if not left_params.isdisjoint(right_params):
+                    continue
+                if len(left_params) == 1 and len(right_params) >= 2:
+                    derived |= left_params
+                elif len(right_params) == 1 and len(left_params) >= 2:
+                    derived |= right_params
+                elif len(left_params) == 1 and len(right_params) == 1:
+                    # 单 vs 单：仅当一侧为裸属性链、另一侧含计算（a == f(b) 形态，
+                    # 如 weightScale == f(weight)）时，裸属性侧判为派生侧；
+                    # 两侧均裸（a.shape == b.shape）或均含计算视为对称，不判向。
+                    # 已知局限：计算式在左侧的写法（f(a) == b）会判反向——文档
+                    # 约定派生方通常裸写在左侧，误判仅影响丢弃优先级不影响正确性。
+                    left_bare = _is_bare_attr(node.left)
+                    right_bare = _is_bare_attr(node.comparators[0])
+                    if left_bare and not right_bare:
+                        derived |= left_params
+                    elif right_bare and not left_bare:
+                        derived |= right_params
+        return derived
 
     def build_param_dtype_constraint(self, constraint_exprs: List[str],
                                      builder: Z3ConstraintBuilder, check: bool = True) -> None:
