@@ -14,6 +14,9 @@ import type { ReplayEvent } from '../api/types'
 /** 单页：顶部轮次汇总、角色队列、交接图及统一详情。任务身份来自全站共享选择（不进 URL）。 */
 const router = useRouter()
 const { loadError, ready, selectedRunId } = useTask()
+// 汇总位置 A/B 对比（临时开关，选定后删除）：bottom=沉到流程区末尾；rail=收进左侧轮次栏
+const layoutMode = ref<'bottom' | 'rail'>('bottom')
+function toggleLayout() { layoutMode.value = layoutMode.value === 'bottom' ? 'rail' : 'bottom' }
 const flowBoard = ref<InstanceType<typeof HandoffBoard>>()
 const flowScroll = ref(0)
 const flowZoom = ref(1)
@@ -70,7 +73,7 @@ const roundEngineers = computed(() => engineers.value.map(eng => {
   const status = state?.status ?? 'pending'
   return { ...eng, runtime: { ...eng.runtime, ...state, status,
     iteration: selectedRound.value,
-    basis: state?.basis || '尚未执行到该阶段（推导）', inferred: true } }
+    basis: state?.basis || '尚未执行到该阶段', inferred: true } }
 }))
 const nextRound = computed(() => {
   const index = rounds.value.indexOf(selectedRound.value ?? -1)
@@ -198,7 +201,7 @@ const outcomes = computed(() => {
       text:
         e.verdict === 'engine_error'
           ? `engine_error：${e.engine_error || '详见执行结果'}`
-          : `execution_result.status=${e.status_raw} 仅指执行器完成，不代表用例全通过；以 ${e.passed}/${e.total} 为准。`,
+          : `执行器已完成；通过 ${e.passed}/${e.total}。`,
       // 覆盖率是本轮执行的产物：入口随执行结果卡（hash 路由内跳转，任务上下文由共享选择携带）
       link: { label: '查看覆盖率', href: router.resolve({ path: '/coverage' }).href },
     })
@@ -260,6 +263,7 @@ function segStates(seg: any): string {
   <div ref="snapRef" class="snap-container">
     <TopBar view="workbench">
       <TaskPicker />
+      <button class="text-btn" title="切换汇总区位置（A/B 对比）" @click="toggleLayout">汇总：{{ layoutMode === 'bottom' ? '底部' : '左栏' }}</button>
     </TopBar>
 
     <aside class="round-rail" aria-label="测试轮次">
@@ -281,11 +285,38 @@ function segStates(seg: any): string {
         <p v-if="!rounds.length" class="rail-caption">暂无轮次记录</p>
       </nav>
       <button v-if="nextRound !== null" class="latest-round" @click="selectedRound = rounds[rounds.length - 1]">查看最新轮次 →</button>
+
+      <!-- 方案B（layout=rail）：汇总收进左栏，轮次列表下方紧凑竖排 -->
+      <div v-if="runView && layoutMode === 'rail'" class="rail-summary">
+        <div class="rail-heading">轮次汇总</div>
+        <div v-for="(m, i) in metrics" :key="i" class="rail-metric">
+          <span class="rail-metric-label">{{ m.label }}</span>
+          <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
+        </div>
+        <div v-for="(c, i) in outcomes" :key="'o' + i" class="rail-outcome" :class="c.tone">
+          <strong>{{ c.title }}</strong>
+          <span>{{ c.text }}</span>
+          <a v-if="c.link" :href="c.link.href">{{ c.link.label }} →</a>
+        </div>
+        <details class="run-context"><summary>任务背景与状态历史</summary>
+          <p>文档：{{ runView.operator_doc }}</p>
+          <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
+        </details>
+      </div>
     </aside>
 
-    <!-- ============ 第一屏：概览 + 分列详情 + 工程师带 ============ -->
-    <section class="screen screen-main">
-      <main class="main-area">
+    <!-- 机器人头像带：紧贴顶栏，全程可见 -->
+    <div class="band-dock">
+      <div class="band-shell">
+        <div class="band-grid">
+          <AgentBand :engineers="roundEngineers.filter(e => e.stage)" :selected="selectedAgent" :round="selectedRound"  :scroll-left="flowScroll" :zoom="flowZoom" :viewport="flowViewport" @viewport="flowViewport = $event" @scroll-x="flowScroll = $event" @select="onAgentSelect" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 交接图与详情：主滚动区（汇总按布局开关沉底或收进左栏） -->
+    <section class="screen screen-board">
+      <div class="board-area">
         <el-alert v-if="loadError && !selectedRunId" type="error" :title="`任务列表加载失败：${loadError}`" :closable="false" style="margin-bottom: 14px" />
         <el-empty v-else-if="ready && !selectedRunId" description="runs/ 目录下没有可解析的任务" />
         <!-- 无选中且列表未就绪：首次拉取任务列表中 -->
@@ -301,47 +332,8 @@ function segStates(seg: any): string {
             <span class="status" :class="statusChip.cls">{{ statusChip.text }}</span>
           </div>
 
-          <div class="round-heading">第 {{ selectedRound ?? '—' }} 轮汇总 <span>以下结果属于当前所选轮次</span></div>
-          <div class="summary">
-            <div v-for="(m, i) in metrics" :key="i" class="metric">
-              <span class="icon">{{ m.icon }}</span>
-              <div>
-                <small>{{ m.label }}</small>
-                <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="outcomes.length" class="outcomes">
-            <div v-for="(c, i) in outcomes" :key="i" class="outcome" :class="c.tone"><strong>{{ c.title }}</strong><span>{{ c.text }}</span><a v-if="c.link" class="outcome-link" :href="c.link.href">{{ c.link.label }} →</a></div>
-          </div>
-          <details class="run-context"><summary>任务背景与状态历史</summary>
-            <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
-            <p>提示词快照：{{ runView.current_prompt || '—' }} · 用例预算：{{ runView.case_count ?? '—' }} · 装配知识：{{ (runView.current_prompt_modules || []).length }} 项</p>
-            <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
-            <p v-for="(seg, i) in runView.segments || []" :key="i">{{ fmtTime(seg.from_at) }} → {{ fmtTime(seg.to_at) }} · {{ segStates(seg) }}</p>
-          </details>
-        </template>
-        <div v-else v-loading="true" style="height: 300px" />
-      </main>
-
-    </section>
-
-    <!-- 汇总与头像行不参与下方流程区域的滚动。 -->
-    <div class="flow-start" aria-hidden="true" />
-    <div class="band-dock" >
-      <div class="band-shell">
-        <div class="band-grid">
-          <AgentBand :engineers="roundEngineers.filter(e => e.stage)" :selected="selectedAgent" :round="selectedRound"  :scroll-left="flowScroll" :zoom="flowZoom" :viewport="flowViewport" @viewport="flowViewport = $event" @scroll-x="flowScroll = $event" @select="onAgentSelect" />
-        </div>
-      </div>
-    </div>
-
-    <!-- 交接图与详情共用独立的纵向滚动区域。 -->
-    <section class="screen screen-board">
-      <div class="board-area">
-        <!-- run 级状态条：进行中/终态均有明确落点（不依赖终态事件的存在） -->
-        <div class="run-status-bar" :data-terminal="runView?.is_terminal">
+          <!-- run 级状态条：进行中/终态均有明确落点（不依赖终态事件的存在） -->
+          <div class="run-status-bar" :data-terminal="runView?.is_terminal">
           <template v-if="runView?.is_terminal">
             <span class="rsb-dot rsb-terminal"></span>
             <b>任务已结束</b>
@@ -379,9 +371,35 @@ function segStates(seg: any): string {
           <span aria-live="polite">正在查看第 {{ selectedRound }} 轮 · 共 {{ rounds.length }} 轮</span>
           <button :disabled="nextRound === null" @click="nextRound !== null && (selectedRound = nextRound)">下一轮 →</button>
         </div>
+
+          <!-- 方案A（layout=bottom）：汇总沉底——流程内容之后、页脚之前 -->
+          <template v-if="layoutMode === 'bottom'">
+            <div class="round-heading">第 {{ selectedRound ?? '—' }} 轮汇总 <span>以下结果属于当前所选轮次</span></div>
+            <div class="summary">
+              <div v-for="(m, i) in metrics" :key="i" class="metric">
+                <span class="icon">{{ m.icon }}</span>
+                <div>
+                  <small>{{ m.label }}</small>
+                  <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
+                </div>
+              </div>
+            </div>
+            <div v-if="outcomes.length" class="outcomes">
+              <div v-for="(c, i) in outcomes" :key="i" class="outcome" :class="c.tone"><strong>{{ c.title }}</strong><span>{{ c.text }}</span><a v-if="c.link" class="outcome-link" :href="c.link.href">{{ c.link.label }} →</a></div>
+            </div>
+            <details class="run-context"><summary>任务背景与状态历史</summary>
+              <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
+              <p>提示词快照：{{ runView.current_prompt || '—' }} · 用例预算：{{ runView.case_count ?? '—' }} · 装配知识：{{ (runView.current_prompt_modules || []).length }} 项</p>
+              <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
+              <p v-for="(seg, i) in runView.segments || []" :key="i">{{ fmtTime(seg.from_at) }} → {{ fmtTime(seg.to_at) }} · {{ segStates(seg) }}</p>
+            </details>
+          </template>
+        </template>
+        <div v-else v-loading="true" style="height: 300px" />
+
         <footer class="page-foot">
           <span>数据来自 {{ selectedRunId }} 的落盘产物</span>
-          <span>状态与交接由产物推导（页面以「推导」标记）· 时间来自 history 与文件修改时间 · 最后活动 {{ fmtTime(runView?.last_activity) }}</span>
+          <span>最后活动 {{ fmtTime(runView?.last_activity) }}</span>
         </footer>
       </div>
     </section>
@@ -398,7 +416,6 @@ function segStates(seg: any): string {
 .text-btn { border: 0; background: none; color: var(--wb-muted); font-size: 12px; }
 .text-btn:hover { color: var(--wb-blue); }
 
-.main-area { flex: 1; padding: 22px 36px 12px; max-width: 1800px; width: 100%; margin: 0 auto; overflow-y: auto; min-height: 0; }
 .heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8px; word-break: break-all; }
 .metadata { color: var(--wb-muted); margin-top: 6px; font-size: 12.5px; }
@@ -512,7 +529,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 }
 
 @media (max-width: 900px) {
-  .main-area, .board-area { padding-left: 16px; padding-right: 16px; }
+  .board-area { padding-left: 16px; padding-right: 16px; }
 }
 @media (max-width: 600px) {
   .heading { flex-direction: column; align-items: flex-start; gap: 8px; }
@@ -522,13 +539,11 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
   .expand-btn { padding: 5px 12px; font-size: 11px; }
   .page-foot { flex-direction: column; gap: 6px; }
 }
-.flow-start { height: 0; }
 .band-dock { position: sticky; top: 72px; z-index: 19; background: var(--wb-card); border-bottom: 1px solid var(--wb-line); box-shadow: 0 4px 12px #152b4909; }
 .band-shell { max-width: 1800px; margin: auto; padding: 0 36px; }
 .band-grid { display: grid; grid-template-columns: minmax(0, 1fr) clamp(260px,24vw,330px); gap:18px; }
 .band-grid > :first-child { min-width:0; margin:0 1px; }
 .band-actions { display:flex;align-items:center;justify-content:center; }
-.screen-main { min-height:calc(100dvh - 72px - 150px); }
 .screen-board { min-height:calc(100dvh - 222px); }
 @media(max-width:900px){.band-shell{padding:0 16px}.band-grid{grid-template-columns:minmax(0,1fr);gap:0}.band-actions{position:absolute;right:20px;top:-32px}.band-actions button{font-size:11px;padding:4px 10px}}
 
@@ -568,14 +583,29 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .round-copy { display:flex; flex-direction:column; gap:5px; padding-top:5px; }
 .round-copy strong { font-size:12px; }.round-copy small { font-size:10px; color:var(--wb-muted); line-height:1.5; }.round-copy em { font-size:10px; font-style:normal; color:var(--wb-blue); }
 .latest-round { margin:20px 0 0; border:0; background:transparent; color:var(--wb-blue); font-size:11px; cursor:pointer; }
+/* 方案B：左栏轮次汇总（紧凑竖排） */
+.rail-summary { margin-top:18px; padding:12px 8px 4px; border-top:1px solid var(--wb-line); }
+.rail-metric { display:flex; flex-direction:column; gap:2px; padding:8px 6px; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-card); margin-bottom:7px; }
+.rail-metric-label { font-size:10px; color:var(--wb-muted); }
+.rail-metric strong { font-size:15px; color:var(--wb-ink); }
+.rail-metric em { font-style:normal; font-size:10px; font-weight:400; color:var(--wb-muted); margin-left:4px; }
+.rail-outcome { border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-card); padding:8px 9px; margin-bottom:7px; }
+.rail-outcome strong { display:block; font-size:11px; margin-bottom:3px; }
+.rail-outcome span { font-size:10px; color:var(--wb-muted); line-height:1.5; display:block; }
+.rail-outcome a { display:inline-block; margin-top:4px; font-size:10px; color:var(--wb-blue); text-decoration:none; }
+.rail-outcome.ok strong { color:var(--wb-green); }
+.rail-outcome.warn strong { color:var(--wb-orange); }
+.rail-outcome.bad strong { color:var(--wb-red); }
+.rail-outcome.info strong { color:var(--wb-blue); }
+.rail-summary .run-context { font-size:10px; }
 .round-pager { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:24px 16px; color:var(--wb-muted); font-size:12px; }
 .round-pager button { border:1px solid var(--wb-line); border-radius:8px; padding:9px 16px; background:var(--wb-card); color:var(--wb-blue); cursor:pointer; }.round-pager button:disabled { opacity:.4; cursor:default; }
 .round-item:focus-visible,.latest-round:focus-visible,.round-pager button:focus-visible { outline:2px solid var(--wb-blue); outline-offset:2px; }
-.screen-main,.band-dock,.screen-board { margin-left:174px; }
+.band-dock,.screen-board { margin-left:174px; }
 @media(max-width:900px){
   .round-rail{width:64px;padding:20px 6px}.rail-heading{font-size:11px;padding:0;justify-content:center}.rail-heading span,.rail-caption,.round-copy,.latest-round{display:none}
   .round-list{margin-top:20px}.round-item{min-height:64px;padding:12px;justify-content:center}.round-item:not(:last-child)::after{left:25px;top:40px;bottom:-12px}.round-item.chosen::before{left:-6px}
-  .screen-main,.band-dock,.screen-board{margin-left:64px}.round-pager{gap:6px}.round-pager button{padding:8px}.round-pager span{font-size:10px}
+  .band-dock,.screen-board{margin-left:64px}.round-pager{gap:6px}.round-pager button{padding:8px}.round-pager span{font-size:10px}
 }
 
 .view-switcher { position:sticky; top:-24px; z-index:3; display:flex; flex-direction:column; gap:5px; padding:0 0 18px; margin-bottom:22px; border-bottom:1px solid var(--wb-line); background:var(--wb-card); }
@@ -587,11 +617,10 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .view-switcher svg { width:18px; height:18px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
 @media(max-width:900px){.view-switcher{top:-20px;padding-bottom:14px;margin-bottom:18px}.view-heading,.view-switcher button span{display:none}.view-switcher button{justify-content:center;padding:10px 0}}
 
-.screen-main,.screen-board { min-height:0; }
-.main-area { max-width:none; padding:20px 24px 16px; overflow:visible; }
+.screen-board { min-height:0; }
 .summary { margin:12px 0; }
-.main-area .outcomes { margin:10px 0 0; gap:10px; }
-.main-area .outcome { padding:10px 14px; }
+.board-area .outcomes { margin:10px 0 0; gap:10px; }
+.board-area .outcome { padding:10px 14px; }
 .round-heading { font-size:13px; font-weight:650; color:var(--wb-ink); }
 .round-heading span { margin-left:10px; font-size:11px; font-weight:400; color:var(--wb-muted); }
 .run-context { margin-top:12px; font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }
@@ -600,8 +629,6 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 /* 固定顶部区域，用剩余高度承载流程与详情，避免依赖固定汇总高度。 */
 .snap-container { display:flex; flex-direction:column; overflow:hidden; }
 .topbar { position:relative; top:auto; flex:0 0 72px; }
-.screen-main { flex:0 0 auto; max-height:36dvh; min-height:0; overflow:auto; overscroll-behavior:contain; }
-.main-area { flex:0 0 auto; }
 .band-dock { position:relative; top:auto; flex:0 0 auto; }
 .screen-board { flex:1 1 0; min-height:0; overflow:auto; overscroll-behavior:contain; scroll-margin-top:0; }
 .board-area { flex:0 0 auto; }

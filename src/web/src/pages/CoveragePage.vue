@@ -374,7 +374,7 @@ export default {
     <p class="report-note">独立覆盖报告 · 函数、语句和分支覆盖率分别统计。
         <template v-if="runContext">正在查看任务 <b>{{ runContext }}</b> 内嵌的覆盖报告（runs/{{ runContext }}/ops_cov_report/），按路径关联，不做名称匹配。</template>
         <template v-else>未携带任务上下文，正在浏览全局覆盖报告目录（项目根 ops_cov_report/）。</template>
-        目录列表每 30 秒自动刷新。
+        
     </p>
     <div class="cover-main">
         <!-- 左侧: 覆盖率数据目录列表 -->

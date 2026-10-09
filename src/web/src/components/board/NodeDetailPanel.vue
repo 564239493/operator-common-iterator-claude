@@ -41,7 +41,7 @@ const summaryLines = computed(() => {
     const c = it.constraint_check
     push('检查结论', c.status, c.status === 'passed' ? 'ok' : 'bad')
     push('轮次', `${c.current_round}/${c.max_rounds}`)
-    push('问题 open/fixed/unfixed', `${c.issues_open}/${c.issues_fixed}/${c.issues_unfixed}`)
+    push('问题 未解决/已修复/仍未修复', `${c.issues_open}/${c.issues_fixed}/${c.issues_unfixed}`)
   }
   if (name === 'case-generator' && it.generation) {
     const p = it.generation.progress || {}
@@ -100,26 +100,6 @@ const extras = computed(() => {
     origins: source.origins || null,
     decisions: source.decisions ?? null,
   }
-})
-
-// 权限配置拍平为键值列表（原值展示；嵌套一层拍平，更深层转 JSON 字符串）
-const permissionEntries = computed(() => {
-  const perm = props.engineer?.permission
-  if (!perm || typeof perm !== 'object') return []
-  const out: { key: string; value: string }[] = []
-  for (const [key, value] of Object.entries(perm)) {
-    if (value === null || typeof value !== 'object') {
-      out.push({ key, value: String(value) })
-    } else {
-      for (const [sub, subValue] of Object.entries(value as Record<string, unknown>)) {
-        out.push({
-          key: `${key}.${sub}`,
-          value: typeof subValue === 'object' ? JSON.stringify(subValue) : String(subValue),
-        })
-      }
-    }
-  }
-  return out
 })
 
 const gate = computed(() => iterationView.value?.quality_gate || null)
@@ -186,52 +166,35 @@ function openArtifact(path: string) {
         </div>
       </div>
 
-      <div class="detail-badge">{{ kindText }}<span v-if="edge?.inferred" class="badge-inline">推导</span></div>
+      <div class="detail-badge">{{ kindText }}</div>
 
-      <div class="detail-label">本次交接依据</div>
+      <div class="detail-label">交接</div>
       <p class="subtle">第 {{ round }} 轮 · {{ edge?.from || '—' }} → {{ edge?.to || '无下游记录' }} · {{ edge?.time || '时间未记录' }}</p>
       <div class="key-output">{{ edge?.basis || '（无依据记录）' }}</div>
 
       <div class="detail-label">本轮保留的阶段结果</div>
-      <p class="subtle tiny">以下为本轮最终保留记录，不代表每次复检或重试当时的结果。</p>
       <dl class="merged-kv"><template v-for="line in summaryLines" :key="line.label"><dt>{{ line.label }}</dt><dd>{{ line.value }}</dd></template></dl>
       <p v-if="!summaryLines.length" class="subtle">暂无结构化阶段摘要，可查看下方产物。</p>
       <div class="detail-label">本阶段参考材料</div>
-      <p class="subtle tiny">来自角色流程定义，不代表本次实际读取记录。</p>
       <dl class="merged-kv"><template v-for="item in inputMaterials" :key="item.path"><dt>{{ item.label }}</dt><dd>{{ item.path }}<small>{{ item.evidence }}</small></dd></template></dl>
-      <div class="detail-label">引用技能（角色配置）</div>
+      <div class="detail-label">引用技能</div>
       <div>
         <span v-for="s in engineer.skills || []" :key="s" class="skill-chip">{{ s }}</span>
         <span v-if="!(engineer.skills || []).length" class="subtle">未配置预加载技能</span>
       </div>
-      <p class="subtle tiny">来自角色定义，非本次实际加载日志。</p>
 
       <!-- 定义加载状态：不伪装成功 -->
       <div v-if="engineer.definition_found === false" class="def-notice">
-        未找到该角色的定义文件——以上为流程固定角色，描述与技能为空，不代表定义加载成功。
+        该角色为流程固定角色，未找到定义文件。
       </div>
       <div v-else-if="engineer.load_error" class="def-notice def-notice-bad">
-        定义文件解析失败：{{ engineer.load_error }}（以上信息可能不完整）
+        定义文件解析失败：{{ engineer.load_error }}
       </div>
-
-      <!-- 权限配置：原值展示，非运行时最终授权 -->
-      <template v-if="permissionEntries.length">
-        <div class="detail-label">权限配置（配置原值，非运行时最终授权）</div>
-        <div class="perm-list">
-          <span v-for="p in permissionEntries" :key="p.key" class="perm-chip" :data-value="p.value">
-            {{ p.key }}: {{ p.value }}
-          </span>
-        </div>
-      </template>
 
       <!-- 补充约束：补充结果与应用情况分开（合并归主协调器） -->
       <template v-if="engineer.name === 'constraint-supplementer' && (extras.application || extras.origins)">
         <div class="detail-label">补丁应用情况</div>
         <p class="subtle">{{ extras.application || '—（空补丁无需应用；origin 计数仅辅助信息）' }}</p>
-        <p v-if="extras.origins" class="subtle tiny">
-          辅助计数（旧约束可能已带标记，不证明本轮已应用）：
-          <template v-for="(v, k) in extras.origins" :key="k">{{ k }}={{ v }}　</template>
-        </p>
       </template>
 
       <!-- 提示词优化：裁决与提案互不推翻 -->
@@ -242,13 +205,13 @@ function openArtifact(path: string) {
         </p>
         <p v-else class="subtle">
           {{ extras.decisions.status === 'ok'
-            ? `已记录 ${extras.decisions.count ?? 0} 条裁决（批准/拒绝/暂缓以文件为准）`
+            ? `已记录 ${extras.decisions.count ?? 0} 条裁决`
             : '未找到裁决文件' }}
         </p>
       </template>
 
       <details v-if="(runView?.current_prompt_modules || []).length" class="skill-record">
-        <summary>装配冻结的知识模块 · {{ runView.current_prompt_modules.length }} 项</summary>
+        <summary>参考知识 · {{ runView.current_prompt_modules.length }} 项</summary>
         <div class="modules">
           <span v-for="m in runView.current_prompt_modules" :key="m" class="skill-chip">{{ m }}</span>
         </div>
@@ -278,7 +241,6 @@ function openArtifact(path: string) {
           {{ gateVerdict?.text }}
           <div v-if="gate.summary" class="gate-sub">
             检查 {{ gate.summary.passed ?? '?' }}/{{ gate.summary.total }} 通过
-            <span v-if="gate.summary_derived" class="badge-inline">现算</span>
           </div>
           <div v-for="(b, i) in (gate.blocking_issues || []).slice(0, 3)" :key="i" class="blocking-item">
             {{ b }}
@@ -295,13 +257,10 @@ function openArtifact(path: string) {
         <LogTailBox :run-id="runId" :iteration="round" name="execution.log" title="execution.log" />
       </details>
 
-      <div class="evidence-note">
-        同一处理实例仅显示一次。复检和重试保留为独立节点；历史缺失时明确标注，不补造。
-      </div>
     </template>
     <template v-else>
       <h3>节点详情</h3>
-      <p class="subtle">点击上方流程节点或机器人，在这里统一查看输入、技能知识、阶段产物与交接依据。</p>
+      <p class="subtle">点击流程节点或机器人，在这里查看它的输入、技能、产物与交接。</p>
     </template>
     <ArtifactViewer ref="viewer" :run-id="runId" />
   </aside>
@@ -322,18 +281,10 @@ function openArtifact(path: string) {
   background: var(--wb-red-soft);
   color: var(--wb-red);
 }
-.perm-list { display: flex; flex-wrap: wrap; gap: 4px; }
-.perm-chip {
-  font: 10px/1.5 ui-monospace, monospace;
-  padding: 3px 7px;
-  border-radius: 5px;
-  border: 1px solid var(--wb-line);
-  background: var(--wb-code-bg);
-  color: var(--wb-ink);
-}
-.perm-chip[data-value='deny'] { color: var(--wb-red); border-color: var(--wb-red-line); }
-.perm-chip[data-value='allow'] { color: var(--wb-green); border-color: var(--wb-green-line); }
-.perm-chip[data-value='ask'] { color: var(--wb-orange); border-color: var(--wb-orange-line); }
+
+
+
+
 
 .detail {
   background: var(--wb-card);
@@ -442,7 +393,7 @@ h3 { font-size: 15px; margin: 0 0 14px; }
 .gate-box.ok { background: var(--wb-green-soft); color: var(--wb-green); border-color: var(--wb-green-line); }
 .gate-sub { margin-top: 5px; font-size: 11px; color: var(--wb-muted); }
 .blocking-item { margin-top: 4px; font-size: 11px; }
-.evidence-note { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--wb-line); font-size: 11px; color: var(--wb-muted); }
+
 .detail { position:static; max-height:none; overflow:visible; }
 .merged-kv { display:grid; grid-template-columns:minmax(110px,160px) minmax(0,1fr); gap:8px 16px; font-size:12px; }
 .merged-kv dt { color:var(--wb-muted); }.merged-kv dd { margin:0; overflow-wrap:anywhere; }.merged-kv small { display:block; margin-top:4px; color:var(--wb-muted); }

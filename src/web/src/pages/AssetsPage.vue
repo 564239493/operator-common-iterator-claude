@@ -89,7 +89,7 @@ onMounted(load)
           <div><span class="eyebrow">{{ ui.current_agent }}</span><h2>{{ agent.role }}</h2><p>{{ summary }}</p></div>
           <div v-if="agent.availability === 'ready'" class="outcomes"><div><span>{{ ui.when_to_use }}</span><p>{{ agent.when_to_use }}</p></div><div><span>{{ ui.outcome }}</span><p>{{ agent.outcome }}</p></div></div>
         </section>
-        <div class="legend"><span><i class="primary" />{{ ui.legend_required }}</span><span><i class="allowed" />{{ ui.legend_allowed }}</span><span><i class="denied" />{{ ui.legend_unknown }}</span><span class="legend-note">{{ ui.legend_note }}</span></div>
+        <div class="legend"><span><i class="primary" />{{ ui.legend_required }}</span><span><i class="allowed" />{{ ui.legend_allowed }}</span><span><i class="denied" />{{ ui.legend_unknown }}</span></div>
         <div class="workspace">
           <div class="capabilities">
             <section class="panel"><div class="panel-heading"><h3>{{ ui.skills_title }}</h3><span>{{ catalog.skills.length }} {{ ui.item_unit }}</span></div>
@@ -113,7 +113,7 @@ onMounted(load)
               <template v-if="detail.kind === 'knowledge'"><h3>{{ ui.scope }}</h3><p>{{ detailFamily?.description }} · {{ catalog.scopes[detail.scope || ''] }}</p><p class="subtle">{{ ui.scope_note }}</p></template>
               <button class="back-detail" @click="closeDetail">{{ ui.back }}</button>
             </template>
-            <template v-else><span class="eyebrow">{{ ui.overview }}</span><h2>{{ agent?.role || ui.choose_agent }}</h2><div class="relation-badge">{{ relatedSummary }}</div><p>{{ summary }}</p><h3>{{ ui.how_to_view }}</h3><p>{{ ui.how_to_view_description }}</p><p class="subtle">{{ ui.unknown_note }}</p></template>
+            <template v-else><span class="eyebrow">{{ ui.overview }}</span><h2>{{ agent?.role || ui.choose_agent }}</h2><div class="relation-badge">{{ relatedSummary }}</div><p>{{ summary }}</p></template>
           </aside>
         </div>
       </main>

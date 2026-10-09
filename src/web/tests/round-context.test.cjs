@@ -12,7 +12,7 @@ function setup(){
  const roundStates={
   1:{'constraint-extractor':{status:'passed',basis:'首轮约束已提交',inferred:true},
      'constraint-updater':{status:'pending',basis:'本轮尚无诊断，未进入更新回路',inferred:true},
-     'case-generator':{status:'running',basis:'历史轮次存在运行中证据，可能为遗留',inferred:true}},
+     'case-generator':{status:'running',basis:'该轮此阶段仍显示运行中，未见完成记录',inferred:true}},
   2:{'constraint-updater':{status:'passed',basis:'约束更新完成：11 处最小修改',inferred:true},
      'case-generator':{status:'passed',basis:'generation_progress.state=complete',inferred:true}},
   6:{'constraint-updater':{status:'unconfirmed',basis:'诊断建议更新但未见 constraint_update.json',inferred:true},
@@ -62,11 +62,11 @@ test('one shared avatar band and one round selector',()=>{
  // RunPage 不再客户端硬造 not_involved：roundEngineers 消费后端 round_states
  assert(page.includes('round_states'));assert(!page.includes("'not_involved'"));
 });
-test('shared band sits between screens, sticks at top and matches flow columns',()=>{
- const mainEnd=page.indexOf('class="screen screen-main"');
+test('band sits at the very top (right under topbar), sticks and matches flow columns',()=>{
  const band=page.indexOf('class="band-dock"');
  const board=page.indexOf('class="screen screen-board"');
- assert(mainEnd<band&&band<board);
+ assert(band>-1&&band<board);
+ assert(!page.includes('class="screen screen-main"')); // 汇总不再顶置占屏
  assert.match(page,/\.band-dock\s*\{\s*position: sticky; top: 72px/);
  assert(!/\.band-dock\s*\{\s*position: fixed/.test(page));
  const avatars=fs.readFileSync(path.join(root,'components/band/AgentBand.vue'),'utf8');
@@ -86,8 +86,8 @@ test('shared column geometry fills viewport, puts dividers at cell edges at ever
 test('input materials are role-specific and previous-round update references stay scoped',()=>{
  const {stageInputs}=loadTs('components/stage/stage-inputs.ts');const run={operator_doc:'inputs/doc.md',iterations:[{n:1,exists:{'analysis.json':true}},{n:2,exists:{'constraints.json':true}}]};
  const scanner=stageInputs('scene-scanner',2,run);assert.equal(scanner.length,1);assert.equal(scanner[0].path,'inputs/doc.md');
- const generator=stageInputs('case-generator',2,run);assert(!generator.some(x=>x.path==='inputs/doc.md'));assert(generator.some(x=>x.path==='iter_002/constraints.json'&&x.evidence==='文件已记录'));
- const updater=stageInputs('constraint-updater',2,run);assert(updater.some(x=>x.path==='iter_001/analysis.json'&&x.evidence==='文件已记录'));assert(!updater.some(x=>x.path==='iter_002/analysis.json'));
+ const generator=stageInputs('case-generator',2,run);assert(!generator.some(x=>x.path==='inputs/doc.md'));assert(generator.some(x=>x.path==='iter_002/constraints.json'&&x.evidence==='已确认'));
+ const updater=stageInputs('constraint-updater',2,run);assert(updater.some(x=>x.path==='iter_001/analysis.json'&&x.evidence==='已确认'));assert(!updater.some(x=>x.path==='iter_002/analysis.json'));
 });
 test('graph core: adjacency is not handoff evidence and node status survives edges',()=>{
  const {buildGraph}=loadTs('components/board/graph.ts');

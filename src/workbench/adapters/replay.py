@@ -62,7 +62,7 @@ def _expand_check_repair(view, n):
         if open_ids:
             events.append({
                 "iteration": n, "agent": "constraint-checker", "action": "rejected",
-                "basis": "第 %s/%s 次检查存在未解决项：%s（据 issues.found_round/status 推导）"
+                "basis": "第 %s/%s 次检查存在未解决项：%s"
                          % (r, current_round, "、".join(open_ids)),
                 "at": None, "inferred": True, "to_agent": "constraint-repairer", "to_round": n,
             })
@@ -94,7 +94,7 @@ def _expand_check_repair(view, n):
             if fixed_between:
                 events.append({
                     "iteration": n, "agent": "constraint-repairer", "action": "passed",
-                    "basis": "第 %s 次修复：%s（据 last_checked_round 推导，计数为报告汇总）"
+                    "basis": "第 %s 次修复：%s"
                              % (r, "、".join(fixed_between)),
                     "at": None, "inferred": True, "to_agent": "constraint-checker", "to_round": n,
                 })

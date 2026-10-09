@@ -252,8 +252,8 @@ def scene_verdict(run_state, inputs_files):
         return _entry("not_involved", "run_state.scene.enabled=false，场景扫描未启用", None)
     scan = inputs_files.get("scene_scan.json") or {}
     if scan.get("status") == "ok" and isinstance(scan.get("has_scenarios"), bool):
-        return _entry("passed", "scene_scan 有效（has_scenarios=%s，%s 类设备；仅证明扫描完成）"
-                      % (scan.get("has_scenarios"), len(scan.get("device_types") or [])), None)
+        return _entry("passed", "场景扫描完成，覆盖 %s 类设备"
+                      % len(scan.get("device_types") or []), None)
     if scan.get("status") == "broken":
         # 文件存在但损坏：扫描实例可能发生过，保留节点展示损坏证据
         return _entry("unconfirmed", "scene_scan.json 损坏", None)
@@ -436,7 +436,7 @@ def per_round_states(run_state, iter_views, inputs_files):
                 if entry and entry["status"] == "running":
                     round_states[name] = _entry(
                         "unconfirmed",
-                        "历史轮次存在运行中证据（%s），可能为遗留" % entry["basis"], n)
+                        "该轮此阶段仍显示运行中，未见完成记录：%s" % entry["basis"], n)
         states[n] = round_states
     return states
 

@@ -14,10 +14,10 @@ DISPLAY_RELATIONS = RELATIONS | {'out_of_scope', 'unavailable'}
 AVAILABILITY = {'ready', 'missing', 'unavailable'}
 UI_KEYS = set('''title subtitle refresh refreshing refresh_failed agents_unit skills_unit knowledge_unit item_unit
     select_agent viewing view_capability agent_unavailable current_agent when_to_use outcome
-    legend_required legend_allowed legend_unknown legend_note skills_title skills_empty knowledge_title
+    legend_required legend_allowed legend_unknown skills_title skills_empty knowledge_title
     family_label knowledge_intro knowledge_empty
     detail_label detail_knowledge detail_skill purpose relation_heading scope scope_note back overview
-    choose_agent how_to_view how_to_view_description unknown_note unavailable_description
+    choose_agent unavailable_description
     no_description'''.split())
 
 

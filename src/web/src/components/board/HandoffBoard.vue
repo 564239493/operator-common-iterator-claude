@@ -339,15 +339,12 @@ const KIND_TEXT: Record<string, string> = {
           </div>
           </div>
         </div>
-        <div class="board-foot">
-          每个处理实例只出现一次；复检或重试是新的处理实例。状态与交接由产物推导，详情栏带「推导」标记。
-        </div>
       </section>
 
     </div>
 
     <section ref="detailAnchor" class="unified-detail" aria-label="处理详情">
-      <div class="detail-toolbar"><span>处理详情 · 输入、技能知识、产物与交接依据</span><button v-if="selectedNode" @click="clearSelection">收起详情</button></div>
+      <div class="detail-toolbar"><span>处理详情</span><button v-if="selectedNode" @click="clearSelection">收起详情</button></div>
       <NodeDetailPanel
         :run-id="runId"
         :run-view="runView"

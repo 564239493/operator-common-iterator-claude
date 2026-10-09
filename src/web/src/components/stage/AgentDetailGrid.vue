@@ -46,7 +46,7 @@ const summaryLines = computed(() => {
     const c = it.constraint_check
     push('检查结论', c.status, c.status === 'passed' ? 'ok' : 'bad')
     push('轮次', `${c.current_round}/${c.max_rounds}`)
-    push('问题 open/fixed/unfixed', `${c.issues_open}/${c.issues_fixed}/${c.issues_unfixed}`)
+    push('问题 未解决/已修复/仍未修复', `${c.issues_open}/${c.issues_fixed}/${c.issues_unfixed}`)
   }
   if (name === 'case-generator' && it.generation) {
     const p = it.generation.progress || {}
@@ -73,7 +73,7 @@ const summaryLines = computed(() => {
       push('修改处数', it.constraint_update.change_count)
       push('status', it.constraint_update.status)
     } else {
-      push('约束更新', '本轮无 constraint_update.json（约束未变，可能仅扩量）')
+      push('约束更新', '本轮约束未调整，仅扩展了用例')
     }
     if (it.regression) {
       const r = it.regression
@@ -119,7 +119,7 @@ const runtime = computed(() => props.engineer?.runtime || null)
           {{ STATUS_TEXT[runtime.status] || runtime.status }}
         </span>
         <el-tooltip v-if="runtime?.basis" :content="runtime.basis" placement="bottom">
-          <span class="basis-tag">推导依据</span>
+          <span class="basis-tag">依据</span>
         </el-tooltip>
       </div>
       <div class="head-right">
@@ -131,7 +131,6 @@ const runtime = computed(() => props.engineer?.runtime || null)
       <!-- 列 1：输入 -->
       <div class="col-card">
         <div class="col-title">本阶段参考材料</div>
-        <p class="input-note">按角色流程定义列出的主要材料，不代表本次实际读取记录。</p>
         <dl class="kv">
           <template v-for="item in inputMaterials" :key="item.path">
             <dt>{{ item.label }}</dt><dd>{{ item.path }}<small class="input-evidence">{{ item.evidence }}</small></dd>
@@ -175,7 +174,7 @@ const runtime = computed(() => props.engineer?.runtime || null)
           <span v-for="s in engineer.skills || []" :key="s" class="skill-chip">{{ s }}</span>
           <span v-if="!(engineer.skills || []).length" class="empty">无</span>
         </div>
-        <div class="col-sub">装配冻结的知识模块（{{ (runView?.current_prompt_modules || []).length }}）</div>
+        <div class="col-sub">参考知识（{{ (runView?.current_prompt_modules || []).length }}）</div>
         <div class="tags">
           <span v-for="m in runView?.current_prompt_modules || []" :key="m" class="skill-chip faint">{{ m }}</span>
         </div>

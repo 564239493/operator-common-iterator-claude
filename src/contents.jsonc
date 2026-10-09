@@ -63,7 +63,6 @@
     "legend_required": "必备",
     "legend_allowed": "按需使用",
     "legend_unknown": "明确禁止使用",
-    "legend_note": "「明确禁止使用」表示该能力与智能体的本职工作或权限范围明确冲突",
     "skills_title": "技能",
     "skills_empty": "此版本尚未收录流程技能。",
     "knowledge_title": "知识库",
@@ -80,9 +79,6 @@
     "back": "返回智能体概览",
     "overview": "能力概览",
     "choose_agent": "请选择智能体",
-    "how_to_view": "如何查看",
-    "how_to_view_description": "点击技能或知识，查看它的用途与适用范围。",
-    "unknown_note": "灰色能力也可以查看；没有固定搭配不代表禁止使用，需要时同样可以按需装配。",
     "unavailable_description": "该智能体的信息暂不可用，请在内容更新后重试。",
     "no_description": "暂无用途说明"
   },

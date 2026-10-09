@@ -1,9 +1,9 @@
 /** Role contracts, not an audit of actual file reads. Presence is reported separately. */
 export function stageInputs(role: string, round: number, run: any) {
   const iter = (n: number) => (run?.iterations || []).find((i: any) => i.n === n)
-  const file = (name: string, n = round, label = name) => ({ label, path: `iter_${String(n).padStart(3,'0')}/${name}`, evidence: iter(n)?.exists?.[name] === true ? '文件已记录' : iter(n)?.exists?.[name] === false ? '未找到文件' : '存在性未核实' })
-  const doc = {label:'算子文档快照',path:run?.operator_doc || '路径未提供',evidence:'任务配置引用，非读取日志'}
-  const prompt = {label:'提示词快照',path:run?.current_prompt || '路径未提供',evidence:'任务配置引用，非读取日志'}
+  const file = (name: string, n = round, label = name) => ({ label, path: `iter_${String(n).padStart(3,'0')}/${name}`, evidence: iter(n)?.exists?.[name] === true ? '已确认' : iter(n)?.exists?.[name] === false ? '未找到' : '' })
+  const doc = {label:'算子文档快照',path:run?.operator_doc || '路径未提供',evidence:'任务配置'}
+  const prompt = {label:'提示词快照',path:run?.current_prompt || '路径未提供',evidence:'任务配置'}
   const state = {label:'任务配置',path:'run_state.json',evidence:'当前任务记录'}
   const constraints = () => file('constraints.json',round,'当前约束')
   const check = () => file('constraint_check.json',round,'约束检查报告')
