@@ -53,7 +53,8 @@ class Z3ConstraintBuilder:
                                                 kwargs.get("length"))),
     }
 
-    def __init__(self, timeout_ms=300000):
+    # （实测可解实例 ~30s 内出解；解不动的 300s 也解不动，90s 留足余量）。
+    def __init__(self, timeout_ms=90000):
         self.solver = z3.Solver()
         self._timeout_ms = timeout_ms
         if timeout_ms:
