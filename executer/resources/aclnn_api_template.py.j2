@@ -305,7 +305,20 @@ class {{ class_name }}(AclnnBaseApi):
                 elif type in ("char", "const char") or arg_name == "activation":
                     input_args.append(None)
                 else:
-                    input_args.append(ctypes.c_void_p(None))
+                    # by-value 标量（int64_t/double/bool 等）在 C ABI 中按值传参，
+                    # 不存在空指针语义：按签名解析出的 C 类型构造类型正确的零值
+                    # （等价 aclnn attr 默认值，如 innerPrecise 缺省 0=高精度）。
+                    # ctypes 按实例类型选择 ABI 寄存器类：c_void_p 会把 double
+                    # 参数放进整型寄存器，被调方从 FP 寄存器读到垃圾；int64 传
+                    # NULL 仅因 0 位模式恰为数值 0 而侥幸。查不到映射时保持旧行为。
+                    try:
+                        scalar_ctype = self.get_ctype(type)
+                    except ValueError:
+                        scalar_ctype = None
+                    if scalar_ctype is None:
+                        input_args.append(ctypes.c_void_p(None))
+                    else:
+                        input_args.append(scalar_ctype(0))
 
         # === 处理标杆输出 ===
         # 收集算子输出，并储存根据输出中的shape和dtype信息生成的AclTensorStruct数据结构
