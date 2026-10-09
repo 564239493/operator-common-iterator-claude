@@ -216,6 +216,27 @@ class ParamRangeValueModelStatic(CommonDispatcher):
         self.operator_name = operator_name
         self.param_name = param_name
 
+    @staticmethod
+    def clamp_values_to_dtype(data, acl_data_type):
+        """
+        将取值裁剪到 dtype 的合法范围内：未提供取值范围约束时，防止 role 模型硬编码
+        边界（如 Min/Max profile、role 定义 Choice/IntUniform 上下界）超出实际
+        dtype（如 int8/int4）可表示范围，语义与 DTYPE_SPECS 设计契约一致
+        （见 data_definition/constants.py DTYPE_SPECS 注释）。
+        :param data: 单个数值或数值列表
+        :param acl_data_type: acl 数据类型（小写，如 int8/int4）
+        :return: 裁剪后的值（数值/列表），非数值或 dtype 无界时不裁剪
+        """
+        dtype_spec = DataMatchMap.DTYPE_SPECS.get(acl_data_type)
+        if not (dtype_spec and dtype_spec[0] is not None and dtype_spec[1] is not None):
+            return data
+        lo, hi = dtype_spec[0], dtype_spec[1]
+        if isinstance(data, (int, float)):
+            return max(lo, min(hi, data))
+        if isinstance(data, list):
+            return [max(lo, min(hi, v)) if isinstance(v, (int, float)) else v for v in data]
+        return data
+
     @CommonDispatcher.register(ParamRangeRoleRules.STATIC.value, target_type=DispatcherTargetType.METHOD.value)
     def static_model_generate(self, size: List, acl_data_type: str, model_def: StaticModel):
         """
@@ -231,16 +252,7 @@ class ParamRangeValueModelStatic(CommonDispatcher):
         static_model_data = model_def.value
         # 将 static 值裁剪到 dtype 的合法范围内，避免硬编码的 INT32
         # 边界（如 Min/Max profile）超出实际 dtype（如 int8）范围
-        dtype_spec = DataMatchMap.DTYPE_SPECS.get(acl_data_type)
-        if dtype_spec and dtype_spec[0] is not None and dtype_spec[1] is not None:
-            lo, hi = dtype_spec[0], dtype_spec[1]
-            if isinstance(static_model_data, (int, float)):
-                static_model_data = max(lo, min(hi, static_model_data))
-            elif isinstance(static_model_data, list):
-                static_model_data = [
-                    max(lo, min(hi, v)) if isinstance(v, (int, float)) else v
-                    for v in static_model_data
-                ]
+        static_model_data = self.clamp_values_to_dtype(static_model_data, acl_data_type)
         self.logger.debug(
             "End generate param range by static, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
@@ -269,6 +281,8 @@ class ParamRangeValueModelStatic(CommonDispatcher):
             static_model_data.append(min(quantile_value_up, model_def.clip_max))
         else:
             static_model_data.append(quantile_value_up)
+        # 分位数值同样受 dtype 可表示范围约束（如 fp16 溢出、int 类分布越界）
+        static_model_data = self.clamp_values_to_dtype(static_model_data, acl_data_type)
         self.logger.debug(
             f"End generate param range by normal, operator name: {self.operator_name}, param name: {self.param_name}, "
             f"size: {size}, data type: {acl_data_type}, data range : {static_model_data}")
@@ -287,7 +301,7 @@ class ParamRangeValueModelStatic(CommonDispatcher):
             "Start generate param range by uniform, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
 
-        static_model_data = [model_def.min, model_def.max]
+        static_model_data = self.clamp_values_to_dtype([model_def.min, model_def.max], acl_data_type)
 
         self.logger.debug(
             "End generate param range by uniform, operator name: %s, param name: %s, size: %s, data type: %s",
@@ -306,7 +320,7 @@ class ParamRangeValueModelStatic(CommonDispatcher):
         self.logger.debug(
             "Start generate param range by intuniform, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
-        static_model_data = [model_def.min, model_def.max]
+        static_model_data = self.clamp_values_to_dtype([model_def.min, model_def.max], acl_data_type)
         self.logger.debug(
             "End generate param range by intuniform, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
@@ -324,7 +338,7 @@ class ParamRangeValueModelStatic(CommonDispatcher):
         self.logger.debug(
             "Start generate param range by intuniformodd, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
-        static_model_data = [model_def.min, model_def.max]
+        static_model_data = self.clamp_values_to_dtype([model_def.min, model_def.max], acl_data_type)
         self.logger.debug(
             "End generate param range by intuniformodd, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
@@ -342,7 +356,7 @@ class ParamRangeValueModelStatic(CommonDispatcher):
         self.logger.debug(
             "Start generate param range by loguniform, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
-        static_model_data = [model_def.min, model_def.max]
+        static_model_data = self.clamp_values_to_dtype([model_def.min, model_def.max], acl_data_type)
         self.logger.debug(
             "End generate param range by loguniform, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
@@ -360,7 +374,8 @@ class ParamRangeValueModelStatic(CommonDispatcher):
         self.logger.debug(
             "Start generate param range by choice, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
-        static_model_data = random.choice(model_def.options)
+        # 抽中的取值同样受 dtype 可表示范围约束（如 role 定义 Choice [1..256] 在 int4/int8 下越界）
+        static_model_data = self.clamp_values_to_dtype(random.choice(model_def.options), acl_data_type)
         self.logger.debug(
             "End generate param range by choice, operator name: %s, param name: %s, size: %s, data type: %s",
             self.operator_name, self.param_name, size, acl_data_type)
