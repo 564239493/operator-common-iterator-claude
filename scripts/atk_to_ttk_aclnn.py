@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Convert ATK compact JSON cases to TTK ACLNN-mode CSV.
 
 TTK ACLNN mode uses ``python3 -m ttk aclnn -i <csv>`` (executed from within
@@ -269,7 +269,9 @@ def _expand_attr_range_values(item: dict[str, Any]) -> Any:
         rv_list = []
     if len(rv_list) == length:
         return list(rv_list)
-    return [deepcopy(rv_list) for _ in range(length)]
+    if len(rv_list) == 1:
+        return [rv_list[0]] * length
+    return [deepcopy(rv_list[0]) for _ in range(length)]
 
 
 def _tensor_data_range(item: dict[str, Any] | None) -> tuple[Any, Any]:
