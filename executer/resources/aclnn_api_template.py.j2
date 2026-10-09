@@ -252,13 +252,21 @@ class {{ class_name }}(AclnnBaseApi):
         # input_data.kwargs['mat2'] = nnopbase.create_acl_tensor(input_data.kwargs['mat2'], AclFormat.ACL_FORMAT_FRACTAL_NZ)
         # === 处理输入参数 ===
         # 将输入数据转换为aclnn所需的c++格式
+        # dtype 透传：int4 等容器型 dtype 必须把 case config 里的逻辑 dtype 显式传给
+        # convert_input_data；否则绑定层按 torch 容器 dtype（torch 无 int4，物化为
+        # torch.int8）注册 ACL_INT8，create_int4_acl_tensor 打包分支永不触发
+        # （2026-10-08 真机实证：int4 呈 ACL_INT8 被 pergroup tiling 拒绝）
         for i, arg in enumerate(input_data.args):
-            data = self.backend.convert_input_data(arg, index=i)
+            data = self.backend.convert_input_data(
+                arg, index=i, dtype=self._get_input_dtype(index=i)
+            )
             input_args.extend(data)
         for name, kwarg in input_data.kwargs.items():
             if name in input_tmp:
                 continue
-            data = self.backend.convert_input_data(kwarg, name=name)
+            data = self.backend.convert_input_data(
+                kwarg, name=name, dtype=self._get_input_dtype(name=name)
+            )
             if name in param_list:
                 input_tmp[name] = data
 
@@ -311,6 +319,21 @@ class {{ class_name }}(AclnnBaseApi):
                 output_packages.append(data)
 
         return input_args, output_packages
+
+    def _get_input_dtype(self, index=None, name=None):
+        """按 index/name 从 case config 取参数逻辑 dtype。
+
+        int4 等无原生 torch dtype 的类型：容器 dtype ≠ 逻辑 dtype，
+        绑定层靠该字符串激活 create_int4_acl_tensor 打包呈现。取不到时
+        返回 None，行为与不传 dtype 的旧版完全一致（向后兼容）。
+        """
+        try:
+            config = self.task_result.case_config.get_input_data_config(index, name)
+        except Exception:  # ATK 版本差异兜底：无此访问器时退回旧行为
+            return None
+        if config is None:
+            return None
+        return getattr(config, "dtype", None)
 
     def get_storage_shape(self, input_data: InputDataset, index=None, name=None):
         if name is not None:
