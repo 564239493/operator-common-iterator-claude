@@ -426,15 +426,11 @@ class TestDelegatedScripts(unittest.TestCase):
             run_dir = Path(tmp)
             inputs = run_dir / "inputs"
             inputs.mkdir()
-            scan = inputs / "scene_scan.json"
-            scan.write_text(
-                json.dumps({"device_types": [], "devices": []}), encoding="utf-8"
-            )
             save_run_state(run_dir / "run_state.json", initial_state(),
                            trailing_newline=False)
             code, payload = run_script(
                 "render_scene_directive.py",
-                "--scan", str(scan), "--run-dir", str(run_dir), "--scope", "off",
+                "--run-dir", str(run_dir), "--scope", "off",
             )
             self.assertEqual(code, 0)
             self.assertTrue(payload["ok"])
@@ -443,10 +439,82 @@ class TestDelegatedScripts(unittest.TestCase):
             after = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(after["scene"]["enabled"], False)
             self.assertEqual(after["scene"]["scope"], "off")
-            self.assertEqual(after["scene"]["scan"], str(scan))
+            self.assertEqual(after["scene"]["scan"], "")
             self.assertNotEqual(after["updated_at"], "2026-09-09T00:00:00+00:00")
             # render_scene_directive 落盘无尾换行
             self.assertFalse(path.read_bytes().endswith(b"\n"))
+
+    def test_render_scene_directive_subset_noscan_delegation(self) -> None:
+        """文本直输模式 subset：写 directive + run_state.scene，单值→fix。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            inputs = run_dir / "inputs"
+            inputs.mkdir()
+            save_run_state(run_dir / "run_state.json", initial_state(),
+                           trailing_newline=False)
+            device = "Atlas A2 训练系列产品"
+            selection = {
+                "device_types": [device],
+                "selection": {device: {"非量化": {"groupListType": [2]}}},
+            }
+            sel_path = inputs / "selection.json"
+            sel_path.write_text(
+                json.dumps(selection, ensure_ascii=False), encoding="utf-8"
+            )
+            code, payload = run_script(
+                "render_scene_directive.py",
+                "--selection", str(sel_path),
+                "--run-dir", str(run_dir), "--scope", "subset",
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["scope"], "subset")
+            self.assertEqual(payload["n_devices"], 1)
+            directive = (inputs / "scene_directive.md").read_text(encoding="utf-8")
+            self.assertIn(device, directive)
+            self.assertIn('"fix"', directive)
+            path = run_dir / "run_state.json"
+            after = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(after["scene"]["enabled"], True)
+            self.assertEqual(after["scene"]["scope"], "subset")
+            self.assertEqual(after["scene"]["device_types"], [device])
+            self.assertEqual(
+                after["scene"]["param_modes"][device]["groupListType"], {"fix": 2}
+            )
+            self.assertEqual(after["scene"]["scan"], "")
+            # render_scene_directive 落盘无尾换行
+            self.assertFalse(path.read_bytes().endswith(b"\n"))
+
+    def test_render_scene_directive_device_required(self) -> None:
+        """设备类型硬性必要项：device_types 为空 → DEVICE_REQUIRED exit 2，
+        不写 directive、不回写 run_state.scene。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            inputs = run_dir / "inputs"
+            inputs.mkdir()
+            save_run_state(run_dir / "run_state.json", initial_state(),
+                           trailing_newline=False)
+            selection = {
+                "device_types": [],
+                "selection": {},
+            }
+            sel_path = inputs / "selection.json"
+            sel_path.write_text(
+                json.dumps(selection, ensure_ascii=False), encoding="utf-8"
+            )
+            code, payload = run_script(
+                "render_scene_directive.py",
+                "--selection", str(sel_path),
+                "--run-dir", str(run_dir), "--scope", "subset",
+            )
+            self.assertEqual(code, 2)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["code"], "DEVICE_REQUIRED")
+            self.assertFalse((inputs / "scene_directive.md").exists())
+            after = json.loads(
+                (run_dir / "run_state.json").read_text(encoding="utf-8")
+            )
+            self.assertIsNone(after["scene"])
 
 
 if __name__ == "__main__":
