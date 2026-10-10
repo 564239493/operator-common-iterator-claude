@@ -106,6 +106,7 @@ class PICTGenerator(BaseGenerator):
             result_output_path: Optional[str] = None,
             domain_data: Optional[Dict[str, Any]] = None,
             filter_by_constraint: bool = True,
+            model_output_dir: Optional[str] = None,
     ) -> None:
         super().__init__(universe, coverage_tracker, constraint, config)
 
@@ -122,6 +123,7 @@ class PICTGenerator(BaseGenerator):
         self._domain_data = domain_data
         self._operator_name = operator_name
         self._filter_by_constraint = filter_by_constraint
+        self._model_output_dir = model_output_dir
         self._inner = CoverageDrivenGenerator(
             universe=universe,
             coverage_tracker=coverage_tracker,
@@ -189,6 +191,7 @@ class PICTGenerator(BaseGenerator):
             return None
         self._pict_model = model
         self._pict_col_map = model.col_map
+        self.save_pict_model()
 
         output_dir = self._result_output_path or os.path.join(tempfile.gettempdir(), "pict_generator_runs")
 
@@ -280,6 +283,41 @@ class PICTGenerator(BaseGenerator):
             parameters=parameters,
             col_map=col_map,
         )
+
+    def save_pict_model(self) -> Optional[str]:
+        """把 PICT 输入模型落盘为 {operator_name}_pict_model.txt。
+
+        用途：PICT 模型是"约束翻译是否成功"的第一手证据（含被剔除约束的
+        影响），落盘后可直接用 `pict {model.txt} /o:2` 手工复跑求解，
+        便于排查"翻译缺口导致组合大量被二次过滤杀伤"类问题（对应根因
+        分析 docs/aclnnConvolution组合数据bias全False根因分析报告.md）。
+
+        落盘条件：model_output_dir 已配置且 self._pict_model 已构建。
+        落盘失败不影响主流程（warning 留痕后返回 None）。
+
+        Returns:
+            成功时返回落盘文件绝对路径；未配置目录 / 模型未构建 / 写入
+            失败时返回 None。
+        """
+        if not self._model_output_dir or self._pict_model is None:
+            return None
+        operator_name = self._operator_name or "operator"
+        try:
+            os.makedirs(self._model_output_dir, exist_ok=True)
+            model_path = os.path.abspath(os.path.join(
+                self._model_output_dir, "{}_pict_model.txt".format(operator_name)))
+            with open(model_path, "w", encoding="utf-8") as f:
+                f.write(self._pict_model.model_text)
+            dropped_count = len(self._pict_model.dropped_constraints)
+            logger.info(
+                "operator=%s PICT input model saved: %s (constraints=%d dropped=%d)",
+                operator_name, model_path, len(self._pict_model.pict_constraints), dropped_count)
+            return model_path
+        except (OSError, TypeError) as exc:
+            # 落盘属旁路留痕，失败不阻断生成主流程
+            logger.warning("operator=%s failed to save PICT model to %s: %s",
+                           operator_name, self._model_output_dir, exc)
+            return None
 
     def build_constraint_eval_context(self, row_values):
         """构造黑盒约束求值上下文。
@@ -414,6 +452,7 @@ class PictModel:
     # 非标量值 token 映射：{列名: {token: 原值}}，行解析后反解还原。
     # 默认空 dict：无 token 时行为与历史版本完全一致（回滚安全）。
     token_map: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    constraint_map: Dict[str, List[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -1133,12 +1172,30 @@ def _collect_ternary(node: ast.AST, guard_terms: List[str], columns: set,
         if right is None:
             return None
         return left + right
-    # 叶子：比较/逻辑关系，或 True/False 字面量
+    # 叶子为跨参数相等（如 input.dtype == output.dtype）时，
+    # _translate_relation -> _translate_compare 会因两边都是列而返回 None。
+    # 改为按两列公共值枚举展开：`IF [guard] AND [left]=v THEN [right]=v;`
     if isinstance(node, ast.Constant) and node.value is True:
         return []
     if isinstance(node, ast.Constant) and node.value is False:
         warnings.append("boolean False conclusion cannot be expressed in PICT")
         return None
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+        left_col = _operand_column(node.left)
+        right_col = _operand_column(node.comparators[0])
+        if left_col is not None and right_col is not None:
+            eq_lines = _expand_cross_equality(left_col, right_col, parameters or {}, warnings)
+            if eq_lines is None:
+                return None
+            if not guard_terms:
+                return eq_lines
+            guard_str = " AND ".join(guard_terms)
+            out: List[str] = []
+            for ln in eq_lines:
+                # eq_line 形如 "IF [l] = v THEN [r] = v;" -> 前置 guard 合取
+                cond, _, concl = ln[3:-1].partition(" THEN ")
+                out.append("IF {} AND {} THEN {};".format(guard_str, cond, concl))
+            return out
     concl = _translate_relation(node, columns, warnings, parameters)
     if concl is None:
         return None
@@ -1197,6 +1254,7 @@ def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
     not_guards: List[str] = []
     neg_guards: List[str] = []
     cross_eqs: List[Tuple[str, str]] = []
+    ternary_or_terms: List[List[str]] = []
     for v in node.values:
         if isinstance(v, ast.UnaryOp) and isinstance(v.op, ast.Not):
             inner = _translate_relation(v.operand, columns, warnings, parameters)
@@ -1215,6 +1273,16 @@ def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
         if r is not None:
             neg_guards.append(r)
             continue
+        # 修复（C10）：OR 分支为三元表达式（如 `(x==3) if (fmt=="NCL") else ...`）。
+        # 先经 _collect_ternary 展开为多条 IF-THEN 行收集到 ternary_or_terms，
+        # 由下方 ternary 分支统一处理：`A or B` == `NOT(A) -> B`，
+        # 即把 guard（A 的取反）合取进每条三元行的 IF 条件前部。
+        if isinstance(v, ast.IfExp):
+            ternary_lines = _collect_ternary(v, [], columns, warnings, parameters)
+            if ternary_lines is not None:
+                ternary_or_terms.append(ternary_lines)
+                continue
+            return None
         # 整体失败：若为 And，递归提取其中的跨参相等
         if isinstance(v, ast.BoolOp) and isinstance(v.op, ast.And):
             if _collect_or_term(v, columns, warnings, parameters,
@@ -1222,17 +1290,58 @@ def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
                 continue
         return None
 
-    if not cross_eqs:
+    if not cross_eqs and not ternary_or_terms:
         if not not_guards:
             return ["({});".format(" OR ".join("({})".format(p) for p in neg_guards))]
         if len(not_guards) == 1 and neg_guards:
             rest = " OR ".join("({})".format(p) for p in neg_guards)
             return ["IF ({}) THEN ({});".format(not_guards[0], rest)]
+        # 多个 NOT 子项且无普通子项，即 `not A or not B ...`。
+        # 数学等价于 `NOT (A AND B ...)`（A、B 不同时成立），PICT 无法表达
+        # ELSE，但可把除第一个外的 NOT 子项取反后并入 THEN（合取必真）：
+        # `not A or not B` == `A -> (NOT B)`，即 `IF (A) THEN (NOT (B));`。
+        if len(not_guards) == 2 and not neg_guards:
+            for g in not_guards[1:]:
+                if " in {" in g:
+                    warnings.append("multiple NOT with 'in' guard unsupported")
+                    return None
+            concl = " AND ".join("(NOT ({}))".format(g) for g in not_guards[1:])
+            return ["IF ({}) THEN {};".format(not_guards[0], concl)]
         warnings.append("multiple NOT or bare NOT clauses unsupported")
         return None
 
-    # 含跨参相等：guard = 正向 not 子项 + 普通子项取反
+
+    # guard = 正向 not 子项 + 普通子项取反
     guards = ["({})".format(p) for p in not_guards] + ["(NOT ({}))".format(r) for r in neg_guards]
+
+    # OR 含三元分支（ternary_or_terms）时。
+    # OR 语义 `A or B` 等价于 `NOT(A) -> B`：guard 为真时（A 全部不成立），
+    # 三元链必须成立，故把 guard 合取进每条三元行的 IF 条件前部。
+    # 例如 `(bias.is_present == False) or ((bias.dimension==3) if (bias.format=="NCL") ...)`
+    # -> `IF (NOT ([bias_is_present] = "false")) AND ([bias_format] = "NCL") THEN ([bias_dimension] = 3);`
+    if ternary_or_terms and not cross_eqs:
+        if not guards:
+            warnings.append("ternary OR without any guard cannot be expressed")
+            return None
+        if any(" in {" in g for g in guards):
+            warnings.append("ternary OR with 'in' guard is too expensive for PICT; dropped")
+            return None
+        guard_str = " AND ".join(guards)
+        lines: List[str] = []
+        for term_lines in ternary_or_terms:
+            for line in term_lines:
+                if not line.startswith("IF "):
+                    # 无条件结论：`A or B` 中 B 恒真 => 整条恒真，无需约束行
+                    continue
+                cond, _, concl = line[3:-1].partition(" THEN ")
+                lines.append("IF {} AND {} THEN {};".format(guard_str, cond, concl))
+        return lines or None
+
+    if ternary_or_terms and cross_eqs:
+        # 三元分支与跨参相等混用：展开语义叠加复杂，显式拒绝交二次过滤兜底
+        warnings.append("ternary branch mixed with cross-parameter equality unsupported")
+        return None
+
     if not guards:
         warnings.append("cross-parameter equality OR without any guard cannot be expressed")
         return None
@@ -1242,13 +1351,19 @@ def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
         warnings.append(
             "cross-parameter equality OR with 'in' guard is too expensive for PICT; dropped")
         return None
-    # 共享左列的多个跨参相等（如 key==value and key==keyCacheRef）展开后约束网络复杂，
-    # PICT 求解爆炸（实测 >50s），这类不展开，交二次约束过滤兜底。
+    # 共享左列的多个跨参相等（如 bias.dtype==input.dtype and
+    # bias.dtype==weight.dtype）按展开规模设上限：
+    # 预计生成行数 = sum(各 pair 公共值数)，超限才拒绝（仍交二次过滤兜底）。
     left_cols = [lc for lc, _ in cross_eqs]
+    _CROSS_EQ_SHARED_LEFT_MAX_LINES = 24
     if len(left_cols) != len(set(left_cols)):
-        warnings.append(
-            "cross-parameter equality OR with shared left column is too expensive for PICT; dropped")
-        return None
+        est_lines = 0
+        for left_col, right_col in cross_eqs:
+            est_lines += len(_common_values(left_col, right_col, parameters))
+        if est_lines > _CROSS_EQ_SHARED_LEFT_MAX_LINES:
+            warnings.append(
+                "cross-parameter equality OR with shared left column is too expensive for PICT; dropped")
+            return None
     guard_str = " AND ".join(guards)
 
     lines: List[str] = []
@@ -1462,16 +1577,30 @@ def convert_domain_json_to_pict_model(operator_name: str,
 
     pict_constraints: List[str] = []
     dropped_constraints: List[str] = []
+    constraint_map: Dict[str, List[str]] = {}
     col_set = set(columns)
     for c in constraints:
         translated, ws = _translate_constraint(c, col_set, typed_domains)
         if translated is None:
             dropped_constraints.append(c)
             warnings.extend(ws or ["untranslatable constraint dropped: {}".format(c[:80])])
+            # 翻译失败不再静默——WARNING 级日志留痕，便于排查
+            # “约束缺席导致 PICT 生成大量非法组合”类问题
+            logger.warning(
+                "operator=%s PICT constraint translation failed, dropped (this may cause "
+                "post-filter to kill many rows). constraint=%r warnings=%s",
+                operator_name, c[:120], ws)
         elif translated:
-            for line in translated.splitlines():
-                if line.strip():
-                    pict_constraints.append(line)
+            pict_lines = [line for line in translated.splitlines() if line.strip()]
+            constraint_map[c] = pict_lines
+            pict_constraints.extend(pict_lines)
+            logger.info("[pict-translate] MAPPED  : %s || -> %d pict line(s)", c, len(pict_lines))
+            for line in pict_lines:
+                logger.info("[pict-translate]    ->   : %s", line)
+        else:
+            # translated == ""：恒真约束（如化简后为 True），0 行，不进 model
+            constraint_map[c] = []
+            logger.info("[pict-translate] VACUOUS : %s || -> 0 pict line(s) (always-true)", c)
 
     model_text = _build_model_text(parameters, pict_constraints)
 
@@ -1495,7 +1624,8 @@ def convert_domain_json_to_pict_model(operator_name: str,
         dropped_constraints=dropped_constraints,
         warnings=warnings,
         operator_name=operator_name,
-        token_map=token_map
+        token_map=token_map,
+        constraint_map=constraint_map
     )
 
 
@@ -1632,8 +1762,10 @@ def execute_pict(
     base = ""
     rounds_dir: Optional[str] = None
     try:
+        constraint_map: Dict[str, List[str]] = {}
         if isinstance(model, PictModel):
             model_text = model.model_text
+            constraint_map = getattr(model, "constraint_map", {})
         else:
             with open(model, encoding="utf-8") as f:
                 model_text = f.read()
@@ -1712,7 +1844,16 @@ def execute_pict(
             removed_line = remaining.pop(offender)
             removed.append(removed_line)
             round_result.removed_constraint = removed_line
-            logger.warning("pict round %d: dropped illegal constraint -> %s", round_idx, removed_line)
+            # 回溯该 PICT 行来自哪条原始表达式（1:N 映射的逆查询）
+            origin_expr = next(
+                (origin for origin, lines in constraint_map.items() if removed_line in lines), None)
+            if origin_expr is not None:
+                logger.warning("pict round %d: dropped illegal constraint -> %s || origin: %s",
+                               round_idx, removed_line, origin_expr)
+            else:
+                logger.warning("pict round %d: dropped illegal constraint -> %s || origin: unknown "
+                               "(no constraint_map, e.g. model loaded from file)",
+                               round_idx, removed_line)
             final_category = PictFailureCategory.CONSTRAINT_PARSE_ERROR
 
         cases: List[Dict[str, Any]] = []
