@@ -42,7 +42,7 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -v
 - **页面形态**：浅色商务风（与 demo.html 统一设计令牌，顶部 ☾/☀ 可切换暗色并记忆）；
   主视图为泳道式「轮次与交接」图（角色列 × 时间流）——**事件生成节点，只有事件中明确的
   交接关系才画箭头，相邻排列不构成交接证据**（核心逻辑抽为 `board/graph.ts` 纯函数，vitest 覆盖）。
-- **智能体定义来源**：优先读 `.opencode/agent/*.md`（opencode 格式，`permission` 为嵌套映射）；
+- **智能体定义来源**：优先读 `.opencode/agents/*.md`（opencode 格式，`permission` 为嵌套映射）；
   该目录**存在但为空时不回退**；目录不存在才回退 `.claude/agents/*.md`（Claude 格式 name/skills/tools/color）。
   单文件读取/解析失败记入 `load_error`，不伪装成功、不静默改用另一格式。
   `definition_found=false` 表示"该角色是流程固定角色，未找到定义文件"——页面上有该智能体

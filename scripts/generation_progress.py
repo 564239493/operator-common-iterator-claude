@@ -53,17 +53,17 @@ returns in ~1 second):
      line. The orchestrator decides done/keep-polling/failed from this line;
      it never reads the verbose console log or the multi-MB cases files.
 
-``watch`` (run as one simple Monitor command by the orchestrator):
+``watch`` (run as one simple bash command by the orchestrator):
   1. Perform the same status sample immediately and then every ``--interval``
      seconds.
   2. Print one compact JSON line for every sample and exit automatically when
      state becomes ``complete`` or ``failed``.
-  3. Keep all polling logic in Python, so the Monitor command contains no shell
+  3. Keep all polling logic in Python, so the bash command contains no shell
      variables, pipes, ``while``/``case`` blocks, command substitutions, or
      ``sleep`` that would trigger a non-business security approval prompt.
 
 The detached ``generate_cases.py`` process does not depend on ``watch``. If a
-Monitor/session is interrupted, generation continues and a later ``status`` or
+bash command/session is interrupted, generation continues and a later ``status`` or
 ``watch`` can resume observing it.
 
 Interface
@@ -80,7 +80,7 @@ Interface
     # orchestrator (foreground, ~1s, repeat every 60s):
     python scripts/generation_progress.py status --output-dir <dir>
 
-    # orchestrator Monitor (preferred for continuous observation):
+    # orchestrator bash foreground (preferred for continuous observation):
     python scripts/generation_progress.py watch --output-dir <dir> --interval 60
 
 ``--output-dir`` is the artifact root (parent of ``generate_cases.py``'s

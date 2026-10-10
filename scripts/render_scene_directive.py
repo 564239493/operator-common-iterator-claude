@@ -706,7 +706,7 @@ def main() -> int:
         description=(
             "Render the scene directive and persist the selection to run_state."
             " Called by the orchestrator's SCENE_SCAN sub-step (after scene-scan"
-            " and the user's AskUserQuestion answers)."
+            " and the user's question-tool answers)."
         )
     )
     p.add_argument(

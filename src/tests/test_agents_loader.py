@@ -48,12 +48,12 @@ class TestAgentsLoader(unittest.TestCase):
         return {d["name"]: d for d in agents_adapter.load_agent_defs(self.root)}[name]
 
     def test_opencode_preferred_with_nested_permission_and_skill_extract(self):
-        self._write(".opencode/agent/case-executor.md", _OPENCODE_DEF)
+        self._write(".opencode/agents/case-executor.md", _OPENCODE_DEF)
         self._write(".claude/agents/case-executor.md", _CLAUDE_DEF)
         entry = self._get("case-executor")
         self.assertEqual(entry["definition_found"], True)
         self.assertIsNone(entry["load_error"])
-        self.assertEqual(entry["source"], ".opencode/agent")
+        self.assertEqual(entry["source"], ".opencode/agents")
         self.assertEqual(entry["mode"], "subagent")
         self.assertEqual(entry["permission"], {"task": "deny", "webfetch": "deny"})
         self.assertEqual(entry["skills"], ["execute-cases"])  # 正文句式提取
@@ -61,7 +61,7 @@ class TestAgentsLoader(unittest.TestCase):
 
     def test_opencode_empty_dir_no_fallback(self):
         """opencode 目录存在但为空 → 不回退，definition_found=False。"""
-        (self.root / ".opencode" / "agent").mkdir(parents=True)
+        (self.root / ".opencode" / "agents").mkdir(parents=True)
         self._write(".claude/agents/case-executor.md", _CLAUDE_DEF)
         defs = agents_adapter.load_agent_defs(self.root)
         entry = {d["name"]: d for d in defs}["case-executor"]
@@ -72,12 +72,12 @@ class TestAgentsLoader(unittest.TestCase):
     def test_broken_opencode_file_reports_load_error(self):
         """单文件损坏（frontmatter 未闭合）→ definition_found=True + load_error，
         不伪装成功、不静默用 Claude 版。"""
-        self._write(".opencode/agent/case-executor.md", "---\ncolor: blue\n未闭合")
+        self._write(".opencode/agents/case-executor.md", "---\ncolor: blue\n未闭合")
         self._write(".claude/agents/case-executor.md", _CLAUDE_DEF)
         entry = self._get("case-executor")
         self.assertEqual(entry["definition_found"], True)
         self.assertIn("未闭合", entry["load_error"])
-        self.assertEqual(entry["source"], ".opencode/agent")
+        self.assertEqual(entry["source"], ".opencode/agents")
 
     def test_claude_fallback_when_opencode_missing(self):
         """opencode 目录不存在 → 回退 Claude，字段按 Claude 规则读取。"""
@@ -99,7 +99,7 @@ class TestAgentsLoader(unittest.TestCase):
 
     def test_unicode_broken_file_reports_load_error(self):
         """非 UTF-8 文件由读取层处理 → load_error，不崩溃。"""
-        path = self.root / ".opencode" / "agent" / "case-executor.md"
+        path = self.root / ".opencode" / "agents" / "case-executor.md"
         path.parent.mkdir(parents=True)
         path.write_bytes(b"---\ndescription: \xff\xfe\xff\n---\n")
         entry = self._get("case-executor")

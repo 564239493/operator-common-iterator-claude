@@ -96,7 +96,7 @@ _UPPER_TOOL_RE = re.compile(r"\b(Read|Write|Edit|Glob|Grep|Bash|Skill|Task)\b")
 
 def validate_lowercase_tool_names() -> list[str]:
     errors: list[str] = []
-    paths = list((ROOT / ".opencode" / "agent").glob("*.md")) + list(
+    paths = list((ROOT / ".opencode" / "agents").glob("*.md")) + list(
         (ROOT / ".opencode" / "skills").glob("*/SKILL.md")
     )
     for path in paths:
@@ -242,9 +242,9 @@ def main() -> int:
     errors.extend(validate_guard_loads())
     errors.extend(validate_terminal_state_sets())
 
-    agents = list((ROOT / ".opencode" / "agent").glob("*.md"))
+    agents = list((ROOT / ".opencode" / "agents").glob("*.md"))
     skills = list((ROOT / ".opencode" / "skills").glob("*/SKILL.md"))
-    commands = list((ROOT / ".opencode" / "command").glob("*.md"))
+    commands = list((ROOT / ".opencode" / "commands").glob("*.md"))
     missing_agents = REQUIRED_AGENTS - {path.stem for path in agents}
     missing_skills = REQUIRED_SKILLS - {path.parent.name for path in skills}
     missing_commands = REQUIRED_COMMANDS - {path.stem for path in commands}

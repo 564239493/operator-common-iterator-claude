@@ -158,14 +158,14 @@ opencode  # 启动 opencode
 
 ### opencode 编排层（.opencode/）
 
-- `.opencode/agent/*.md` — 12 个专职子智能体定义（WHO：角色身份、权限白名单、
+- `.opencode/agents/*.md` — 12 个专职子智能体定义（WHO：角色身份、权限白名单、
   返回契约；流程细节一律在各阶段技能，不重复抄写）
 - `.opencode/skills/<name>/SKILL.md` — 流程与知识技能（HOW：可执行规则、输入清单、
   校验命令）。手写流程技能 17 个（`iterate-operator`、`iterate-directory`、各阶段技能；
   其中 `atc-cpu-golden-derivation` 已废弃留档——CPU golden 已在生成时 mock 化，见
   WORKFLOW.md）
   + `build_knowledge_skills.py` 生成的知识技能 43 个（`aclnn-*` / `torch-npu-*`，生成物禁止手改）
-- `.opencode/command/*.md` — 斜杠命令（`/iterate-operator`、`/iterate-directory`、
+- `.opencode/commands/*.md` — 斜杠命令（`/iterate-operator`、`/iterate-directory`、
   `/show-workforce`；前两个是薄壳，正文引导加载同名技能）
 - `.opencode/plugins/guard.js` — 写入守卫插件：受保护路径只读 + 活动 run 写隔离 +
   跨 run 访问禁止 + 高风险 shell 转 ask；deny → throw 阻断工具，ask → 以

@@ -104,7 +104,7 @@ paged-attention 场景拆分和投影时才显式指定：
 |---|---|---|
 | 顶层编排 | `orchestrator.py` | opencode 主会话 + `/iterate-operator` |
 | LLM 调用 | Python backend/API/CLI 子进程 | opencode Agent 原生上下文 |
-| 专家隔离 | 手写 Session A/B | `.opencode/agent/*.md` 独立上下文 |
+| 专家隔离 | 手写 Session A/B | `.opencode/agents/*.md` 独立上下文 |
 | 流程能力 | Python 函数 | `.opencode/skills/*/SKILL.md` |
 | 安全边界 | Python 自检 | 静态 permission + guard.js 插件（fail-closed） |
 | 阶段交接 | Python 内存对象为主 | 明确的 JSON/Markdown 产物契约 |

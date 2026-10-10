@@ -6,7 +6,7 @@
 
 | 数据层次 | 来源 | 当前实现 | 可以说明 | 不能说明 |
 |---|---|---|---|---|
-| 角色默认技能 | 当前 `.opencode/agent/*.md`（不存在时回退 `.claude/agents/*.md`）正文的「加载 `X` 技能」句式 | agents.py → /api/agents → engineer.skills | 当前角色配置了哪些技能 | 历史运行当时实际加载了哪些；这些定义不是本次运行的冻结副本 |
+| 角色默认技能 | 当前 `.opencode/agents/*.md`（不存在时回退 `.claude/agents/*.md`）正文的「加载 `X` 技能」句式 | agents.py → /api/agents → engineer.skills | 当前角色配置了哪些技能 | 历史运行当时实际加载了哪些；这些定义不是本次运行的冻结副本 |
 | 本次任务选用的知识模块 | run_state.current_prompt_modules；inputs/prompt_assembly.json | run_detail.py 输出清单；两处详情展示 | 本次提示词装配选择了哪些知识模块 | 每个角色逐一读取/应用了这些模块 |
 | 首轮提取的知识应用报告 | iter_001/extraction_provenance.json 的 modules_applied | NodeDetailPanel 仅选中提取角色时按需读取 | 报告声明哪些已应用、哪些不适用及原因 | 所有角色、所有轮次的实际加载轨迹；精确加载时间 |
 | 加载过程的完整运行记录 | 本次已核查文件与现有接口未提供 | 未见对应解析和展示 | 暂无法确认 | 不应把配置或装配记录当实际加载日志 |

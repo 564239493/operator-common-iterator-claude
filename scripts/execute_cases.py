@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Project-local CLI entry point for the EXECUTE stage.
 
-Driven by the ``case-executor`` agent (see ``.opencode/agent/case-executor.md``)
+Driven by the ``case-executor`` agent (see ``.opencode/agents/case-executor.md``)
 through the ``execute-cases`` skill.  This script is the single CLI glue
 between the deterministic executer (`executer.runner`) and the
 ``runs/<run-id>/iter_*/execution_result.json`` artifact contract.

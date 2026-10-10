@@ -1,6 +1,6 @@
 """GET /api/agents：智能体定义加载。
 
-优先读 .opencode/agent/*.md（opencode 格式：无 name/tools/skills 字段，
+优先读 .opencode/agents/*.md（opencode 格式：无 name/tools/skills 字段，
 permission 为嵌套映射）；该目录不存在时回退 .claude/agents/*.md（Claude 格式：
 name/skills/tools/color）。目录存在但为空不回退；单文件读取/解析失败记入
 load_error，不伪装成功、不静默改用另一格式。固定流程角色来自
@@ -96,7 +96,7 @@ def _load_from_dir(dir_path, source):
 def load_agent_defs(root):
     # type: (...) -> list
     """返回与 AGENTS_FLOW 同序的定义列表（流程角色固定顺序 + definition_found 标记）。"""
-    defs = _load_from_dir(root / ".opencode" / "agent", ".opencode/agent")
+    defs = _load_from_dir(root / ".opencode" / "agents", ".opencode/agents")
     if defs is None:
         # 仅当 opencode 目录不存在才回退；存在但为空不回退
         defs = _load_from_dir(root / ".claude" / "agents", ".claude/agents") or {}

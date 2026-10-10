@@ -4,9 +4,9 @@
 // 不扫描资产目录，也不从自然语言、关键词或正则推断关系。
 // 
 // 你的任务：核对本次版本的真实资产，更新本文件所有页面内容和明确关联。
-// 1. 只读核对 .opencode/agent/*.md、对应的 .opencode/skills/*/SKILL.md、
+// 1. 只读核对 .opencode/agents/*.md、对应的 .opencode/skills/*/SKILL.md、
 //    knowledge/aclnn/manifest.json、knowledge/torch_npu/manifest.json 及其模块。
-//    仅当 .opencode/agent 目录不存在时核对 .claude/agents；目录为空不得回退。
+//    仅当 .opencode/agents 目录不存在时核对 .claude/agents；目录为空不得回退。
 //    扩展能力已从页面移除，不再核对与收录。禁止读取凭据或 .env。
 //    不修改上述源文件，不启动任何业务，不提交、不部署。
 // 2. 逐个理解角色与技能完整上下文、条件、否定和职责边界；“禁止加载 X”、示例、

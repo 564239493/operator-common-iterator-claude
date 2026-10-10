@@ -48,7 +48,7 @@ class TestAssets(unittest.TestCase):
         self.data['agents'][0]['relations'] = {}
         self.data['agents'][0]['description'] = '禁止加载 `extract-constraints` 技能。必载知识。'
         self.save()
-        outside = self.root / '.opencode/agent'
+        outside = self.root / '.opencode/agents'
         outside.mkdir(parents=True)
         (outside / 'new-agent.md').write_text('立即用 skill 工具加载 `unknown` 技能。')
         result = assets.load_assets(self.root)
