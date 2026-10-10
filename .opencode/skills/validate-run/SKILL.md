@@ -30,7 +30,9 @@ real 模式额外追加 executor 门禁：对 `iter_dir/cases_executor.py` 运�
 passed/failed 无业务语义，必须阻断。另注意 mock 化后精度比对本身无业务语义
 （NPU 结果对比的是 mock zeros），passed/failed 反映的是执行成败而非精度。
 
-写入 quality_gate.json。任何 blocking_issues 非空时 status 必须为 blocked。
+用 **write 工具**将完整 JSON 一次写入 `<iter-dir>/quality_gate.json`，
+写完 read 回读确认 JSON 完整可解析；
+任何 blocking_issues 非空时 status 必须为 blocked。
 
 `quality_gate.json` 的 `status` 字段取值必须规范：通过写 `passed`，阻断写
 `blocked`，跳过写 `skip`（可视化侧按词表归一化，兼容 ok/success 等同义词；

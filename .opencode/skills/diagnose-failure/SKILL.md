@@ -91,7 +91,9 @@ constraint_extraction/补充表达错误，不得归为生成器忽略约束。�
   异常栈确认实际失败参数。紧凑表示已正确展开时，应继续查找真实根因；展开逻辑
   本身错误时归为 executor_bug。
 
-写 `analysis.json`：
+用 **write 工具**将完整 JSON 一次写入 `<iter-dir>/analysis.json`（重新诊断时覆盖写），
+写完 read 回读确认 JSON 完整可解析；
+`analysis.json` 结构：
 
 ```json
 {

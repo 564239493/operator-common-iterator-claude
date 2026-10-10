@@ -3,7 +3,10 @@ description: 依据 constraint_check.json 仅修复其中 open/unfixed 的约束
 mode: subagent
 color: "#f1c40f"
 permission:
-  write: deny
+  edit:
+    "*": "deny"
+    "runs/**/constraints.json": "allow"
+    "**/constraints.json": "allow"
   glob: deny
   grep: deny
   task: deny

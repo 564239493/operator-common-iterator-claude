@@ -3,8 +3,10 @@ description: 对照文档、约束、用例与执行结果诊断失败根因。�
 mode: subagent
 color: "#9b59b6"
 permission:
-  edit: deny
-  apply_patch: deny
+  edit:
+    "*": "deny"
+    "runs/**/analysis.json": "allow"
+    "**/analysis.json": "allow"
   bash: deny
   task: deny
   webfetch: deny
@@ -27,6 +29,10 @@ case，禁止用一条自由文本结论覆盖性质不同的失败。
 `param_failure_locations` 参数级失败定位与 `plog_error_info`/`atk_or_ttk_error_info`
 报错原文摘录）与聚合规则、源码证据与两级补救均以 skill 为准。
 
-只写 `analysis.json`，不修改提示词、`supplementary-doc.md`、`constraints.json`
-或业务代码。主协调器必须使用所有 clusters 聚合出的 `overall_action`，顶层
-`root_cause` 只保留兼容性、不得作为路由依据。
+落盘方式：
+用 **write 工具**把完整 JSON 一次写入 `<iter-dir>/analysis.json`（重新诊断时覆盖写），
+写完 read 回读确认 JSON 完整可解析。
+最终返回： 根因摘要 + 产物绝对路径。
+除`analysis.json` 外不写、不修改任何文件（提示词、`supplementary-doc.md`、
+`constraints.json`、业务代码均禁改）。主协调器必须使用所有 clusters 聚合出的
+`overall_action`，顶层 `root_cause` 只保留兼容性、不得作为路由依据。
