@@ -22,7 +22,7 @@ real 模式下按 **generate → real-run** 两子步骤执行；CPU golden 已�
 用例文件，但 EXECUTE 阶段**只执行一个平台**。不要循环所有产品。调用
 `scripts/execute_cases.py` 时通常不传 `--platform`；执行器会按 `servers.json` 中每台
 服务器 `platforms` 数组的顺序，选择第一个被算子支持且已有 `cases_<platform>.json`
-的产品用例执行。若旧 CSV 指向其他平台，自动复用匹配桶重组 canonical JSON/CSV，
+的产品用例执行。若旧 CSV 指向其他平台，自动复用匹配桶重组 `cases.json`/CSV，
 不要求重新 EXTRACT 或 GENERATE。`--platform` 仅用于人工调试时显式覆盖。
 
 ## real 模式两子步骤

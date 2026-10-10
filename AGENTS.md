@@ -53,7 +53,9 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 > `product_support`（设备类型为"产品支持情况"具体设备名，直接与 √ 行取交集，无"通用"
 > 展开；**仅提取所选设备/所选场景的约束**，未选设备/未选场景专属条目不产出，共用基础
 > 约束保留）；`product_support` 随后驱动用例生成（`generate_cases.py` 按
-> `product_support` 逐平台生成，不读场景）。为独立子步骤而非新状态，无场景即跳过。
+> `product_support` 逐平台生成，不读场景；唯一例外是收尾的执行平台选择——
+> `_select_execution_platform` 优先 `run_state.scene` 单选设备，多选/未选回退
+> `servers.json` 顺序，并据此确定性写出 `<iter>/cases.json`）。为独立子步骤而非新状态，无场景即跳过。
 > legacy 三级扫描 + Q1→Q2→Q3 三轮征询 + `check_scene_conflicts.py` 预判已被该模式取代
 > 并隐藏，skill/脚本文件保留未删，完整原流程见 git 历史与 `prompts/scan_scenes.md`。
 

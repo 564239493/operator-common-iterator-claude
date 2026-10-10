@@ -9,11 +9,16 @@ extraction step (constraints.json + agent.generators.facade outputs match
 operator_case_generator's ``single_operator_handle`` semantics).
 
 Outputs:
-- ``<output>``                       — overall cases path; its parent dir
-  receives per-platform files (kept for backward CLI compatibility)
 - ``<output_dir>/cases_<platform>.json`` — one JSON array per product_support
   entry, ``id`` is the integer the facade emits (per-platform 0, 1, 2, …)
-- ``<output_dir>/generation_summary.json`` — per-platform counts + paths
+- ``<output_dir>/cases.json``       — the selected execution platform's cases
+  (atk and ttk alike; selection is ``_select_execution_platform``: explicit
+  ``--platform`` → single scene-stage device → servers.json order). ttk
+  additionally derives ``cases_ttk.csv`` from it.
+- ``<output>``                       — nominal overall cases path (kept for
+  backward CLI compatibility); its parent dir receives the artifacts above
+- ``<output_dir>/generation_summary.json`` — per-platform counts + paths +
+  ``selected_platform``/``platform_selection_reason``
 - ``<iter_dir>/generation.log``       — when ``--iter-dir`` is passed, a
   timestamped log mirror of the run for diagnostics
 """
@@ -118,16 +123,59 @@ def _setup_iter_log(iter_dir: Path) -> Path | None:
         return None
 
 
-def _select_ttk_platform(
+def _scene_platform_preference(output_dir: Path) -> str | None:
+    """Return the single device chosen at the scene stage, if any.
+
+    Reads ``<run-dir>/run_state.json`` → ``scene`` (written by
+    ``render_scene_directive.py`` during PLAN). A preference exists only for
+    an enabled ``subset``-scope scene narrowed to exactly one device — an
+    explicit user device choice. ``scope=all`` lists every device that has
+    scenes in the doc (not a user choice); multi-select, disabled scenes,
+    and unreadable/absent state (ad-hoc output dirs outside a run) all
+    yield ``None`` so selection falls back to servers.json order.
+    """
+    run_state_path = output_dir.parent / "run_state.json"
+    try:
+        payload = json.loads(run_state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    scene = payload.get("scene") if isinstance(payload, dict) else None
+    if not isinstance(scene, dict):
+        return None
+    if not scene.get("enabled") or scene.get("scope") != "subset":
+        return None
+    device_types = scene.get("device_types")
+    if (
+        isinstance(device_types, list)
+        and len(device_types) == 1
+        and isinstance(device_types[0], str)
+        and device_types[0].strip()
+    ):
+        return device_types[0].strip()
+    return None
+
+
+def _select_execution_platform(
     per_platform_paths: dict[str, Path],
     requested_platform: str | None,
     server_config: str | None,
+    scene_platform: str | None = None,
+    strict: bool = True,
 ) -> tuple[str, str]:
-    """Select the canonical TTK platform, preferring executable servers.
+    """Select the execution platform behind ``cases.json`` (atk and ttk).
 
-    Priority: explicit ``--platform``; then servers/file order and each
-    server's ``platforms`` order; finally the historical first generated
-    platform only when no server configuration file is available.
+    Priority: explicit ``--platform``; then a single device selected at the
+    scene stage (authoritative user intent — product_support narrowing
+    usually leaves only that platform generated; this keeps the choice when
+    it does not, e.g. human-edited constraints); then servers/file order and
+    each server's ``platforms`` order; finally the historical first
+    generated platform only when no server configuration file is available.
+
+    ``strict`` (ttk) raises when servers.json covers none of the generated
+    platforms — the CSV must be oriented at a runnable platform. With
+    ``strict=False`` (atk) that case degrades to the first generated
+    platform: generation itself succeeded and EXECUTE can still retarget
+    via its own server-based selection.
     """
     available = list(per_platform_paths)
     if not available:
@@ -139,6 +187,15 @@ def _select_ttk_platform(
                 f"available={available}"
             )
         return requested_platform, "explicit_cli"
+
+    if scene_platform:
+        if scene_platform in per_platform_paths:
+            return scene_platform, "scene_selection"
+        logger.warning(
+            "scene-selected device %r has no generated cases bucket; "
+            "falling back to server-config selection",
+            scene_platform,
+        )
 
     config_path = Path(server_config or "servers.json").expanduser()
     if not config_path.is_absolute():
@@ -168,6 +225,16 @@ def _select_ttk_platform(
             configured.append(platform)
             if platform in available_set:
                 return platform, "server_config_match"
+    if not strict:
+        logger.warning(
+            "servers.json platforms do not cover any generated operator "
+            "platform; falling back to first generated platform %s "
+            "(configured=%s, generated=%s)",
+            available[0],
+            configured,
+            available,
+        )
+        return available[0], "first_generated_no_server_coverage"
     raise RuntimeError(
         "servers.json platforms do not cover any generated operator platform: "
         f"configured={configured}, generated={available}"
@@ -425,8 +492,10 @@ def _main() -> int:
         "--platform",
         default=None,
         help=(
-            "可选：显式指定 TTK canonical/CSV 平台。未指定时按 servers.json "
-            "中的服务器及 platforms 顺序选择第一个已有 per-platform cases 的平台。"
+            "可选：显式指定执行平台（atk 的 cases.json 与 ttk 的 "
+            "cases_ttk.csv 出自同一选择）。未指定时优先场景阶段单选设备，"
+            "再按 servers.json 中的服务器及 platforms 顺序选择第一个已有 "
+            "per-platform cases 的平台。"
         ),
     )
     parser.add_argument(
@@ -538,7 +607,7 @@ def _main() -> int:
             "state": "in_progress",
             "message": (
                 "TTK generation has not completed; EXECUTE must not reuse "
-                "canonical JSON or CSV artifacts from an earlier attempt."
+                "stale cases.json or CSV artifacts from an earlier attempt."
             ),
         })
     scenario_generation: dict[str, Any] = {}
@@ -566,26 +635,32 @@ def _main() -> int:
             generator, args.count, jsonl_save_path, output_dir
         )
 
+    # ── Execution platform selection (unified for atk and ttk) ──────────
+    # cases.json is this iteration's framework-neutral case file: the
+    # selected execution platform's cases, while every per-platform JSON
+    # generated above is preserved for audit/replay. Priority: explicit
+    # --platform, then a single scene-stage device selection, then
+    # servers.json order (see _select_execution_platform).
+    operator_name = generator.operator_name
+    selected_platform, platform_selection_reason = _select_execution_platform(
+        per_platform_paths,
+        args.platform,
+        args.server_config,
+        scene_platform=_scene_platform_preference(output_dir),
+        strict=(args.test_framework == "ttk"),
+    )
+    logger.info(
+        "execution platform selected: %s (%s)",
+        selected_platform,
+        platform_selection_reason,
+    )
+    cases_json_path = output_dir / "cases.json"
+    selected_source = per_platform_paths[selected_platform]
+    materialization_report = None
+    per_platform_execution_paths = dict(per_platform_paths)
+
     if args.test_framework == "ttk":
-        operator_name = generator.operator_name
-        # cases.json is the canonical, framework-neutral concrete-case model.
-        # Keep one selected platform canonical for execution while preserving
-        # every per-platform JSON generated above for audit/replay.
-        selected_platform, platform_selection_reason = _select_ttk_platform(
-            per_platform_paths,
-            args.platform,
-            args.server_config,
-        )
-        logger.info(
-            "TTK canonical platform selected: %s (%s)",
-            selected_platform,
-            platform_selection_reason,
-        )
-        selected_source = per_platform_paths[selected_platform]
-        canonical_cases = output_dir / "cases.json"
-        materialization_report = None
         selected_materialized_source: Path | None = None
-        per_platform_execution_paths = dict(per_platform_paths)
         if operator_name == "aclnnScatterPaKvCache":
             from scripts.atk_to_ttk_aclnn import (
                 materialize_scatter_pa_kv_cache_cases,
@@ -748,10 +823,16 @@ def _main() -> int:
             selected_materialized_source
             or per_platform_execution_paths[selected_platform]
         )
-        _atomic_write_text(
-            canonical_cases, selected_source.read_text(encoding="utf-8"),
-        )
 
+    # Framework-neutral cases.json: written for atk and ttk alike,
+    # and before generation_summary.json, so completion detection (which
+    # watches the summary) never reports a finished generation without
+    # this artifact.
+    _atomic_write_text(
+        cases_json_path, selected_source.read_text(encoding="utf-8"),
+    )
+
+    if args.test_framework == "ttk":
         if operator_name.startswith("aclnn"):
             from scripts.atk_to_ttk_aclnn import convert_file
             from scripts.validate_ttk_aclnn_csv import validate_csv
@@ -763,7 +844,7 @@ def _main() -> int:
             )
             ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
             conversion = convert_file(
-                canonical_cases, ttk_temporary, constraints=constraints
+                cases_json_path, ttk_temporary, constraints=constraints
             )
             csv_validation = validate_csv(ttk_temporary)
             conversion_failures = [
@@ -787,7 +868,7 @@ def _main() -> int:
                 "operator_name": operator_name,
                 "test_framework": "ttk",
                 "ttk_mode": "aclnn",
-                "intermediate_model": str(canonical_cases),
+                "intermediate_model": str(cases_json_path),
                 "selected_platform": selected_platform,
                 "platform_selection_reason": platform_selection_reason,
                 "platforms": per_platform_counts,
@@ -815,7 +896,7 @@ def _main() -> int:
             }
             summary["artifact_hashes"] = {
                 "selected_execution_file": _sha256(selected_source),
-                "cases_json": _sha256(canonical_cases),
+                "cases_json": _sha256(cases_json_path),
                 "cases_csv": _sha256(ttk_output),
             }
             _atomic_write_json(output_dir / "generation_summary.json", summary)
@@ -826,7 +907,7 @@ def _main() -> int:
                 "state": "complete",
                 "selected_platform": selected_platform,
                 "selected_execution_file": str(selected_source),
-                "cases_json": str(canonical_cases),
+                "cases_json": str(cases_json_path),
                 "cases_csv": str(ttk_output),
                 "artifact_hashes": summary["artifact_hashes"],
             })
@@ -853,7 +934,7 @@ def _main() -> int:
             )
             platform_audits[platform] = audit
             platform_audit_paths[platform] = str(audit_path)
-        concrete_cases = json.loads(canonical_cases.read_text(encoding="utf-8"))
+        concrete_cases = json.loads(cases_json_path.read_text(encoding="utf-8"))
         hs_case_audit = platform_audits[selected_platform]
         (output_dir / "hs_case_audit.json").write_text(
             json.dumps(hs_case_audit, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -907,7 +988,7 @@ def _main() -> int:
         tensor_order = _ordered_input_tensor_names(constraints)
         ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
         conversion = convert_file(
-            canonical_cases, ttk_temporary, selected_platform, tensor_order,
+            cases_json_path, ttk_temporary, selected_platform, tensor_order,
         )
         conversion_failures = [
             entry for entry in conversion["audit"] if entry["issues"]
@@ -927,7 +1008,7 @@ def _main() -> int:
         summary = {
             "operator_name": operator_name,
             "test_framework": "ttk",
-            "intermediate_model": str(canonical_cases),
+            "intermediate_model": str(cases_json_path),
             "selected_platform": selected_platform,
             "platform_selection_reason": platform_selection_reason,
             "platforms": per_platform_counts,
@@ -963,7 +1044,7 @@ def _main() -> int:
         }
         summary["artifact_hashes"] = {
             "selected_execution_file": _sha256(selected_source),
-            "cases_json": _sha256(canonical_cases),
+            "cases_json": _sha256(cases_json_path),
             "cases_csv": _sha256(ttk_output),
         }
         _atomic_write_json(ttk_output.parent / "generation_summary.json", summary)
@@ -974,7 +1055,7 @@ def _main() -> int:
             "state": "complete",
             "selected_platform": selected_platform,
             "selected_execution_file": str(selected_source),
-            "cases_json": str(canonical_cases),
+            "cases_json": str(cases_json_path),
             "cases_csv": str(ttk_output),
             "artifact_hashes": summary["artifact_hashes"],
         })
@@ -985,8 +1066,13 @@ def _main() -> int:
 
     summary = {
         "operator_name": generator.operator_name,
+        "test_framework": "atk",
         "requested_per_platform": args.count,
         "platforms": per_platform_counts,
+        "selected_platform": selected_platform,
+        "platform_selection_reason": platform_selection_reason,
+        "cases_json_path": str(cases_json_path),
+        "selected_execution_file": str(selected_source),
         "per_platform_files": {
             k: str(v) for k, v in per_platform_paths.items()
         },
@@ -1002,9 +1088,11 @@ def _main() -> int:
         ),
         "id_format": "platform 内 0 基整数 (per-platform 0,1,2,...)",
     }
-    (output_dir / "generation_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    summary["artifact_hashes"] = {
+        "selected_execution_file": _sha256(selected_source),
+        "cases_json": _sha256(cases_json_path),
+    }
+    _atomic_write_json(output_dir / "generation_summary.json", summary)
 
     elapsed = time.monotonic() - started
     logger.info(

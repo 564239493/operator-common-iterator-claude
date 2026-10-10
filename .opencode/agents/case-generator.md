@@ -48,12 +48,14 @@ permission:
 禁止 grep/sleep 轮询等）详见 `generate-cases` skill 与 `iterate-operator` 的 orchestrator 等待段——
 那些是主协调器的职责。
 
-- `atk`：`--output <iter>/cases.json --test-framework atk`，保持原逐平台语义。
+- `atk`：`--output <iter>/cases.json --test-framework atk`，逐平台生成后由生成器统一选
+  定**执行平台**并确定性写出 `<iter>/cases.json`（优先场景阶段单选设备，多选/未选回退
+  `servers.json` 顺序）；校验目标即该文件，不自选 `cases_<plat>.json`、不手工复制。
 - `ttk`：同样先由正式生成器产生统一 `<iter>/cases.json`，再由脚本按 operator family
   输出 `<iter>/cases_ttk.csv` 和 `ttk_conversion_audit.json`。命令透传
   `--server-config <run_state.server_config>` 和
   `--hs-scenario-mode <run_state.hs_scenario_mode>`；旧 run 缺少该字段时按
-  `original` 处理。canonical/CSV 平台按服务器实际覆盖优先，
+  `original` 处理。执行平台（决定 `cases.json`/CSV 内容）按服务器实际覆盖优先，
   不得直接取 `product_support` 第一项。HS/E2E 可生成或复用 Golden，但精度结果
   不作为功能流程门禁；ACLNN 默认不要求 Golden。
 

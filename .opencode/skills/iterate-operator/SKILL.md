@@ -277,14 +277,17 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
           （某平台一完成其 JSONL 即被 convert 删掉转成 `cases_<plat>.json`、从进度里"消失"），
           **绝不**据此停掉生成进程。**`per_platform` 语义（关键，防误判调查）**：running 期间 `per_platform`
           列出的是**当前正在被生成的目标平台**（`generate_platform_outputs` 按 `product_support` 顺序逐平台
-          生成全部平台，每个产 `cases_<plat>.json`），**不是执行/canonical 平台**；canonical/CSV 平台是在
-          生成**全部完成后**由 `_select_ttk_platform` 按 `servers.json` 服务器顺序及各 `platforms` 顺序选定的，
+          生成全部平台，每个产 `cases_<plat>.json`），**不是执行平台**；`cases.json`/CSV 的执行平台是在
+          生成**全部完成后**由 `_select_execution_platform` 选定的（优先场景阶段单选设备，多选/未选
+          按 `servers.json` 服务器顺序及各 `platforms` 顺序），
           与 running 期间 `per_platform` 出现哪个平台无关。故 `per_platform` 里出现 `servers.json` 未覆盖的
           平台（如 A3 训练/推理）属**正常**、不是选错平台，**禁止**据此调查 `generate_cases.py` 平台选择逻辑
           或 kill 重启——平台是否选对只在 `state=complete` 后、`generation_summary.json.selected_platform`
           不符 `servers.json` 时才处理（EXECUTE 前的事）。
        4. `state=complete`（`generation_summary.json` 已产出）后跑
-          `python scripts/validate_artifacts.py cases <cases 路径>`，通过后运行
+          `python scripts/validate_artifacts.py cases <iter>/cases.json`（生成器收尾确定性
+          写出的 `cases.json`，ATK/TTK 一致；不自选 `cases_<plat>.json`、不手工复制），
+          通过后运行
           `python scripts/flow_control.py advance --run-dir <run-dir>` 进入 EXECUTE；
           `state=failed` 读 `status` JSON 的 `error` 字段（已有界摘录）报告 `generator_bug`，不自行解析日志。
        5. **绝不在已有 `cases_<plat>.json` 时重跑 `generate_cases.py`**（`generate_platform_outputs:192`
@@ -306,8 +309,9 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
       `engine_error` 终止流程。
    - 执行完成后运行 `python scripts/flow_control.py advance --run-dir <run-dir>`
-     （裁决 EXECUTE → GATE），随后再委派 `quality-reviewer`；gate 产出后由第 7 步的
-     `advance` 决定去向。
+     （裁决 EXECUTE → GATE），随后再委派 `quality-reviewer`（其自行用 **write 工具**
+     落盘 `<iter>/quality_gate.json` 并返回结论摘要 + 产物绝对路径，主协调器
+     **禁止代写**）；gate 产出后由第 7 步的 `advance` 决定去向。
    - `quality-reviewer`
 7. 若基础产物可读、至少生成一条用例且执行器已完成运行，运行
    `python scripts/flow_control.py advance --run-dir <run-dir>`（推进器按 `quality_gate.json`
@@ -323,9 +327,11 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
    `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence 与同一
    PLOG 证据下根因）。`operator_src_snapshot` 为空时直接委派 `failure-analyst`，但真实
    TTK 执行仍必须传入 `execution_result.plog` 指向的全部诊断产物。
-   failure-analyst 完成后先运行
-   `python scripts/validate_artifacts.py analysis <iter>/analysis.json`；失败时阻断路由并让
-   Agent 修正。schema 2.1 的 `constraint_findings` 是执行反馈轮唯一问题清单，直接交给
+   failure-analyst 用 **write 工具**自行落盘 `<iter>/analysis.json`（返回根因摘要 +
+   产物绝对路径，不把 JSON 正文交回）。完成后主协调器只做校验：
+   `python scripts/validate_artifacts.py analysis <iter>/analysis.json`；失败时阻断路由，
+   把校验错误退回 failure-analyst 修正后覆盖重写，**禁止主协调器代写**。
+   schema 2.1 的 `constraint_findings` 是执行反馈轮唯一问题清单，直接交给
    constraint-updater；不再生成或合并 `supplement_additions.md`。
    主协调器禁止只看顶层 `root_cause`，必须按已校验的 `overall_action` 路由：
    - **UPDATE_CONSTRAINTS**：所有失败簇均为 constraint_extraction 且 findings 覆盖完整。

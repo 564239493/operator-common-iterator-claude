@@ -62,8 +62,9 @@ launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoc
   complete/failed 之后，**绝不用调查取代一次轮询**。进度一旦从某回合起长时间空白，根因几乎都是
   "本该轮询的回合被旁支调查/长考占用"——这正是"有时有进度、有时没进度"的唯一可控根因。
 - **`per_platform` 语义（防误判调查）**：running 期间 `per_platform` 列的是**正在生成的目标平台**
-  （`generate_platform_outputs` 按 `product_support` 逐平台全部生成），**不是执行/canonical 平台**；
-  canonical 平台在全部生成完后由 `_select_ttk_platform` 按 `servers.json` 选定。故 `per_platform` 出现
+  （`generate_platform_outputs` 按 `product_support` 逐平台全部生成），**不是执行平台**；
+  执行平台在全部生成完后由 `_select_execution_platform` 选定（优先场景阶段单选设备，
+  多选/未选回退 `servers.json` 服务器及 `platforms` 顺序）。故 `per_platform` 出现
   `servers.json` 未覆盖的平台（如 A3）属**正常**、不是选错平台，**禁止**据此调查或 kill 重启；
   仅在 `state=complete` 后 `generation_summary.json.selected_platform` 不符 `servers.json` 时才处理。
   详见 `iterate-operator` skill 等待段。
@@ -89,7 +90,10 @@ launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoc
 **禁止**将 count 除以产品数后再传入。脚本和 facade 内部已按 per-platform 处理，
 调用方传入原始期望值即可。
 
-随后执行 `python scripts/validate_artifacts.py cases <cases.json>`。禁止手工补造生成失败
+`<iter-dir>/cases.json` 由生成器收尾**确定性写出**（执行平台 = `--platform` 显式指定
+> 场景阶段单选设备 > `servers.json` 顺序首个覆盖平台），ATK 与 TTK 一致；校验目标固定为该
+文件，**不**自选 `cases_<plat>.json`、**不**手工复制。随后执行
+`python scripts/validate_artifacts.py cases <iter-dir>/cases.json`。禁止手工补造生成失败
 的 case。保留 `<iter-dir>/generation_summary.json` 作为数量和平台摘要。ATK 路径下 cases
 校验不通过即中断 GENERATE，不得因告警删除已生成用例或绕过校验继续。
 
@@ -99,10 +103,10 @@ launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoc
 python scripts/generate_cases.py --constraints <constraints.json> --output <iter>/cases_ttk.csv --count <N> --test-framework ttk --hs-scenario-mode <run_state.hs_scenario_mode> --server-config servers.json
 ```
 
-所有产品的 `cases_<platform>.json` 仍分别生成并保留；用于 `cases.json` 和
-`cases_ttk.csv` 的 canonical 平台不再取 `product_support` 第一项，而是按
-`servers.json` 中服务器顺序及各服务器 `platforms` 顺序，选择第一个已有用例桶的平台。
-人工调试可用 `--platform <精确平台名>` 覆盖。选择结果和原因写入
+所有产品的 `cases_<platform>.json` 仍分别生成并保留；执行平台选择与 ATK 同一逻辑
+（`_select_execution_platform`：`--platform` 显式指定 → 场景阶段单选设备 → 按
+`servers.json` 中服务器顺序及各服务器 `platforms` 顺序选择第一个已有用例桶的平台）。
+`cases.json` 与 `cases_ttk.csv` 均由该选择派生。选择结果和原因写入
 `generation_summary.json.selected_platform/platform_selection_reason`。
 
 torch_npu TTK 默认使用 `--hs-scenario-mode original`，完全使用原有
