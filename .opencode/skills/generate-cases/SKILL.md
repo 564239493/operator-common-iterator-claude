@@ -108,6 +108,7 @@ python scripts/generate_cases.py --constraints <constraints.json> --output <iter
 `servers.json` 中服务器顺序及各服务器 `platforms` 顺序选择第一个已有用例桶的平台）。
 `cases.json` 与 `cases_ttk.csv` 均由该选择派生。选择结果和原因写入
 `generation_summary.json.selected_platform/platform_selection_reason`。
+`cases_ttk.csv` 文件名固定、不取 `--output` 的文件名（`--output` 仅定位输出目录）。
 
 torch_npu TTK 默认使用 `--hs-scenario-mode original`，完全使用原有
 `agent/generators` 逻辑，不做 `tnd` / `bsnd` / `paged_attention`

@@ -14,9 +14,11 @@ Outputs:
 - ``<output_dir>/cases.json``       — the selected execution platform's cases
   (atk and ttk alike; selection is ``_select_execution_platform``: explicit
   ``--platform`` → single scene-stage device → servers.json order). ttk
-  additionally derives ``cases_ttk.csv`` from it.
+  additionally derives ``cases_ttk.csv`` from it (fixed name — never taken
+  from ``--output``'s filename).
 - ``<output>``                       — nominal overall cases path (kept for
-  backward CLI compatibility); its parent dir receives the artifacts above
+  backward CLI compatibility); only its parent dir is used to place the
+  artifacts above — the filename influences no artifact name
 - ``<output_dir>/generation_summary.json`` — per-platform counts + paths +
   ``selected_platform``/``platform_selection_reason``
 - ``<iter_dir>/generation.log``       — when ``--iter-dir`` is passed, a
@@ -478,7 +480,15 @@ def _log_ranksize_distribution(
 def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--constraints", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--output",
+        required=True,
+        help=(
+            "输出目录定位 + legacy 兼容路径；产物文件名固定"
+            "（cases.json / cases_ttk.csv / generation_summary.json），"
+            "不取本参数的文件名"
+        ),
+    )
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -837,11 +847,7 @@ def _main() -> int:
             from scripts.atk_to_ttk_aclnn import convert_file
             from scripts.validate_ttk_aclnn_csv import validate_csv
 
-            ttk_output = (
-                output_path
-                if output_path.suffix.lower() == ".csv"
-                else output_path.with_suffix(".csv")
-            )
+            ttk_output = output_dir / "cases_ttk.csv"
             ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
             conversion = convert_file(
                 cases_json_path, ttk_temporary, constraints=constraints
@@ -984,7 +990,7 @@ def _main() -> int:
             }
             _atomic_write_json(generation_status_path, failure_payload)
             raise RuntimeError("; ".join(generation_gate_errors))
-        ttk_output = output_path if output_path.suffix.lower() == ".csv" else output_path.with_suffix(".csv")
+        ttk_output = output_dir / "cases_ttk.csv"
         tensor_order = _ordered_input_tensor_names(constraints)
         ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
         conversion = convert_file(
