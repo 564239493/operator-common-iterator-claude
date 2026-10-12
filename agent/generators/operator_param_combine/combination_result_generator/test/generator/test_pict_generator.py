@@ -1,6 +1,7 @@
 ﻿import glob
 import json
 import os
+import logging
 
 import pytest
 
@@ -20,6 +21,7 @@ from agent.generators.operator_param_combine.combination_result_generator.engine
     build_universe_and_tracker,
     load_config,
 )
+from agent.generators.common_utils.logger_util import init_logger
 
 from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
 from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
@@ -176,6 +178,20 @@ def _save_combination_data(result: GenerationResult, operator_name: str) -> str:
         json.dump(output, f, indent=2, ensure_ascii=False, default=str)
     return output_path
 
+@pytest.fixture(autouse=True)
+def _init_logger_fixture(tmp_path):
+    """LazyLogger 全局惰性初始化：未 init 时首次打日志抛 RuntimeError。
+
+    参照 tests/src/generator/batch_case_generator_correct_case_aclnnffnv3_test.py
+    的惯例先 init_logger，日志落到 pytest 临时目录，避免污染仓库。
+    """
+    init_logger(
+        log_name="test_pict_generator",
+        log_dir=str(tmp_path),
+        log_level=logging.WARNING,
+        console_output=False,
+    )
+
 
 class TestPICTGeneratorDomainData:
     """以 output 目录下每个 {operator_name}_domain_data.json 为输入，
@@ -227,3 +243,64 @@ class TestPICTGeneratorDomainData:
 
         output_path = _save_combination_data(result, operator_name)
         assert os.path.isfile(output_path)
+
+
+class TestSavePictModel:
+    """验证 PICTGenerator.save_pict_model 落盘行为。
+
+    说明：_build_pict_model() 是纯函数，不设置 self._pict_model（该赋值在
+    _build_with_real_pict 中完成）；测试用 _attach_model 辅助方法镜像生产
+    赋值逻辑后再验证落盘。
+    """
+
+    @staticmethod
+    def _make_generator(model_output_dir):
+        config = create_config()
+        universe, tracker, builder = build_components(config)
+        candidate_gen = CandidateGenerator(config, random_seed=42)
+        options = GeneratorOptions(max_iterations=100)
+
+        gen = PICTGenerator(
+            universe=universe,
+            coverage_tracker=tracker,
+            constraint=None,
+            config=options,
+            candidate_generator=candidate_gen,
+            pair_builder=builder,
+            operator_name="TestOp",
+            model_output_dir=model_output_dir,
+        )
+        return gen
+
+    @staticmethod
+    def _attach_model(gen):
+        """镜像 _build_with_real_pict 中对模型的两行生产赋值。"""
+        model = gen._build_pict_model()
+        assert model is not None
+        gen._pict_model = model
+        gen._pict_col_map = model.col_map
+        return model
+
+    def test_save_pict_model_without_dir_returns_none(self):
+        gen = self._make_generator(model_output_dir=None)
+        self._attach_model(gen)
+        assert gen.save_pict_model() is None
+
+    def test_save_pict_model_without_model_returns_none(self, tmp_path):
+        gen = self._make_generator(model_output_dir=str(tmp_path))
+        assert gen._pict_model is None
+        assert gen.save_pict_model() is None
+
+    def test_save_pict_model_writes_file(self, tmp_path):
+        gen = self._make_generator(model_output_dir=str(tmp_path))
+        model = self._attach_model(gen)
+
+        model_path = gen.save_pict_model()
+
+        assert model_path is not None
+        assert os.path.isfile(model_path)
+        assert os.path.basename(model_path) == "TestOp_pict_model.txt"
+        with open(model_path, encoding="utf-8") as f:
+            assert f.read() == model.model_text
+
+
