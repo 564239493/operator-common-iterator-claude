@@ -29,14 +29,14 @@ REQUIRED_AGENTS = {
     "constraint-extractor", "constraint-repairer", "constraint-supplementer",
     "constraint-updater",
     "failure-analyst", "prompt-optimizer", "quality-reviewer",
-    "scene-scanner", "source-analyst",
+    "source-analyst",
 }
 REQUIRED_SKILLS = {
     "analyze-source", "atc-cpu-golden-derivation", "check-constraints",
     "collect-operator-source", "derive-ttk-golden", "diagnose-failure",
     "execute-cases", "extract-constraints", "generate-cases",
     "iterate-directory", "iterate-operator", "optimize-prompt",
-    "repair-constraints", "scan-scenes", "show-workforce",
+    "repair-constraints", "show-workforce",
     "supplement-constraints", "update-constraints", "validate-run",
 }
 

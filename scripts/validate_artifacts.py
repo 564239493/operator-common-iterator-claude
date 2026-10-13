@@ -2403,8 +2403,8 @@ def _validate_scene_scan(value: dict) -> tuple[list[str], list[str]]:
 
 
 def validate_scene_scan(value) -> tuple[list[str], list[str]]:
-    """Validate inputs/scene_scan.json produced by the scene-scanner Agent
-    (three-level device → 量化模板 → 特性参数 model)."""
+    """Validate inputs/scene_scan.json（legacy：三级场景扫描流程已下线删除，
+    本校验模式仅为历史 run 产物保留；新 run 场景走文本直输模式，不产本文件）。"""
     if not isinstance(value, dict):
         return ["scene_scan must be an object"], []
     return _validate_scene_scan(value)

@@ -35,10 +35,11 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    前 `human_checkpoint_round` 轮仍纯自动迭代，检查点之后每个失败轮都重新弹该四选一 （可逐轮切换）。 
    未开启`human-constraints-upload`时检查点退化为三选一（人工修复不可选）。详见下方「挂起、监听与唤醒」节。
 
-   `--scenes "<场景描述>"` 可选；提供时跳过 scene-scanner 与 Q1→Q2→Q3 征询，由主协调器
-   对该文本做简单文字匹配（设备/量化场景/参数取值）对齐文档后写 selection.json
-   （原文存 `run_state.scenes`）。未提供时进入手动输入模式（先展示文档设备/量化场景/
-   执行机建议面板，再让用户文本输入场景描述）。详见 SCENE_SCAN 子步骤。
+   `--scenes "<场景描述>"` 可选；提供时直接以该文本为场景描述（原文存
+   `run_state.scenes`），由主协调器做简单文字匹配（设备/量化场景/参数取值）对齐文档后
+   写 selection.json。未提供时进入手动输入模式（先展示文档设备/量化场景/执行机建议
+   面板，再让用户文本输入场景描述）。场景收集是强制步骤：**至少选择出设备类型**才
+   允许进入 EXTRACT。详见 SCENE_SCAN 子步骤。
 
    `hs-scenario-mode=original`；只有用户显式传入
    `--hs-scenario-mode planned` 时，torch_npu + TTK 才启用 TND/BSND/
@@ -81,9 +82,13 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
    最小修改上一轮约束，不再委派 constraint-extractor。
 
-**SCENE_SCAN 子步骤（文本直输模式）**：场景信息不再走 scene-scanner + Q1→Q2→Q3
-征询（该 legacy 流程已隐藏，完整原流程见 git 历史中本文件旧版本与
-`prompts/scan_scenes.md`），改为**用户文本输入 + 简单文字匹配**。场景信息二选一：
+**SCENE_SCAN 子步骤（文本直输模式，唯一路径）**：场景信息只走**用户文本输入 +
+简单文字匹配**。legacy 三级场景扫描流程（scene-scanner Agent 扫 `scene_scan.json`
++ Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判）**已整体下线并删除，
+禁止再调用**——`scene-scanner` Agent 与 `scan-scenes` Skill 已从注册表移除、
+`prompts/scan_scenes.md` 与 `scripts/check_scene_conflicts.py` 已删除、
+`render_scene_directive.py` 已移除 `--scan` 参数与 `--scope all`（原实现仅存 git
+历史）。场景信息二选一：
 
 - `--scenes "<场景描述>"` 已传入：直接以该文本为场景描述（原文已存 `run_state.scenes`）；
 - 未传：主协调器先组装【建议面板】展示给用户（全部来自落盘文件/配置，非模型记忆），
@@ -95,11 +100,11 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
   `A2非量化groupListType等于2`。
 
 **文字匹配与回显确认**（两种入口合流，逐项执行）：
-- **设备（必要项）**：用户文本包含设备关键字（"A2"/"A3"/"910B" 或设备名子串）→ 对齐到
-  文档"产品支持情况"的**设备全称**；**对不上任何设备 → 追问重输**，并列出文档支持的
-  设备全称清单作为提示（不得自行猜测或放行）。对齐后与 servers.json `platforms` 并集
-  比对：无执行机 → 警示"该设备无执行机，real 执行无法进行"（**不阻断**，约束提取仍可
-  进行）。
+- **设备（硬性必要项）**：用户文本包含设备关键字（"A2"/"A3"/"910B" 或设备名子串）→
+  对齐到文档"产品支持情况"的**设备全称**；**对不上任何设备 → 追问重输**，并列出文档
+  支持的设备全称清单作为提示（不得自行猜测或放行）。对齐后与 servers.json
+  `platforms` 并集比对：无执行机 → 警示"该设备无执行机，real 执行无法进行"
+  （**不阻断**，约束提取仍可进行）。
 - **量化场景**：文本命中文档中出现的量化关键词（非量化/全量化-xx/伪量化…）；匹配不上 →
   展示关键词清单让用户挑选；非量化算子允许不填。
 - **参数取值（含大白话区间，解析细则）**：
@@ -119,34 +124,36 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
 - **回显确认（强制一次）**：把解析结果以表格（设备全称 / 量化场景 / 参数取值列表）展示，
   AskUserQuestion 让用户【确认/修改】；确认后才允许落盘。
 
-**落盘**：确认后写 `<run-dir>/inputs/selection.json`（**值级形态，与旧格式一致**）：
+**设备必选硬门槛（强制）**：未选出至少一个可对齐文档"产品支持情况"的设备全称之前，
+禁止写 `selection.json`、禁止渲染 `scene_directive.md`、禁止推进 EXTRACT；用户明确
+拒绝提供设备时，向用户确认是否停止任务（不得静默跳过场景步骤继续提取）。
+`render_scene_directive.py` 以 `DEVICE_REQUIRED`（device_types 为空）/
+`EMPTY_SCENE`（无选中场景）exit 2 硬拦截——收到该返回时回到文字匹配重新征询，
+不得伪造 selection 绕过。
+
+**落盘**：确认后写 `<run-dir>/inputs/selection.json`（**值级形态**）：
 `{"device_types": [<设备全称>], "selection": {<设备全称>: {<量化场景>: null | {参数: [值...]}}}}`
 （"保持自动" → `null`；显式参数 → `{param: [values]}`；文本模式**不支持** `fix_all_default`
-——无 scan 参数枚举，需要固定全部默认值时请显式列出各参数）。
+——无场景参数枚举，需要固定全部默认值时请显式列出各参数）。
 
 **渲染**：
 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
-（**不带 `--scan`**：文本直输模式，跳过枚举交叉校验、仅做结构校验；exit 2 阻断并按
-`errors` 提示修正。设备支撑：无执行机的设备仅警示不阻断——约束仍可提取，real 执行阶段
-自然失败。）渲染产出 `inputs/scene_directive.md`（机读块
+（文本直输模式唯一调用形态：无 `--scan`，`--scope` 仅 `subset|off`——脚本已移除
+legacy 参数；仅做结构校验、无枚举交叉校验；exit 2 阻断并按 `code`/`errors` 提示修正。
+设备支撑：无执行机的设备仅警示不阻断——约束仍可提取，real 执行阶段自然失败。）
+渲染产出 `inputs/scene_directive.md`（机读块
 `<!-- scene: {device_types, selection, param_modes, selection_policy} -->`）并回写
 `run_state.scene`（`scene.source` = scenes_param / interactive_input）。
-EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`
-（与文档 √ 行取交集，无"通用"展开）；按 `param_modes` 产 `allowed_range_value`
-（`expand` 用取值清单、`fix` 单值、缺键按文档和已选场景适配）；已选场景禁止的 Optional
-参数必须产出 `param is None`；**仅提取所选设备/所选场景的约束**——未选设备、未选
-模板/场景专属条目不产出（与所选场景共用的基础约束保留）。该 `product_support` 随后
-驱动 `generate_cases.py` 逐平台生成——**设备选择经约束提取驱动生成，不直接改生成逻辑**。
 
-> 附录：legacy 场景征询（scene-scanner 三级扫描 + Q1→Q2→Q3 逐级问询 +
-> check_scene_conflicts 预判）已被上述文本直输模式取代并隐藏；skill/脚本文件保留在
-> 仓库中未删除，完整原流程见 git 历史中本文件旧版本。
-EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`；
-按 `param_modes` 产 `allowed_range_value`；**仅提取所选设备/所选场景的约束**（独占
-提取，见上方渲染节）。该 `product_support` 随后驱动 `generate_cases.py` 逐平台生成。
-EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入
-constraint-extractor；执行反馈轮不重写 prompt 或 directive，constraint-updater 继续读取
-同一场景指令，保持跨轮稳定。
+**EXTRACT 消费**：EXTRACT 调度消息须把 `inputs/scene_directive.md` 路径一并传入
+constraint-extractor；extractor 读 directive 的 `device_types` 收窄 `product_support`
+（与文档 √ 行取交集，无"通用"展开）；按 `param_modes` 产 `allowed_range_value`
+（`expand` 用取值清单、`fix` 单值、缺键按文档和已选场景适配）；已选场景禁止的
+Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场景的约束**——未选
+设备、未选场景专属条目不产出（与所选场景共用的基础约束保留）。该 `product_support`
+随后驱动 `generate_cases.py` 逐平台生成——**设备选择经约束提取驱动生成，不直接改
+生成逻辑**。执行反馈轮不重写 prompt 或 directive，constraint-updater 继续读取同一
+场景指令，保持跨轮稳定。
 
 6. 初始化首轮按顺序委派：
    - **EXTRACT（fork-join，仅初始化首轮）**：当 `run_state.operator_src_snapshot` 非空时，

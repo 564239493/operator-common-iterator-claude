@@ -297,10 +297,11 @@ def main() -> int:
         dest="scenes",
         default="",
         help=(
-            "场景描述直输（文本）：如 \"A2非量化groupListType等于2\"。提供时跳过"
-            "scene-scanner 与 Q1→Q2→Q3 征询，由主协调器做简单文字匹配（设备/量化"
-            "场景/参数取值）对齐文档后写 selection.json；原文存 run_state.scenes。"
-            "未提供时进入手动输入模式（先展示文档设备/量化场景/执行机建议再让用户输入）。"
+            "场景描述直输（文本）：如 \"A2非量化groupListType等于2\"。由主协调器做"
+            "简单文字匹配（设备/量化场景/参数取值）对齐文档后写 selection.json；"
+            "原文存 run_state.scenes。未提供时进入手动输入模式（先展示文档设备/"
+            "量化场景/执行机建议再让用户输入）。场景收集为强制步骤，至少选择出设备"
+            "类型才进入 EXTRACT（legacy 三级场景扫描已下线删除）。"
         ),
     )
     parser.add_argument(
@@ -355,18 +356,6 @@ def main() -> int:
     )
     parser.add_argument("--mode", choices=("mock", "real"), default="real")
     parser.add_argument("--server-config", default="servers.json")
-    parser.add_argument(
-        "--scene",
-        choices=("auto", "all", "off"),
-        default="auto",
-        help=(
-            "场景提取范围：auto=EXTRACT 前跑 scene-scan，文档有场景则主会话"
-            "AskUserQuestion 两级多选征询(设备类型+逐设备场景，支持全选)、无则跳过；"
-            "all=跑 scene-scan 但取全场景(不剪枝、不询问，批处理默认)；off=不跑 scene-scan。"
-            "scene-scan 由 iterate-operator 在 EXTRACT 前委派 scene-scanner Agent 完成，"
-            "本脚本只记录选择并在 run_state.scene 留空待回写。"
-        ),
-    )
     args = parser.parse_args()
 
     if args.doc is None:
