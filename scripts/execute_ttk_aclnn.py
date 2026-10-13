@@ -97,6 +97,36 @@ def _parse_results(path: Path) -> dict[str, Any]:
     }
 
 
+def _decide_aclnn_status(
+    *, mode: str, exit_code: int,
+    npu_pass: int, npu_fail: int, npu_total: int,
+) -> tuple[str, str]:
+    """TTK ACLNN 结果判定：返回 ``(status, engine_error)``。
+
+    - **有 results.csv 结果行（npu_total>0）= TTK 执行正常**：成败只看用例行——
+      全过=success、有败=partial/failed，engine_error 恒为空；失败用例按
+      ``failed`` 计数走 GATE→DIAGNOSE 继续迭代分析，而非按引擎故障阻断。
+      exit code 非零但结果齐全时同样如此（如 ``--proc-timeout`` 杀掉个别挂死
+      用例后 ttk 以非零退出），异常退出经 ``command_warning`` 留痕。
+    - **无 results.csv（npu_total==0）= TTK 本身执行异常**（环境/框架问题）：
+      status=failed 且 engine_error 非空，推进器在 EXECUTE 态直接 BLOCKED，
+      提示检查执行环境。
+    - validate 模式没有结果文件语义，沿用 exit code：非零=failed+engine_error。
+    """
+    if mode != "npu":
+        if exit_code == 0:
+            return "success", ""
+        return "failed", f"TTK ACLNN validate command failed (exit={exit_code})"
+    if npu_total == 0:
+        return "failed", (
+            f"TTK ACLNN produced no results.csv (exit={exit_code}); "
+            "TTK 本身执行异常，需检查执行环境"
+        )
+    if npu_fail == 0:
+        return "success", ""
+    return ("partial" if npu_pass > 0 else "failed"), ""
+
+
 def _write_remote_plan(
     artifact_dir: Path, *, command: str, remote_dir: str,
 ) -> None:
@@ -230,25 +260,28 @@ async def _run_aclnn(
                 continue
             await _download_via_shell(conn, remote_file, local_path)
 
-        passed = result.exit_code == 0
         npu_pass = results_info.get("passed", 0)
         npu_fail = results_info.get("failed", 0)
         npu_total = results_info.get("total", 0)
         precision_pass = results_info.get("precision_passed", 0)
         precision_fail = results_info.get("precision_failed", 0)
 
-        status = "success"
-        if not passed:
-            status = "failed"
-        elif mode == "npu" and npu_fail > 0:
-            status = "partial"
-        elif mode == "npu" and npu_total == 0:
-            status = "failed"  # no results produced
+        status, engine_error = _decide_aclnn_status(
+            mode=mode, exit_code=result.exit_code,
+            npu_pass=npu_pass, npu_fail=npu_fail, npu_total=npu_total,
+        )
+        command_warning = ""
+        if mode == "npu" and result.exit_code != 0 and npu_total > 0:
+            command_warning = (
+                f"ttk exited with {result.exit_code} but results.csv has "
+                f"{npu_total} row(s); treated as case-level results"
+            )
 
         return {
             "status": status, "mode": f"ttk_aclnn_{mode}",
             "test_framework": "ttk", "ttk_mode": "aclnn",
             "exit_code": result.exit_code,
+            "command_warning": command_warning,
             "stdout": result.stdout, "stderr": result.stderr,
             "duration": duration,
             "proc_timeout": proc_timeout,
@@ -262,10 +295,7 @@ async def _run_aclnn(
             "precision_blocking": False,
             "passed": npu_pass, "failed": npu_fail, "total": npu_total,
             "records": results_info.get("rows", []),
-            "engine_error": "" if status == "success" else (
-                "TTK ACLNN command failed" if not passed else
-                f"TTK ACLNN NPU output missing for {npu_fail}/{npu_total} cases"
-            ),
+            "engine_error": engine_error,
             "plog": plog_info,
         }
     except SSHEngineError as exc:
