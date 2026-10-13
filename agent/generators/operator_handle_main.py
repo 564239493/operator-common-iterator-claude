@@ -21,6 +21,7 @@ from agent.generators.data_definition.param_models_def import RunPlatform
 from agent.generators.operator_param_combine.param_combination_generate import ParamCombinationGenerator
 from agent.generators.operator_param_combine.combination_generator_main import PairwiseParamCombinationGenerator
 from agent.generators.operator_param_models.batch_case_generate import OperatorCaseGenerator
+from agent.generators.param_constraint_solve.param_constraint_utils import derive_reduce_output_shapes
 
 logger = LazyLogger()
 
@@ -127,7 +128,17 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
         operator_constraint_data=effective_operator_constraint_data, param_domain_data=param_domain_data,
         param_combination_list=param_combination_list, target_platform=platform,
         case_num=case_num, jsonl_save_path=jsonl_save_path, json_file_name=json_file_name)
-    return case_list, operator_name
+    # reduce 类算子输出 shape 派生兜底：权威落盘在 correct_case→solve_z3_constraints 已完成，
+    # 这里对返回列表再跑一次（幂等），保证直接消费返回值的调用方也拿到派生后的 out.shape。
+    final_case_list = []
+    for case in case_list or []:
+        if derive_reduce_output_shapes(case, effective_operator_constraint_data):
+            final_case_list.append(case)
+        else:
+            logger.error(
+                f"Drop case from returned list, reduce axis out of range, "
+                f"operator name : '{operator_name}', case id : {getattr(case, 'id', None)}")
+    return final_case_list, operator_name
 
 
 def batch_operator_handel(operator_constraint_directory, operators: List = None,
