@@ -441,6 +441,19 @@ def _format_single_tensor_shape(shape: list[int] | None) -> str:
     return repr(tuple(shape))
 
 
+def _outer_tuple(parts: list[str]) -> str:
+    """Join pre-formatted slot fragments into the outer per-case tuple.
+
+    Parts are source-code fragments (``'float16'``, ``(1,2,3)``, ``None``…).
+    A lone part must keep 1-tuple semantics — ``('float16')`` literal-evals
+    to a bare string and ``((1,2,3))`` drops the outer level; only ``(x,)``
+    round-trips as a 1-tuple. Same rule as ``_format_tensor_list_shapes``.
+    """
+    if len(parts) == 1:
+        return f"({parts[0]},)"
+    return "(" + ",".join(parts) + ")"
+
+
 def _format_dtype(dtype_str: str | None) -> str:
     """Map ATK dtype string to TTK dtype string."""
     if dtype_str is None:
@@ -648,10 +661,11 @@ def convert_case(
         if is_output:
             output_indexes.append(idx)
 
-    # Build the outer tuples
-    tensor_view_shapes = f"({','.join(shapes_parts)})"
-    tensor_dtypes = f"({','.join(dtypes_parts)})"
-    tensor_formats = f"({','.join(formats_parts)})"
+    # Build the outer tuples (single-slot rows need the trailing comma so
+    # ast.literal_eval yields a 1-tuple instead of a bare value).
+    tensor_view_shapes = _outer_tuple(shapes_parts)
+    tensor_dtypes = _outer_tuple(dtypes_parts)
+    tensor_formats = _outer_tuple(formats_parts)
 
     attrs = _format_attrs(case, attr_specs)
     # A8W4 with offset=null is interpreted by CANN as count mode regardless

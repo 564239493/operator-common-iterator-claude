@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print project Skills, Agents, their preload relations, and dispatch flow."""
+"""Print project skills, subagents, their preload relations, and dispatch flow."""
 
 from __future__ import annotations
 
@@ -35,16 +35,23 @@ def frontmatter(path: Path) -> dict[str, object]:
     return data
 
 
+def preload_skill(path: Path) -> str:
+    """智能体正文首行的「开工第一步用 skill 工具加载 X 技能」指令。"""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"用 skill 工具加载[`'\" ]*([a-z0-9-]+)", text)
+    return match.group(1) if match else "-"
+
+
 def clipped(value: object, width: int = 52) -> str:
     text = str(value or "-")
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
 def main() -> int:
-    print("=== Claude Code Workforce ===")
+    print("=== opencode Workforce ===")
     flow_skills: list[tuple[str, object]] = []
     knowledge_skills: list[tuple[str, object]] = []
-    for path in sorted((ROOT / ".claude" / "skills").glob("*/SKILL.md")):
+    for path in sorted((ROOT / ".opencode" / "skills").glob("*/SKILL.md")):
         meta = frontmatter(path)
         head = path.read_text(encoding="utf-8", errors="replace").splitlines()[:8]
         entry = (path.parent.name, meta.get("description"))
@@ -62,21 +69,28 @@ def main() -> int:
         print(f"  *{name:<28} {clipped(description, 60)}")
 
     print("\nAgents")
-    for path in sorted((ROOT / ".claude" / "agents").glob("*.md")):
+    for path in sorted((ROOT / ".opencode" / "agent").glob("*.md")):
         meta = frontmatter(path)
         name = str(meta.get("name") or path.stem)
-        skills = str(meta.get("skills") or "-")
+        skills = preload_skill(path)
         print(f"  @{name:<22} skill={skills:<22} {clipped(meta.get('description'), 44)}")
 
-    print("\nDispatch")
+    print("\nCommands")
+    for path in sorted((ROOT / ".opencode" / "command").glob("*.md")):
+        meta = frontmatter(path)
+        print(f"  /{path.stem:<22} {clipped(meta.get('description'))}")
+
+    print("\nDispatch（与 AGENTS.md 调度表一致的 12 角色全量）")
     print("  PLAN -> constraint-extractor -> optional constraint-supplementer")
     print("       -> constraint-checker <-> constraint-repairer -> case-generator -> case-executor")
     print("       -> quality-reviewer -> SUCCESS")
-    print("       -> failure-analyst -> UPDATE_CONSTRAINTS -> constraint-updater")
-    print("       -> constraint-checker <-> constraint-repairer -> next generation")
+    print("       -> failure-analyst(+可选 source-analyst 诊断域) -> UPDATE_CONSTRAINTS")
+    print("       -> constraint-updater -> constraint-checker <-> constraint-repairer -> next generation")
     print("       -> mixed failures -> REVIEW | generator_bug/executor_bug -> STOP")
+    print("  [终态沉淀可选] prompt-optimizer（root_cause=constraint_extraction 时提案）")
+    print("  [EXTRACT 并行可选] source-analyst 源码分析域")
     print(
-        "\nLive views: /agents (instances) | /hooks (lifecycle) | "
+        "\nLive views: /show-workforce (registry) | "
         "/iterate-operator (run) | /iterate-directory (batch)"
     )
     return 0

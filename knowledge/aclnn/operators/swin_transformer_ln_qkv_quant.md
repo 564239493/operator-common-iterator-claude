@@ -9,7 +9,7 @@ depends_on: []
 
 # 模块 swin_transformer_ln_qkv_quant（按需加载）
 
-> 本模块原为 `knowledge/operator_patterns/swin_transformer_ln_qkv_quant.md` 的实战经验（含 `swin_transformer_ln_qkv_quant_infershape.cpp` 推导规则），按算子名由 `scripts/select_prompt.py` 装配到活跃提示词末尾。该规则按 `operator_name=="aclnnSwinTransformerLnQkvQuant"` 触发，**不**扩散到其他算子。
+> 本模块由已退役的旧位置 `knowledge/operator_patterns/swin_transformer_ln_qkv_quant.md` 迁入（现址 `knowledge/aclnn/operators/`）的实战经验（含 `swin_transformer_ln_qkv_quant_infershape.cpp` 推导规则），按算子名由 `scripts/select_prompt.py` 装配到活跃提示词末尾。该规则按 `operator_name=="aclnnSwinTransformerLnQkvQuant"` 触发，**不**扩散到其他算子。
 
 ## 适用判定
 

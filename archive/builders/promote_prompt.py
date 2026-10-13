@@ -35,13 +35,14 @@ OPERATOR_PROMPT_PATTERN = re.compile(
     r"^operator_constraints_extract_v(?P<version>\d+)\.md$"
 )
 
-# 与 .claude/hooks/guard_project_writes.py TERMINAL_STATES (L25-31) 同步。
+# 与 .opencode/plugins/guard.js 的 TERMINAL_STATES 同步（run_state.py 状态机共 6 个终态）。
 TERMINAL_STATES = {
     "SUCCESS",
     "BLOCKED",
     "MAX_ITERATIONS",
     "STOP_GENERATOR_BUG",
     "STOP_EXECUTOR_BUG",
+    "STOPPED_BY_USER",
 }
 
 

@@ -18,7 +18,9 @@ FAILURE_STATES = {
     "STOP_GENERATOR_BUG",
     "STOP_EXECUTOR_BUG",
 }
-TERMINAL_STATES = SUCCESS_STATES | FAILURE_STATES
+# 用户手动停止：可完结上报并单独统计，但不算失败、不触发 fail-fast 停批。
+STOPPED_STATES = {"STOPPED_BY_USER"}
+TERMINAL_STATES = SUCCESS_STATES | FAILURE_STATES | STOPPED_STATES
 
 
 def utc_now() -> str:
@@ -61,6 +63,9 @@ def counts_for(batch: dict[str, Any]) -> dict[str, int]:
         "completed": len(completed),
         "success": sum(item.get("terminal_state") in SUCCESS_STATES for item in completed),
         "failed": sum(item.get("terminal_state") in FAILURE_STATES for item in completed),
+        "stopped_by_user": sum(
+            item.get("terminal_state") in STOPPED_STATES for item in completed
+        ),
     }
 
 
@@ -172,6 +177,10 @@ def run_options_for(batch: dict[str, Any]) -> dict[str, Any]:
         "operator_family": batch.get("operator_family", "auto"),
         "test_framework": batch.get("test_framework", "auto"),
         "hs_scenario_mode": batch.get("hs_scenario_mode", "original"),
+        "max_iterations": batch.get("max_iterations", 5),
+        "case_count": batch.get("case_count", 10),
+        "mode": batch.get("mode", "real"),
+        "server_config": batch.get("server_config", ""),
         "supplement_constraints": batch.get("supplement_constraints", ""),
         "constraint_check_rounds": batch.get("constraint_check_rounds", 3),
     }

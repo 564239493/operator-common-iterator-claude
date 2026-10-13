@@ -49,6 +49,20 @@ async def _download_via_shell(conn, remote_path: str, local_path: Path) -> bool:
     return True
 
 
+def _count_golden_sentinels(log_dir: Path) -> int:
+    # 统计 ttk-compare.log 中 golden 未注册的 sentinel 行。
+    # golden 缺失时 TTK 对每个输出打 "Precision is UNSUPPORTED (golden sentinel)"
+    # 并以非零退出——这是"精度通道未启用"，不是引擎/功能失败。
+    compare_log = log_dir / "ttk-compare.log"
+    if not compare_log.is_file():
+        return 0
+    try:
+        text = compare_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    return text.count("(golden sentinel)")
+
+
 def _parse_results(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {
@@ -266,6 +280,9 @@ async def _run_aclnn(
         precision_pass = results_info.get("precision_passed", 0)
         precision_fail = results_info.get("precision_failed", 0)
 
+        # engine_error 语义（_decide_aclnn_status）：只有"引擎层失败"（无 results.csv/
+        # 无可解析结果行）才写 engine_error；有结果行时成败只看用例行（failed>0 走
+        # failed 计数进 DIAGNOSE 链路），远端退出码仅存 exit_code + command_warning 供审计。
         status, engine_error = _decide_aclnn_status(
             mode=mode, exit_code=result.exit_code,
             npu_pass=npu_pass, npu_fail=npu_fail, npu_total=npu_total,
@@ -276,6 +293,17 @@ async def _run_aclnn(
                 f"ttk exited with {result.exit_code} but results.csv has "
                 f"{npu_total} row(s); treated as case-level results"
             )
+
+        # precision_blocking 从 ttk-compare.log 推导，不再硬编码 False
+        # golden 未注册（sentinel）显式记 precision_status="no_golden"
+        golden_sentinel_count = _count_golden_sentinels(local_log_dir)
+        if golden_sentinel_count > 0:
+            precision_status = "no_golden"
+        elif precision_pass or precision_fail:
+            precision_status = "checked"
+        else:
+            precision_status = "none"
+        precision_blocking = precision_fail > 0
 
         return {
             "status": status, "mode": f"ttk_aclnn_{mode}",
@@ -292,7 +320,11 @@ async def _run_aclnn(
             "npu_passed": npu_pass, "npu_failed": npu_fail, "npu_total": npu_total,
             "precision_passed": precision_pass,
             "precision_failed": precision_fail,
-            "precision_blocking": False,
+            # 精度状态三态显式化（no_golden/checked/none），
+            # sentinel 计数一并落盘供 quality gate 与审计使用。
+            "precision_status": precision_status,
+            "golden_sentinel_count": golden_sentinel_count,
+            "precision_blocking": precision_blocking,
             "passed": npu_pass, "failed": npu_fail, "total": npu_total,
             "records": results_info.get("rows", []),
             "engine_error": engine_error,

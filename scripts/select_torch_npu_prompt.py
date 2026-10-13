@@ -88,7 +88,7 @@ def assemble(
     base = base_path.read_text(encoding="utf-8").rstrip()
     entries = required_list_entries(result, knowledge_path, family="torch_npu")
     load_list = render_required_list("torch_npu", entries).rstrip()
-    # 与 ACLNN 同构：知识正文以 .claude/skills/torch-npu-* 生成物按需加载，
+    # 与 ACLNN 同构：知识正文以 .opencode/skills/torch-npu-* 生成物按需加载，
     # 快照只冻结核心层 + 必载清单；可复现性由 assembly record 的 sha256 全集保证。
     snapshot = "\n".join([base, "", "---", "", load_list, ""])
     validate_prompt_contract(snapshot)
