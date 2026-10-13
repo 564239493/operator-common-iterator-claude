@@ -1,6 +1,7 @@
 ---
 name: iterate-operator
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
+argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
 ---
 
 # 算子闭环迭代
@@ -29,16 +30,17 @@ description: 编排算子约束提取、用例生成、执行、诊断和提示�
    check 最大轮数：首轮完整 EXTRACT 后执行，后续仅在 UPDATE_CONSTRAINTS 产生新版本后执行；
    与 `max-iterations` 相互独立，check 通过提前结束。
    human-checkpoint-round=3（0=禁用）；迭代到该轮仍以 constraint_extraction 失败时，
-   在下一轮开始前弹人工补充检查点（question 工具四选一）。需 `max-iterations > 该值` 才有意义。
+   在下一轮开始前弹人工补充检查点（AskUserQuestion 四选一）。需 `max-iterations > 该值` 才有意义。
 
    `--human-constraints-upload` 默认关闭；开启时检查点为**四选一**（人工修复 / 人工补充 / 自动修复 / 立即停止），
    前 `human_checkpoint_round` 轮仍纯自动迭代，检查点之后每个失败轮都重新弹该四选一 （可逐轮切换）。 
    未开启`human-constraints-upload`时检查点退化为三选一（人工修复不可选）。详见下方「挂起、监听与唤醒」节。
 
-   `--scenes "<场景描述>"` 可选；提供时跳过 scene-scanner 与 Q1→Q2→Q3 征询，由主协调器
-   对该文本做简单文字匹配（设备/量化场景/参数取值）对齐文档后写 selection.json
-   （原文存 `run_state.scenes`）。未提供时进入手动输入模式（先展示文档设备/量化场景/
-   执行机建议面板，再让用户文本输入场景描述）。详见 SCENE_SCAN 子步骤。
+   `--scenes "<场景描述>"` 可选；提供时直接以该文本为场景描述（原文存
+   `run_state.scenes`），由主协调器做简单文字匹配（设备/量化场景/参数取值）对齐文档后
+   写 selection.json。未提供时进入手动输入模式（先展示文档设备/量化场景/执行机建议
+   面板，再让用户文本输入场景描述）。场景收集是强制步骤：**至少选择出设备类型**才
+   允许进入 EXTRACT。详见 SCENE_SCAN 子步骤。
 
    `hs-scenario-mode=original`；只有用户显式传入
    `--hs-scenario-mode planned` 时，torch_npu + TTK 才启用 TND/BSND/
@@ -81,9 +83,13 @@ description: 编排算子约束提取、用例生成、执行、诊断和提示�
    空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
    最小修改上一轮约束，不再委派 constraint-extractor。
 
-**SCENE_SCAN 子步骤（文本直输模式）**：场景信息不再走 scene-scanner + Q1→Q2→Q3
-征询（该 legacy 流程已隐藏，完整原流程见 git 历史中本文件旧版本与
-`prompts/scan_scenes.md`），改为**用户文本输入 + 简单文字匹配**。场景信息二选一：
+**SCENE_SCAN 子步骤（文本直输模式，唯一路径）**：场景信息只走**用户文本输入 +
+简单文字匹配**。legacy 三级场景扫描流程（scene-scanner Agent 扫 `scene_scan.json`
++ Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判）**已整体下线并删除，
+禁止再调用**——`scene-scanner` Agent 与 `scan-scenes` skill 已从注册表移除、
+`prompts/scan_scenes.md` 与 `scripts/check_scene_conflicts.py` 已删除、
+`render_scene_directive.py` 已移除 `--scan` 参数与 `--scope all`（原实现仅存 git
+历史）。场景信息二选一：
 
 - `--scenes "<场景描述>"` 已传入：直接以该文本为场景描述（原文已存 `run_state.scenes`）；
 - 未传：主协调器先组装【建议面板】展示给用户（全部来自落盘文件/配置，非模型记忆），
@@ -95,11 +101,11 @@ description: 编排算子约束提取、用例生成、执行、诊断和提示�
   `A2非量化groupListType等于2`。
 
 **文字匹配与回显确认**（两种入口合流，逐项执行）：
-- **设备（必要项）**：用户文本包含设备关键字（"A2"/"A3"/"910B" 或设备名子串）→ 对齐到
-  文档"产品支持情况"的**设备全称**；**对不上任何设备 → 追问重输**，并列出文档支持的
-  设备全称清单作为提示（不得自行猜测或放行）。对齐后与 servers.json `platforms` 并集
-  比对：无执行机 → 警示"该设备无执行机，real 执行无法进行"（**不阻断**，约束提取仍可
-  进行）。
+- **设备（硬性必要项）**：用户文本包含设备关键字（"A2"/"A3"/"910B" 或设备名子串）→
+  对齐到文档"产品支持情况"的**设备全称**；**对不上任何设备 → 追问重输**，并列出文档
+  支持的设备全称清单作为提示（不得自行猜测或放行）。对齐后与 servers.json
+  `platforms` 并集比对：无执行机 → 警示"该设备无执行机，real 执行无法进行"
+  （**不阻断**，约束提取仍可进行）。
 - **量化场景**：文本命中文档中出现的量化关键词（非量化/全量化-xx/伪量化…）；匹配不上 →
   展示关键词清单让用户挑选；非量化算子允许不填。
 - **参数取值（含大白话区间，解析细则）**：
@@ -117,33 +123,38 @@ description: 编排算子约束提取、用例生成、执行、诊断和提示�
   （如 `x: [2,3,4,5,6]（维度数）`、`groupList: [4,5,6]`），用户确认后才写入
   selection.json。
 - **回显确认（强制一次）**：把解析结果以表格（设备全称 / 量化场景 / 参数取值列表）展示，
-  question 工具（单问，2 预设 + Other）让用户【确认/修改】；确认后才允许落盘。
+  AskUserQuestion 让用户【确认/修改】；确认后才允许落盘。
 
-**落盘**：确认后写 `<run-dir>/inputs/selection.json`（**值级形态，与旧格式一致**）：
+**设备必选硬门槛（强制）**：未选出至少一个可对齐文档"产品支持情况"的设备全称之前，
+禁止写 `selection.json`、禁止渲染 `scene_directive.md`、禁止推进 EXTRACT；用户明确
+拒绝提供设备时，向用户确认是否停止任务（不得静默跳过场景步骤继续提取）。
+`render_scene_directive.py` 以 `DEVICE_REQUIRED`（device_types 为空）/
+`EMPTY_SCENE`（无选中场景）exit 2 硬拦截——收到该返回时回到文字匹配重新征询，
+不得伪造 selection 绕过。
+
+**落盘**：确认后写 `<run-dir>/inputs/selection.json`（**值级形态**）：
 `{"device_types": [<设备全称>], "selection": {<设备全称>: {<量化场景>: null | {参数: [值...]}}}}`
 （"保持自动" → `null`；显式参数 → `{param: [values]}`；文本模式**不支持** `fix_all_default`
-——无 scan 参数枚举，需要固定全部默认值时请显式列出各参数）。
+——无场景参数枚举，需要固定全部默认值时请显式列出各参数）。
 
 **渲染**：
 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
-（**不带 `--scan`**：文本直输模式，跳过枚举交叉校验、仅做结构校验；exit 2 阻断并按
-`errors` 提示修正。设备支撑：无执行机的设备仅警示不阻断——约束仍可提取，real 执行阶段
-自然失败。）渲染产出 `inputs/scene_directive.md`（机读块
+（文本直输模式唯一调用形态：无 `--scan`，`--scope` 仅 `subset|off`——脚本已移除
+legacy 参数；仅做结构校验、无枚举交叉校验；exit 2 阻断并按 `code`/`errors` 提示修正。
+设备支撑：无执行机的设备仅警示不阻断——约束仍可提取，real 执行阶段自然失败。）
+渲染产出 `inputs/scene_directive.md`（机读块
 `<!-- scene: {device_types, selection, param_modes, selection_policy} -->`）并回写
 `run_state.scene`（`scene.source` = scenes_param / interactive_input）。
-EXTRACT 时 constraint-extractor 读 directive 的 `device_types` 收窄 `product_support`
-（与文档 √ 行取交集，无"通用"展开）；按 `param_modes` 产 `allowed_range_value`
-（`expand` 用取值清单、`fix` 单值、缺键按文档和已选场景适配）；已选场景禁止的 Optional
-参数必须产出 `param is None`；**仅提取所选设备/所选场景的约束**——未选设备、未选
-模板/场景专属条目不产出（与所选场景共用的基础约束保留）。该 `product_support` 随后
-驱动 `generate_cases.py` 逐平台生成——**设备选择经约束提取驱动生成，不直接改生成逻辑**。
 
-> 附录：legacy 场景征询（scene-scanner 三级扫描 + Q1→Q2→Q3 逐级问询 +
-> check_scene_conflicts 预判）已被上述文本直输模式取代并隐藏；skill/脚本文件保留在
-> 仓库中未删除，完整原流程见 git 历史中本文件旧版本。
-EXTRACT 调度消息须把 `inputs/scene_directive.md`（若存在）路径一并传入
-constraint-extractor；执行反馈轮不重写 prompt 或 directive，constraint-updater 继续读取
-同一场景指令，保持跨轮稳定。
+**EXTRACT 消费**：EXTRACT 调度消息须把 `inputs/scene_directive.md` 路径一并传入
+constraint-extractor；extractor 读 directive 的 `device_types` 收窄 `product_support`
+（与文档 √ 行取交集，无"通用"展开）；按 `param_modes` 产 `allowed_range_value`
+（`expand` 用取值清单、`fix` 单值、缺键按文档和已选场景适配）；已选场景禁止的
+Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场景的约束**——未选
+设备、未选场景专属条目不产出（与所选场景共用的基础约束保留）。该 `product_support`
+随后驱动 `generate_cases.py` 逐平台生成——**设备选择经约束提取驱动生成，不直接改
+生成逻辑**。执行反馈轮不重写 prompt 或 directive，constraint-updater 继续读取同一
+场景指令，保持跨轮稳定。
 
 6. 初始化首轮按顺序委派：
    - **EXTRACT（fork-join，仅初始化首轮）**：当 `run_state.operator_src_snapshot` 非空时，
@@ -256,15 +267,14 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
      可被会话生命周期（中断/重启/上下文压缩，无 60 分钟上限）杀死；唯一长寿命进程是脱离的
      `generate_cases.py`，`scripts/probe_breakaway.py` 已证其在 launcher 退出后存活到完成。
      当 case-generator 报告"生成在脱离会话的进程里跑（pid=…）"时，主协调器**接管等待**：
-       1. 用 `bash` 工具**前台阻塞**执行一条无 shell 包装的单条绝对路径命令：
-          `<python-absolute> <repo-absolute>/scripts/generation_progress.py watch --output-dir <iter-absolute> --interval 60`
-          （给足 timeout）。`watch` 立即采样、每约 60 秒输出一行 JSON，并在 `complete`/`failed` 时自动退出；
-          超时未出事件就原样重跑同一条命令（watch 命令中断不影响已经脱离会话的生成子进程），
-          或每 ~60 秒**前台**运行一次同样使用绝对路径的
-          `generation_progress.py status --output-dir <iter-absolute>`。
-           **该命令禁止包含**变量赋值/展开、`cd`、管道、命令替换、shell
-           `while`/`case`/`sleep`/`grep`/`head`/`ps`；这些结构会触发非业务安全审批询问。
-       2. **每次 `watch`/`status` 采样返回后必须向用户报告** `per_platform` 各平台 `done`/`total`/`elapsed_seconds`/
+       1. 优先启动一个 `Monitor`，其 command 必须是无 shell 包装的单条绝对路径命令：
+          `<venv-python-absolute> <repo-absolute>/scripts/generation_progress.py watch --output-dir <iter-absolute> --interval 60`。
+          `watch` 立即采样、每约 60 秒输出一行 JSON，并在 `complete`/`failed` 时自动退出；Monitor
+          中断不影响已经脱离会话的生成子进程。不能使用 Monitor 时，才每 ~60 秒**前台**运行一次同样
+          使用绝对路径的 `generation_progress.py status --output-dir <iter-absolute>`。
+          **Monitor command 禁止包含**变量赋值/展开、`cd`、管道、命令替换、shell
+          `while`/`case`/`sleep`/`grep`/`head`/`ps`；这些结构会触发非业务安全审批询问。
+       2. **每次 `watch`/`status` 采样返回后必须向用户报告** `per_platform` 各平台 `done`/`total`/`elapsed`/
           `pid_alive`（`done` 递增、`pid_alive=true` 即活跃）——输出这四项是**强制**，**不得**用"平台名
           看起来不对"之类的旁支判断替换进度数字。这样用户每 ~60 秒看到一次进度，而不是长时间空白。
        2a. **轮询回合排他（强制，防进度丢失）**：`state=running` 期间，主协调器每回合的**唯一**动作
@@ -277,17 +287,14 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
           （某平台一完成其 JSONL 即被 convert 删掉转成 `cases_<plat>.json`、从进度里"消失"），
           **绝不**据此停掉生成进程。**`per_platform` 语义（关键，防误判调查）**：running 期间 `per_platform`
           列出的是**当前正在被生成的目标平台**（`generate_platform_outputs` 按 `product_support` 顺序逐平台
-          生成全部平台，每个产 `cases_<plat>.json`），**不是执行平台**；`cases.json`/CSV 的执行平台是在
-          生成**全部完成后**由 `_select_execution_platform` 选定的（优先场景阶段单选设备，多选/未选
-          按 `servers.json` 服务器顺序及各 `platforms` 顺序），
+          生成全部平台，每个产 `cases_<plat>.json`），**不是执行/canonical 平台**；canonical/CSV 平台是在
+          生成**全部完成后**由 `_select_ttk_platform` 按 `servers.json` 服务器顺序及各 `platforms` 顺序选定的，
           与 running 期间 `per_platform` 出现哪个平台无关。故 `per_platform` 里出现 `servers.json` 未覆盖的
           平台（如 A3 训练/推理）属**正常**、不是选错平台，**禁止**据此调查 `generate_cases.py` 平台选择逻辑
           或 kill 重启——平台是否选对只在 `state=complete` 后、`generation_summary.json.selected_platform`
           不符 `servers.json` 时才处理（EXECUTE 前的事）。
        4. `state=complete`（`generation_summary.json` 已产出）后跑
-          `python scripts/validate_artifacts.py cases <iter>/cases.json`（生成器收尾确定性
-          写出的 `cases.json`，ATK/TTK 一致；不自选 `cases_<plat>.json`、不手工复制），
-          通过后运行
+          `python scripts/validate_artifacts.py cases <cases 路径>`，通过后运行
           `python scripts/flow_control.py advance --run-dir <run-dir>` 进入 EXECUTE；
           `state=failed` 读 `status` JSON 的 `error` 字段（已有界摘录）报告 `generator_bug`，不自行解析日志。
        5. **绝不在已有 `cases_<plat>.json` 时重跑 `generate_cases.py`**（`generate_platform_outputs:192`
@@ -309,9 +316,8 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
       `engine_error` 终止流程。
    - 执行完成后运行 `python scripts/flow_control.py advance --run-dir <run-dir>`
-     （裁决 EXECUTE → GATE），随后再委派 `quality-reviewer`（其自行用 **write 工具**
-     落盘 `<iter>/quality_gate.json` 并返回结论摘要 + 产物绝对路径，主协调器
-     **禁止代写**）；gate 产出后由第 7 步的 `advance` 决定去向。
+     （裁决 EXECUTE → GATE），随后再委派 `quality-reviewer`；gate 产出后由第 7 步的
+     `advance` 决定去向。
    - `quality-reviewer`
 7. 若基础产物可读、至少生成一条用例且执行器已完成运行，运行
    `python scripts/flow_control.py advance --run-dir <run-dir>`（推进器按 `quality_gate.json`
@@ -327,18 +333,16 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
    `<iter>/source_evidence.json`），再委派 `failure-analyst`（读 source_evidence 与同一
    PLOG 证据下根因）。`operator_src_snapshot` 为空时直接委派 `failure-analyst`，但真实
    TTK 执行仍必须传入 `execution_result.plog` 指向的全部诊断产物。
-   failure-analyst 用 **write 工具**自行落盘 `<iter>/analysis.json`（返回根因摘要 +
-   产物绝对路径，不把 JSON 正文交回）。完成后主协调器只做校验：
-   `python scripts/validate_artifacts.py analysis <iter>/analysis.json`；失败时阻断路由，
-   把校验错误退回 failure-analyst 修正后覆盖重写，**禁止主协调器代写**。
-   schema 2.1 的 `constraint_findings` 是执行反馈轮唯一问题清单，直接交给
+   failure-analyst 完成后先运行
+   `python scripts/validate_artifacts.py analysis <iter>/analysis.json`；失败时阻断路由并让
+   Agent 修正。schema 2.1 的 `constraint_findings` 是执行反馈轮唯一问题清单，直接交给
    constraint-updater；不再生成或合并 `supplement_additions.md`。
    主协调器禁止只看顶层 `root_cause`，必须按已校验的 `overall_action` 路由：
    - **UPDATE_CONSTRAINTS**：所有失败簇均为 constraint_extraction 且 findings 覆盖完整。
      **（human-checkpoint 检查点）** 若 `human_checkpoint_round > 0` 且
      `current_iteration >= human_checkpoint_round` 且 `current_iteration < max_iterations`
      且 `current_iteration > human_checkpoint_resolved_iteration`（本轮尚未弹过），在进入下方
-      自动更新前先弹 question 工具检查点（**四选一**，固定顺序），
+     自动更新前先弹 AskUserQuestion 检查点（**四选一**，固定顺序），
      并把`human_checkpoint_resolved_iteration` 置为 `current_iteration`（防上下文压缩后对同一轮 重复询问）：
      1. **人工修复**（仅 `human_constraints_upload == true` 时可选；false 时该选项标注"需带
         `--human-constraints-upload` 启用"）：先运行
@@ -369,7 +373,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
         constraints 做最小 edit，并完成 finalize 与 `constraint_update` 校验。
      4a. **回归校验**：constraint-updater 完成回归校验后，若返回 exit code 3，主协调器读取 `<next>/regression_check.json`。
          - 若 `limit_reached=true`（updater 自修正 3 次后仍有回归）：主协调器必须暂停流程，
-            用 `question` 工具弹框让用户选择：
+           用 `AskUserQuestion` 弹框让用户选择：
            - **选项 1**：接受当前回归，先运行 finalize
              （`python scripts/constraint_update_state.py finalize --report <next>/constraint_update.json`
              + `python scripts/validate_artifacts.py constraint_update <next>/constraint_update.json`），
@@ -421,15 +425,15 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
    未拉起则拉起浏览器一次），把返回的 URL 提示给用户：「请到该网页编辑约束并提交，网页提交会自动生成
    `<run>/iter_<N>/constraints_copy.json`」；当前轮约束只读基线是 `<run>/iter_<N>/constraints.json`。
    文件出现即代表用户已在网页提交、准备开启下一轮；文件尚未出现即代表用户仍在修改，继续等待。
-4. **挂监听器**：用 `bash` 工具**前台阻塞**执行（命令为单条绝对路径、无变量/管道/
-    shell 循环——遵守 WORKFLOW.md 监听命令纪律，给足 timeout）挂起监听器：
-    `<python-absolute> <repo-absolute>/scripts/watch_constraints_copy.py --run-dir <run-dir-absolute>`
-    监听器轮询 `iter_<N>/constraints_copy.json` 的**出现 + 稳定性**：启动时文件应缺席（agent
-    不创建）——缺席时**继续等待、不退出**；文件出现后连续两次轮询 mtime/size 不变（≈ interval×2，
-    默认 10 秒，防部分写入竞态）即判定「上传完成」，输出一行 JSON 后**退出**（单次触发后退出：只报告一个事件即结束）。
-    bash 超时未出事件就原样重跑同一条命令重新挂起。向用户提示：「请把修改后的约束上传到
-    `<abs>/iter_<N>/constraints_copy.json`；上传完成后自动开启下一轮。若怀疑监听失效，重新
-    运行上述监听命令即可重新挂起。」
+4. **挂监听器**：用 `Monitor` 工具（`persistent: true`，命令为单条绝对路径、无变量/管道/
+   shell 循环——遵守 WORKFLOW.md Monitor 用法纪律）挂起监听器：
+   `<venv-python-absolute> <repo-absolute>/scripts/watch_constraints_copy.py --run-dir <run-dir-absolute>`
+   监听器轮询 `iter_<N>/constraints_copy.json` 的**出现 + 稳定性**：启动时文件应缺席（agent
+   不创建）——缺席时**继续等待、不退出**；文件出现后连续两次轮询 mtime/size 不变（≈ interval×2，
+   默认 10 秒，防部分写入竞态）即判定「上传完成」，输出一行 JSON 后**退出**（单次触发后退出：只报告一个事件即结束），
+   Monitor 把该事件送回空闲会话。向用户提示：「请把修改后的约束上传到
+   `<abs>/iter_<N>/constraints_copy.json`；上传完成后自动开启下一轮。若怀疑监听失效，重新
+   运行上述 Monitor 命令即可重新挂起。」
 5. **空闲等待**：会话进入空闲，等待监听器事件唤醒。窗口须保持开启（单窗口方案固有代价）。
 
 **唤醒与接入**：
@@ -457,7 +461,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
    `MAX_ITERATIONS` / `STOP_*` / `STOPPED_BY_USER`）不变，问环自然结束。
 
 **断开恢复**：
-- **同对话恢复**：恢复 opencode 同一会话——模型记得挂起上下文，重新执行第 4 步（挂监听器）
+- **同对话恢复**：`claude --continue`——模型记得挂起上下文，重新执行第 4 步（挂监听器）
   后空闲等待（第 3 步不创建文件，agent 始终不复制）。
 - **全新会话恢复**：`/iterate-operator --resume-run <run-dir>`——主协调器读 `run_state.json`：
   - `state=AWAITING_HUMAN_CONSTRAINTS` → 执行第 4 步挂监听器挂起等待上传；
@@ -482,7 +486,7 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
    - 应用后重跑 `validate_aclnn_knowledge`、路由测试（`init_run`）和
      `validate_prompt_assembly.py --record`（`build_*_prompt_base.py` 已退场归档于
      `archive/builders/`，base 直接编辑后不再 `--check`），并把决定与验证结果落入当前 run。
-11. 每次委派前后都按 `AGENTS.md` 的格式在主会话报告。所有交接必须落盘，
+11. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
    不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
 12. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
     `STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 或 `STOPPED_BY_USER` 后，调用
@@ -495,10 +499,9 @@ constraint-extractor；执行反馈轮不重写 prompt 或 directive，constrain
 - 每个 Agent 委派前读取 `run_state.json` 的 `operator_family` 与 `test_framework`。
 - `atk`：产物为每平台 compact JSON，沿用原 ACLNN 生成和 ATK executor。
 - `ttk`：先产出统一 `cases.json`，再适配为 `cases_ttk.csv`；generator 命令必须带
-  `--test-framework ttk`。`operator_family=hs` 默认**不**加载 Golden（`--no-golden`
-  即默认行为）；仅当用户明确要求精度对比时显式 `--with-golden` 开启（自主推导或
-  源码 Golden），且不以 Golden manifest 或精度结果阻塞流程。
-  `operator_family=aclnn` 直接走原生 `ttk aclnn`。两者均不得进入
+  `--test-framework ttk`。`operator_family=hs` 默认加载可用的自主推导或源码 Golden，
+  但不以 Golden manifest 或精度结果阻塞流程；只有用户明确要求完全跳过 Golden 时
+  才使用 `--no-golden`。`operator_family=aclnn` 直接走原生 `ttk aclnn`。两者均不得进入
   ATK 链。
 - `constraints`：只产出并校验 `constraints.json`，不调用任何 case/executor 命令；
   SUCCESS 必须注明 `run_scope=constraints_only`，不能表述成用例或精度闭环成功。

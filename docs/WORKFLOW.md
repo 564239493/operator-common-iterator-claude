@@ -1,8 +1,8 @@
-# opencode 流程规划与执行设计
+# Claude Code CLI 流程规划与执行设计
 
 ## 1. 设计目标
 
-本项目把 opencode 作为顶层运行时。规划、专家选择、上下文隔离、阶段调度和循环
+本项目把 Claude Code 作为顶层运行时。规划、专家选择、上下文隔离、阶段调度和循环
 判断都在 CLI 中可见；Python 不再创建隐藏 LLM session，只执行可重复的确定性动作。
 
 核心原则：
@@ -10,7 +10,7 @@
 1. **先规划再执行**：每次 run 先固化参数、阶段、Agent 和终止条件。
 2. **角色隔离**：提取、生成、执行、诊断、优化由不同 Agent 独立完成。
 3. **文件交接**：Agent 之间只认已校验的落盘产物。
-4. **调度可见**：委派文本与 task 工具调用记录两层观测。
+4. **调度可见**：委派文本、CLI Agent 面板、Hooks 和 JSONL 四层观测。
 5. **失败按簇分流**：分析全部失败簇；只有全部属于约束问题时才自动增量更新约束，
    生成器/执行器问题立即止损，混合根因默认转人工复核。
 
@@ -21,7 +21,7 @@
 | 项 | 默认值 | 规划影响 |
 |---|---|---|
 | operator-doc | 必填；支持项目外路径 | 初始化时只读快照到 run/inputs |
-| prompt | family 的 `base.md`（canonical，直接编辑）+ manifest 知识装配，初始化冻结为 `prompt_v1.md` | 确定首轮提取规则；显式 `--prompt` 可固定原样快照 |
+| prompt | 当前 family 数值版本最新的 vN prompt | 确定首轮提取规则；显式 `--prompt` 可固定原样快照 |
 | max-iterations | 5 | 防止无界循环 |
 | constraint-check-rounds | 3 | 每个新约束版本（首轮 EXTRACT 或后续 UPDATE_CONSTRAINTS）Checker/Repairer 语义检查修复的最大轮数；通过可提前结束 |
 | case-count | 10/平台 | 控制生成与执行规模 |
@@ -117,34 +117,39 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
 
 ## 4. 单轮执行协议
 
-### SCENE_SCAN（条件触发，非独立状态）
+### SCENE_SCAN（强制场景收集，文本直输模式，EXTRACT 前子步骤）
 
-输入：`inputs/<doc>.md`（只读）、`servers.json`（只读，取执行机平台并集）。
-执行者：主协调器（**文本直输模式，不再委派 scene-scanner**）。场景信息二选一：
-- `--scenes "<场景描述>"` 已传入：直接以该文本为场景描述（原文存 `run_state.scenes`）；
-- 未传：先组装【建议面板】展示给用户（文档"产品支持情况"设备全称 / servers.json 各
-  服务器 `platforms` 并集及覆盖标注 / 文中出现的量化关键词），再请用户**文本输入**
-  场景描述（建议格式：设备类型（必要）+ 量化场景 + 参数取值，如 `A2非量化groupListType等于2`）。
-主协调器对文本做简单文字匹配：设备对齐文档设备全称（对不上追问重输，不得自行猜测）；
-量化关键词匹配（匹配不上展示清单让用户挑选，非量化算子允许不填）；参数取值解析支持
-大白话（等值"等于2"→`fix [2]`、枚举"取0和3"→`expand [0,3]`、闭区间"2-6之间"→展开为
-整数序列、展开超 32 个值提示收窄、开区间话术要求用户给出确定上下界；参数名对不上
-文档参数表则回报修正）。解析结果以表格（设备全称/量化场景/参数取值，区间须展示完整
-展开清单）回显，question 工具**确认一次**后才落盘
-`selection.json={"device_types":[...],"selection":{设备:{量化场景:null|{param:[values]}}}}`
-（"保持自动"→`null`；显式参数→`{param:[values]}`；文本模式**不支持** `fix_all_default`，
-需固定全部默认值时显式列出各参数）。
-渲染：`scripts/render_scene_directive.py --selection ... --scope subset`（**不带 `--scan`**：
-文本直输模式仅做结构校验，跳过枚举交叉校验；exit 2 阻断并按 `errors` 提示修正）。
-无执行机的设备仅警示不阻断（约束仍可提取，real 执行阶段自然失败）。产出
-`inputs/scene_directive.md`（机读块 `{device_types, selection, param_modes, selection_policy}`）
-并回写 `run_state.scene`（`scene.source` = scenes_param / interactive_input）。
-完成条件：选定场景落 `run_state.scene` + `inputs/scene_directive.md`（仅 subset）。
-失败策略：设备/参数名对不上 → 追问重输；非法 selection（render exit 2）阻断，不静默回退。
-为独立子步骤而非新状态，空即跳过。
-> legacy 三级扫描（scene-scanner 子代理 + Q1→Q2→Q3 三轮征询 + `check_scene_conflicts.py`
-> 预判）已被文本直输模式取代并隐藏；skill/脚本/产物 schema 文件保留未删，完整原流程见
-> git 历史与 `prompts/scan_scenes.md`。
+输入：`inputs/<doc>.md`（只读）、`servers.json`（只读平台并集）。
+执行者：主协调器（无独立 Agent）。场景信息二选一：`--scenes "<场景描述>"` 直输
+（原文存 `run_state.scenes`）；未传时组装【建议面板】（文档"产品支持情况"设备全称、
+`servers.json` 各服务器 `platforms` 并集、文中量化场景关键词）请用户**文本输入**。
+主协调器做简单文字匹配（解析细则见 `iterate-operator` Skill SCENE_SCAN 节）：设备
+关键字对齐文档设备全称（**硬性必要项**，对不上→追问重输）；量化场景关键词命中；
+参数取值等值→fix、枚举→expand、大白话闭区间→展开整数序列（>32 值提示收窄，
+开区间话术必须请用户给确定上下界）。AskUserQuestion 回显确认一次（expand 清单
+显示完整展开结果）后写 `inputs/selection.json`
+（`{"device_types":[...],"selection":{device:{template: null|{param:[values]}}}}`），
+再运行 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
+做结构校验并渲染 `inputs/scene_directive.md`（机读块
+`{device_types, selection, param_modes, selection_policy}`）、回写 `run_state.scene`
+（`scene.source` = scenes_param / interactive_input）。
+
+**设备必选硬门槛（强制）**：未选出至少一个可对齐文档"产品支持情况"的设备全称，
+禁止写 `selection.json`、禁止渲染 directive、禁止推进 EXTRACT；用户明确拒绝提供
+设备时确认是否停止任务，不得静默跳过场景步骤继续提取。
+`render_scene_directive.py` 对 `device_types` 空返回 `DEVICE_REQUIRED` exit 2、
+无选中场景返回 `EMPTY_SCENE` exit 2，此时回到文字匹配重新征询。
+`--scope off` 显式禁用场景（不产 directive，纯文档驱动）；批处理
+（`iterate-directory`）无头不能 AskUserQuestion，默认不收集场景。
+
+**legacy 已下线**：三级场景扫描流程（scene-scanner Agent 扫 `scene_scan.json` +
+Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判 + `--scan`/`--scope all`
+渲染路径）已整体删除，禁止调用；`scene-scan` Agent/Skill、`prompts/scan_scenes.md`、
+`scripts/check_scene_conflicts.py` 均已移除，原实现仅存 git 历史。
+
+完成条件：`run_state.scene` 落地 + `inputs/scene_directive.md` 存在（subset）。
+失败策略：设备/关键词匹配不上→追问重输；`render_scene_directive.py` exit 2 → 按
+`code`/`errors` 修正后重新渲染，不静默回退。
 
 ### EXTRACT
 
@@ -226,21 +231,25 @@ ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生
 完成条件：`cases.json` 非空；TTK 还要求 CSV 与 audit 结构合法。
 失败策略：不让 LLM 手工“补齐”用例，保留 generator_bug 证据。
 
-长时间生成由脱离会话的 `generation_progress.py launch` 启动。主协调器用 bash 工具
-前台阻塞执行单条 `generation_progress.py watch --output-dir <iter-absolute> --interval 60`
-（给足 timeout）持续读取结构化进度；该命令不得包含变量、管道或 shell
-`while`/`grep`/`sleep` 循环，避免触发与业务无关的安全审批。命令超时中断不影响已经
-脱离会话的生成进程，原样重跑 `watch` 或单次运行 `status` 继续观察。
+长时间生成由脱离会话的 `generation_progress.py launch` 启动。主协调器用 Monitor
+执行单条 `generation_progress.py watch --output-dir <iter-absolute> --interval 60`
+持续读取结构化进度；Monitor 命令不得包含变量、管道或 shell
+`while`/`grep`/`sleep` 循环，避免触发与业务无关的安全审批。Monitor 中断不影响已经
+脱离会话的生成进程，之后可重新运行 `watch` 或单次运行 `status` 继续观察。
 
-> **长时间监听脚本必须写成一条裸命令**：
+> **长时间监听脚本必须写成一条裸命令（Claude Code 与 opencode 通用）**：
 > 所有长时间监听命令（`generation_progress.py watch`、`watch_constraints_copy.py` 等）
-> 一律写成单条裸命令 `<python> <repo>/scripts/<script>.py <args>`——即 python
+> 一律写成单条裸命令 `<venv-python> <repo>/scripts/<script>.py <args>`——即 python
 > 解释器直接跟一个项目内 `.py` 脚本，**不要**用 `Start-Process -FilePath $py -ArgumentList @(...)`、
 > `Start-Job`、`& { }` 等 shell/PowerShell 包装。原因：项目的写入守卫
-> （`.opencode/plugins/guard.js`）只对"python 直接跑项目内 .py"这种裸命令自动放行；
+> （`guard_project_writes.py`）只对"python 直接跑项目内 .py"这种裸命令自动放行；
 > 一旦用 shell/PowerShell 包装，守卫认不出其中的 .py 入口，会弹用户确认。
-> 用 `bash` 工具直接跑这条裸命令（前台阻塞，给足 `timeout`；超时未出
-> 事件就原样重跑同一条，不轮询、不 kill）。
+> - **Claude Code**：用 `Monitor` 工具（`persistent: true`）挂这条裸命令。**不要改用
+>   `run_in_background`**——`run_in_background` 虽也自动放行，但它不会在文件事件出现时
+>   唤醒空闲会话；只有 Monitor 能在监听脚本输出事件后把会话唤醒。
+> - **opencode**：用 `bash` 工具直接跑同一条裸命令（前台阻塞，给足 `timeout`；超时未出
+>   事件就重跑同一条，不轮询、不 kill）。
+> - 两种运行时共享同一自动放行规则，命令写法完全一样。
 
 ### EXECUTE
 
@@ -298,7 +307,7 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 `init_run.py --human-constraints-upload` 置 `run_state.human_constraints_upload=true`。**前
 `human_checkpoint_round` 轮纯自动迭代**（走 UPDATE_CONSTRAINTS 自动更新分支，不挂起）。到达
 检查点（`current_iteration >= human_checkpoint_round` 且本轮以 constraint_extraction 失败、
-本轮未弹过、`< max_iterations`）时，弹 question 工具**四选一**：
+本轮未弹过、`< max_iterations`）时，弹 AskUserQuestion **四选一**：
 
 1. **人工修复**（constraints_copy.json + 监听）→ 进入下方挂起流程；
 2. **人工补充**（用户补充事实/证据，append 到 `supplement_constraints.md`，重新诊断）→ 回自动更新；
@@ -315,12 +324,12 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
    `<iter_N>/constraints.json`；用户据此（或经 web 页面）编辑后把修改后的约束**上传**到
    `<iter_N>/constraints_copy.json`。文件出现 = 已上传、待开启下一轮；文件未出现 = 仍在修改/
    尚未上传，继续等待。
-3. **挂监听器**：bash 工具前台阻塞（单条绝对路径命令、无变量/管道/shell
-   循环，给足 timeout）挂 `python scripts/watch_constraints_copy.py --run-dir <run-dir>`。监听器轮询
+3. **挂监听器**：Monitor 工具（`persistent: true`，单条绝对路径命令、无变量/管道/shell
+   循环）挂 `python scripts/watch_constraints_copy.py --run-dir <run-dir>`。监听器轮询
    `iter_<N>/constraints_copy.json` 的**出现 + 稳定性**：启动时文件应缺席——缺席时**继续
    等待、不退出**（缺席 = 未上传）；文件出现后连续两次轮询 mtime/size 不变（≈ interval×2，
    默认 10 秒，防部分写入竞态）才判定上传完成，输出一行 JSON 后**退出**（单次触发后退出：只报告一个事件即结束），
-   命令返回即会话收到事件。向用户提示上传目标路径与「上传完成后自动开启下一轮」；超时未出事件就原样重跑同一条监听命令。
+   由 Monitor 把事件送回空闲会话。向用户提示上传目标路径与「上传完成后自动开启下一轮」。
 4. **唤醒与接入**：会话被唤醒后运行 `python scripts/apply_human_constraints.py --run-dir <run-dir>`
    （可选 `--max-iterations N` 提升上限，须 > 当前轮次）。该脚本三阶段：
    - 预检（不写盘）：`human_constraints_upload==true`、状态门禁（`AWAITING_HUMAN_CONSTRAINTS`；
@@ -337,7 +346,7 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
    GENERATE → EXECUTE → GATE → DIAGNOSE。若再次以 constraint_extraction 失败且
    `current_iteration >= human_checkpoint_round` → 回到检查点重新弹四选一。终态不变，问环自然结束。
 
-断开恢复：监听器随会话死亡即失效；opencode 恢复同会话（重新执行第 3 步挂监听器）或
+断开恢复：监听器随会话死亡即失效；`claude --continue`（同对话，重新执行第 3 步挂监听器）或
 `/iterate-operator --resume-run <run-dir>`（纯文件驱动：`AWAITING`→第 3 步挂监听器等待上传；
 `UPDATE_CONSTRAINTS` 且 iter 无生成产物→从 CHECK/REPAIR 续跑）。
 
@@ -354,7 +363,7 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 主链路有严格数据依赖，EXTRACT、GENERATE、EXECUTE、GATE 必须串行。质量门禁内部的
 只读结构检查可以并行，但只能由主协调器发起，且不得让多个 Agent 写同一文件。
 
-Agent 注册清单可通过 `/show-workforce` 查看，运行记录见 `docs/OBSERVABILITY.md`。若未来把同一算子
+在 Claude Code 中可通过 `/agents` 查看正在运行和最近完成的 Agent。若未来把同一算子
 的多个平台拆成并行执行，应为每个平台分配独立目录，汇总前执行一次统一门禁。
 
 ## 6. 循环与终止
@@ -371,7 +380,7 @@ Agent 注册清单可通过 `/show-workforce` 查看，运行记录见 `docs/OBS
 
 ## 7. 恢复执行
 
-会话中断后，恢复 opencode 会话或重新启动 opencode，读取 run_state.json，从最后一个
+会话中断后，使用 `claude --continue` 或重新启动 Claude，读取 run_state.json，从最后一个
 完成状态继续。任何 Agent 都不得依赖聊天历史恢复事实；产物目录是唯一真相源。
 `/iterate-operator --resume-run <run-dir>` 提供全新会话的瘦恢复入口：不创建新 run，
 直接读 `<run-dir>/run_state.json` 与 iter 产物判定续跑点（含人工约束上传通道的
@@ -390,9 +399,8 @@ Agent 注册清单可通过 `/show-workforce` 查看，运行记录见 `docs/OBS
 不会为没有 callable 的索引创建 run。
 
 默认 `continue-on-error`：`SUCCESS` 计为成功，`BLOCKED`、`MAX_ITERATIONS`、
-`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 计为失败，`STOPPED_BY_USER`（用户手动停止）
-单列统计、不算失败；失败与手动停止均不会阻止后续文档执行。
-`--fail-fast` 会在首个失败终态后把批次置为 STOPPED。这里的“全部执行完毕”
+`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计为失败，但不会阻止后续文档执行。
+`--fail-fast` 会在首个非 SUCCESS 终态后把批次置为 STOPPED。这里的“全部执行完毕”
 表示所有队列项都进入终态，不等价于全部成功。
 
 批次状态保存在 `runs/batches/<batch-id>/batch_state.json`。当前算子 run 创建后立即

@@ -111,6 +111,36 @@ def _parse_results(path: Path) -> dict[str, Any]:
     }
 
 
+def _decide_aclnn_status(
+    *, mode: str, exit_code: int,
+    npu_pass: int, npu_fail: int, npu_total: int,
+) -> tuple[str, str]:
+    """TTK ACLNN 结果判定：返回 ``(status, engine_error)``。
+
+    - **有 results.csv 结果行（npu_total>0）= TTK 执行正常**：成败只看用例行——
+      全过=success、有败=partial/failed，engine_error 恒为空；失败用例按
+      ``failed`` 计数走 GATE→DIAGNOSE 继续迭代分析，而非按引擎故障阻断。
+      exit code 非零但结果齐全时同样如此（如 ``--proc-timeout`` 杀掉个别挂死
+      用例后 ttk 以非零退出），异常退出经 ``command_warning`` 留痕。
+    - **无 results.csv（npu_total==0）= TTK 本身执行异常**（环境/框架问题）：
+      status=failed 且 engine_error 非空，推进器在 EXECUTE 态直接 BLOCKED，
+      提示检查执行环境。
+    - validate 模式没有结果文件语义，沿用 exit code：非零=failed+engine_error。
+    """
+    if mode != "npu":
+        if exit_code == 0:
+            return "success", ""
+        return "failed", f"TTK ACLNN validate command failed (exit={exit_code})"
+    if npu_total == 0:
+        return "failed", (
+            f"TTK ACLNN produced no results.csv (exit={exit_code}); "
+            "TTK 本身执行异常，需检查执行环境"
+        )
+    if npu_fail == 0:
+        return "success", ""
+    return ("partial" if npu_pass > 0 else "failed"), ""
+
+
 def _write_remote_plan(
     artifact_dir: Path, *, command: str, remote_dir: str,
 ) -> None:
@@ -250,29 +280,19 @@ async def _run_aclnn(
         precision_pass = results_info.get("precision_passed", 0)
         precision_fail = results_info.get("precision_failed", 0)
 
-        # engine_error 语义修正——只有"引擎层失败"（无可解析结果/结构异常）才写 engine_error；
-        # 用例层成败走 failed 字段，远端退出码仅存exit_code 供审计。
-        if mode != "npu":
-            # validate 等模式没有可解析的用例结果，退出码仍是唯一成败信号
-            status = "success" if result.exit_code == 0 else "failed"
-            engine_error = "" if result.exit_code == 0 else (
-                f"TTK ACLNN command failed (exit={result.exit_code})")
-        elif not results_info.get("rows"):
-            # npu 模式：结果 CSV 缺失或解析不出行 → 引擎层失败
-            status = "failed"
-            engine_error = (
-                f"TTK ACLNN command failed (exit={result.exit_code}, "
-                "no parsable results)")
-        elif npu_total == 0:
-            status = "failed"
-            engine_error = "TTK results parsed but no case rows"
-        elif npu_fail > 0:
-            # 用例失败属于业务结果（failed>0 → DIAGNOSE 链路），不是引擎错误
-            status = "partial"
-            engine_error = ""
-        else:
-            status = "success"
-            engine_error = ""
+        # engine_error 语义（_decide_aclnn_status）：只有"引擎层失败"（无 results.csv/
+        # 无可解析结果行）才写 engine_error；有结果行时成败只看用例行（failed>0 走
+        # failed 计数进 DIAGNOSE 链路），远端退出码仅存 exit_code + command_warning 供审计。
+        status, engine_error = _decide_aclnn_status(
+            mode=mode, exit_code=result.exit_code,
+            npu_pass=npu_pass, npu_fail=npu_fail, npu_total=npu_total,
+        )
+        command_warning = ""
+        if mode == "npu" and result.exit_code != 0 and npu_total > 0:
+            command_warning = (
+                f"ttk exited with {result.exit_code} but results.csv has "
+                f"{npu_total} row(s); treated as case-level results"
+            )
 
         # precision_blocking 从 ttk-compare.log 推导，不再硬编码 False
         # golden 未注册（sentinel）显式记 precision_status="no_golden"
@@ -289,6 +309,7 @@ async def _run_aclnn(
             "status": status, "mode": f"ttk_aclnn_{mode}",
             "test_framework": "ttk", "ttk_mode": "aclnn",
             "exit_code": result.exit_code,
+            "command_warning": command_warning,
             "stdout": result.stdout, "stderr": result.stderr,
             "duration": duration,
             "proc_timeout": proc_timeout,

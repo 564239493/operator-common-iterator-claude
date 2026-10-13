@@ -81,7 +81,6 @@ def main() -> int:
         print(f"  /{path.stem:<22} {clipped(meta.get('description'))}")
 
     print("\nDispatch（与 AGENTS.md 调度表一致的 12 角色全量）")
-    print("  [SCENE_SCAN 可选] scene-scanner -> PLAN")
     print("  PLAN -> constraint-extractor -> optional constraint-supplementer")
     print("       -> constraint-checker <-> constraint-repairer -> case-generator -> case-executor")
     print("       -> quality-reviewer -> SUCCESS")

@@ -92,6 +92,15 @@ python scripts/execute_cases.py --mode mock --cases <cases.json> --output <execu
 不要求 `golden_manifest.json`，不调用 `derive-ttk-golden`，不做精度/覆盖率
 门禁。ACLNN 同样直接使用 TTK 原生 ACLNN runner。
 
+结果判定（ACLNN 链 `scripts/execute_ttk_aclnn.py`，2026-10-13 裁决）：
+**results.csv 有结果行 = TTK 执行正常**——成败只看用例行（全过 `success` / 有败
+`partial`|`failed`），`engine_error` 恒空，失败用例按 `failed` 计数正常推进
+GATE→DIAGNOSE 继续迭代（exit code 非零但结果齐全时经 `command_warning` 留痕）；
+**无 results.csv = TTK 本身执行异常**（`status=failed` 且 `engine_error` 非空，
+推进器在 EXECUTE 态直接 BLOCKED，需检查执行环境）。精度结果
+（`precision_passed/failed`）只记录、不入成败。E2E 链（`executer/ttk_runner.py`）
+同语义：仅缺 results.csv 时报 `TTK 未生成 results.csv` 引擎错误。
+
 HS/E2E 在 command preparation 和 real 执行前都会重新核对服务器平台。如果
 `generation_summary.selected_platform` 不被服务器覆盖，但其他
 `per_platform_files` 有匹配桶，则自动 retarget；结果记录在
