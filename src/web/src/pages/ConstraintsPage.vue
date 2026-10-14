@@ -295,19 +295,12 @@ export default {
         // ---- 原文定位 ----
         const docLines = computed(() => docContent.value.split('\n'));
         // markdown 渲染视图（GFM 表格支持；文档为项目内受信快照）。
-        // 命中行锚点：在源文本命中行首注入零宽注释，渲染后替换为高亮 span —— 渲染视图也能定位。
+        // 定位由「原文（带行号）」视图负责（.doc-line-hit 逐行精确高亮），
+        // 渲染视图只做纯 markdown 预览，不再注入行首锚点（避免破坏列表/表格/<details> 结构）。
         const docHtml = computed(() => {
             if (!docContent.value) return '';
             try {
-                const hits = docHitLines.value;
-                const marked2 = hits.size
-                    ? docContent.value.split('\n')
-                        .map((line, li) => (hits.has(li) ? '<!--WBHIT-->' + line : line))
-                        .join('\n')
-                    : docContent.value;
-                return marked.parse(marked2, { gfm: true, breaks: false })
-                    .replace(/<!--WBHIT-->/g, '<span class="doc-md-hit"></span>')
-                    .replace(/&lt;!--WBHIT--&gt;/g, '');
+                return marked.parse(docContent.value, { gfm: true, breaks: false });
             } catch (e) {
                 return '';
             }
@@ -323,6 +316,15 @@ export default {
             return hits;
         });
 
+        // 滚动到首个命中行（原文视图 .doc-line-hit 精确高亮；渲染视图不再做锚点定位）
+        function scrollToHit() {
+            if (!docHitLines.value.size) return;
+            const first = docMode.value === 'rendered'
+                ? docMdRef.value?.querySelector('.doc-md-hit')
+                : docViewerRef.value?.querySelector('.doc-line-hit');
+            if (first) first.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }
+
         async function showSrcInDoc(row) {
             const task = currentTask.value;
             if (!task) {
@@ -337,8 +339,9 @@ export default {
             docSrcLines.value = Array.isArray(row.src_txt_line)
                 ? row.src_txt_line.filter(n => Number.isInteger(n) && n > 0)
                 : [];
-            // 有定位行号 → 渲染视图也带锚点高亮；两种模式均自动滚动到首个命中行
-            docMode.value = 'rendered';
+            // 有定位行号 → 默认切到「原文（带行号）」视图精确滚动定位；
+            // 渲染视图的行首锚点会破坏列表/表格结构、且在 <details> 折叠块内不可见
+            docMode.value = 'raw';
             try {
                 const res = await fetch(`/api/review/runs/${task.dir_name}/operator_doc?source=${encodeURIComponent(row.origin || 'doc')}`);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -349,15 +352,7 @@ export default {
                 docContent.value = '';
             } finally {
                 docDialogLoading.value = false;
-                nextTick(() => {
-                    // 滚动到第一个命中锚点（渲染视图 .doc-md-hit / 原文视图 .doc-line-hit）
-                    if (docHitLines.value.size) {
-                        const first = docMode.value === 'rendered'
-                            ? docMdRef.value?.querySelector('.doc-md-hit')
-                            : docViewerRef.value?.querySelector('.doc-line-hit');
-                        if (first) first.scrollIntoView({behavior: 'smooth', block: 'center'});
-                    }
-                });
+                nextTick(scrollToHit);
             }
         }
 
@@ -634,6 +629,8 @@ export default {
         }
 
         watch(currentProduct, () => { const task = currentTask.value; if (task) loadDiff(task); });
+        // 切换 渲染视图 ↔ 原文视图 时，原文视图因 v-if/v-else 重建会丢失滚动位置，切回时重新定位
+        watch(docMode, () => nextTick(scrollToHit));
         // ---- 轮次对比: 当前轮 vs 上一轮 ----
         function flattenCnp(cnp) {
             // 把 constraints_in_parameters (dict-by-product 或 array) 拍平为条目数组
@@ -1741,19 +1738,19 @@ export default {
     font-size: 13px;
     line-height: 1.7;
 }
-.doc-md h1, .doc-md h2, .doc-md h3, .doc-md h4 {
+.doc-md :deep(h1), .doc-md :deep(h2), .doc-md :deep(h3), .doc-md :deep(h4) {
     margin: 18px 0 8px;
     color: var(--text);
     line-height: 1.4;
 }
-.doc-md h1 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
-.doc-md h2 { font-size: 17px; }
-.doc-md h3 { font-size: 15px; }
-.doc-md h4 { font-size: 13.5px; }
-.doc-md p { margin: 8px 0; }
-.doc-md ul, .doc-md ol { margin: 8px 0; padding-left: 22px; }
-.doc-md li { margin: 3px 0; }
-.doc-md code {
+.doc-md :deep(h1) { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.doc-md :deep(h2) { font-size: 17px; }
+.doc-md :deep(h3) { font-size: 15px; }
+.doc-md :deep(h4) { font-size: 13.5px; }
+.doc-md :deep(p) { margin: 8px 0; }
+.doc-md :deep(ul), .doc-md :deep(ol) { margin: 8px 0; padding-left: 22px; }
+.doc-md :deep(li) { margin: 3px 0; }
+.doc-md :deep(code) {
     font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
     font-size: 12px;
     background: var(--code-bg);
@@ -1761,7 +1758,7 @@ export default {
     padding: 1px 5px;
     border-radius: 4px;
 }
-.doc-md pre {
+.doc-md :deep(pre) {
     background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -1769,36 +1766,36 @@ export default {
     overflow-x: auto;
     margin: 10px 0;
 }
-.doc-md pre code { background: none; padding: 0; }
-.doc-md blockquote {
+.doc-md :deep(pre code) { background: none; padding: 0; }
+.doc-md :deep(blockquote) {
     border-left: 3px solid var(--accent);
     background: #f8faff;
     margin: 10px 0;
     padding: 8px 14px;
     color: var(--text-secondary);
 }
-.doc-md table {
+.doc-md :deep(table) {
     border-collapse: collapse;
     margin: 12px 0;
     width: 100%;
     font-size: 12.5px;
 }
-.doc-md th, .doc-md td {
+.doc-md :deep(th), .doc-md :deep(td) {
     border: 1px solid var(--border);
     padding: 6px 10px;
     text-align: left;
     vertical-align: top;
 }
-.doc-md th {
+.doc-md :deep(th) {
     background: #f1f5f9;
     font-weight: 600;
     white-space: nowrap;
 }
-.doc-md tr:nth-child(even) td { background: #fafbfc; }
-html[data-theme='dark'] .doc-md tr:nth-child(even) td { background: #141a2b; }
-html[data-theme='dark'] .doc-md th { background: #182136; }
+.doc-md :deep(tr:nth-child(even) td) { background: #fafbfc; }
+html[data-theme='dark'] .doc-md :deep(tr:nth-child(even) td) { background: #141a2b; }
+html[data-theme='dark'] .doc-md :deep(th) { background: #182136; }
 html[data-theme='dark'] .doc-mode-btn.on { background: #1a2440; }
-html[data-theme='dark'] .doc-md blockquote { background: #16203a; }
+html[data-theme='dark'] .doc-md :deep(blockquote) { background: #16203a; }
 .doc-md-empty {
     text-align: center;
     padding: 40px 0;
@@ -1806,14 +1803,14 @@ html[data-theme='dark'] .doc-md blockquote { background: #16203a; }
     font-size: 13px;
 }
 /* 渲染视图中的命中行锚点：零宽 span 染色所在文本块 */
-.doc-md .doc-md-hit {
+.doc-md :deep(.doc-md-hit) {
     display: inline;
     background: #fff3bf;
     box-shadow: -6px 0 0 0 #fff3bf, 6px 0 0 0 #fff3bf;
     border-radius: 2px;
     scroll-margin-top: 80px;
 }
-html[data-theme='dark'] .doc-md .doc-md-hit {
+html[data-theme='dark'] .doc-md :deep(.doc-md-hit) {
     background: #5c4a1e;
     box-shadow: -6px 0 0 0 #5c4a1e, 6px 0 0 0 #5c4a1e;
 }
