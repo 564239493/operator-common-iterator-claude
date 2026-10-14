@@ -9,8 +9,17 @@ This is a deterministic regression check. It reads:
 For each previously passed case, it evaluates whether the case still satisfies
 the new constraints. If any case fails, it's reported as a regression.
 
+Baseline mode (--baseline-constraints): when the pre-update constraints file is
+also provided, every flagged case is evaluated against the baseline as well.
+Issues already present under the baseline are classified ``pre_existing`` (they
+were not introduced by this update); only issues absent from the baseline are
+``introduced`` and count as regressions of the update. The tool's contract —
+"the modification must not break previously successful cases" — is about newly
+introduced breakage, so ``ok``/exit 0 require zero introduced regressions while
+pre-existing issues stay visible in the report.
+
 Exit codes:
-- 0: No regressions (all passed cases still valid)
+- 0: No (new) regressions (all passed cases still valid)
 - 1: Regressions detected, but under max attempts (updater can self-correct)
 - 2: Input error (missing files, invalid JSON, etc.)
 - 3: Regressions detected AND reached max attempts (user intervention required)
@@ -35,14 +44,19 @@ def check_regression(
     prev_cases_path: Path,
     prev_execution_result_path: Path,
     new_constraints_path: Path,
+    baseline_constraints_path: Path | None = None,
 ) -> dict[str, Any]:
     """Check if modified constraints break previously successful cases.
 
     Returns a report dict with:
-    - ok: bool (True if no regressions)
+    - ok: bool (True if no regressions; with a baseline, True if no
+      *introduced* regressions — pre-existing issues don't flip ok)
     - total_passed_cases: int (number of previously passed cases)
     - checked_cases: int (number of cases actually checked)
-    - regressions: list of dicts (each with case_id, issues)
+    - regressions: list of dicts (each with case_id, issues; with a baseline
+      also introduced_issues / pre_existing_issues / classification)
+    - baseline_constraints / introduced_regressions / pre_existing_regressions:
+      present only in baseline mode
     - error: str (only if there was an error loading files)
     """
     # Load previous execution result
@@ -103,6 +117,29 @@ def check_regression(
     except (OSError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": f"Failed to load constraints.json: {exc}"}
 
+    # Load pre-update baseline constraints (optional)
+    baseline_constraints = None
+    if baseline_constraints_path is not None:
+        try:
+            baseline_constraints = json.loads(
+                baseline_constraints_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "ok": False,
+                "error": f"Failed to load baseline constraints.json: {exc}",
+            }
+
+    # Pre-compute baseline violations per passed case (baseline mode only)
+    baseline_issues_by_case: dict[Any, list[str]] = {}
+    if baseline_constraints is not None:
+        for case_id in passed_case_ids:
+            if case_id not in case_map:
+                continue
+            baseline_issues_by_case[case_id] = evaluate_case_relations(
+                case_map[case_id], baseline_constraints, platform=None
+            )
+
     # Check each passed case against new constraints
     regressions = []
     for case_id in passed_case_ids:
@@ -113,17 +150,37 @@ def check_regression(
         issues = evaluate_case_relations(case, new_constraints, platform=None)
 
         if issues:
-            regressions.append({
+            record: dict[str, Any] = {
                 "case_id": case_id,
                 "issues": issues,
-            })
+            }
+            if baseline_constraints is not None:
+                previous = set(baseline_issues_by_case.get(case_id, ()))
+                introduced = sorted(set(issues) - previous)
+                pre_existing = sorted(set(issues) & previous)
+                record["introduced_issues"] = introduced
+                record["pre_existing_issues"] = pre_existing
+                record["classification"] = (
+                    "introduced" if introduced else "pre_existing"
+                )
+            regressions.append(record)
 
-    return {
-        "ok": len(regressions) == 0,
+    introduced_regressions = sum(
+        1
+        for record in regressions
+        if record.get("classification", "introduced") == "introduced"
+    )
+    report: dict[str, Any] = {
+        "ok": introduced_regressions == 0,
         "total_passed_cases": len(passed_case_ids),
         "checked_cases": len([cid for cid in passed_case_ids if cid in case_map]),
         "regressions": regressions,
     }
+    if baseline_constraints is not None:
+        report["baseline_constraints"] = str(baseline_constraints_path)
+        report["introduced_regressions"] = introduced_regressions
+        report["pre_existing_regressions"] = len(regressions) - introduced_regressions
+    return report
 
 
 def main() -> int:
@@ -147,6 +204,16 @@ def main() -> int:
         type=Path,
         required=True,
         help="Path to current iteration's constraints.json (modified constraints)",
+    )
+    parser.add_argument(
+        "--baseline-constraints",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to the pre-update constraints.json; violations "
+            "already present against it are classified pre_existing and do "
+            "not count as regressions of this update"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -179,6 +246,12 @@ def main() -> int:
     if not args.constraints.is_file():
         print(f"Error: constraints file not found: {args.constraints}", file=sys.stderr)
         return 2
+    if args.baseline_constraints is not None and not args.baseline_constraints.is_file():
+        print(
+            f"Error: baseline constraints file not found: {args.baseline_constraints}",
+            file=sys.stderr,
+        )
+        return 2
     if args.attempt < 1:
         print(f"Error: --attempt must be >= 1, got {args.attempt}", file=sys.stderr)
         return 2
@@ -187,7 +260,12 @@ def main() -> int:
         return 2
 
     # Run regression check
-    report = check_regression(args.cases, args.execution_result, args.constraints)
+    report = check_regression(
+        args.cases,
+        args.execution_result,
+        args.constraints,
+        baseline_constraints_path=args.baseline_constraints,
+    )
 
     # Add attempt metadata to report
     report["attempt"] = args.attempt
@@ -213,12 +291,26 @@ def main() -> int:
     regressions = len(report["regressions"])
 
     if report["ok"]:
-        print(f"No regressions: {checked}/{total} passed cases checked, all still valid")
+        pre_existing = report.get("pre_existing_regressions", 0)
+        if pre_existing:
+            print(
+                f"No new regressions: {checked}/{total} passed cases checked, "
+                f"all introduced-violation free; {pre_existing} pre-existing "
+                f"issue set(s) carried over from baseline (not introduced by "
+                f"this update)"
+            )
+        else:
+            print(f"No regressions: {checked}/{total} passed cases checked, all still valid")
         return 0
 
-    print(f"Regressions detected: {regressions}/{checked} cases now fail new constraints")
+    introduced = report.get("introduced_regressions", regressions)
+    print(
+        f"Regressions detected: {introduced}/{checked} case(s) newly fail "
+        f"new constraints"
+    )
     for reg in report["regressions"]:
-        print(f"  - {reg['case_id']}: {len(reg['issues'])} constraint(s) violated")
+        label = reg.get("classification", "introduced")
+        print(f"  - {reg['case_id']} [{label}]: {len(reg['issues'])} constraint(s) violated")
 
     if report["limit_reached"]:
         print(f"Reached max attempts ({args.max_attempts}), user intervention required")
