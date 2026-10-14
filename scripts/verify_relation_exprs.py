@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
+from agent.generators.operator_param_combine.combination_result_generator.constraint.whitelist import ALLOWED_CALLABLES
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -56,8 +57,6 @@ import z3
 
 SCHEMA_VERSION = "1.0"
 
-# 表达式里允许出现的内置函数名（ASTtoZ3Converter 支持），不算参数
-_FUNCTION_NAMES = {"len", "all", "any", "max", "min", "sum", "prod", "range"}
 
 _STATUS_VALUES = (
     "ok_with_witnesses",
@@ -154,7 +153,7 @@ def _expr_param_names(expr: str) -> set[str]:
     return {
         node.id
         for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and node.id not in _FUNCTION_NAMES
+        if isinstance(node, ast.Name) and node.id not in ALLOWED_CALLABLES
     }
 
 

@@ -1,39 +1,58 @@
 from __future__ import annotations
+
 import ast
 import re
-from typing import List, Set, Optional, Any, Dict, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import List, Set, Optional, Any, Dict, TYPE_CHECKING, Callable
 
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
+from agent.generators.operator_param_combine.combination_result_generator.constraint.whitelist import ALLOWED_NAMES, \
+    ALLOWED_CALLABLES
 
 if TYPE_CHECKING:
     from agent.generators import OperatorRule
 from agent.generators.data_definition.constants import ParamModelConfig, DataMatchMap
 
 
+@dataclass(frozen=True)
+class DroppedRecord:
+    """
+    一条被降级或丢弃的约束记录，用于核对与回溯。
+    :param expr: 原始约束表达式
+    :param reason: 丢弃或降级原因（英文，便于日志检索）
+    :param detail: 附加细节（如命中的维索引引用、缺失的因子名），逗号分隔
+    """
+
+    expr: str
+    reason: str
+    detail: str = ""
+
+
+def _collect_name_ids(expr: str) -> Set[str]:
+    """
+    收集表达式中所有 ``ast.Name`` 的标识符。
+
+    用于降级台账记录未命中白名单的名字。
+    :param expr: 约束表达式原文
+    :return: 表达式中出现的标识符集合
+    """
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        # 解析失败时无可用标识符，返回空集合，交由调用方按原逻辑继续处理
+        return set()
+    return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+
+
 class CombinationConstraintGenerate:
     _FACTOR_REF_RE = re.compile(r"(?<![a-zA-Z_])($|(?P<prev>[a-zA-Z_]\w*))\.(?P<attr>[a-zA-Z_]\w*)")
+    # 维索引探测：匹配 `<name>.shape[`，供降级原因落盘使用，不改变表达式。
+    # 边界 (?<![a-zA-Z_]) 与本文件 _FACTOR_REF_RE 保持一致。
+    _DIM_INDEX_RE = re.compile(r"(?<![a-zA-Z_])([a-zA-Z_]\w*)\.shape\s*\[")
 
     def __init__(self, operator_rule_data: OperatorRule):
         self.operator_rule_data = operator_rule_data
-        self._ALLOWED_BUILTINS = {
-            "abs": abs,
-            "any": any,
-            "all": all,
-            "min": min,
-            "max": max,
-            "len": len,
-            "True": True,
-            "False": False,
-            "int": int,
-            "float": float,
-            "str": str,
-            "bool": bool,
-        }
-        self._ALLOWED_NAMES: Set[str] = {
-            "abs", "any", "all", "min", "max", "len",
-            "True", "False", "None",
-            "int", "float", "str", "bool",
-        }
+        self._ALLOWED_NAMES: Set[str] = set(ALLOWED_NAMES)
 
     @staticmethod
     def _dot_to_underscore(name: str) -> str:
@@ -119,6 +138,8 @@ class CombinationConstraintGenerate:
                     return False
 
             # ---- Subscript on a factor reference (e.g. x1_shape[0]) ----
+            # 此处不再决定整条去留，而是作为「该原子子句不可表达」的判定入口，
+            # 由 check_constraint_expr 走 _prune_invalid_subclauses 做子句级降级。
             if isinstance(node, ast.Subscript):
                 val = node.value
                 if isinstance(val, ast.Name) and val.id in valid_ids:
@@ -133,14 +154,97 @@ class CombinationConstraintGenerate:
             # ---- Unauthorised function call ----
             if isinstance(node, ast.Call):
                 func = node.func
-                _allowed_callables: Set[str] = self._ALLOWED_NAMES - {"True", "False", "None"}
+                _allowed_callables: Set[str] = set(ALLOWED_CALLABLES)
                 if isinstance(func, ast.Name) and func.id not in _allowed_callables:
                     return False
 
         return True
 
     @staticmethod
-    def get_param_range_value_expr(param_name: str, param_type:str, dtype_list: List[str], range_value_profile: List[Any]):
+    def _split_top_level(expr: str, op: str) -> List[str]:
+        """
+        按顶层布尔运算符切分表达式，保留原始文本片段。
+        只在括号深度为 0 处切分，避免误切 ``(a and b) or c`` 中括号内的 ``and``。
+        :param expr: 待切分的约束表达式原文
+        :param op: 顶层运算符字面量，只取 ``"and"`` 或 ``"or"``
+        :return: 顶层切分后的片段列表；无该运算符时返回仅含原文的单元素列表
+        """
+        token = f" {op} "
+        lowered = expr.lower()
+        parts: List[str] = []
+        buffer: List[str] = []
+        depth = 0
+        index = 0
+        while index < len(expr):
+            char = expr[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            if depth == 0 and lowered.startswith(token, index):
+                parts.append("".join(buffer))
+                buffer = []
+                index += len(token)
+                continue
+            buffer.append(char)
+            index += 1
+        parts.append("".join(buffer))
+        return parts
+
+    @classmethod
+    def _prune_invalid_subclauses(cls, expr: str,
+                                  atom_valid: Callable[[str], bool]) -> Optional[str]:
+        """
+        子句级降级：整条表达式含不可表达原子子句时，按顶层布尔结构安全摘除。
+        安全性规则如下：
+        顶层 ``or`` 只要有一个析取项不可表达即返回 ``None``，因为析取项不可摘除，
+        摘除会收紧约束、可能误删合法组合；
+        顶层 ``and`` 摘除不可表达合取项后返回剩余合取项，放宽约束是安全的，
+        多生成的组合由 PICT 二次约束过滤兜底；
+        单原子子句可表达返回原串，否则返回 ``None``。
+        :param expr: 待降级的约束表达式原文
+        :param atom_valid: 原子子句可表达性判定函数，由各修复点注入
+        :return: 降级后的表达式；无法安全降级时返回 ``None``
+        """
+        top_or = cls._split_top_level(expr, "or")
+        if len(top_or) > 1:
+            # 全部析取项均可表达：原样返回。
+            # 示例：x.dtype == y.dtype or x.rank == y.rank
+            #       -> x.dtype == y.dtype or x.rank == y.rank
+            if all(atom_valid(p.strip()) for p in top_or):
+                return expr
+            return None
+        # 逐个析取项独立降级：递归摘除该析取项内不可表达的合取项、保留其余，再以 or 重连；
+        # 任一析取项无法降级时整条返回 None。
+        # 示例：x.shape[0] == 2 and x.dtype == y.dtype or x.rank == y.rank
+        #       -> (x.dtype == y.dtype) or (x.rank == y.rank)
+        # 示例：x.shape[0] == 2 or x.dtype == y.dtype
+        #       -> None
+        widened: List[str] = []
+        for part in top_or:
+            degraded = cls._prune_invalid_subclauses(part.strip(), atom_valid)
+            if degraded is None:
+                return None
+            widened.append(
+                degraded if (degraded.startswith("(") and degraded.endswith(")")) else f"({degraded})"
+            )
+        return " or ".join(widened)
+        top_and = cls._split_top_level(expr, "and")
+        if len(top_and) > 1:
+            kept = [p.strip() for p in top_and if atom_valid(p.strip())]
+            if not kept:
+                return None
+            # 顶层已无 ``or``（上面已拦截），故剩余片段以 ``and`` 重连不会改变优先级；
+            # 仅为避免与原文括号叠加，对未加括号的片段才补一层。
+            return " and ".join(
+                p if p.startswith("(") and p.endswith(")") else f"({p})" for p in kept
+            )
+
+        return expr if atom_valid(expr) else None
+
+    @staticmethod
+    def get_param_range_value_expr(param_name: str, param_type: str, dtype_list: List[str],
+                                   range_value_profile: List[Any]):
         """
         根据dtype确认data_profile可以取的数据模型，构建表达式进行约束
         如："(x1.dtype in ['FLOAT32','FLOAT16','BFLOAT16'] and x1.range in ['PosNormal','PosInf','SubNormal']) or (x1.dtype in ['INT8','INT16'] and x1.range in ['Zero','NegNormal','NaN'])"
@@ -177,8 +281,25 @@ class CombinationConstraintGenerate:
 
     @staticmethod
     def replace_shape_len_to_dimension(expr: str) -> str:
-        """将表达式中的 len(xx.shape) 替换为 xx.dimension。"""
+        """
+        将表达式中的 len(xx.shape) 替换为 xx.dimension。
+        维索引 ``x.shape[i]`` 在组合阶段无对应标量因子（shape 被抽象为不分维
+        ``shape_property`` 加 ``dimension`` 秩），本方法不为其虚构映射，交由
+        ``check_constraint_expr`` 的子句级降级摘除并记录 dropped 原因。
+        :param expr: 待改写的约束表达式原文
+        :return: 改写后的表达式
+        """
         return re.sub(r"len\(([a-zA-Z_]\w*)\.shape\)", r"\1.dimension", expr)
+
+    @classmethod
+    def detect_unrepresentable_dim_index(cls, expr: str) -> List[str]:
+        """
+        返回表达式中所有不可表达的维索引引用（如 ``x1.shape``）。
+        仅供降级原因落盘，便于核对与回溯，不改变表达式。
+        :param expr: 待探测的约束表达式原文
+        :return: 命中的张量名列表
+        """
+        return [m.group(1) for m in cls._DIM_INDEX_RE.finditer(expr)]
 
     @staticmethod
     def _propagate_equal_values(parameters: Dict, constraints: List[str]) -> None:
@@ -242,7 +363,7 @@ class CombinationConstraintGenerate:
         Returns: List[str]
         """
         valid_expr_list = []
-
+        dropped_records: List[DroppedRecord] = []
         valid_factor_refs: Set[str] = set()
         if parameters:
             for param_name, attrs in parameters.items():
@@ -255,15 +376,44 @@ class CombinationConstraintGenerate:
             raw_expr = CombinationConstraintGenerate._replace_len_to_length(raw_expr, param_type_dict,
                                                                             valid_factor_refs)
             raw_expr = CombinationConstraintGenerate._normalize_string_constants(raw_expr, parameters)
-            is_valid = (
-                    constraint.expr_type in ParamModelConfig.COMBINATION_USE_CONSTRAINT_TYPE
-                    or self.is_valid_combinatorial_constraint(raw_expr))
-            if not is_valid:
+            if constraint.expr_type in ParamModelConfig.COMBINATION_USE_CONSTRAINT_TYPE:
+                # 白名单类型直接放行（保持原语义）
+                valid_expr_list.append(
+                    CombinationConstraintGenerate.replace_shape_len_to_dimension(expr=raw_expr))
                 continue
-            valid_expr = CombinationConstraintGenerate.replace_shape_len_to_dimension(expr=raw_expr)
+
+            if self.is_valid_combinatorial_constraint(raw_expr):
+                candidate = raw_expr
+            else:
+                # 整条不过 -> 子句级降级：摘除不可表达原子子句，保留其余
+                candidate = CombinationConstraintGenerate._prune_invalid_subclauses(
+                    raw_expr, self.is_valid_combinatorial_constraint)
+            if candidate is None:
+                unknown_names = sorted(_collect_name_ids(raw_expr) - self._ALLOWED_NAMES)
+                dim_refs = CombinationConstraintGenerate.detect_unrepresentable_dim_index(raw_expr)
+                dropped_records.append(DroppedRecord(
+                    expr=constraint.expr,
+                    reason="clause pruned: unknown name / unrepresentable dim index, not safely prunable",
+                    detail=";".join(
+                        part for part in (
+                            f"unknown_names={','.join(unknown_names)}" if unknown_names else "",
+                            f"dim_refs={','.join(dim_refs)}" if dim_refs else "",
+                        ) if part
+                    ),
+                ))
+                continue
+
+            valid_expr = CombinationConstraintGenerate.replace_shape_len_to_dimension(expr=candidate)
             if parameters and not self._is_semantically_valid_for_combination(
                     valid_expr, valid_factor_refs, parameters):
-                continue
+                # 整条不合语义 -> 子句级降级，保留合法子句
+                valid_expr = self._prune_semantically_valid(valid_expr, valid_factor_refs, parameters)
+                if valid_expr is None:
+                    dropped_records.append(DroppedRecord(
+                        expr=constraint.expr,
+                        reason="gate2 semantic reject (factor-ref/numeric/literal), not safely prunable",
+                    ))
+                    continue
             valid_expr_list.append(valid_expr)
         return valid_expr_list
 
@@ -283,6 +433,23 @@ class CombinationConstraintGenerate:
                 expr, valid_factor_refs, parameters):
             return False
         return True
+
+    def _prune_semantically_valid(self, expr: str, valid_factor_refs: Set[str],
+                                  parameters: Dict) -> Optional[str]:
+        """
+        P3/P4/P5 共用入口：把 Gate2 三项检查下沉到原子子句级，摘除不合语义的子句。
+
+        :param expr: 已改写为组合阶段因子口径的约束表达式
+        :param valid_factor_refs: 组合阶段实际建模出的因子引用集合
+        :param parameters: 参数字典，提供各因子值域用于语义判定
+        :return: 降级后的表达式；无法安全降级时返回 ``None``
+        """
+        return CombinationConstraintGenerate._prune_invalid_subclauses(
+            expr,
+            lambda clause: self._is_semantically_valid_for_combination(
+                CombinationConstraintGenerate.replace_shape_len_to_dimension(expr=clause),
+                valid_factor_refs, parameters),
+        )
 
     @staticmethod
     def _check_factor_refs_exist(expr: str, valid_factor_refs: Set[str]) -> bool:
@@ -329,7 +496,11 @@ class CombinationConstraintGenerate:
                     ref = under_to_dot[operand.id]
                     param, attr = ref.split(".", 1)
                     values = parameters.get(param, {}).get(attr, [])
-                    if values and all(not isinstance(v, (int, float)) for v in values):
+                    if not values:
+                        # 域为空 = 未知，不据此拒绝（保持保守放行）
+                        continue
+                    if all(not isinstance(v, (int, float)) or isinstance(v, bool) for v in values):
+                        # 值域全为非数值（字符串/枚举/bool）-> 判定为「不可表达子句」
                         return False
         return True
 
@@ -397,11 +568,24 @@ class CombinationConstraintGenerate:
 
     @staticmethod
     def _constants_match_values(ref: str, constants: List[Any], parameters: Dict) -> bool:
-        """检查常量列表中是否至少有一个值在因子取值集合中"""
+        """
+        检查常量列表中是否至少有一个值落在该因子的取值集合中。
+
+        P5 增强：精确匹配失败后，再对字符串常量做一次小写归一匹配，
+        对齐 ``_normalize_string_constants`` 的别名口径，消除大小写引起的「假无交集」。
+        :param ref: 因子引用，形如 ``param.attr``
+        :param constants: 约束中的字面量常量列表
+        :param parameters: 参数字典，提供该因子的实际值域
+        :return: 常量列表与实际值域是否存在交集
+        """
         param, attr = ref.split(".", 1)
         values = parameters.get(param, {}).get(attr, [])
         for c in constants:
             if c in values:
+                return True
+        lowered = {str(v).lower() for v in values if isinstance(v, str)}
+        for c in constants:
+            if isinstance(c, str) and c.lower() in lowered:
                 return True
         return False
 
@@ -430,11 +614,13 @@ class CombinationConstraintGenerate:
                     if isinstance(v, str):
                         all_string_values[v.lower()] = v
 
-        # Step 2: 构建短名 → 候选全名集合（多对一安全）
-        short_to_full: Dict[str, Set[str]] = {}
+        # Step 2: 构建短名 → 候选全名列表（多对一安全；保序去重，消除 set 顺序依赖）
+        short_to_full: Dict[str, List[str]] = {}
         for full_name, short_name in DataMatchMap.ACL_DTYPE_TRANSFER_TENSOR_MAP.items():
             if isinstance(full_name, str) and isinstance(short_name, str):
-                short_to_full.setdefault(short_name.lower(), set()).add(full_name)
+                bucket = short_to_full.setdefault(short_name.lower(), [])
+                if full_name not in bucket:
+                    bucket.append(full_name)
 
         _QUOTED_STR_RE = re.compile(r"""('[^']+'|"[^"]+")""")
 
@@ -447,10 +633,23 @@ class CombinationConstraintGenerate:
             # ① 直接大小写匹配
             if lower in all_string_values and all_string_values[lower] != inner:
                 return f"{quote}{all_string_values[lower]}{quote}"
-
-            # ② dtype 别名匹配：从候选集中选择实际存在于参数中的全名
+            # ② dtype 别名匹配：从候选中确定性选择实际存在于参数中的全名
+            #    P7：原实现遍历 set，顺序取决于 PYTHONHASHSEED，导致
+            #        多候选（如 int64 -> INT64 / int64_t）结果摆动。
+            #    改为「确定性排序 + 优先级」：
+            #      (a) 与原文 inner 大小写一致者优先；
+            #      (b) 其次按全名长度升序（更短更具体）；
+            #      (c) 最后按字典序，保证完全确定。
             if lower in short_to_full:
-                for full_name in short_to_full[lower]:
+                candidates = sorted(
+                    short_to_full[lower],
+                    key=lambda full_name: (
+                        0 if full_name == inner else 1,
+                        len(full_name),
+                        full_name,
+                    ),
+                )
+                for full_name in candidates:
                     full_lower = full_name.lower()
                     if full_lower in all_string_values:
                         return f"{quote}{all_string_values[full_lower]}{quote}"
@@ -477,7 +676,6 @@ class CombinationConstraintGenerate:
             dtype_support_constraints.append(dtype_constraint_str)
         dtype_support_constraints_str = " or ".join(f"({item})" for item in dtype_support_constraints)
         return dtype_support_constraints_str, relation_param
-
 
     def solve_format_support_map(self) -> tuple[str | None, List[str] | None]:
         # 这里对于format_support_description中的数据，不能随机选择一组作为全组合的数据，需要将此节点中的数据转换成表达式，

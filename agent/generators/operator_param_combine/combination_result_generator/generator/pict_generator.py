@@ -209,6 +209,12 @@ class PICTGenerator(BaseGenerator):
             write_artifacts=bool(self._result_output_path),
         )
         self._pict_report = report
+        if report.success and report.removed_constraints:
+            logger.warning(
+                "operator=%s real PICT converged only after removing %d constraint(s): %s; "
+                "relying on secondary constraint filter",
+                self._operator_name, len(report.removed_constraints), report.removed_constraints,
+            )
         if not report.success:
             logger.warning(
                 "operator=%s real PICT failed (category=%s); falling back to in-process generator. "
