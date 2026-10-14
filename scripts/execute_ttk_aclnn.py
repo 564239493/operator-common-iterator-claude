@@ -80,18 +80,24 @@ def _parse_results(path: Path) -> dict[str, Any]:
 
     def execution_succeeded(row: dict[str, Any]) -> bool:
         """Whether the NPU produced a result, independent of precision."""
-        precision = str(row.get("precision") or "").strip().upper()
-        if precision == "NO_OUTPUT":
+        precision_text = str(row.get("precision") or "").strip()
+        upper = precision_text.upper()
+        # 负向排除：算子执行被拒 / 无输出 / 工具链崩溃（错误原文在 precision 列）
+        if upper.startswith(("ACLNN_EXECUTE_FAILED", "NO_OUTPUT")) or "TRACEBACK" in upper:
             return False
-        if str(row.get("api_perf_us") or "").strip():
-            return True
-        if str(row.get("op_perf_us") or "").strip():
-            return True
+        # 正向证据：计时字段是数字（崩溃行填字面量 'FAILURE'，不可作数）
+        for key in ("api_perf_us", "op_perf_us"):
+            try:
+                float(str(row.get(key) or "").strip())
+                return True
+            except ValueError:
+                continue
         perf_status = str(row.get("perf_status") or "").strip().upper()
         if perf_status in {"PASS", "FAIL"}:
             return True
         # GOLDEN_FAILURE and numerical FAIL both happen after NPU output exists.
-        return precision in {"PASS", "FAIL", "GOLDEN_FAILURE"}
+        return str(row.get("precision_status") or "").strip().upper() in {
+            "PASS", "FAIL", "GOLDEN_FAILURE"}
 
     execution_passed = 0
     for row in rows:
