@@ -69,6 +69,11 @@ body {
     background: var(--border);
 }
 
+.refresh-info {
+    font-size: 12px;
+    color: var(--text-muted, #94a3b8);
+}
+
 /* ===== 主体: 左右分栏 ===== */
 .cover-main {
     flex: 1;
@@ -409,6 +414,17 @@ body {
     line-height: 1.7;
 }
 
+/* 原因说明作为表格列直接展示（不再点击展开），允许长文本换行 */
+.uc-reason-col .cell {
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.7;
+}
+
+.uc-reason-empty {
+    color: var(--text-muted);
+}
+
 .uc-expand-empty {
     padding: 8px 16px;
     color: var(--text-muted);
@@ -551,15 +567,55 @@ body {
     background: var(--text-muted);
 }
 
-/* Element Plus 表格微调 */
+/* ===== Element Plus 表格样式优化 ===== */
 .op-table {
+    /* 主题变量: 统一 hover / 表头 / 边框 / 文字色, 与 EP 主题系统协同 */
+    --el-table-row-hover-bg-color: var(--accent-light);
+    --el-table-header-bg-color: #f8fafc;
+    --el-table-header-text-color: var(--text-secondary);
+    --el-table-border-color: var(--border-light);
+    --el-table-text-color: var(--text);
     font-size: 12.5px;
 }
 
-.op-table .el-table__cell {
-    padding: 6px 0;
+/* 表头: 加粗、去竖线、底边强调, 视觉上与表体分离 */
+.op-table .el-table__header-wrapper th.el-table__cell {
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--text-secondary);
+    border-right: none;
+    border-bottom: 1.5px solid var(--border);
+    padding: 10px 0;
 }
 
+/* 单元格: 去竖线保持横向阅读流, 行高更舒展 */
+.op-table .el-table__cell {
+    padding: 8px 0;
+    border-right: none;
+}
+
+/* 斑马纹底色(配合 stripe 属性), 浅灰与底色区分但不抢眼 */
+.op-table .el-table__row--striped td.el-table__cell {
+    background: #fafbfc;
+}
+
+/* 末行去底边, 与折叠面板内边距自然衔接, 避免双线 */
+.op-table .el-table__body tr:last-child > td.el-table__cell {
+    border-bottom: none;
+}
+
+/* 展开行: 浅底与表体区分, 凸显嵌套内容 */
 .op-table .el-table__expanded-cell {
     padding: 4px 12px 12px;
+    background: #fcfdfe;
+}
+
+/* 单元格内 tag 垂直居中, 避免与文字基线错位 */
+.op-table .el-tag {
+    vertical-align: middle;
+}
+
+/* 展开按钮过渡, 点击反馈更柔和 */
+.op-table .el-table__expand-icon {
+    transition: transform 0.2s ease;
 }
