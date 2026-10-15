@@ -29,6 +29,7 @@
     {"id":"batch_matmul_weight_nz","scope":"operator","path":"operators/batch_matmul_weight_nz.md","priority":85},
     {"id":"ffn_v3","scope":"operator","path":"operators/ffn_v3.md","priority":85},
     {"id":"swin_transformer_ln_qkv_quant","scope":"operator","path":"operators/swin_transformer_ln_qkv_quant.md","priority":85},
-    {"id":"scatter_pa_kv_cache","scope":"operator","path":"operators/scatter_pa_kv_cache.md","priority":85}
+    {"id":"scatter_pa_kv_cache","scope":"operator","path":"operators/scatter_pa_kv_cache.md","priority":85},
+    {"id":"nsa_compress_attention_infer","scope":"operator","path":"operators/nsa_compress_attention_infer.md","priority":85}
   ]
 }

@@ -19,7 +19,7 @@ PROTECTED_WRITE_DIRS = ("executer", "agent/generators", ".git")
 PROTECTED_WRITE_FILES = ("servers.json",)
 
 # 维护期豁免前缀：非空时精确豁免指定文件/目录的写保护（如维护任务临时使用），
-# 当前为空：问题8修复已完成，恢复原只读保护语义。
+# 当前为空：executer 缺席输出占位修复（2026-10-15）已完成，恢复原只读保护语义。
 WRITE_EXEMPT_PREFIXES: tuple[str, ...] = ()
 
 TERMINAL_STATES = {
