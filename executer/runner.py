@@ -14,8 +14,8 @@ Differences from the reference:
   (``generator.py``) live next to the executer.
 * The LLM ``exec_cpu_derivation`` step is dropped from Python entirely.
   The CPU golden derivation prompt from the reference has been promoted
-  to a Claude *skill* at ``.claude/skills/atc-cpu-golden-derivation/SKILL.md``;
-  Python only does deterministic actions (per ``CLAUDE.md``).
+  to a skill at ``.opencode/skills/atc-cpu-golden-derivation/SKILL.md``;
+  Python only does deterministic actions (per ``AGENTS.md``).
 * With the LLM step gone, the ``ChatOpenAI`` /
   ``Settings(active_api_key=...)`` import chain is gone too — no more
   ``ZAI_API_KEY`` placeholder blocking the EXECUTE stage.

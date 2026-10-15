@@ -49,6 +49,20 @@ async def _download_via_shell(conn, remote_path: str, local_path: Path) -> bool:
     return True
 
 
+def _count_golden_sentinels(log_dir: Path) -> int:
+    # 统计 ttk-compare.log 中 golden 未注册的 sentinel 行。
+    # golden 缺失时 TTK 对每个输出打 "Precision is UNSUPPORTED (golden sentinel)"
+    # 并以非零退出——这是"精度通道未启用"，不是引擎/功能失败。
+    compare_log = log_dir / "ttk-compare.log"
+    if not compare_log.is_file():
+        return 0
+    try:
+        text = compare_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    return text.count("(golden sentinel)")
+
+
 def _parse_results(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {
@@ -66,18 +80,24 @@ def _parse_results(path: Path) -> dict[str, Any]:
 
     def execution_succeeded(row: dict[str, Any]) -> bool:
         """Whether the NPU produced a result, independent of precision."""
-        precision = str(row.get("precision") or "").strip().upper()
-        if precision == "NO_OUTPUT":
+        precision_text = str(row.get("precision") or "").strip()
+        upper = precision_text.upper()
+        # 负向排除：算子执行被拒 / 无输出 / 工具链崩溃（错误原文在 precision 列）
+        if upper.startswith(("ACLNN_EXECUTE_FAILED", "NO_OUTPUT")) or "TRACEBACK" in upper:
             return False
-        if str(row.get("api_perf_us") or "").strip():
-            return True
-        if str(row.get("op_perf_us") or "").strip():
-            return True
+        # 正向证据：计时字段是数字（崩溃行填字面量 'FAILURE'，不可作数）
+        for key in ("api_perf_us", "op_perf_us"):
+            try:
+                float(str(row.get(key) or "").strip())
+                return True
+            except ValueError:
+                continue
         perf_status = str(row.get("perf_status") or "").strip().upper()
         if perf_status in {"PASS", "FAIL"}:
             return True
         # GOLDEN_FAILURE and numerical FAIL both happen after NPU output exists.
-        return precision in {"PASS", "FAIL", "GOLDEN_FAILURE"}
+        return str(row.get("precision_status") or "").strip().upper() in {
+            "PASS", "FAIL", "GOLDEN_FAILURE"}
 
     execution_passed = 0
     for row in rows:
@@ -95,6 +115,36 @@ def _parse_results(path: Path) -> dict[str, Any]:
         "precision_failed": len(rows) - precision_passed,
         "rows": rows,
     }
+
+
+def _decide_aclnn_status(
+    *, mode: str, exit_code: int,
+    npu_pass: int, npu_fail: int, npu_total: int,
+) -> tuple[str, str]:
+    """TTK ACLNN 结果判定：返回 ``(status, engine_error)``。
+
+    - **有 results.csv 结果行（npu_total>0）= TTK 执行正常**：成败只看用例行——
+      全过=success、有败=partial/failed，engine_error 恒为空；失败用例按
+      ``failed`` 计数走 GATE→DIAGNOSE 继续迭代分析，而非按引擎故障阻断。
+      exit code 非零但结果齐全时同样如此（如 ``--proc-timeout`` 杀掉个别挂死
+      用例后 ttk 以非零退出），异常退出经 ``command_warning`` 留痕。
+    - **无 results.csv（npu_total==0）= TTK 本身执行异常**（环境/框架问题）：
+      status=failed 且 engine_error 非空，推进器在 EXECUTE 态直接 BLOCKED，
+      提示检查执行环境。
+    - validate 模式没有结果文件语义，沿用 exit code：非零=failed+engine_error。
+    """
+    if mode != "npu":
+        if exit_code == 0:
+            return "success", ""
+        return "failed", f"TTK ACLNN validate command failed (exit={exit_code})"
+    if npu_total == 0:
+        return "failed", (
+            f"TTK ACLNN produced no results.csv (exit={exit_code}); "
+            "TTK 本身执行异常，需检查执行环境"
+        )
+    if npu_fail == 0:
+        return "success", ""
+    return ("partial" if npu_pass > 0 else "failed"), ""
 
 
 def _write_remote_plan(
@@ -230,25 +280,42 @@ async def _run_aclnn(
                 continue
             await _download_via_shell(conn, remote_file, local_path)
 
-        passed = result.exit_code == 0
         npu_pass = results_info.get("passed", 0)
         npu_fail = results_info.get("failed", 0)
         npu_total = results_info.get("total", 0)
         precision_pass = results_info.get("precision_passed", 0)
         precision_fail = results_info.get("precision_failed", 0)
 
-        status = "success"
-        if not passed:
-            status = "failed"
-        elif mode == "npu" and npu_fail > 0:
-            status = "partial"
-        elif mode == "npu" and npu_total == 0:
-            status = "failed"  # no results produced
+        # engine_error 语义（_decide_aclnn_status）：只有"引擎层失败"（无 results.csv/
+        # 无可解析结果行）才写 engine_error；有结果行时成败只看用例行（failed>0 走
+        # failed 计数进 DIAGNOSE 链路），远端退出码仅存 exit_code + command_warning 供审计。
+        status, engine_error = _decide_aclnn_status(
+            mode=mode, exit_code=result.exit_code,
+            npu_pass=npu_pass, npu_fail=npu_fail, npu_total=npu_total,
+        )
+        command_warning = ""
+        if mode == "npu" and result.exit_code != 0 and npu_total > 0:
+            command_warning = (
+                f"ttk exited with {result.exit_code} but results.csv has "
+                f"{npu_total} row(s); treated as case-level results"
+            )
+
+        # precision_blocking 从 ttk-compare.log 推导，不再硬编码 False
+        # golden 未注册（sentinel）显式记 precision_status="no_golden"
+        golden_sentinel_count = _count_golden_sentinels(local_log_dir)
+        if golden_sentinel_count > 0:
+            precision_status = "no_golden"
+        elif precision_pass or precision_fail:
+            precision_status = "checked"
+        else:
+            precision_status = "none"
+        precision_blocking = precision_fail > 0
 
         return {
             "status": status, "mode": f"ttk_aclnn_{mode}",
             "test_framework": "ttk", "ttk_mode": "aclnn",
             "exit_code": result.exit_code,
+            "command_warning": command_warning,
             "stdout": result.stdout, "stderr": result.stderr,
             "duration": duration,
             "proc_timeout": proc_timeout,
@@ -259,13 +326,14 @@ async def _run_aclnn(
             "npu_passed": npu_pass, "npu_failed": npu_fail, "npu_total": npu_total,
             "precision_passed": precision_pass,
             "precision_failed": precision_fail,
-            "precision_blocking": False,
+            # 精度状态三态显式化（no_golden/checked/none），
+            # sentinel 计数一并落盘供 quality gate 与审计使用。
+            "precision_status": precision_status,
+            "golden_sentinel_count": golden_sentinel_count,
+            "precision_blocking": precision_blocking,
             "passed": npu_pass, "failed": npu_fail, "total": npu_total,
             "records": results_info.get("rows", []),
-            "engine_error": "" if status == "success" else (
-                "TTK ACLNN command failed" if not passed else
-                f"TTK ACLNN NPU output missing for {npu_fail}/{npu_total} cases"
-            ),
+            "engine_error": engine_error,
             "plog": plog_info,
         }
     except SSHEngineError as exc:

@@ -30,9 +30,10 @@ import 不调用），仅作为"从不可变历史源机械拆分 + `--check` �
 
 ## 退休测试
 
-`test_aclnn_prompt_knowledge.py` 原在 `tests/` 下，断言 `build_aclnn_prompt_base.split_prompt`
-的机械拆分行为（移除 schema/默认知识节等）。随 builder 退场该测试失去对象（import 即
-`ModuleNotFoundError`），一并退休归档于本目录，不再纳入测试套。
+曾有针对 `build_aclnn_prompt_base.split_prompt` 机械拆分行为（移除 schema/默认
+知识节等）的测试 `test_aclnn_prompt_knowledge.py`。随 builder 退场该测试失去对象
+（import 即 `ModuleNotFoundError`）而退休；经核对全部 git 历史该文件并未实际入库
+归档（本目录无此文件），此处仅作记录。
 
 ## 退休的提升器（vN 模型）
 

@@ -1,53 +1,34 @@
-# Skill、Agent 与调度可观测性
+# 技能、子智能体与调度可观测性（opencode 原生）
 
-## 启动时看清“有哪些”
+## 启动时看清"有哪些"
 
-SessionStart Hook 会显示 `[WORKFORCE]`，列出项目 Skills、Agents 和常用命令。
-也可随时运行 `/show-workforce`，或让 Claude 调用 `show-workforce` Skill，获取名称、
-职责、预加载 Skill 与调度链。
+运行 `/show-workforce` 获取项目技能、子智能体、命令与调度链的名称、职责、
+开工首载技能（`scripts/show_registry.py` 渲染）。在 opencode 中输入 `/` 可在
+命令选择器中看到项目命令与技能。
 
-Claude Code 原生入口：
+## 执行时看清"谁在工作"
 
-- `/agents`：Library 查看全部 Agent；Running 查看运行中和最近完成实例。
-- `/hooks`：查看 SessionStart、SubagentStart、SubagentStop 配置及来源。
-- 输入 `/`：在命令选择器中看到项目 Skills。
-
-## 执行时看清“谁在工作”
-
-主协调器在委派前后输出可读调度消息。项目 Hook 同时监听：
-
-- `SubagentStart`：显示 Agent 名称与实例 id；
-- `SubagentStop`：显示结束事件；
-- `SessionStart`：显示 workforce 总览。
-
-示例：
+主协调器在委派前后输出可读调度消息（项目约定，写入 AGENTS.md）：
 
 ```text
 调度 -> constraint-extractor | 输入: doc + prompt_v1 | 预期产物: constraints.json
-[SCHEDULER] START agent=constraint-extractor id=agent-...
-[SCHEDULER] STOP  agent=constraint-extractor id=agent-...
 完成 <- constraint-extractor | 结论: validation passed | 产物: runs/.../constraints.json
 ```
 
-## 文件化审计
+任务（task）工具的每次调用即一次子智能体委派，opencode 会在会话消息中
+保留完整的工具调用记录（含参数与结果状态），可用于事后核对委派链。
 
-`.claude/runtime/schedule.jsonl` 每行一个事件：
+## 业务状态审计
 
-```json
-{
-  "timestamp": "2026-06-30T02:00:00+00:00",
-  "event": "SubagentStart",
-  "session_id": "abc",
-  "agent_id": "agent-123",
-  "agent_type": "constraint-extractor",
-  "message": "[SCHEDULER] START ..."
-}
-```
+- 业务流程状态存于 `runs/<run-id>/run_state.json`（唯一真相源），每次状态迁移
+  由 `scripts/flow_control.py advance` 落盘裁决。
+- 会话与 run 的权限绑定元数据存于 `.opencode/runtime/task_scopes/`（不入库）。
 
-该目录不提交 Git。业务状态另存于 `runs/<run-id>/run_state.json`，两者分别回答：
-“Claude 调度了谁”和“业务流程走到哪一步”。
+> 历史说明：旧版（Claude Code 线）曾通过 `.claude/runtime/schedule.jsonl` 记录
+> 子智能体启停调度事件；opencode 原生化后该机制已随 trace 插件移除，事件级
+> 采集与关联作为独立需求另行设计（opencode 原生事件流可提供更完整依据）。
 
 ## 非交互 CI
 
-使用 `--output-format stream-json --verbose` 可以保留 Claude Code 原始事件流；项目级
-schedule.jsonl 提供更精简的 Agent 生命周期索引。不要使用 text 输出做机器解析。
+opencode 以 server 模式运行时可通过 SDK/HTTP API 获取会话消息与工具记录；
+机器解析不要依赖 TUI 文本输出。

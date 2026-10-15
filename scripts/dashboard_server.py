@@ -23,23 +23,23 @@ RUNS_DIR = ROOT / "runs"
 STATIC_DIR = ROOT / "static"
 COVER_DIR = ROOT / "ops_cov_report"
 
-# 安全: run_id / artifact 名只允许字母数字下划线连字符
-_SAFE_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+# 安全: run_id 只拒绝结构风险字符（\w 含 Unicode，中文算子名 run 可正常访问；
+# 与 src/workbench/paths.py 的 RUN_ID_RE、guard.js validRunId 语义对齐）
+_SAFE_RE = re.compile(r"^[\w\-]+$")
 
-# 状态机阶段顺序 (用于排序, 非校验)
+# 状态机阶段顺序 (用于排序, 非校验；与 run_state.py 的 ALLOWED_STATES 对齐)
 STATE_ORDER = [
     "PLAN",
-    "INITIAL_EXTRACT",
     "EXTRACT",
-    "SUPPLEMENT",
-    "CONSTRAINT_CHECK",
     "GENERATE",
     "EXECUTE",
     "GATE",
     "DIAGNOSE",
     "UPDATE_CONSTRAINTS",
     "MIXED_FAILURE_REVIEW",
+    "NEEDS_HUMAN_EVIDENCE",
     "HUMAN_CHECKPOINT",
+    "AWAITING_HUMAN_CONSTRAINTS",
     "SUCCESS",
     "MAX_ITERATIONS",
     "STOP_GENERATOR_BUG",

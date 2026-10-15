@@ -1093,7 +1093,7 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
 
 ---
 
-> **附录迁移说明**：历史变更记录（原附录 B）已移至 `prompts/CHANGELOG.md`；10 个典型算子对齐示例（原附录 A）已移至 `prompts/examples.md`。两份文件**不参与约束提取**，仅作维护参考，本提示词加载时不含其内容。
+> **附录迁移说明**：历史变更记录（原附录 B）与 10 个典型算子对齐示例（原附录 A）已随 2026-09 目录改版移出本文件；如需维护参考请查 `git log -- prompts/`（旧版见 `prompts/history/`）。两者**不参与约束提取**，本提示词加载时不含其内容。
 
 > **生成器层 null 语义 gap**（extractor 不直接执行，属 GENERATE/EXECUTE 层对齐缺口，
 > 含 5 条 file:line 分析与 `is_null` 建模改造关键点）已移至

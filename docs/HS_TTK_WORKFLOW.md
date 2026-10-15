@@ -43,9 +43,9 @@ python scripts/generate_cases.py \
   --server-config servers.json
 ```
 
-生成器会为全部 `product_support` 平台保留独立 JSON，但 canonical `cases.json` 和
+生成器会为全部 `product_support` 平台保留独立 JSON，但 `cases.json` 和
 `cases_ttk.csv` 优先选择 `servers.json` 实际覆盖的平台，不再固定取第一个产品。
-优先级为：显式 `--platform` > servers 文件顺序 > 单台服务器 platforms 顺序。
+优先级为：显式 `--platform` > 场景阶段单选设备 > servers 文件顺序 > 单台服务器 platforms 顺序。
 
 默认使用 `--hs-scenario-mode original`，完全使用原有 `agent/generators`
 生成逻辑，不拆分场景、不固定 layout、不做 HS case 投影。如需显式按
@@ -98,7 +98,7 @@ python scripts/execute_cases.py --test-framework ttk --generate \
 ```
 
 对于已经生成完三个（或多个）平台 JSON 的旧任务，无需重新 EXTRACT/GENERATE。
-执行准备会按服务器覆盖平台自动复用对应 `cases_<platform>.json`，并重建 canonical
+执行准备会按服务器覆盖平台自动复用对应 `cases_<platform>.json`，并重建
 `cases.json` 与 `cases_ttk.csv`；平台切换证据写入 `platform_retarget`。
 
 Linux CANN/NPU 节点执行：
@@ -152,8 +152,9 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
 ## 精度与 Golden 经验
 
 - `precision_tolerances` 是 `(rtol, ptol)`；`atol` 写在 `absolute_precision`。
-- 当前默认优先加载算子目录中的自主推导或源码 Golden，但不要求 manifest
-  `verified`，精度不通过只记录诊断，不阻塞 NPU 功能执行结果。
+- 默认**不加载**算子 Golden；仅当用户明确要求精度对比时显式 `--with-golden`
+  开启（加载算子目录中的自主推导或源码 Golden），不要求 manifest `verified`，
+  精度不通过只记录诊断，不阻塞 NPU 功能执行结果。
 - 内部格式运行时初始化与 Golden 插件解耦：无论是否使用 Golden，TTK 每个
   worker 都会设置 `allow_internal_format=True`。
 - Golden 签名要接收 API 全部默认属性，避免 ParamPlan 默认值造成调用失败。
@@ -161,8 +162,9 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
 
 ## Golden 推导（当前非必需）
 
-默认使用当前可用的 Golden，并将功能结果与精度结果分别统计。显式传入
-`--no-golden` 可以不加载算子 Golden，但仍保留内部格式运行时初始化。
+默认不加载算子 Golden（`--no-golden` 即默认行为），功能结果照常统计。仅当用户
+明确要求精度对比时显式传入 `--with-golden` 加载，并将功能结果与精度结果分别
+统计；无论是否使用 Golden，内部格式运行时初始化均保留。
 
 失败分类：场景违反文档回到约束迭代；JSON→CSV映射错误归 `ttk_adapter`；Golden
 UNSUPPORTED/GOLDEN_FAILURE/数值公式问题归 `golden_derivation`；SSH/CANN/TBE归

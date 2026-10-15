@@ -1,0 +1,68 @@
+/* 设计令牌：与 demo.html 统一的浅色商务风为默认；html[data-theme='dark'] 为可选暗色 */
+
+:root {
+  --wb-bg: #f5f7fb;
+  --wb-card: #ffffff;
+  --wb-card-soft: #fbfcff;
+  --wb-line: #e6ecf3;
+  --wb-line-soft: #eef2f7;
+  --wb-ink: #172c47;
+  --wb-muted: #78869c;
+  --wb-faint: #aab2be;
+
+  --wb-blue: #2774ed;
+  --wb-blue-soft: #edf4ff;
+  --wb-blue-line: #c9dcfa;
+  --wb-green: #159b78;
+  --wb-green-soft: #e8f7f1;
+  --wb-green-line: #bde6d5;
+  --wb-orange: #df8a27;
+  --wb-orange-soft: #fff7eb;
+  --wb-orange-line: #f1d6aa;
+  --wb-red: #da5961;
+  --wb-red-soft: #fff0f1;
+  --wb-red-line: #f4c8cc;
+
+  --wb-code-bg: #f5f7fa;
+  --wb-hover: #f7faff;
+  --wb-grid-line: #edf1f7;
+  --wb-band-bg: #f4f8ff;
+  --wb-shadow: 0 2px 6px rgba(32, 52, 84, 0.06);
+  --robot-face: #ffffff;
+
+  /* Element Plus 主色对齐 */
+  --el-color-primary: #2774ed;
+}
+
+html[data-theme='dark'] {
+  --wb-bg: #0f1420;
+  --wb-card: #151c2e;
+  --wb-card-soft: #182136;
+  --wb-line: #2a3350;
+  --wb-line-soft: #232c47;
+  --wb-ink: #e6e9f0;
+  --wb-muted: #8ea2c9;
+  --wb-faint: #5b6478;
+
+  --wb-blue: #5b9bff;
+  --wb-blue-soft: #1a2440;
+  --wb-blue-line: #3d5a99;
+  --wb-green: #4ecba5;
+  --wb-green-soft: #14302a;
+  --wb-green-line: #2a5a4c;
+  --wb-orange: #eda552;
+  --wb-orange-soft: #33270f;
+  --wb-orange-line: #6b5222;
+  --wb-red: #f3838b;
+  --wb-red-soft: #3a1d20;
+  --wb-red-line: #6e3238;
+
+  --wb-code-bg: #0d1220;
+  --wb-hover: #1d2740;
+  --wb-grid-line: #1c2338;
+  --wb-band-bg: #16203a;
+  --wb-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --robot-face: #1b2338;
+
+  --el-color-primary: #5b9bff;
+}

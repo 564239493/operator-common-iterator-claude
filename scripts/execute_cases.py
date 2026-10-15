@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Project-local CLI entry point for the EXECUTE stage.
 
-Driven by the ``case-executor`` agent (see ``.claude/agents/case-executor.md``)
+Driven by the ``case-executor`` agent (see ``.opencode/agents/case-executor.md``)
 through the ``execute-cases`` skill.  This script is the single CLI glue
 between the deterministic executer (`executer.runner`) and the
 ``runs/<run-id>/iter_*/execution_result.json`` artifact contract.
@@ -22,7 +22,7 @@ This rewrite keeps everything inside this project:
 * No ``sys.path`` reach-around to ``D:\\operator_project\\operator-common-iterator``
   (reference) or ``D:\\operator_project\\operator-agent`` (the old consumer).
 * No ``langchain_openai.ChatOpenAI`` / ``Settings(active_api_key=...)``
-  imports — the CLI itself is the LLM (per ``CLAUDE.md``).
+  imports — the CLI itself is the LLM (per ``AGENTS.md``).
 * Real execution still goes through SSH / asyncssh against the host
   declared in ``servers.json`` — we just hand control to the
   project-local ``executer.runner.RunRequest`` path.
@@ -207,7 +207,7 @@ def _load_operator_supported_platforms(iter_dir: Path | None) -> list[str]:
 
 
 def _load_ttk_selected_platform(iter_dir: Path | None) -> str | None:
-    """Return the platform whose canonical cases.json was converted to CSV."""
+    """Return the platform whose cases.json was converted to CSV."""
     if iter_dir is None:
         return None
     summary = _read_json_object(iter_dir / "generation_summary.json")
@@ -302,7 +302,7 @@ def _ttk_e2e_refresh_reasons(
     cases_path: Path,
     selected_platform: str,
 ) -> list[str]:
-    """Return reasons why canonical JSON/CSV must be rebuilt."""
+    """Return reasons why cases.json/CSV must be rebuilt."""
     iter_dir = cases_path.parent
     summary = _read_json_object(iter_dir / "generation_summary.json")
     if not summary:
@@ -327,11 +327,11 @@ def _ttk_e2e_refresh_reasons(
     reasons: list[str] = []
     if summary.get("selected_platform") != selected_platform:
         reasons.append("selected platform changed")
-    canonical = iter_dir / "cases.json"
-    if not canonical.is_file():
-        reasons.append("canonical cases.json is missing")
-    elif canonical.read_bytes() != source.read_bytes():
-        reasons.append("canonical cases.json differs from selected execution file")
+    cases_json = iter_dir / "cases.json"
+    if not cases_json.is_file():
+        reasons.append("cases.json is missing")
+    elif cases_json.read_bytes() != source.read_bytes():
+        reasons.append("cases.json differs from selected execution file")
     if not cases_path.is_file():
         reasons.append("TTK CSV is missing")
     elif cases_path.stat().st_mtime_ns < source.stat().st_mtime_ns:
@@ -341,7 +341,7 @@ def _ttk_e2e_refresh_reasons(
     if isinstance(hashes, dict):
         expected = {
             "selected_execution_file": source,
-            "cases_json": canonical,
+            "cases_json": cases_json,
             "cases_csv": cases_path,
         }
         for name, path in expected.items():
@@ -374,7 +374,7 @@ def _retarget_ttk_e2e_csv(
     cases_path: Path,
     selected_platform: str,
 ) -> dict[str, Any]:
-    """Reuse an existing per-platform JSON and rebuild canonical JSON + E2E CSV."""
+    """Reuse an existing per-platform JSON and rebuild cases.json + E2E CSV."""
     iter_dir = cases_path.parent
     summary_path = iter_dir / "generation_summary.json"
     summary = _read_json_object(summary_path)
@@ -400,15 +400,15 @@ def _retarget_ttk_e2e_csv(
     if not constraints:
         raise RuntimeError(f"missing readable constraints for TTK conversion: {constraints_path}")
 
-    canonical_cases = iter_dir / "cases.json"
+    cases_json_path = iter_dir / "cases.json"
     _atomic_write_text(
-        canonical_cases, source.read_text(encoding="utf-8"),
+        cases_json_path, source.read_text(encoding="utf-8"),
     )
     from scripts.atc_to_ttk import convert_file, _ordered_input_tensor_names
 
     temporary_csv = cases_path.with_name(f".{cases_path.name}.tmp")
     conversion = convert_file(
-        canonical_cases,
+        cases_json_path,
         temporary_csv,
         selected_platform,
         _ordered_input_tensor_names(constraints),
@@ -426,7 +426,7 @@ def _retarget_ttk_e2e_csv(
     summary.update({
         "selected_platform": selected_platform,
         "platform_selection_reason": "execute_server_config_match",
-        "intermediate_model": str(canonical_cases),
+        "intermediate_model": str(cases_json_path),
         "selected_execution_file": str(source),
         "output": str(cases_path),
         "total": conversion.get("case_count", summary.get("total")),
@@ -435,7 +435,7 @@ def _retarget_ttk_e2e_csv(
         ),
         "artifact_hashes": {
             "selected_execution_file": _sha256_file(source),
-            "cases_json": _sha256_file(canonical_cases),
+            "cases_json": _sha256_file(cases_json_path),
             "cases_csv": _sha256_file(cases_path),
         },
     })
@@ -444,7 +444,7 @@ def _retarget_ttk_e2e_csv(
         "state": "complete",
         "selected_platform": selected_platform,
         "selected_execution_file": str(source),
-        "cases_json": str(canonical_cases),
+        "cases_json": str(cases_json_path),
         "cases_csv": str(cases_path),
         "artifact_hashes": summary["artifact_hashes"],
     })
@@ -532,16 +532,16 @@ def main() -> int:
         action="store_true",
         dest="no_golden",
         help=(
-            "TTK 专用：不加载算子 Golden；仍加载内部格式运行时插件。"
+            "TTK 专用：不加载算子 Golden（默认）；仍加载内部格式运行时插件。"
         ),
     )
     golden_group.add_argument(
         "--with-golden",
         action="store_false",
         dest="no_golden",
-        help="TTK 专用：加载可用的自主推导或源码 Golden（默认）。",
+        help="TTK 专用：加载可用的自主推导或源码 Golden（仅用户明确要求精度对比时使用）。",
     )
-    parser.set_defaults(no_golden=False)
+    parser.set_defaults(no_golden=True)
     parser.add_argument(
         "--cases", required=True, help="cases.json 路径 (项目内或外部)。"
     )
