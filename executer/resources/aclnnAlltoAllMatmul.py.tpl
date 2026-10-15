@@ -209,7 +209,7 @@ class AclnnNpuFormatCast(AclnnBaseApi):
             if name in input_tmp:
                 continue
             dtype = self.get_dtype_of_json(name)
-            data = self.backend.convert_input_data(kwarg, name=name, dtype=dtype)
+            data = self.backend.convert_input_data(kwarg, name=name)
             if name in param_list:
                 input_tmp[name] = data
 

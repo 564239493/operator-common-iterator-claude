@@ -17,7 +17,7 @@ _DTYPE_ALIASES = {
     "fp16": "float16",
     "fp32": "float32",
 }
-_ALLOWED_CALLS = {"len", "all"}
+_ALLOWED_CALLS = {"len", "all", "any", "sum", "min", "max"}
 _ALLOWED_ATTRIBUTES = {"shape", "dtype", "format", "range_value", "is_present"}
 _ALLOWED_NODES = (
     ast.Expression, ast.BoolOp, ast.BinOp, ast.UnaryOp, ast.Compare, ast.IfExp,
@@ -30,9 +30,19 @@ _ALLOWED_NODES = (
 )
 
 
+def _shape_key(shape: Any) -> Any:
+    """Normalize list/tuple shapes so equality and hashing agree.
+
+    JSON expression literals are lists while some callers construct tuples;
+    ``tuple((1, 2)) == [1, 2]`` is False in Python, which used to turn every
+    ``param.shape == [...]`` relation into a false violation.
+    """
+    return tuple(shape) if isinstance(shape, list) else shape
+
+
 @dataclass(frozen=True)
 class ConstraintValue:
-    shape: tuple[int, ...] = ()
+    shape: tuple[int, ...] | list[int] | None = ()
     dtype: str | None = None
     format: str | None = None
     range_value: Any = None
@@ -40,7 +50,8 @@ class ConstraintValue:
 
     def __eq__(self, other: Any) -> bool:
         if isinstance(other, ConstraintValue):
-            return (self.shape == other.shape and self.dtype == other.dtype
+            return (_shape_key(self.shape) == _shape_key(other.shape)
+                    and self.dtype == other.dtype
                     and self.format == other.format
                     and self.range_value == other.range_value
                     and self.is_present == other.is_present)
@@ -50,7 +61,7 @@ class ConstraintValue:
         return not self.__eq__(other)
 
     def __hash__(self) -> int:
-        return hash((self.shape, self.dtype, self.format,
+        return hash((_shape_key(self.shape), self.dtype, self.format,
                      self.range_value, self.is_present))
 
     def __len__(self) -> int:
@@ -105,7 +116,10 @@ def case_environment(case: Mapping[str, Any]) -> dict[str, Any]:
                 continue
             shape = item.get("shape")
             environment[name] = ConstraintValue(
-                shape=tuple(shape) if isinstance(shape, list) else None,
+                # JSON 表达式字面量是 list；环境侧同样存 list，保证
+                # `param.shape == [B.range_value, ...]` 的相等比较与
+                # 生成器/Z3 侧一致（旧实现存 tuple，tuple != list 恒 False）。
+                shape=list(shape) if isinstance(shape, list) else None,
                 dtype=_normal_dtype(item.get("dtype")),
                 format=item.get("format"),
                 range_value=item.get("range_values"),
@@ -147,7 +161,10 @@ def _validate_tree(tree: ast.AST, known_names: set[str]) -> None:
                 raise ValueError(f"unsupported attribute: {node.attr}")
         elif isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name) or node.func.id not in _ALLOWED_CALLS:
-                raise ValueError("only len(...) calls are supported")
+                raise ValueError(
+                    "unsupported call: only "
+                    f"{sorted(_ALLOWED_CALLS)} are allowed"
+                )
             if len(node.args) != 1 or node.keywords:
                 raise ValueError("len(...) must have exactly one positional argument")
 
@@ -189,7 +206,8 @@ def evaluate_expression(expression: str, environment: Mapping[str, Any]) -> bool
     _validate_tree(tree, set(environment))
     result = eval(  # noqa: S307 - AST is strictly whitelisted above.
         compile(tree, "<hs-constraint>", "eval"),
-        {"__builtins__": {}, "len": len, "all": all},
+        {"__builtins__": {}, "len": len, "all": all,
+         "any": any, "sum": sum, "min": min, "max": max},
         dict(environment),
     )
     if not isinstance(result, bool):

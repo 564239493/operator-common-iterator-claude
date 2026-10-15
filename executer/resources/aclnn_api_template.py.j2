@@ -258,14 +258,14 @@ class {{ class_name }}(AclnnBaseApi):
         # （2026-10-08 真机实证：int4 呈 ACL_INT8 被 pergroup tiling 拒绝）
         for i, arg in enumerate(input_data.args):
             data = self.backend.convert_input_data(
-                arg, index=i, dtype=self._get_input_dtype(index=i)
+                arg, index=i
             )
             input_args.extend(data)
         for name, kwarg in input_data.kwargs.items():
             if name in input_tmp:
                 continue
             data = self.backend.convert_input_data(
-                kwarg, name=name, dtype=self._get_input_dtype(name=name)
+                kwarg, name=name
             )
             if name in param_list:
                 input_tmp[name] = data
@@ -349,10 +349,18 @@ class {{ class_name }}(AclnnBaseApi):
         return getattr(config, "dtype", None)
 
     def get_storage_shape(self, input_data: InputDataset, index=None, name=None):
+        # 分块存储（NZ 等）通用通道：case 条目带 storage_shape（viewShape 与
+        # storageShape 分离，生成阶段按参数卡 storage_layout 轴表达式求值产
+        # 出）时优先上报物理形状；缺省回退 view shape（storage==view，与旧
+        # 产物行为一致）。
         if name is not None:
             found = self.get_config_by_name(self.task_result.case_config.inputs, name)
-            if not isinstance(found, list) and found.shape is not None:
-                return torch.Size(found.shape)
+            if found is not None and not isinstance(found, list):
+                storage_shape = getattr(found, "storage_shape", None)
+                if storage_shape:
+                    return torch.Size(storage_shape)
+                if found.shape is not None:
+                    return torch.Size(found.shape)
         return None
 
     def get_format(self, input_data: InputDataset, index=None, name=None):
