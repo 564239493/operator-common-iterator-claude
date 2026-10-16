@@ -1,7 +1,9 @@
-﻿import glob
+﻿import ast
+import glob
 import json
 import os
 import logging
+from typing import List
 
 import pytest
 
@@ -11,7 +13,8 @@ from agent.generators.operator_param_combine.combination_result_generator.covera
 from agent.generators.operator_param_combine.combination_result_generator.coverage.universe import PairUniverse
 from agent.generators.operator_param_combine.combination_result_generator.coverage.value import FactorValue
 
-from agent.generators.operator_param_combine.combination_result_generator.generator.pict_generator import PICTGenerator
+from agent.generators.operator_param_combine.combination_result_generator.generator.pict_generator import PICTGenerator, \
+    _guarded_cross_eq_lines, _translate_or
 from agent.generators.operator_param_combine.combination_result_generator.generator.candidate_generator import CandidateGenerator
 from agent.generators.operator_param_combine.combination_result_generator.generator.generator_options import GeneratorOptions
 from agent.generators.operator_param_combine.combination_result_generator.generator.model import GenerationResult
@@ -302,5 +305,122 @@ class TestSavePictModel:
         assert os.path.basename(model_path) == "TestOp_pict_model.txt"
         with open(model_path, encoding="utf-8") as f:
             assert f.read() == model.model_text
+
+
+class TestTranslateOrGuardedCrossEq:
+    """覆盖 _translate_or 的互斥 OR 守卫式跨参等式展开。"""
+
+    def _node(self, expr: str) -> ast.AST:
+        """把表达式解析为顶层 AST 节点。
+
+        :param expr: 约束表达式原文
+        :return: 顶层 AST 节点（本例均为 BoolOp）
+        """
+        return ast.parse(expr, mode="eval").body
+
+    def test_mutually_exclusive_or_emits_guarded_lines(self) -> None:
+        """互斥 OR 且析取项含跨参等式时，生成带钉值守卫的 IF-THEN 行。
+
+        示例：(groupType.range_value == -1 and x.length == weight.length)
+              or (groupType.range_value == 0)
+              -> IF ([groupType_range_value] = -1) AND [x_length] = 128 THEN [weight_length] = 128;
+        """
+        node = self._node(
+            "(groupType.range_value == -1 and x.length == weight.length) or (groupType.range_value == 0)"
+        )
+        columns = {"groupType_range_value", "x_length", "weight_length"}
+        parameters = {"groupType_range_value": [-1, 0], "x_length": [128], "weight_length": [128]}
+        warnings: List[str] = []
+        lines = _guarded_cross_eq_lines(node, columns, warnings, parameters)
+        assert lines == [
+            "IF ([groupType_range_value] = -1) AND [x_length] = 128 THEN [weight_length] = 128;"
+        ]
+
+    def test_non_exclusive_or_emits_nothing(self) -> None:
+        """析取项之间不互斥（没有同列不同常量）时，不生成任何守卫行（保守）。"""
+        node = self._node("(a.range_value == 1 and x.length == weight.length) or (b.range_value == 2)")
+        columns = {"a_range_value", "b_range_value", "x_length", "weight_length"}
+        parameters = {"a_range_value": [1], "b_range_value": [2], "x_length": [128], "weight_length": [128]}
+        warnings: List[str] = []
+        assert _guarded_cross_eq_lines(node, columns, warnings, parameters) == []
+
+    def test_in_clause_pins_expand_into_guard(self) -> None:
+        """M-14：``in [...]`` 钉值展开进守卫——按列分组、笛卡尔积、每组合一条守卫行。
+
+        示例：groupType.range_value == -1 and splitItem.range_value in [0, 1]
+              and x.length == weight.length
+              -> si=0 与 si=1 各一条（守卫更窄、保留原式的 splitItem 条件）。
+        """
+        node = self._node(
+            "(groupType.range_value == -1 and splitItem.range_value in [0, 1]"
+            " and x.length == weight.length)"
+            " or (groupType.range_value == 0)"
+        )
+        columns = {"groupType_range_value", "splitItem_range_value", "x_length", "weight_length"}
+        parameters = {"groupType_range_value": [-1, 0], "splitItem_range_value": [0, 1],
+                      "x_length": [128], "weight_length": [128]}
+        warnings: List[str] = []
+        lines = _guarded_cross_eq_lines(node, columns, warnings, parameters)
+        assert lines == [
+            "IF ([groupType_range_value] = -1) AND ([splitItem_range_value] = 0)"
+            " AND [x_length] = 128 THEN [weight_length] = 128;",
+            "IF ([groupType_range_value] = -1) AND ([splitItem_range_value] = 1)"
+            " AND [x_length] = 128 THEN [weight_length] = 128;",
+        ]
+
+    def test_in_clause_without_in_unchanged(self) -> None:
+        """M-14 回归核验：不含 ``in`` 的输入上，输出与 M-12 现行为逐字一致（零回归面）。
+
+        示例：(groupType.range_value == -1 and x.length == weight.length)
+              or (groupType.range_value == 0)
+              -> IF ([groupType_range_value] = -1) AND [x_length] = 128 THEN [weight_length] = 128;
+        """
+        node = self._node(
+            "(groupType.range_value == -1 and x.length == weight.length)"
+            " or (groupType.range_value == 0)"
+        )
+        columns = {"groupType_range_value", "x_length", "weight_length"}
+        parameters = {"groupType_range_value": [-1, 0], "x_length": [128], "weight_length": [128]}
+        warnings: List[str] = []
+        lines = _guarded_cross_eq_lines(node, columns, warnings, parameters)
+        assert lines == [
+            "IF ([groupType_range_value] = -1) AND [x_length] = 128 THEN [weight_length] = 128;"
+        ]
+
+    def test_in_clause_guard_combo_over_limit_falls_back(self) -> None:
+        """M-14 边界：守卫组合数（笛卡尔积）超上限 24 时回退现行行为并记录 warning。
+
+        示例：两个 5 值 ``in``（5×5=25 > 24）
+              -> 0 行守卫 + warnings 含 "guard combination count 25 exceeds limit"。
+        """
+        node = self._node(
+            "(groupType.range_value == -1 and splitItem.range_value in [0, 1, 2, 3, 4]"
+            " and groupListType.range_value in [0, 1, 2, 3, 4] and x.length == weight.length)"
+            " or (groupType.range_value == 0)"
+        )
+        columns = {"groupType_range_value", "splitItem_range_value",
+                   "groupListType_range_value", "x_length", "weight_length"}
+        parameters = {"groupType_range_value": [-1, 0], "splitItem_range_value": [0, 1, 2, 3, 4],
+                      "groupListType_range_value": [0, 1, 2, 3, 4],
+                      "x_length": [128], "weight_length": [128]}
+        warnings: List[str] = []
+        lines = _guarded_cross_eq_lines(node, columns, warnings, parameters)
+        assert lines == []
+        assert any("exceeds limit" in w for w in warnings)
+
+    def test_translate_or_appends_guarded_lines(self) -> None:
+        """_translate_or 在既有翻译结果之上追加守卫行，且既有 OR 行保持不变。"""
+        node = self._node(
+            "(groupType.range_value == -1 and x.length == weight.length) or (groupType.range_value == 0)"
+        )
+        columns = {"groupType_range_value", "x_length", "weight_length"}
+        parameters = {"groupType_range_value": [-1, 0], "x_length": [128], "weight_length": [128]}
+        warnings: List[str] = []
+        result = _translate_or(node, columns, warnings, parameters)
+        assert result is not None
+        assert result[-1] == (
+            "IF ([groupType_range_value] = -1) AND [x_length] = 128 THEN [weight_length] = 128;"
+        )
+        assert any(line.startswith("(") and " OR " in line for line in result)
 
 

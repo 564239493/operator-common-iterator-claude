@@ -186,17 +186,23 @@ def _format_ast(node: ast.expr) -> str:
     return ast.unparse(node) if hasattr(ast, "unparse") else str(node)
 
 
-def translate_constraint(python_expr: str) -> str:
-    """将一条 Python 约束表达式翻译为 PICT 语法。
-
+def translate_constraint(python_expr: str, warnings: Optional[List[str]] = None) -> str:
+    """
+    将一条 Python 约束表达式翻译为 PICT 语法。
     成功时返回以 ``;`` 结尾的 PICT 约束文本。
     失败时返回以 ``//`` 开头的注释行，包含原文和错误原因。
+    P6：失败时同时写入 warnings，避免约束在 PICT 侧被静默削弱。
+    :param python_expr: Python 约束表达式原文
+    :param warnings: 可选的告警收集器；传入时把翻译失败原因追加进去
+    :return: 以 ``;`` 结尾的 PICT 约束文本，或 ``//`` 注释行
     """
     try:
         tree = ast.parse(python_expr.strip(), mode="eval")
         result = _translate_expr(tree.body)
         return result + " ;"
     except _TranslateError as e:
+        if warnings is not None:
+            warnings.append(f"convert_to_pict: untranslatable constraint dropped: {python_expr!r} — {e}")
         return (
             f"// ORIGINAL: {python_expr}\n"
             f"// WARNING: Cannot translate — {e}"
@@ -250,13 +256,17 @@ def convert_json_to_pict(json_path: str, output_path: str) -> None:
         lines.append("")
         translated_count = 0
         failed_count = 0
+        translate_warnings: List[str] = []
         for c in constraints:
-            pict = translate_constraint(c)
+            pict = translate_constraint(c, translate_warnings)
             lines.append(pict)
             if pict.startswith("//"):
                 failed_count += 1
             else:
                 translated_count += 1
+        if translate_warnings:
+            logger.warning("convert_to_pict dropped %d constraint(s):\n%s",
+                           len(translate_warnings), "\n".join(translate_warnings))
 
     content = "\n".join(lines) + "\n"
 

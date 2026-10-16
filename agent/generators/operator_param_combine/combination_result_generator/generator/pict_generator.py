@@ -35,7 +35,8 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from itertools import product as _product
+from typing import Any, Dict, List, Optional, Tuple, Union, Set
 
 from agent.generators.operator_param_combine.combination_result_generator.constraint.interfaces import \
     ConstraintProtocol
@@ -68,6 +69,8 @@ PICT_LIST_TOKEN_PREFIX = "__L_"
 PICT_LIST_TOKEN_SUFFIX = "__"
 # 保守前缀黑名单：值域中真实出现 __ 前缀字符串时退化为计数 token，防止撞名
 PICT_TOKEN_COLLISION_FALLBACK_TEMPLATE = "__v{ordinal}__"
+_CROSS_EQ_SHARED_LEFT_MAX_LINES = 24
+_GUARD_COMBO_MAX = 24  # 守卫钉值笛卡尔积组合数上限，超限回退「跳过该析取项」（对齐 _CROSS_EQ_SHARED_LEFT_MAX_LINES）
 
 
 class PICTGenerator(BaseGenerator):
@@ -209,6 +212,12 @@ class PICTGenerator(BaseGenerator):
             write_artifacts=bool(self._result_output_path),
         )
         self._pict_report = report
+        if report.success and report.removed_constraints:
+            logger.warning(
+                "operator=%s real PICT converged only after removing %d constraint(s): %s; "
+                "relying on secondary constraint filter",
+                self._operator_name, len(report.removed_constraints), report.removed_constraints,
+            )
         if not report.success:
             logger.warning(
                 "operator=%s real PICT failed (category=%s); falling back to in-process generator. "
@@ -1241,7 +1250,7 @@ def _collect_or_term(node: ast.AST, columns: set, warnings: List[str],
     return produced[0]
 
 
-def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
+def _translate_or_base(node: ast.BoolOp, columns: set, warnings: List[str],
                   parameters: Optional[Dict[str, List[Any]]] = None) -> Optional[List[str]]:
     """把顶层 `... or ...` 翻译为 PICT。
 
@@ -1355,7 +1364,6 @@ def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
     # bias.dtype==weight.dtype）按展开规模设上限：
     # 预计生成行数 = sum(各 pair 公共值数)，超限才拒绝（仍交二次过滤兜底）。
     left_cols = [lc for lc, _ in cross_eqs]
-    _CROSS_EQ_SHARED_LEFT_MAX_LINES = 24
     if len(left_cols) != len(set(left_cols)):
         est_lines = 0
         for left_col, right_col in cross_eqs:
@@ -1380,6 +1388,195 @@ def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
             lines.append("IF {} AND [{}] = {} THEN [{}] = {};".format(
                 guard_str, left_col, fv, right_col, fv))
     return lines or None
+
+def _col_eq_pairs(node: ast.AST) -> List[Tuple[str, str]]:
+    """提取跨参等式链中的相邻列对。
+
+    节点为「所有比较符均为 == 且两侧都是列引用」的单个/链式比较时，返回相邻两两
+    ``(列, 列)`` 列表；否则返回空列表。
+
+    示例：``x.dtype == y.dtype``            -> ``[("x_dtype", "y_dtype")]``
+          ``x.dtype == y.rank == z.rank``   -> ``[("x_dtype", "y_rank"), ("y_rank", "z_rank")]``
+
+    :param node: 待检查的 AST 节点
+    :return: 相邻列引用对列表；非跨参等式时为空
+    """
+    if isinstance(node, ast.Compare) and node.ops and all(isinstance(op, ast.Eq) for op in node.ops):
+        operands = [node.left] + list(node.comparators)
+        cols = [_operand_column(operand) for operand in operands]
+        if all(col is not None for col in cols):
+            return [(cols[index], cols[index + 1]) for index in range(len(cols) - 1)]
+    return []
+
+
+def _const_literal(node: ast.AST) -> Optional[str]:
+    """取常量节点的 PICT 字面量。
+
+    识别 ``ast.Constant`` 与负数形式 ``UnaryOp(op=USub(), operand=Constant)``；
+    字面量统一走 ``_format_constraint_value``，即字符串/布尔加**双引号**、数值不加引号。
+
+    示例：``-1`` -> ``-1``；``3`` -> ``3``；``"FLOAT32"`` -> ``"FLOAT32"``；``True`` -> ``"true"``
+
+    :param node: 待取值的 AST 节点
+    :return: PICT 字面量；非常量返回 ``None``
+    """
+    if isinstance(node, ast.Constant):
+        return _format_constraint_value(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) \
+            and isinstance(node.operand, ast.Constant):
+        return _format_constraint_value(-node.operand.value)
+    return None
+
+
+def _pin_values(node: ast.AST) -> Set[Tuple[str, str]]:
+    """收集析取项内的钉值集合，用于判定析取项之间是否互斥。
+
+    收集 ``[列] == 常量`` 与 ``[列] in [常量...]`` 形式；``[列] == [列]``（跨参等式）不算钉值。
+    ``in`` 集合的每个常量各算一个钉值（同列多值），供守卫按列分组做笛卡尔积。
+
+    示例：``x.dtype == "FLOAT32"``  -> ``{("x_dtype", '"FLOAT32"')}``
+          ``x.dtype == y.dtype``    -> ``set()``
+          splitItem.range_value in [0, 1] → {("splitItem_range_value", "0"), ("splitItem_range_value", "1")}
+
+    :param node: 析取项 AST
+    :return: ``(列, 常量文本)`` 集合
+    """
+    pins: Set[Tuple[str, str]] = set()
+
+    def _walk(current: ast.AST) -> None:
+        if isinstance(current, ast.BoolOp):
+            for value in current.values:
+                _walk(value)
+            return
+        if isinstance(current, ast.Compare) and len(current.ops) == 1 \
+                and isinstance(current.ops[0], ast.In):
+            right = current.comparators[0]
+            if isinstance(right, (ast.List, ast.Tuple)):
+                col = _operand_column(current.left)
+                if col is None:
+                    return
+                for element in right.elts:
+                    literal = _const_literal(element)
+                    if literal is None:
+                        return
+                    pins.add((col, literal))
+            return
+        if isinstance(current, ast.Compare) and len(current.ops) == 1 and isinstance(current.ops[0], ast.Eq):
+            left_col = _operand_column(current.left)
+            right_col = _operand_column(current.comparators[0])
+            if left_col is not None and right_col is not None:
+                return
+            left_literal = _const_literal(current.left)
+            right_literal = _const_literal(current.comparators[0])
+            if left_col is not None and right_literal is not None:
+                pins.add((left_col, right_literal))
+            elif right_col is not None and left_literal is not None:
+                pins.add((right_col, left_literal))
+
+    _walk(node)
+    return pins
+
+
+def _guarded_cross_eq_lines(node: ast.BoolOp, columns: set, warnings: List[str],
+                            parameters: Optional[Dict[str, List[Any]]] = None) -> List[str]:
+    """互斥 OR 内的跨参等式守卫式展开。
+
+    各析取项把同一列钉在不同常量（互斥）时，对每个 And 型析取项，把其中的跨参等式按
+    公共值枚举为受「钉值守卫」约束的 IF-THEN 行：
+
+        IF [钉值] AND [l] = v THEN [r] = v;
+
+    守卫是析取项前缀的子集，故新增行被原约束蕴含（只放宽、不收紧）；守卫落到
+    ``in {...}`` 集合形式时跳过该析取项（PICT 对含集合守卫的 3-way IF-THEN 求解会爆炸）。
+
+    示例：``(groupType.range_value == -1 and x.dtype == y.dtype) or (groupType.range_value == 0)``，
+    ``x.dtype`` / ``y.dtype`` 取值域均为 ``["FLOAT32", "FLOAT16"]`` ——>
+    ``IF ([groupType_range_value] = -1) AND [x_dtype] = "FLOAT32" THEN [y_dtype] = "FLOAT32";``
+    ``IF ([groupType_range_value] = -1) AND [x_dtype] = "FLOAT16" THEN [y_dtype] = "FLOAT16";``
+
+    :param node: 顶层 OR 布尔节点
+    :param columns: PICT 合法列集合
+    :param warnings: 告警收集器（原地追加）
+    :param parameters: 各列取值域，用于求公共值
+    :return: 守卫式 IF-THEN 行列表；不满足条件时返回空列表
+    """
+    parameters = parameters or {}
+    disjuncts = list(node.values)
+    pins = [_pin_values(disjunct) for disjunct in disjuncts]
+    exclusive = any(
+        left_col == right_col and left_literal != right_literal
+        for i in range(len(pins)) for j in range(i + 1, len(pins))
+        for (left_col, left_literal) in pins[i] for (right_col, right_literal) in pins[j]
+    )
+    if not exclusive:
+        return []
+    out: List[str] = []
+    for index, disjunct in enumerate(disjuncts):
+        if not (isinstance(disjunct, ast.BoolOp) and isinstance(disjunct.op, ast.And)):
+            continue
+        pairs: List[Tuple[str, str]] = []
+
+        def _walk(current: ast.AST) -> None:
+            if isinstance(current, ast.BoolOp) and isinstance(current.op, ast.And):
+                for value in current.values:
+                    _walk(value)
+                return
+            found = _col_eq_pairs(current)
+            if found:
+                pairs.extend(found)
+
+        _walk(disjunct)
+        if not pairs:
+            continue
+        grouped: Dict[str, List[str]] = {}
+        for col, const in pins[index]:
+            grouped.setdefault(col, []).append(const)
+        combo_count = 1
+        for consts in grouped.values():
+            combo_count *= len(consts)
+        if combo_count > _GUARD_COMBO_MAX:
+            warnings.append("guard combination count {} exceeds limit; disjunct skipped".format(combo_count))
+            continue
+        guard_cols = sorted(grouped)
+        for combo in _product(*(sorted(grouped[col]) for col in guard_cols)):
+            guard_str = " AND ".join(
+                "([{}] = {})".format(col, const) for col, const in zip(guard_cols, combo)
+            )
+            for (left_col, right_col) in pairs:
+                for value in _common_values(left_col, right_col, parameters):
+                    formatted = _format_domain_value(value)
+                    if formatted is None:
+                        continue
+                    out.append("IF {} AND [{}] = {} THEN [{}] = {};".format(
+                        guard_str, left_col, formatted, right_col, formatted))
+    return out
+
+
+def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
+                  parameters: Optional[Dict[str, List[Any]]] = None) -> Optional[List[str]]:
+    """``_translate_or_base`` 的外层包装：在既有翻译结果之上追加守卫式跨参等式展开行。
+
+    返回值 = 基函数结果 + ``_guarded_cross_eq_lines`` 产出的守卫行；守卫展开抛异常时
+    只记录告警、保持基函数行为不变。
+
+    示例：``(groupType.range_value == -1 and x.length == weight.length) or (groupType.range_value == 0)``
+          -> 基函数的 OR 行 + ``IF ([groupType_range_value] = -1) AND [x_length] = 128 THEN [weight_length] = 128;``
+
+    :param node: 顶层 OR 布尔节点
+    :param columns: PICT 合法列集合
+    :param warnings: 告警收集器（原地追加）
+    :param parameters: 各列取值域
+    :return: 合并后的 PICT 约束行；两者皆空时返回 ``None``
+    """
+    base = _translate_or_base(node, columns, warnings, parameters)
+    extra: List[str] = []
+    try:
+        extra = _guarded_cross_eq_lines(node, columns, warnings, parameters)
+    except Exception as exc:  # 守卫展开失败不改动基函数结果，仅记录告警
+        warnings.append("guarded cross-eq expansion failed: {}".format(exc))
+    if base is None and not extra:
+        return None
+    return (base or []) + extra
 
 
 def _translate_anyall(node: ast.Call, columns: set, warnings: List[str],

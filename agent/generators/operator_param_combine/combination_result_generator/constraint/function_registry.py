@@ -10,7 +10,6 @@ Version:
 Responsibility:
     Manage allowed constraint functions.
 """
-
 from typing import (
     Callable,
     Dict,
@@ -18,19 +17,9 @@ from typing import (
 
 from agent.generators.operator_param_combine.combination_result_generator.constraint import \
     FunctionAlreadyRegisteredError, FunctionNotRegisteredError
+from agent.generators.operator_param_combine.combination_result_generator.constraint.whitelist import ALLOWED_CALLABLES
 
-_DEFAULT_FUNCTIONS: dict[str, Callable] = {
-    "len": len,
-    "abs": abs,
-    "any": any,
-    "all": all,
-    "min": min,
-    "max": max,
-    "int": int,
-    "float": float,
-    "str": str,
-    "bool": bool
-}
+_DEFAULT_FUNCTIONS: dict[str, Callable] = dict(ALLOWED_CALLABLES)
 
 
 class FunctionRegistry:
@@ -42,7 +31,7 @@ class FunctionRegistry:
     """
 
     def __init__(self):
-        self._functions: Dict[str,Callable] = {}
+        self._functions: Dict[str, Callable] = {}
         for name, func in _DEFAULT_FUNCTIONS.items():
             self.register(name, func)
 
