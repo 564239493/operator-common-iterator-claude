@@ -10,6 +10,7 @@
       "platforms": [
         "Atlas A3 训练系列产品/Atlas A3 推理系列产品"
       ],
+      "cann_version": "cann9.0.0",
       "supports_npu": true,
       "supports_fusion": true,
       "fusion_devices": [0, 1],
@@ -63,6 +64,7 @@
     "ttk.plog_dir": "远端 PLOG 目录，默认 /root/ascend/log/debug",
     "atk": "ATK 执行配置；PLOG 采集与 TTK 链一致（env_init 建议同 TTK 先清理 plog_dir，保证 error_summary.log 只含本轮报错）",
     "atk.collect_plog": "真实 ATK 执行后是否同步 PLOG，默认 true；缺省回落到 ttk.collect_plog",
-    "atk.plog_dir": "远端 PLOG 目录；缺省回落到 ttk.plog_dir / 默认 /root/ascend/log/debug"
+    "atk.plog_dir": "远端 PLOG 目录；缺省回落到 ttk.plog_dir / 默认 /root/ascend/log/debug",
+    "cann_version": "测试算子对应的cann版本，覆盖率归档必填"
   }
 }
