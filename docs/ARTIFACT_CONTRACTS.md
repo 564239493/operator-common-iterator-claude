@@ -15,10 +15,9 @@ runs/<operator>-<timestamp>/
     conflict_candidates.json           # 可选：source-analyst 产，结构化冲突候选（机读）
     conflict_resolution.json           # 可选：用户裁决 [{conflict_id, winner}]
     supplement_constraints.md          # 可选：--supplement-constraints 手写快照
-    scene_scan.json                    # 可选：scene-scanner 产，设备→量化模板→特性参数三级嵌套
-    scene_directive.md                 # 可选：render_scene_directive.py 渲染（含 param_modes/selection_policy/known_conflicts 机读块），extractor 据此适配
-    scene_conflicts.json               # 可选：check_scene_conflicts.py 产，Q3 后特性参数冲突识别报告（advisory，allow-continue）
-    selection.json                     # 可选：主协调器 Q1/Q2/Q3 答案汇总（值级），render_scene_directive.py 据此渲染 directive
+    scene_directive.md                 # 可选：render_scene_directive.py 渲染（含 device_types/selection/param_modes/selection_policy 机读块），extractor 据此适配
+    selection.json                     # 可选：主协调器场景文本直输匹配汇总（值级），render_scene_directive.py 据此渲染 directive
+    # legacy：scene_scan.json / scene_conflicts.json 仅存在于历史 run（三级场景扫描流程已下线删除）
   iter_001/
     constraints.json
     extraction_provenance.json         # 必载知识清单逐模块 applied/not_applicable 记录（首轮 EXTRACT 产，checker 审计用）
@@ -392,39 +391,33 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 被 `apply_conflict_resolution.py` 消费（与 `conflict_candidates.json` join）；
 由用户人工产出。无独立结构校验命令——合并器对`conflict_id` 匹配和 `winner` 取值处理是唯一门禁。
 
-## scene_scan.json
+## scene_scan.json（legacy，已下线）
 
-`scene-scanner` 产 `<run-dir>/inputs/scene_scan.json`（调度时必须显式传入 `<run-dir>`，不得按仓库 cwd 解析相对 `inputs/`）。
-按**设备类型 → 量化模板 → 特性参数**三级嵌套提取文档中有测试需求的场景，**禁止输出"通用"设备类型**
-（无明确设备标注的内容，需要分别记录到每个具体设备组下）。
-顶层含 `operator`/`has_scenarios`/`device_types`（"产品支持情况"具体设备名）/`devices[]`/`scan_notes`；
-每设备 `device`/`templates[]`，
-每模板 `template`/`definition`/`unsupported_features`/`feature_params[]`，
-每特性 `feature`/`params[]`，
-每参数 `name`/`values`/`description`/`constraint`/`related`/`value_conflicts`（可选）。
-
-完整 schema、字段语义、JSON 示例见 `prompts/scan_scenes.md` §4。
-提取规则见 `scan-scenes` skill 和 `prompts/scan_scenes.md` §3-§5。
-
-被 `validate_artifacts.py scene_scan` 校验（该函数是 schema 的唯一强制真相源，校验 `has_scenarios`/`device_types`/
-`devices[].device` 派生一致性/`value_conflicts` 结构合法性）；
-由 `scene-scanner` 产出；主协调器消费（据此 Q1→Q2→Q3 三轮征询，征询协议见 `iterate-operator/SKILL.md` 步骤 5）。
+三级场景扫描流程（scene-scanner Agent + Q1→Q2→Q3 征询 + `check_scene_conflicts.py`）
+**已整体下线删除**，新 run 不再产生本文件；保留说明仅为历史 run 兼容。
+`validate_artifacts.py scene_scan` 校验模式保留，仅用于校验历史 run 产物。
+当前唯一场景路径为**文本直输模式**（见 `selection.json` / `scene_directive.md`）。
 
 ## selection.json
 
-主协调器 Q1→Q2→Q3 答案汇总落地到 `<run-dir>/inputs/selection.json`。
+主协调器场景文本匹配结果落地到 `<run-dir>/inputs/selection.json`（文本直输模式，
+来源为 `--scenes "<场景描述>"` 或用户交互文本输入）。
 形态 `{device_types, selection}`，
-`selection` 为`{device: {template: <tpl_value>}}`，
-`<tpl_value>` ∈ `null`（保持自动）| `"fix_all_default"` | `{param:[values]}`（Other 用户输入，主协调器识别组装）。
+`device_types` 为文档"产品支持情况"**设备全称非空清单（硬性必要项）**，
+`selection` 为 `{device: {template: <tpl_value>}}`，
+`<tpl_value>` ∈ `null`（保持自动）| `{param:[values]}`（文本匹配的显式取值；
+`"fix_all_default"` 文本模式不支持——无场景参数枚举）。
 
-供 `render_scene_directive.py` 解析 `param_modes` 和 `check_scene_conflicts.py` 做冲突识别。
-无独立结构校验命令——`render_scene_directive.py` 和 `check_scene_conflicts.py` 对其内容的解析是唯一门禁。由主协调器产出。
+供 `render_scene_directive.py` 解析 `param_modes`。
+无独立结构校验命令——`render_scene_directive.py` 对其内容的解析是唯一门禁
+（`device_types` 空 → `DEVICE_REQUIRED` exit 2）。由主协调器产出。
 
 ## scene_directive.md
 
 `render_scene_directive.py` 渲染，落 `<run-dir>/inputs/scene_directive.md`（仅 `scope=subset`时存在）。
-逐设备逐模板列出选定模板及特性参数取值，末尾附机读块
-`<!-- scene: {device_types, selection, param_modes, selection_policy, known_conflicts} -->`。
+逐设备列出选定设备/量化场景/参数取值，末尾附机读块
+`<!-- scene: {device_types, selection, param_modes, selection_policy, known_conflicts} -->`
+（文本直输模式 `known_conflicts` 恒为 `[]`）。
 `param_modes[device][param]` ∈ `{"expand": [取值清单]}` | `{"fix": X}`；
 缺键 = 按文档和已选场景自动适配，已选场景禁止的 Optional 参数显式生成 `param is None`。
 
@@ -432,18 +425,18 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 `extract-constraints` skill 场景屏蔽规则段）；
 执行反馈轮不改本文件，`constraint-updater` 必须遵守同一 directive 保持跨轮稳定。
 
-被 `render_scene_directive.py` 渲染时校验（设备/模板/param 名/值 ∈ scan、解析 `param_modes`、非法选择 exit 2 阻断）；
-由`render_scene_directive.py` 产出（从 `scene_scan.json` + `selection.json` 渲染），
+被 `render_scene_directive.py` 渲染时校验（结构合法性、`device_types` 非空、解析 `param_modes`、非法选择 exit 2 阻断）；
+由 `render_scene_directive.py` 产出（从 `selection.json` 渲染，无 `scene_scan.json` 依赖），
 `constraint-extractor`消费。无独立结构校验命令——渲染器的校验是唯一门禁。
 
 ## run_state.scene
 
 `init_run` 写 `null`，SCENE_SCAN 子步骤由 `render_scene_directive.py` 回写。
-形态`{enabled, scope, device_types, selection, param_modes, selection_policy, known_conflicts, directive, scan}`。
+形态`{enabled, scope, device_types, selection, param_modes, selection_policy, known_conflicts, directive, scan, source}`。
 `scope=subset` 时 `directive` 指向 `inputs/scene_directive.md`；
-`scope=all` 全设备全模板全特性参数全展开（不剪枝，不写 directive 文件）；
 `scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件（extractor 见无 directive 即按全场景提取，行为不变）。
-纯无场景算子（`has_scenarios=false`）不触发征询，`run_state.scene=null`。
+`source` ∈ `scenes_param`（`--scenes` 直输）/ `interactive_input`（交互文本输入）。
+批处理（`iterate-directory`）不收集场景，`run_state.scene=null`。
 
 无独立结构校验命令——`render_scene_directive.py` 写入时校验合法性，`init_run` 读取时校验初始 `null`。由
 `render_scene_directive.py` 回写。

@@ -117,35 +117,39 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
 
 ## 4. 单轮执行协议
 
-### SCENE_SCAN（条件触发，非独立状态）
+### SCENE_SCAN（强制场景收集，文本直输模式，EXTRACT 前子步骤）
 
-输入：`inputs/<doc>.md`（只读）。
-执行者：scene-scanner（调度消息显式传入 `<run-dir>` 绝对路径，产
-`<run-dir>/inputs/scene_scan.json`；禁止按仓库 cwd 解析相对 `inputs/`。按**设备类型
-→ 量化模板 → 特性参数**三级提取，不设"通用"组、特性参数只提取枚举/分档可选项）+ 主
-协调器（AskUserQuestion **Q1→Q2→Q3 三轮顺序征询**，每轮一次调用、其内问题并行作答；
-必须分三轮而非一次：Q2 问题集依赖 Q1 选中设备、Q3 问题集依赖 Q2 选中模板，同调用内
-拿不到前轮答案且预枚举 (设备,模板) 全组合会爆炸。Q1 设备类型（multiSelect 真实设备、
-**不设"全部设备"**聚合项；`device_types` 仅 1 个时直接默认选中、跳过 Q1 进 Q2）→ Q2 逐设备
-量化模板（multiSelect 真实模板、**不设"全部模板"**聚合项、批量 ≤4 问/次；某设备仅 1 模板
-自动选中、跳过该设备 Q2）→ Q3 逐（设备,模板）特性参数（**single-select**，批量 ≤4 问/次，
-每问固定 2 预设 + Other：选项1「保持自动/继承文档约束（未填写）」→`null`、选项2「全部固定
-默认值」→`"fix_all_default"`、Other→值级 JSON 如 `{"groupType":[-1,0],"splitItem":[3]}`
-（单值→fix、多值→expand 子集、未列参数→按文档和已选场景自动适配）；question 文本含完整 feature_params 编号表
-+ 提示语「明确填写（Other 输 JSON）→ 按用户值限制；选保持自动（未填写）→ 保持自动/继承文档
-约束」），写 `selection.json={"device_types":[...],"selection":{device:{template:<tpl_value>}}}`
-（`<tpl_value>` ∈ `null|"fix_all_default"|{param:[values]}`）+
-`scripts/render_scene_directive.py`（校验设备/模板/param 名/值 ∈ scan、解析显式参数的 `param_modes`、渲染 `inputs/scene_directive.md`
-（含机读块 `{device_types, selection, param_modes, selection_policy}`；`selection` 保留
-逐设备选中模板，确保“保持自动”时仍可机器判定场景）、回写 `run_state.scene`）。
-`--scene off` 跳过；`--scene auto`（默认）文档有场景则征询、无则跳过；`--scene all` 取
-全设备全模板全特性参数不剪枝（批处理默认）。文档无场景（`has_scenarios=false`）跳过，
-退回纯文档驱动；仅有量化参数信号而未提取到模板时只写 `scan_notes`
-（`quant_signal_no_template`）警告，不补造。
-完成条件：`scene_scan.json` 过 `validate_artifacts.py scene_scan`；选定场景落
-`run_state.scene` + `inputs/scene_directive.md`（仅 subset）。
-失败策略：scene-scanner 自修正最多三次；`render_scene_directive.py` 对非法选择 exit 2
-阻断，提示重选，不静默回退。为独立子步骤而非新状态，空即跳过。
+输入：`inputs/<doc>.md`（只读）、`servers.json`（只读平台并集）。
+执行者：主协调器（无独立 Agent）。场景信息二选一：`--scenes "<场景描述>"` 直输
+（原文存 `run_state.scenes`）；未传时组装【建议面板】（文档"产品支持情况"设备全称、
+`servers.json` 各服务器 `platforms` 并集、文中量化场景关键词）请用户**文本输入**。
+主协调器做简单文字匹配（解析细则见 `iterate-operator` Skill SCENE_SCAN 节）：设备
+关键字对齐文档设备全称（**硬性必要项**，对不上→追问重输）；量化场景关键词命中；
+参数取值等值→fix、枚举→expand、大白话闭区间→展开整数序列（>32 值提示收窄，
+开区间话术必须请用户给确定上下界）。AskUserQuestion 回显确认一次（expand 清单
+显示完整展开结果）后写 `inputs/selection.json`
+（`{"device_types":[...],"selection":{device:{template: null|{param:[values]}}}}`），
+再运行 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
+做结构校验并渲染 `inputs/scene_directive.md`（机读块
+`{device_types, selection, param_modes, selection_policy}`）、回写 `run_state.scene`
+（`scene.source` = scenes_param / interactive_input）。
+
+**设备必选硬门槛（强制）**：未选出至少一个可对齐文档"产品支持情况"的设备全称，
+禁止写 `selection.json`、禁止渲染 directive、禁止推进 EXTRACT；用户明确拒绝提供
+设备时确认是否停止任务，不得静默跳过场景步骤继续提取。
+`render_scene_directive.py` 对 `device_types` 空返回 `DEVICE_REQUIRED` exit 2、
+无选中场景返回 `EMPTY_SCENE` exit 2，此时回到文字匹配重新征询。
+`--scope off` 显式禁用场景（不产 directive，纯文档驱动）；批处理
+（`iterate-directory`）无头不能 AskUserQuestion，默认不收集场景。
+
+**legacy 已下线**：三级场景扫描流程（scene-scanner Agent 扫 `scene_scan.json` +
+Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判 + `--scan`/`--scope all`
+渲染路径）已整体删除，禁止调用；`scene-scan` Agent/Skill、`prompts/scan_scenes.md`、
+`scripts/check_scene_conflicts.py` 均已移除，原实现仅存 git 历史。
+
+完成条件：`run_state.scene` 落地 + `inputs/scene_directive.md` 存在（subset）。
+失败策略：设备/关键词匹配不上→追问重输；`render_scene_directive.py` exit 2 → 按
+`code`/`errors` 修正后重新渲染，不静默回退。
 
 ### EXTRACT
 

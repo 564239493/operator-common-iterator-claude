@@ -28,6 +28,7 @@ from agent.generators.operator_param_combine.generate_combination_input.combinat
     CombinationConstraintGenerate
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
+from agent.generators.param_constraint_solve.case_expr_evaluator import build_namespace, eval_constraint
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
 
 logger = LazyLogger()
@@ -39,6 +40,198 @@ class ParamSetValueFlag(BaseModel):
     range_values: bool = False
     format: bool = False
     length: bool = False
+
+
+# ---------------------------------------------------------------------------
+# reduce 类算子输出 shape 确定性派生（keepDim=false 去轴 / true 置 1）
+# ---------------------------------------------------------------------------
+# 轴参数名提示集合（小写匹配）。reduce 语义由「同时存在轴参数 + keepDim 参数」共同标识，
+# 避免把仅带 dim 的切分/门控算子（如 GeGluV3，无 keepDim）误纳入。
+_REDUCE_DIM_PARAM_NAMES = {
+    "dim", "dims", "axis", "axes", "reduce_dim", "reduce_dims", "reduce_axis", "reduce_axes",
+}
+_REDUCE_KEEPDIM_PARAM_NAMES = {
+    "keepdim", "keepdims", "keep_dim", "keep_dims",
+}
+# 源 tensor 名称提示（关系约束缺失时的兜底）
+_REDUCE_SOURCE_PARAM_NAMES = ("self", "x", "input", "input_x", "in", "lhs", "src")
+# 可作为输出 shape 派生依据的约束类型（按 relation_params 定位源 tensor，不解析表达式）
+_REDUCE_OUTPUT_SHAPE_DEP_TYPES = {"shape_dependency", "shape_value_dependency"}
+
+
+def _as_case_input_map(case) -> Dict[str, Any]:
+    """把 CaseConfig.inputs（可能含嵌套 list）摊平为 {param_name: InputCaseConfig}。"""
+    by_name: Dict[str, Any] = {}
+    for item in getattr(case, "inputs", None) or []:
+        items = item if isinstance(item, (list, tuple)) else [item]
+        for sub_item in items:
+            name = getattr(sub_item, "name", None)
+            if name:
+                by_name[name] = sub_item
+    return by_name
+
+
+def normalize_reduce_axes(raw_axes, rank: int):
+    """对轴序列做去重 + 负轴归一化。
+
+    保留首次出现顺序；任一轴归一化后越界（<0 或 >=rank）返回 None（调用方拒产）。
+    """
+    normalized: List[int] = []
+    for axis in raw_axes:
+        try:
+            axis = int(axis)
+        except (TypeError, ValueError):
+            return None
+        if axis < 0:
+            axis += rank
+        if axis < 0 or axis >= rank:
+            return None
+        if axis not in normalized:
+            normalized.append(axis)
+    return normalized
+
+
+def _extract_reduce_axes(dim_case):
+    """从轴参数提取执行器视角的原始轴序列。
+
+    镜像执行层 `_expand_attrs_input` 对带 length 的 attrs 展开语义：length>0 时
+    标量复制 length 份、list 长度不等时以首元素复制 length 份；否则按 list/标量原样。
+    """
+    range_value = getattr(dim_case, "range_values", None)
+    length = getattr(dim_case, "length", None)
+    try:
+        length = int(length) if length is not None else None
+    except (TypeError, ValueError):
+        length = None
+    if length is not None and length > 0:
+        if isinstance(range_value, (list, tuple)):
+            rv_list = list(range_value)
+        elif range_value is not None:
+            rv_list = [range_value]
+        else:
+            rv_list = []
+        if len(rv_list) == length:
+            return rv_list
+        if len(rv_list) == 1:
+            return rv_list * length
+        if not rv_list:
+            return []
+        return [rv_list[0]] * length
+    if range_value is None:
+        return None
+    if isinstance(range_value, (list, tuple)):
+        return list(range_value)
+    return [range_value]
+
+
+def _resolve_reduce_source(output_name, output_names, dim_param, keepdim_param, by_name, constraints):
+    """定位被 reduce 的源 tensor：优先关系约束 relation_params，其次名称提示兜底。"""
+    for dependency in constraints or []:
+        if getattr(dependency, "expr_type", None) not in _REDUCE_OUTPUT_SHAPE_DEP_TYPES:
+            continue
+        relation_params = list(getattr(dependency, "relation_params", None) or [])
+        if output_name not in relation_params:
+            continue
+        for param_name in relation_params:
+            if param_name in output_names or param_name in (dim_param, keepdim_param):
+                continue
+            case_input = by_name.get(param_name)
+            if (case_input is not None and case_input.type in ParamModelConfig.TENSOR_ATK_TYPE
+                    and case_input.shape is not None):
+                return param_name
+    for hint in _REDUCE_SOURCE_PARAM_NAMES:
+        for param_name, case_input in by_name.items():
+            if (param_name.lower() == hint and case_input.type in ParamModelConfig.TENSOR_ATK_TYPE
+                    and case_input.shape is not None):
+                return param_name
+    return None
+
+
+def derive_reduce_output_shapes(case, operator_rule_data) -> bool:
+    """reduce 类算子输出 shape 确定性派生 + 轴参数去重/负轴归一化。
+
+    对同时声明 dim/axis 轴参数与 keepDim/keepdim 布尔参数的算子，不再把 out.shape
+    作为自由变量交 Z3 随机求解，而是按 self/dim/keepDim 确定性派生：
+      - keepDim=true：非 reduce 轴取 self 对应轴，reduce 轴置 1；
+      - keepDim=false：按序去除 reduce 轴后的 self 子序列。
+    同时把轴参数归一化（去重 + 负轴转正）后原地回写，从源头杜绝重复轴/越界轴用例。
+
+    非 reduce（缺 dim 或 keepDim）或无法定位源 tensor 时原样返回 True（不改动）。
+    轴归一化后越界返回 False，由上层拒产该 case。函数幂等，可重复调用。
+    """
+    outputs = getattr(operator_rule_data, "outputs", None) or {}
+    output_names = list(outputs.keys()) if hasattr(outputs, "keys") else list(outputs)
+    if not output_names:
+        return True
+    by_name = _as_case_input_map(case)
+    dim_param = None
+    keepdim_param = None
+    for param_name in by_name:
+        lower_name = param_name.lower()
+        if dim_param is None and lower_name in _REDUCE_DIM_PARAM_NAMES:
+            dim_param = param_name
+        if keepdim_param is None and lower_name in _REDUCE_KEEPDIM_PARAM_NAMES:
+            keepdim_param = param_name
+    if dim_param is None or keepdim_param is None:
+        return True
+    dim_case = by_name.get(dim_param)
+    keepdim_case = by_name.get(keepdim_param)
+    if dim_case is None or keepdim_case is None:
+        return True
+
+    constraints = getattr(operator_rule_data, "constraints_in_parameters", None)
+    if isinstance(constraints, dict):
+        constraints = [item for value in constraints.values() if isinstance(value, list)
+                       for item in value]
+    output_name_set = set(output_names)
+    source_param = None
+    for output_name in output_names:
+        source_param = _resolve_reduce_source(output_name, output_name_set, dim_param, keepdim_param,
+                                              by_name, constraints)
+        if source_param is not None:
+            break
+    if source_param is None:
+        logger.debug(
+            f"Skip reduce output derivation, source tensor not located, "
+            f"operator name : '{getattr(operator_rule_data, 'operator_name', '')}'")
+        return True
+
+    source_shape = list(by_name[source_param].shape or [])
+    rank = len(source_shape)
+    raw_axes = _extract_reduce_axes(dim_case)
+    if raw_axes is None:
+        return True
+    axes = normalize_reduce_axes(raw_axes, rank)
+    if axes is None:
+        logger.error(
+            f"Reduce axis out of range after normalization, operator name : "
+            f"'{getattr(operator_rule_data, 'operator_name', '')}', dim : {raw_axes}, "
+            f"source : '{source_param}', rank : {rank}")
+        return False
+
+    # 轴参数原地回写：去重 + 负轴归一化。带 length 的列表类轴参数必须同步收敛
+    # length，否则执行层仍按原 length 复制首元素 → 重复轴无法根除；list 形态直接
+    # 写归一化轴序列，标量形态写首个归一化轴。
+    if getattr(dim_case, "length", None) is not None:
+        dim_case.__setattr__("range_values", list(axes))
+        dim_case.__setattr__("length", len(axes))
+    else:
+        dim_case.__setattr__("range_values", axes[0] if axes else 0)
+
+    keep_dim = bool(keepdim_case.range_values)
+    axis_set = set(axes)
+    derived_shape = ([1 if i in axis_set else source_shape[i] for i in range(rank)] if keep_dim
+                     else [source_shape[i] for i in range(rank) if i not in axis_set])
+    for output_name in output_names:
+        output_case = by_name.get(output_name)
+        if output_case is None or getattr(output_case, "type", None) not in ParamModelConfig.TENSOR_ATK_TYPE:
+            continue
+        output_case.__setattr__("shape", list(derived_shape))
+        logger.info(
+            f"Derive reduce output shape, operator name : "
+            f"'{getattr(operator_rule_data, 'operator_name', '')}', output : '{output_name}', "
+            f"keepDim : {keep_dim}, dim : {axes}, shape : {derived_shape}")
+    return True
 
 
 class ParamConstraintUtils(CommonDispatcher):
@@ -686,12 +879,19 @@ class ParamConstraintUtils(CommonDispatcher):
             constraint_exprs.extend(seed_static_value_expr_list)
 
     def build_param_shape_len_constraint(self, constraint_exprs: List[str], builder: Z3ConstraintBuilder,
-                                         check: bool = True) -> None:
+                                         check: bool = True,
+                                         hard_static_expr_list: List[str] | None = None) -> None:
         """
         基于约束数据冲的dimension创建shape的len条件
         :param constraint_exprs: 约束表达式对象（会被原地修改）
         :param builder: Z3求解器构建器
         :param check: 是否立即执行冲突检测
+        :param hard_static_expr_list: tensor 秩（len(shape)）静态表达式硬约束输出列表（可选）。
+            tensor 维度是文档声明的结构硬约束，不允许在冲突消解中被当作偏好丢弃（防静默
+            降秩：rank 表达式被丢后 shape 长度失去约束，解出 rank 1/2 的 self，设备
+            CheckTbcShape 才失败）。传入时秩表达式写入此列表，由 solve_z3_constraints
+            在偏好消解前永久断言；与硬约束集冲突时 whole solve UNSAT → 返回 False →
+            上层按 param combination 轮换重试，快速失败不产错秩用例。
         """
         shape_len_static_value_expr_list = []
         relation_params = list(self.case_input_map.keys())
@@ -709,11 +909,16 @@ class ParamConstraintUtils(CommonDispatcher):
                 continue
             if isinstance(param_shape_dimension, list):
                 param_shape_dimension = list(set(param_shape_dimension))
-                shape_len_static_value_expr_list.append(f"len({param_name}.shape) in {param_shape_dimension}")
+                shape_len_expr = f"len({param_name}.shape) in {param_shape_dimension}"
             elif isinstance(param_shape_dimension, int):
-                shape_len_static_value_expr_list.append(f"len({param_name}.shape) == {param_shape_dimension}")
+                shape_len_expr = f"len({param_name}.shape) == {param_shape_dimension}"
             else:
                 logger.warning(f"Can't get valid tensor dimension data, param name : {param_name}")
+                continue
+            if hard_static_expr_list is not None:
+                hard_static_expr_list.append(shape_len_expr)
+            else:
+                shape_len_static_value_expr_list.append(shape_len_expr)
 
         if check:
             self.choice_no_conflicts_expr(builder=builder, param_union_expr=constraint_exprs,
@@ -909,6 +1114,63 @@ class ParamConstraintUtils(CommonDispatcher):
 
         self.set_param_is_present(builder)
 
+    def _post_check_tensor_rank_and_elements(self) -> bool:
+        """落盘前用真 Python 语义复核 tensor 秩与元素总数（防静默降秩回归）。
+
+        消费 case_expr_evaluator 的 build_namespace/eval_constraint，对每个 tensor 参数
+        按文档声明 dimensions 复核 len(param.shape)（int → ==，list → in），并以真
+        Python 乘积复核元素总数不超过 TENSOR_TENSOR_ELEMENT_LIMIT。任一不满足即返回
+        False，交由上层拒产该 case（快速失败，不落错秩/超限用例）。eval 本身失败
+        （ok=None，如 shape 为 None、expr 含未暴露属性）按 fail-open 跳过，不阻断。
+        """
+        namespace = build_namespace(self.case_input_map)
+        element_limit = ParamModelConfig.TENSOR_TENSOR_ELEMENT_LIMIT
+        for param_name, case_param in self.case_input_map.items():
+            case_param_shape = getattr(case_param, "shape", None)
+            if case_param_shape is None:
+                continue
+            param_ori_data = self.operator_rule_data.inputs.get(
+                param_name) if param_name in self.operator_rule_data.inputs else self.operator_rule_data.outputs.get(
+                param_name)
+            if param_ori_data is None:
+                continue
+            param_shape_dimension, _ = DataHandleUtil.get_relevant_attribute_value(
+                param_name, param_ori_data.dimensions, "dimensions")
+            if param_shape_dimension is None:
+                continue
+            if isinstance(param_shape_dimension, list):
+                rank_expr = f"len({param_name}.shape) in {list(set(param_shape_dimension))}"
+            elif isinstance(param_shape_dimension, int):
+                rank_expr = f"len({param_name}.shape) == {param_shape_dimension}"
+            else:
+                continue
+            ok, err = eval_constraint(rank_expr, namespace)
+            if ok is False:
+                logger.error(
+                    f"Post-check tensor rank violated, operator name : '{self.operator_name}', "
+                    f"param name : '{param_name}', shape : {case_param_shape}, expr : '{rank_expr}'")
+                return False
+            if ok is None:
+                logger.warning(
+                    f"Post-check tensor rank eval skipped (fail-open), param name : '{param_name}', "
+                    f"expr : '{rank_expr}', err : '{err}'")
+            try:
+                product = 1
+                for dim in case_param_shape:
+                    product *= int(dim)
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    f"Post-check tensor elements skipped (fail-open), param name : '{param_name}', "
+                    f"shape : {case_param_shape}, err msg : '{str(e)}'")
+                continue
+            if product > element_limit:
+                logger.error(
+                    f"Post-check tensor elements exceeded limit, operator name : '{self.operator_name}', "
+                    f"param name : '{param_name}', shape : {case_param_shape}, "
+                    f"elements : {product}, limit : {element_limit}")
+                return False
+        return True
+
     def solve_z3_constraints(self, z3_constraints: List[InterParamConstraint]):
         """
         针对所有的参数关联表达式，使用z3求解器求解
@@ -966,7 +1228,8 @@ class ParamConstraintUtils(CommonDispatcher):
         self.build_param_range_value_constraint(all_static, builder, check=False,
                                                 hard_static_expr_list=domain_static)
         self.build_param_range_value_seed_constraint(all_static, builder, check=False)
-        self.build_param_shape_len_constraint(all_static, builder, check=False)
+        self.build_param_shape_len_constraint(all_static, builder, check=False,
+                                              hard_static_expr_list=domain_static)
         self.build_param_length_constraint(all_static, builder, check=False)
 
         # 文档声明的标量取值域（allowed_range_value enum/range）是硬约束：在偏好
@@ -1039,8 +1302,23 @@ class ParamConstraintUtils(CommonDispatcher):
                         self.case_input_map[param_name].__setattr__(field_name, attr_value)
                 elif param_attr_ori_status and attr_value is not None:
                     self.case_input_map[param_name].__setattr__(field_name, attr_value)
+        # reduce 类算子：out 是派生输出，不把 out.shape 当自由变量；按 self/dim/keepDim
+        # 确定性派生（keepDim=false 去轴 / true 置 1），并就地归一化 dim（去重 + 负轴转正），
+        # 从源头消除 CheckShape（out 轴任意）与 CheckDimValid（重复轴）失败。派生先于下方
+        # 秩复核，保证复核的是最终派生 shape。
+        if not derive_reduce_output_shapes(self.case, self.operator_rule_data):
+            logger.error(
+                f"Reject case, reduce axis out of range after normalization, "
+                f"operator name : '{self.operator_name}'")
+            return False
         # 生成优先：Z3 已给出解后直接保留用例。旧的 Python PostCheck 会再次 eval
         # constraints_in_parameters，并把“伪 SAT”用例 fail-closed 丢弃；复杂算子中
         # Param 包装、可选参数和 SeqSort 语义不完整，曾导致 0/10 用例全部被误杀。
-        # 真实合法性改由后续 TTK/ATK 执行结果观察，不在生成阶段二次阻断。
+        # 仅保留收窄后的秩/元素总数后置复核（case_expr_evaluator 真 Python 语义），
+        # 命中秩违例或元素超限才拒产；其余合法性仍由后续 TTK/ATK 执行结果观察。
+        if not self._post_check_tensor_rank_and_elements():
+            logger.error(
+                f"Post-check rejected resolved case (tensor rank/elements), "
+                f"operator name : '{self.operator_name}'")
+            return False
         return True

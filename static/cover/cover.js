@@ -22,13 +22,12 @@ const app = createApp({
         const chartReady = computed(() => {
             if (!coverData.value || !window.echarts) return false;
             const g = coverData.value.granularities || {};
-            return !!(g[granularity.value] || g.file || g.func);
+            return !!g[granularity.value];
         });
 
         // 单模块环形图 option: covered vs (total-covered), 环心综合率, tooltip 明细
         function ringOption(mod) {
-            const g = coverData.value && (coverData.value.granularities[granularity.value]
-                || coverData.value.granularities.file || coverData.value.granularities.func);
+            const g = coverData.value && coverData.value.granularities[granularity.value];
             if (!g || !g.coverage || !g.coverage[mod]) return null;
             const metrics = g.coverage[mod].metrics || [];
             if (!metrics.length) return null;
@@ -99,6 +98,15 @@ const app = createApp({
             nextTick(renderRings);
         });
 
+        // coverData 置空 → 详情区(v-if)销毁, 旧 echarts 实例绑定的是已移除 DOM,
+        // 必须 dispose 并清空, 否则重建 DOM 后 setOption 作用在旧 canvas 上导致环形图丢失
+        watch(coverData, (val) => {
+            if (!val) {
+                Object.values(ringInstances).forEach(inst => inst && inst.dispose());
+                Object.keys(ringInstances).forEach(k => delete ringInstances[k]);
+            }
+        });
+
         const filteredDirs = computed(() => {
             const q = coverSearch.value.trim().toLowerCase();
             if (!q) return coverDirs.value;
@@ -118,7 +126,7 @@ const app = createApp({
         function curGran() {
             const g = coverData.value && coverData.value.granularities;
             if (!g) return null;
-            return g[granularity.value] || g.file || g.func || null;
+            return g[granularity.value] || null;
         }
 
         function metricsOf(mod) {
@@ -173,19 +181,26 @@ const app = createApp({
         });
 
         // ---- 已覆盖函数行详情 (关联 analysis.md D 节) ----
+        // 兼容两种 schema:
+        //   dict (swin):  {file, coveredFuncCount, totalLines, items:[{name,dir,fullPath,lineStr,lineCount,covered_lines}]}
+        //   list (lse):   [{file,path,func,line_begin,line_end,total_lines,cov_lines,cov_rate,covered_lines,uncovered_lines,dir}]
         const coveredFuncRows = computed(() => {
             const g = curGran();
             if (!g || !g.coveredFuncLineDetail) return [];
+            const cfl = g.coveredFuncLineDetail;
             const linesMap = coveredUncoveredLines.value;
-            return (g.coveredFuncLineDetail.items || []).map(it => {
-                const la = linesMap[it.name] || {};
+            const items = Array.isArray(cfl) ? cfl : (cfl.items || []);
+            return items.map(it => {
+                // 兼容字段名: name/func, fullPath/path, lineCount/cov_lines, lineStr 缺省时由 covered_lines 拼
+                const name = it.name || it.func || '';
+                const dir = it.dir || '';
+                const fullPath = it.fullPath || it.path || '';
+                const coveredLines = it.covered_lines || [];
+                const lineCount = it.lineCount != null ? it.lineCount : (it.cov_lines != null ? it.cov_lines : coveredLines.length);
+                const lineStr = it.lineStr || (coveredLines.length ? coveredLines.join(', ') : '');
+                const la = linesMap[name] || {};
                 return {
-                    name: it.name || '',
-                    dir: it.dir || '',
-                    fullPath: it.fullPath || '',
-                    coveredLines: it.covered_lines || [],
-                    lineCount: it.lineCount || 0,
-                    lineStr: it.lineStr || '',
+                    name, dir, fullPath, coveredLines, lineCount, lineStr,
                     uncoveredLines: la.uncoveredLines || '',
                     hasAnalysis: !!(la.details && la.details.length),
                 };
@@ -335,9 +350,9 @@ const app = createApp({
             return s.replace(/`/g, '').trim();
         }
 
-        // ---- 选择目录 + 加载数据 ----
-        async function selectCoverDir(d) {
-            if (currentCoverDir.value === d.dir_name && coverData.value) return;
+        // ---- 选择目录 + 加载数据 (force=true 时即使同目录也重新拉取) ----
+        async function selectCoverDir(d, force) {
+            if (!force && currentCoverDir.value === d.dir_name && coverData.value) return;
             currentCoverDir.value = d.dir_name;
             detailLoading.value = true;
             coverData.value = null;
@@ -347,13 +362,13 @@ const app = createApp({
             activePanels.value = ['uncovered'];
             try {
                 const [covRes, anaRes] = await Promise.all([
-                    fetch('/api/cover/' + encodeURIComponent(d.dir_name) + '/coverage').then(r => r.json()),
-                    fetch('/api/cover/' + encodeURIComponent(d.dir_name) + '/analysis').then(r => r.json()).catch(() => null),
+                    fetch('/api/cover/' + encodeURIComponent(d.dir_name) + '/coverage?t=' + Date.now()).then(r => r.json()),
+                    fetch('/api/cover/' + encodeURIComponent(d.dir_name) + '/analysis?t=' + Date.now()).then(r => r.json()).catch(() => null),
                 ]);
                 if (covRes && !covRes.error) {
                     coverData.value = covRes;
-                    const gs = covRes.granularities || {};
-                    granularity.value = gs.func ? 'func' : (gs.file ? 'file' : 'func');
+                    // 暂时固定 func 粒度 (file 粒度暂不展示)
+                    granularity.value = 'func';
                 } else {
                     ElMessage.error('加载覆盖率失败: ' + (covRes && covRes.error ? covRes.error : '未知'));
                 }
@@ -369,6 +384,51 @@ const app = createApp({
             }
         }
 
+        // ---- 手动/定时刷新: 重读 ops_cov_report 目录 + 当前详情 ----
+        const refreshing = ref(false);
+        const lastRefresh = ref('');
+        let pollTimer = null;
+        const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 分钟
+
+        function fmtTime(d) {
+            const p = n => String(n).padStart(2, '0');
+            return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+        }
+
+        async function refreshAll(silent) {
+            if (refreshing.value) return;
+            refreshing.value = true;
+            try {
+                // 1. 重读目录列表
+                const list = await (await fetch('/api/cover/dirs?t=' + Date.now())).json();
+                coverDirs.value = Array.isArray(list) ? list : [];
+                // 2. 当前选中目录若仍存在则强制重载, 否则选第一个
+                let target = coverDirs.value.find(d => d.dir_name === currentCoverDir.value);
+                if (!target) target = coverDirs.value[0] || null;
+                if (target) {
+                    await selectCoverDir(target, true);
+                } else {
+                    currentCoverDir.value = '';
+                    coverData.value = null;
+                }
+                lastRefresh.value = fmtTime(new Date());
+                if (!silent) ElMessage.success('已刷新');
+                nextTick(renderRings);
+            } catch (e) {
+                if (!silent) ElMessage.error('刷新失败: ' + e.message);
+            } finally {
+                refreshing.value = false;
+            }
+        }
+
+        function startPolling() {
+            stopPolling();
+            pollTimer = setInterval(() => refreshAll(true), POLL_INTERVAL_MS);
+        }
+        function stopPolling() {
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        }
+
         function escapeHtml(s) {
             return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
@@ -381,14 +441,17 @@ const app = createApp({
                 if (coverDirs.value.length) {
                     await selectCoverDir(coverDirs.value[0]);
                 }
+                lastRefresh.value = fmtTime(new Date());
                 nextTick(renderRings);
             } catch (e) {
                 ElMessage.error('加载目录列表失败: ' + e.message);
             }
             window.addEventListener('resize', resizeRings);
+            startPolling();
         });
 
         onBeforeUnmount(() => {
+            stopPolling();
             window.removeEventListener('resize', resizeRings);
             Object.values(ringInstances).forEach(inst => inst && inst.dispose());
             Object.keys(ringInstances).forEach(k => delete ringInstances[k]);
@@ -401,6 +464,7 @@ const app = createApp({
             coverModules, metricsOf, modCount, rateColor,
             opDomain, opDir, uncoveredRows, coveredFuncRows,
             ringEls, chartReady,
+            refreshing, lastRefresh, refreshAll,
             selectCoverDir, goBack, funcDetails, toggleFunc, coverTypeOf, normalizeCover, coverTagType,
         };
     }

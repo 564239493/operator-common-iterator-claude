@@ -255,7 +255,10 @@ class ParamShapeModel(CommonDispatcher):
             strategy_shape[dim_index] = choose_shape_value
             current_elements *= choose_shape_value
         if current_elements > ParamModelConfig.TENSOR_TENSOR_ELEMENT_LIMIT:
-            strategy_shape = [ParamModelConfig.TENSOR_SHAPE_MIN_VALUE] * (dims - 1) + [strategy_shape[-1]]
+            raise ValueError(
+                f"Typical shape generation exceeds tensor element limit, "
+                f"operator name : '{self.operator_name}', param name : '{param_name}', dims : {dims}, "
+                f"elements : {current_elements}, limit : {ParamModelConfig.TENSOR_TENSOR_ELEMENT_LIMIT}")
         logger.debug("End generate param shape by typical, operator name: %s, param name: %s, dims: %s",
                      self.operator_name, param_name, dims)
         return strategy_shape

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate .claude/skills wrappers for every manifest knowledge module.
+"""Generate .opencode/skills wrappers for every manifest knowledge module.
 
 canonical 保持在 ``knowledge/<family>/**``（唯一编辑源，prompt 演进流程不变）；
-本脚本把每个 manifest 模块渲染成 ``.claude/skills/<prefix><id>/SKILL.md``
-生成物，供任意阶段、任意 Agent 通过 Skill 工具按需加载。
+本脚本把每个 manifest 模块渲染成 ``.opencode/skills/<prefix><id>/SKILL.md``
+生成物，供任意阶段、任意 Agent 通过 skill 工具按需加载。
 
 - 生成物禁止手改；validator（validate_*_knowledge.py）逐字节比对生成物与
   canonical 渲染结果，漂移即 fail（init_run 预校验自动拦截）。
@@ -29,7 +29,7 @@ except ModuleNotFoundError:  # pragma: no cover - alternate package path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILLS_ROOT = ROOT / ".claude" / "skills"
+SKILLS_ROOT = ROOT / ".opencode" / "skills"
 FAMILY_KNOWLEDGE = {
     "aclnn": ROOT / "knowledge" / "aclnn",
     "torch_npu": ROOT / "knowledge" / "torch_npu",
@@ -108,7 +108,7 @@ def render_skill(family: str, item: dict) -> str:
         digest=_sha_text(item["raw"]),
         validator=_VALIDATOR[family],
     )
-    # frontmatter 必须位于文件首行（Claude Code 按首部 YAML 解析 name/description）；
+    # frontmatter 必须位于文件首行（opencode 按首部 YAML 解析 name/description）；
     # GENERATED 注释放 frontmatter 之后。
     lines = [
         "---",
@@ -125,7 +125,7 @@ def render_skill(family: str, item: dict) -> str:
     if deps:
         lines.extend([
             "---",
-            "<!-- 依赖模块：如本 skill 被单独触发，先 Skill 加载 "
+            "<!-- 依赖模块：如本 skill 被单独触发，先 skill 加载 "
             + "、".join(deps)
             + " -->",
             "",
@@ -194,7 +194,7 @@ def render_required_list(family: str, entries: list[dict]) -> str:
     lines = [
         "<!-- required-knowledge-begin -->", "",
         "## 本次必载知识清单（确定性路由命中）", "",
-        "以下模块已由 run 初始化阶段的知识路由确认命中。提取时必须**逐一用 Skill 工具"
+        "以下模块已由 run 初始化阶段的知识路由确认命中。提取时必须**逐一用 skill 工具"
         "加载并应用**；认为某模块对本算子不适用的，必须在"
         " `extraction_provenance.json` 中记录 `not_applicable` 及理由，不得静默跳过。"
         "除清单外，文档出现其他信号时也应自主加载对应的"
@@ -233,7 +233,7 @@ def required_list_entries(result: dict, knowledge: Path | None = None, family: s
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate .claude/skills wrappers from knowledge manifests."
+        description="Generate .opencode/skills wrappers from knowledge manifests."
     )
     parser.add_argument("--family", choices=["aclnn", "torch_npu", "all"], default="all")
     parser.add_argument(
