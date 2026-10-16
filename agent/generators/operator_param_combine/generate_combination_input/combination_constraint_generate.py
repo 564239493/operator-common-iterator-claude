@@ -213,34 +213,112 @@ class CombinationConstraintGenerate:
             #       -> x.dtype == y.dtype or x.rank == y.rank
             if all(atom_valid(p.strip()) for p in top_or):
                 return expr
-            return None
-        # 逐个析取项独立降级：递归摘除该析取项内不可表达的合取项、保留其余，再以 or 重连；
-        # 任一析取项无法降级时整条返回 None。
-        # 示例：x.shape[0] == 2 and x.dtype == y.dtype or x.rank == y.rank
-        #       -> (x.dtype == y.dtype) or (x.rank == y.rank)
-        # 示例：x.shape[0] == 2 or x.dtype == y.dtype
-        #       -> None
-        widened: List[str] = []
-        for part in top_or:
-            degraded = cls._prune_invalid_subclauses(part.strip(), atom_valid)
-            if degraded is None:
-                return None
-            widened.append(
-                degraded if (degraded.startswith("(") and degraded.endswith(")")) else f"({degraded})"
-            )
-        return " or ".join(widened)
+            # 逐个析取项独立降级：递归摘除该析取项内不可表达的合取项、保留其余，再以 or 重连；
+            # 任一析取项无法降级时整条返回 None。
+            # 示例：x.shape[0] == 2 and x.dtype == y.dtype or x.rank == y.rank
+            #       -> (x.dtype == y.dtype) or (x.rank == y.rank)
+            # 示例：x.shape[0] == 2 or x.dtype == y.dtype
+            #       -> None
+            widened: List[str] = []
+            for part in top_or:
+                degraded = cls._prune_invalid_subclauses(part.strip(), atom_valid)
+                if degraded is None:
+                    return None
+                widened.append(
+                    degraded if (degraded.startswith("(") and degraded.endswith(")")) else f"({degraded})"
+                )
+            return " or ".join(widened)
         top_and = cls._split_top_level(expr, "and")
         if len(top_and) > 1:
-            kept = [p.strip() for p in top_and if atom_valid(p.strip())]
+            # 逐个合取项判定：可表达者原样保留；不可表达者若是整体被括号包裹的子句，
+            # 先剥壳递归降级，降级成功则保留其降级串（已套回一层括号），失败才摘除。
+            # 示例：x.length == 1 and (y.shape[0] == 2 and z.dtype == w.dtype)
+            #       -> (x.length == 1) and (z.dtype == w.dtype)
+            # 示例：x.length == 1 and (y.shape[0] == 2)
+            #       -> (x.length == 1)        # 无整体包裹或降级失败，退回摘除
+            kept: List[str] = []
+            for part in top_and:
+                piece = part.strip()
+                if atom_valid(piece):
+                    kept.append(piece)
+                    continue
+                degraded = cls._prune_bracketed_subclause(piece, atom_valid)
+                if degraded is not None:
+                    kept.append(degraded)
             if not kept:
                 return None
             # 顶层已无 ``or``（上面已拦截），故剩余片段以 ``and`` 重连不会改变优先级；
-            # 仅为避免与原文括号叠加，对未加括号的片段才补一层。
+            # 此处按「是否整体被一对匹配括号包裹」判定，避免把 ``(a) and (b)`` 误判为已包裹。
             return " and ".join(
-                p if p.startswith("(") and p.endswith(")") else f"({p})" for p in kept
+                p if cls._is_fully_wrapped(p) else f"({p})" for p in kept
             )
 
-        return expr if atom_valid(expr) else None
+        return expr if atom_valid(expr) else cls._prune_bracketed_subclause(expr, atom_valid)
+
+    @classmethod
+    def _is_fully_wrapped(cls, expr: str) -> bool:
+        """
+        判断表达式是否整体被一对匹配的圆括号包裹。
+        :param expr: 待判定表达式
+        :return: 整体被一对匹配括号包裹时返回 True
+
+        示例：
+            "(x.length == 1 and weight.length == 1)" -> True
+            "(x.length == 1) and (weight.length == 1)" -> False（深度在首个 ")" 处归零，不在末位）
+            "x.length == 1" -> False
+        """
+        text = expr.strip()
+        if len(text) < 2 or not text.startswith("(") or not text.endswith(")"):
+            return False
+        depth = 0
+        for index, char in enumerate(text):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return index == len(text) - 1
+        return False
+
+    @classmethod
+    def _strip_balanced_outer_parens(cls, expr: str) -> Optional[str]:
+        """
+        循环剥掉整体包裹的平衡外层括号。
+        :param expr: 待剥壳表达式
+        :return: 剥净后的内层文本；未发生剥壳（本就无整体包裹）时返回 None
+
+        示例：
+            "((x.length == 1 and weight.length == 1))" -> "x.length == 1 and weight.length == 1"（多重括号剥净）
+            "x.length == 1" -> None（无整体包裹，未发生剥壳）
+        """
+        text = expr.strip()
+        changed = False
+        while cls._is_fully_wrapped(text):
+            text = text[1:-1].strip()
+            changed = True
+        return text if changed else None
+
+    @classmethod
+    def _prune_bracketed_subclause(cls, atom: str,
+                                   atom_valid: Callable[[str], bool]) -> Optional[str]:
+        """
+        对整体被括号包裹的原子子句剥壳后递归降级；无法降级时返回 None（由调用方回退整块摘除）。
+        :param atom: 已被判定为不可表达的原子子句
+        :param atom_valid: 原子子句可表达性判定函数
+        :return: 已由一对括号包裹的降级串；无法降级时返回 None
+
+        示例（atom_valid 为真实 Gate1 判定：y.shape[0] == 2 等下标形式不可表达，z.dtype == w.dtype 可表达）：
+            "(y.shape[0] == 2 and z.dtype == w.dtype)" -> "(z.dtype == w.dtype)"（剥壳后 and 摘除，重新套回括号）
+            "(y.shape[0] == 2)" -> None（剥壳后单原子仍不可表达，回退整块摘）
+            "(transposeWeight.range_value or weight.shape[1] <= 65535)" -> None（or 某支剪空，回退整块摘）
+        """
+        inner = cls._strip_balanced_outer_parens(atom)
+        if inner is None:
+            return None
+        degraded = cls._prune_invalid_subclauses(inner, atom_valid)
+        if degraded is None:
+            return None
+        return degraded if cls._is_fully_wrapped(degraded) else f"({degraded})"
 
     @staticmethod
     def get_param_range_value_expr(param_name: str, param_type: str, dtype_list: List[str],
