@@ -74,6 +74,8 @@ class ParamModelConfig:
     DEFAULT_TENSOR_SHAPE_DIM_MAX = 8
     # 默认数组类参数的长度
     DEFAULT_LIST_LENGTH = 1
+    # 整型小区间枚举化阈值：跨度 ≤8 时物化为枚举值（0-2/0-5 等取值范围语义）
+    _SMALL_RANGE_ENUM_MAX_SPAN = 8
     # tensor shape每一维取值模型全集
     DIM_VALUE_PROFILE_LIST = ["Has_Large_Size", "Has_Size_1", "Has_Odd_Size", "Typical"]
     # 定义属于float, int, bool等可枚举的数据类型
