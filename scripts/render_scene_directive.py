@@ -6,7 +6,11 @@ selection (``inputs/selection.json``) and persist the scene payload to
 或交互输入），主协调器做简单文字匹配（设备 / 量化场景 / 参数取值）对齐文档后写
 ``selection.json``：
 
-``{device_types:[...], selection:{device:{template: None|{param:[values]}}}}``
+``{device_types:[...], selection:{device: None|{template: None|{param:[values]}}}}``
+
+设备值 ``None``（或空 dict）= **该设备无场景维度**（文档无场景或量化关键词，
+无可选场景模板）：仅按 ``device_types`` 收窄 ``product_support``，不做场景屏蔽；协调器禁止为无场景
+维度的算子虚构 "非量化" 等模板名——"文档没有该维度" 不是 "在该维度上选了非量化"。
 
 ``_param_modes_noscan`` resolves explicitly selected parameters into two states:
 ``{"expand": [values]}`` (candidate set = the user's selected value subset) |
@@ -14,11 +18,14 @@ selection (``inputs/selection.json``) and persist the scene payload to
 extractor continues from the operator document and adapts the parameter to the
 selected scene. If the selected scene forbids an Optional parameter, the
 extractor must emit ``param is None``. The directive carries this policy in a
-machine block ``<!-- scene: {device_types, selection, param_modes, selection_policy} -->``
+machine block ``<!-- scene: {device_types, selection, param_modes,
+no_scene_devices, selection_policy} -->``
 (the extractor reads only the directive).
 
 设备类型是硬性必要项：``device_types`` 为空 → exit 2（``DEVICE_REQUIRED``）；
-未选出设备不得渲染 directive、不得进入 EXTRACT。
+未选出设备不得渲染 directive、不得进入 EXTRACT。``selection`` 无任何有效设备
+条目 → exit 2（``EMPTY_SCENE``）；设备值 ``None``（无场景维度）是合法条目，
+全 device-only 选择不触发 ``EMPTY_SCENE``。
 
 Scope:
 
@@ -74,14 +81,19 @@ def _resolve_selection_noscan(
     """文本直输模式（无 scene_scan）：仅做结构校验，不做枚举交叉校验。
 
     selection 结构：``{"device_types": [...], "selection": {device:
-    {template: None|{param: [values]}}}}``；tpl_value 仅支持 ``None``（保持自动）
-    与 ``{param: [values]}``（显式取值，值不与枚举比对——由 extractor 提取阶段
+    None|{template: None|{param: [values]}}}}``；设备值 ``None``（或空 dict）表示
+    **该设备无场景维度**（文档无场景或量化关键词，无可选场景模板）——仅按设备收窄，不做场景屏蔽，
+    渲染时列入 ``no_scene_devices``；tpl_value 仅支持 ``None``（保持自动）与
+    ``{param: [values]}``（显式取值，值不与枚举比对——由 extractor 提取阶段
     对齐文档参数表）。``"fix_all_default"`` 无场景枚举支撑，文本模式不支持。
 
     **设备类型是硬性必要项**：``device_types`` 非空字符串清单缺失 →
-    ``DEVICE_REQUIRED`` 错误（exit 2），不得渲染 directive。
+    ``DEVICE_REQUIRED`` 错误（exit 2），不得渲染 directive。``selection`` 无任何
+    有效设备条目（既无模板也无 device-only 标记）→ ``EMPTY_SCENE``；全设备
+    device-only 是合法选择。
 
-    Returns ``(errors, warnings, sel_devices, selection_resolved)``.
+    Returns ``(errors, warnings, sel_devices, selection_resolved)``；
+    ``selection_resolved`` 的设备值可为 ``None``（无场景维度）。
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -110,11 +122,11 @@ def _resolve_selection_noscan(
     if not isinstance(raw_sel, dict) or not raw_sel:
         errors.append(
             "selection.selection must be a non-empty dict "
-            "{device: {template: null|{param:[values]}}}"
+            "{device: null|{template: null|{param:[values]}}}"
         )
         raw_sel = {}
 
-    resolved: dict[str, dict] = {}
+    resolved: dict[str, dict | None] = {}
     for d, raw_dev in raw_sel.items():
         if not isinstance(d, str) or not d:
             errors.append(f"selection key must be device name string: {d!r}")
@@ -122,8 +134,15 @@ def _resolve_selection_noscan(
         if d not in sel_devices:
             errors.append(f"selection device {d!r} not in device_types")
             continue
-        if not isinstance(raw_dev, dict) or not raw_dev:
-            errors.append(f"selection[{d!r}] must be a non-empty dict {{template: ...}}")
+        if raw_dev is None or (isinstance(raw_dev, dict) and not raw_dev):
+            # 设备值 null / 空 dict = 无场景维度：仅按设备收窄，不做场景屏蔽。
+            resolved[d] = None
+            continue
+        if not isinstance(raw_dev, dict):
+            errors.append(
+                f"selection[{d!r}] must be null (no scene dimension) or a "
+                "non-empty dict {template: ...}"
+            )
             continue
         dev_resolved: dict[str, Any] = {}
         for t, feats in raw_dev.items():
@@ -168,7 +187,10 @@ def _resolve_selection_noscan(
             resolved[d] = dev_resolved
 
     if not resolved:
-        errors.append("EMPTY_SCENE: selection yields no selected templates")
+        errors.append(
+            "EMPTY_SCENE: selection yields no valid device entries "
+            "(设备值 null = 无场景维度，是合法条目；全 device-only 不触发本错误)"
+        )
 
     return errors, warnings, sel_devices, resolved
 
@@ -179,10 +201,13 @@ def _param_modes_noscan(
     """文本直输模式：直接从 selection_resolved 派生 param_modes（无 scan 枚举）。
 
     单值 → fix；多值 → expand；None（保持自动）→ 无显式 mode（文档自适应）。
+    设备值为 None（无场景维度）无显式参数，不产生该设备的 param_modes 条目。
     """
     out: dict[str, dict] = {}
     for d in sel_devices:
-        tmap = selection_resolved.get(d, {})
+        tmap = selection_resolved.get(d)
+        if not isinstance(tmap, dict):
+            continue  # None（无场景维度）或缺失：无显式参数
         param_state: dict[str, object] = {}
         for _t, sel in tmap.items():
             if not isinstance(sel, dict):
@@ -212,16 +237,43 @@ def _param_modes_noscan(
     return out
 
 
+def _no_scene_devices(
+    sel_devices: list[str], selection_resolved: dict
+) -> list[str]:
+    """无场景维度设备清单：device_types 中未选出任何模板的设备。
+
+    覆盖两种来源——selection 值显式为 null（一等公民"仅设备"形态），以及设备
+    列入 device_types 但 selection 未给出该设备条目（旧合法形态，语义等同）。
+    这些设备不做场景屏蔽，仅按 ``device_types`` 收窄 ``product_support``。
+    """
+    return [
+        d for d in sel_devices
+        if not isinstance(selection_resolved.get(d), dict)
+    ]
+
+
 def _render_directive_noscan(
     sel_devices: list[str],
     selection_resolved: dict,
     param_modes: dict[str, dict],
 ) -> str:
-    """文本直输模式的 directive：机读块由 selection 派生（无 scene_scan 来源）。"""
+    """文本直输模式的 directive：机读块由 selection 派生（无 scene_scan 来源）。
+
+    ``no_scene_devices``（机读块 + prose 同步携带）：未选出任何模板的设备清单，
+    extractor 据此对这些设备跳过场景屏蔽。
+    """
+    no_scene = _no_scene_devices(sel_devices, selection_resolved)
     lines: list[str] = []
     for d in sel_devices:
         lines.append(f"**{d}**:")
-        for t, sel in (selection_resolved.get(d, {}) or {}).items():
+        dev_sel = selection_resolved.get(d)
+        if not isinstance(dev_sel, dict):
+            lines.append(
+                "  - 无场景维度（未选任何模板）：不做场景屏蔽，仅按设备收窄"
+                " product_support，按文档全量提取该设备可达约束"
+            )
+            continue
+        for t, sel in dev_sel.items():
             lines.append(f"- **{t}**:")
             if sel is None:
                 lines.append("  - 参数：保持自动（按文档和已选场景适配）")
@@ -240,6 +292,7 @@ def _render_directive_noscan(
             "device_types": sel_devices,
             "selection": selection_resolved,
             "param_modes": param_modes,
+            "no_scene_devices": no_scene,
             "selection_policy": dict(SELECTION_POLICY, scope="exclusive"),
             "known_conflicts": [],
         },
@@ -257,10 +310,13 @@ def _render_directive_noscan(
 
 ### 提取要求
 
-1. **仅提取所选设备与所选场景**：`product_support` 按机读块 `device_types` 与文档
-   "产品支持情况" √ 行取交集，未列设备不产出；约束条目以**所选场景可达**为准——
-   触发条件在所选参数取值下恒为假的条目、以及未选量化场景专属的条目，不产出；
-   与所选场景共用的基础约束（dtype 合法域、通用 shape 关系等）照常保留。
+1. **仅提取所选设备**：`product_support` 按机读块 `device_types` 与文档
+   "产品支持情况" √ 行取交集，未列设备不产出。**场景屏蔽仅对列出了模板的设备
+   生效**：已列模板设备的约束条目以**所选场景可达**为准——触发条件在所选参数
+   取值下恒为假的条目、以及未选量化场景专属的条目，不产出；与所选场景共用的
+   基础约束（dtype 合法域、通用 shape 关系等）照常保留。机读块 `no_scene_devices`
+   列出的设备（selection 值为 null 或未列任何模板，无场景维度）不做场景屏蔽，
+   仅按设备收窄。
 2. **选择内容是基本限制**：机读块 `param_modes` 中 `{{"fix": X}}` 参数取单值 X、
    `{{"expand": [取值清单]}}` 参数按清单收窄，依赖其取值的约束（自身
    `allowed_range_value`、`dtype`/`format`/`dimensions` 条件分支、
@@ -269,7 +325,9 @@ def _render_directive_noscan(
 3. 与参数取值**无关**的通用约束（shape_equality、维度、groupType 等）原样保留，
    不得因场景删除。
 4. 未选量化场景/分支的专属 Optional 参数（如已选非量化时的 quant / pseudo-quant
-   专属参数）必须产出 `is None` 可执行约束，不能随未选场景规则一起删除。
+   专属参数）必须产出 `is None` 可执行约束，不能随未选场景规则一起删除；
+   `no_scene_devices` 设备无场景维度，不存在"未选场景专属参数"，不得虚构
+   量化/非量化区分或据此产出 `is None`。
 5. 落盘后照常跑 `normalize_constraints.py` + `validate_artifacts.py constraints`；
    结果必须仍满足 `OperatorRule`。
 
@@ -282,6 +340,7 @@ def _scene_payload(
     device_types: list[str] | None = None,
     selection: dict | None = None,
     param_modes: dict[str, dict] | None = None,
+    no_scene_devices: list[str] | None = None,
     directive_path: Path | None = None,
 ) -> dict:
     return {
@@ -290,6 +349,7 @@ def _scene_payload(
         "device_types": device_types or [],
         "selection": selection or {},
         "param_modes": param_modes or {},
+        "no_scene_devices": no_scene_devices or [],
         "selection_policy": dict(SELECTION_POLICY),
         "known_conflicts": [],
         "directive": str(directive_path) if directive_path else "",
@@ -328,7 +388,8 @@ def main() -> int:
     p.add_argument(
         "--selection",
         help=(
-            "{device_types, selection:{device:{template: None|{param:[values]}}}}. "
+            "{device_types, selection:{device: null|{template: null|{param:[values]}}}}. "
+            "Device value null = no scene dimension (device-only narrowing). "
             "Required for --scope subset."
         ),
     )
@@ -393,18 +454,23 @@ def main() -> int:
     directive_text = _render_directive_noscan(
         sel_devices, selection_resolved, param_modes
     )
+    no_scene_devices = _no_scene_devices(sel_devices, selection_resolved)
     inputs_dir.mkdir(parents=True, exist_ok=True)
     directive_path.write_text(directive_text, encoding="utf-8")
     _write_run_state_scene(
         run_dir,
         _scene_payload(
-            "subset", sel_devices, selection_resolved, param_modes, directive_path
+            "subset", sel_devices, selection_resolved, param_modes,
+            no_scene_devices, directive_path
         ),
     )
-    n_templates = sum(len(v) for v in selection_resolved.values())
+    n_templates = sum(
+        len(v) for v in selection_resolved.values() if isinstance(v, dict)
+    )
     print(json.dumps(
         {"ok": True, "scope": "subset", "directive": str(directive_path),
          "n_devices": len(sel_devices), "n_templates": n_templates,
+         "no_scene_devices": no_scene_devices,
          "warnings": warnings},
         ensure_ascii=False,
     ))

@@ -39,9 +39,11 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 > 文中量化场景关键词）后的用户文本输入；主协调器做简单文字匹配（设备全称对齐 /
 > 量化关键词命中 / 参数取值解析，等值→fix、枚举→expand、大白话闭区间→展开整数
 > 序列），AskUserQuestion 回显确认一次后写 `inputs/selection.json`
-> （`{device_types, selection:{设备:{场景: null|{参数:[值...]}}}}`），再由
-> `scripts/render_scene_directive.py --scope subset` 做结构校验并渲染
+> （`{device_types, selection:{设备: null|{场景: null|{参数:[值...]}}}}`；
+> 设备值`null`=该设备**无场景维度**——文档无场景或量化关键词（建议面板场景清单为空）时**不选场景、仅设备即可，无需用"非量化"等模板名代替**，落盘写 `null`），
+> 再由 `scripts/render_scene_directive.py --scope subset` 做结构校验并渲染
 > `inputs/scene_directive.md`（机读块 `device_types`/`selection`/`param_modes`/
+> `no_scene_devices`/
 > `selection_policy`）回写 `run_state.scene`。**设备类型是硬性必要项**：未选出至少
 > 一个文档"产品支持情况"设备全称，禁止落盘/渲染/进 EXTRACT
 > （`DEVICE_REQUIRED`/`EMPTY_SCENE` exit 2 硬拦截）；批处理（`iterate-directory`）
@@ -50,7 +52,8 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 > 禁止调用**（原实现仅存 git 历史）。
 > constraint-extractor 读 directive 按 `param_modes` 收窄（`{"fix": X}` 单值、
 > `{"expand": [取值清单]}` 按清单收窄、缺键参数按文档和已选场景适配，已选场景
-> 明确禁止的 Optional 参数显式生成 `param is None`）、按 `device_types` 收窄
+> 明确禁止的 Optional 参数显式生成 `param is None`；`no_scene_devices` 设备无
+> 场景维度，不做场景屏蔽、不虚构量化/非量化区分）、按 `device_types` 收窄
 > `product_support`——设备类型为"产品支持情况"具体设备名，直接与 √ 行取交集
 > （无"通用"展开）；`product_support` 随后驱动用例生成（`generate_cases.py` 按
 > `product_support` 逐平台生成，不读场景；唯一例外是收尾的执行平台选择——

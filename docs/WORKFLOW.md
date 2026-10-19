@@ -124,21 +124,25 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
 （原文存 `run_state.scenes`）；未传时组装【建议面板】（文档"产品支持情况"设备全称、
 `servers.json` 各服务器 `platforms` 并集、文中量化场景关键词）请用户**文本输入**。
 主协调器做简单文字匹配（解析细则见 `iterate-operator` Skill SCENE_SCAN 节）：设备
-关键字对齐文档设备全称（**硬性必要项**，对不上→追问重输）；量化场景关键词命中；
-参数取值等值→fix、枚举→expand、大白话闭区间→展开整数序列（>32 值提示收窄，
-开区间话术必须请用户给确定上下界）。AskUserQuestion 回显确认一次（expand 清单
-显示完整展开结果）后写 `inputs/selection.json`
-（`{"device_types":[...],"selection":{device:{template: null|{param:[values]}}}}`），
+关键字对齐文档设备全称（**硬性必要项**，对不上→追问重输）；量化场景关键词命中
+（**文档无场景或量化关键词（建议面板场景清单为空）→ 该设备无场景维度：不选场景、
+仅设备即可，无需用"非量化"等模板名代替**，selection 设备值写 `null`）；参数取值
+等值→fix、枚举→expand、大白话闭区间→展开整数序列
+（>32 值提示收窄，开区间话术必须请用户给确定上下界）。AskUserQuestion 回显确认
+一次（expand 清单显示完整展开结果）后写 `inputs/selection.json`
+（`{"device_types":[...],"selection":{device: null|{template: null|{param:[values]}}}}`；
+设备值 `null` = 无场景维度，仅按设备收窄），
 再运行 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
 做结构校验并渲染 `inputs/scene_directive.md`（机读块
-`{device_types, selection, param_modes, selection_policy}`）、回写 `run_state.scene`
-（`scene.source` = scenes_param / interactive_input）。
+`{device_types, selection, param_modes, no_scene_devices, selection_policy}`）、
+回写 `run_state.scene`（`scene.source` = scenes_param / interactive_input）。
 
 **设备必选硬门槛（强制）**：未选出至少一个可对齐文档"产品支持情况"的设备全称，
 禁止写 `selection.json`、禁止渲染 directive、禁止推进 EXTRACT；用户明确拒绝提供
 设备时确认是否停止任务，不得静默跳过场景步骤继续提取。
 `render_scene_directive.py` 对 `device_types` 空返回 `DEVICE_REQUIRED` exit 2、
-无选中场景返回 `EMPTY_SCENE` exit 2，此时回到文字匹配重新征询。
+selection 无任何有效设备条目返回 `EMPTY_SCENE` exit 2（设备值 `null` = 无场景维度，
+是合法条目，全"仅设备"选择不触发），此时回到文字匹配重新征询。
 `--scope off` 显式禁用场景（不产 directive，纯文档驱动）；批处理
 （`iterate-directory`）无头不能 AskUserQuestion，默认不收集场景。
 
@@ -160,6 +164,8 @@ Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判 + `--scan`/`
 （`{"expand": [取值清单]}` 清单=用户明确选择的子集 /
 `{"fix": X}` 单值=用户单值输入或 values[0]）；缺键参数继续按算子文档和已选场景
 提取适配，已选场景明确禁止的 Optional 参数必须显式生成 `param is None`；
+机读块 `no_scene_devices` 列出的设备（无场景维度）不做场景屏蔽，仅按设备收窄，
+不得虚构量化/非量化区分。
 该 `product_support` 随后驱动 `generate_cases.py` 逐平台生成。
 完成条件：constraints.json 通过 Pydantic/结构校验。
 失败策略：同一 Agent 最多自修正三次，之后阻断，不把非法 JSON 传下游。
