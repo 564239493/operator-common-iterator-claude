@@ -966,6 +966,8 @@ def _translate_operand(node: ast.AST, columns: set, warnings: List[str]) -> Opti
 
     裸标识符（如 `x.dtype == FLOAT32` 中的 FLOAT32）在约束 evaluate 语义里是
     未定义变量（EvalState.UNKNOWN），因此不参与 PICT 翻译，返回 None。
+    len(<param>.shape) 秩操作数映射为 [{param}_dimension] 列引用。
+
     """
     if isinstance(node, ast.Constant):
         v = node.value
@@ -987,6 +989,20 @@ def _translate_operand(node: ast.AST, columns: set, warnings: List[str]) -> Opti
             return '"true"'
         if node.id == "False":
             return '"false"'
+        return None
+    if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "len" and len(node.args) == 1:
+        # len(param.shape) == k 的操作数映射：len 是秩（维度数）语义，
+        # 对应 PICT 列 {param}_dimension。打通 C-019 类「枚举参数 ↔ tensor 秩」
+        # 联动进组合层（glt∈{0,1} ⇒ gl 1 维；glt=2 ⇒ gl 2 维）——此前该形态
+        # 落到末行 return None，IfExp 叶子全部不可译、联动约束整条被 drop
+        # （2026-10-17 实证：组合层 (glt,dim) 矛盾态 138/314）。
+        arg = node.args[0]
+        if isinstance(arg, ast.Attribute) and arg.attr == "shape" and isinstance(arg.value, ast.Name):
+            dim_col = "{}_dimension".format(arg.value.id)
+            if dim_col in columns:
+                return "[{}]".format(dim_col)
+            warnings.append("constraint references unknown column '{}'".format(dim_col))
+            return None
         return None
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
         return repr(-node.operand.value)

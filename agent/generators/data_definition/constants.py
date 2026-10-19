@@ -99,6 +99,8 @@ class ParamModelConfig:
     TENSOR_ATK_TYPE = ["tensor", "tensors"]
     # 数组类参数的数据类型
     LIST_ATK_TYPE = ["tensors", "scalars", "attrs"]
+    # 标量参数的数据类型
+    SCALAR_ATK_TYPE = ["scalar", "attr"]
     # 严格应用人工规则修正的参数间约束类型
     COMBINATION_USE_CONSTRAINT_TYPE = ["shape_equality", "type_equality", "format_equality"]
     # STRICT_CONSTRAINT_TYPE = ["shape_equality", "type_equality"]

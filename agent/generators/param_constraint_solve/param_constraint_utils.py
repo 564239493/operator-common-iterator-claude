@@ -590,7 +590,23 @@ class ParamConstraintUtils(CommonDispatcher):
                                      next((e for e, tg in tag_of.items() if tg is t), ''))]
             derived_candidates = [t for t in candidates
                                   if param_of_tag.get(t) in derived_param_names]
-            if output_candidates:
+
+            # seed 保护（I-2，2026-10-19）：冲突候选同时含 scalar seed（组合层
+            # 多样性意图载体）与非 seed 物化候选时，优先弃非 seed——seed 注册
+            # 晚于 shape 静态式，注册顺序兜底会反向弃 seed（12:01 实证：glt
+            # seed 0/2 被 drop 128/127 次）。仅在 I-1 回归后 seed drop 率仍高时启用。
+            def _is_scalar_seed(expr_str):
+                return bool(re.match(r'^(\w+)\.range_value == ', expr_str or ''))
+
+            seed_tags = {t for t in candidates
+                         if _is_scalar_seed(next((e for e, tg in tag_of.items() if tg is t), ''))}
+            non_seed = [t for t in candidates if t not in seed_tags]
+            if seed_tags and non_seed:
+                to_remove = non_seed[0]
+                logger.info(
+                    f"[choice_core] drop-priority: scalar-seed protected, "
+                    f"dropping non-seed candidate instead")
+            elif output_candidates:
                 to_remove = output_candidates[0]
                 logger.info(
                     f"[choice_core] drop-priority: output-side static preferred, "
@@ -818,11 +834,12 @@ class ParamConstraintUtils(CommonDispatcher):
         per-row 多样性全链路丢失。dtype/format/shape/length 四个静态通道都读
         per-row 值，唯独 range_value 缺失 —— 本方法补上这条通道。
 
-        种子表达式形态（per-row 值的两种形态）：
-        - list（如 [-2,-1]）  -> "{param}.range_value == [-2, -1]"
-          整数组取值钉住（Seq==List 比较，转换器 334-344 行支持）
-        - 标量（如 128）      -> "{param}.range_value[0] == 128"
-          维度代表值钉住首元素，其余元素仍由 JSON 约束（如 0<x<=100000）限定
+        # 按 Z3 变量类型分流：
+            # - tensor / tensor_list：range_value 是数据内容区间，不走等值钉值（维持现状跳过）
+            # - list（attrs/scalars 数组型）：走已有的「整数组等值」钉值（L850-861 现状保留）
+            # - scalar（枚举型标量，如 groupListType/actType）：新增——组合层选定的枚举值
+            #   必须以软静态种子钉入 Z3，否则在语义等价类（如 C-019 中 glt∈{0,1} 同分支）
+            #   内被 Z3 模型偏好覆盖，组合多样性在物化层丢失（2026-10-17 glt 全灭为 1 实证）。
 
         安全性：走偏好静态通道（choice_core 冲突消解），种子与 JSON 约束冲突时
         丢弃种子保 JSON 约束，不会整 case UNSAT —— 与 dtype/length 通道同模式。
@@ -831,7 +848,26 @@ class ParamConstraintUtils(CommonDispatcher):
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
             case_input = self.case_input_map.get(param)
-            # 仅处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
+            # 这里处理标量参数
+            z3_var_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(case_input.type)
+            if z3_var_type in ("tensor", "tensor_list"):
+                logger.debug(
+                    f"Range value seed skipped, tensor-type param uses content-range "
+                    f"semantics, param name : '{param}', seed : '{case_input.range_values}'")
+                continue
+            if z3_var_type in ParamModelConfig.SCALAR_ATK_TYPE:
+                scalar_seed = case_input.range_values
+                # 仅构建「数值/布尔字面量」形态（组合层物化的枚举值）；profile 名
+                # （'Pos' 等）与 None 不钉——它们本就不是具体取值
+                if isinstance(scalar_seed, (int, float, bool)):
+                    seed_expr = "{param_name}.range_value == {seed_value}".format(
+                        param_name=param, seed_value=scalar_seed)
+                    logger.debug(
+                        f"Range value seed constraint (scalar), param name : '{param}', "
+                        f"seed expr : '{seed_expr}'")
+                    seed_static_value_expr_list.append(seed_expr)
+                continue
+            # 这里处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
             # 自己的取值通道（tensor 的 range_value 是数据内容区间，scalar 的
             # build_param_range_value_constraint 已按源 JSON 域处理）
             if case_input.type not in ParamModelConfig.LIST_ATK_TYPE:
