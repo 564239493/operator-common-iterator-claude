@@ -24,6 +24,98 @@ def digest(path):
 def run_file(root, run_id, rel):
     return paths.resolve_within(paths.resolve_run(root, run_id), rel)
 
+
+def _cov_rate(metrics, *names):
+    """从 metrics 列表按名称取 rate（函数/行·语句/分支），取不到返回 0。"""
+    if not isinstance(metrics, list):
+        return 0.0
+    by_name = {}
+    for m in metrics:
+        if isinstance(m, dict) and m.get('name'):
+            by_name[m['name']] = m.get('rate', 0)
+    for n in names:
+        if n in by_name:
+            return by_name[n]
+    return 0.0
+
+
+def _op_summary(odir, data):
+    """从单份 coverage.json 提取算子摘要（op 模块 函数/行/分支覆盖率）。"""
+    g = data.get('granularities') or {}
+    gr = g.get('func') or g.get('file') or {}
+    cov = gr.get('coverage') or {}
+    op = cov.get('op') or {}
+    metrics = op.get('metrics') or []
+    oi = data.get('operatorInfo') or {}
+    return {
+        'dir_name': odir.name,
+        # 新命名约定以算子名作为目录名（如 aclnnLogSumExp），优先用目录名；JSON 的 operator 字段可能滞后
+        'operator': odir.name,
+        'domain': oi.get('domain', ''),
+        'has_analysis': bool(list(odir.glob('*.md'))),
+        'func': _cov_rate(metrics, '函数覆盖率'),
+        'line': _cov_rate(metrics, '行覆盖率', '语句覆盖率'),
+        'branch': _cov_rate(metrics, '分支覆盖率'),
+    }
+
+
+def _coverage_tree(base):
+    """四级目录树：base/<版本>/<算子库>/<算子目录>/<算子名称>/{*.json 覆盖率, *.md 分析}。
+
+    算子库层只携带其下算子的聚合覆盖率（无 md）；算子名称层才带 coverage + analysis。
+    """
+    versions = []
+    if not base.is_dir():
+        return {'versions': versions}
+    for vdir in sorted(base.glob('*')):
+        if not vdir.is_dir() or vdir.is_symlink():
+            continue
+        libs = []
+        for ldir in sorted(vdir.glob('*')):
+            if not ldir.is_dir() or ldir.is_symlink():
+                continue
+            dirs = []
+            for ddir in sorted(ldir.glob('*')):
+                if not ddir.is_dir() or ddir.is_symlink():
+                    continue
+                ops = []
+                for odir in sorted(ddir.glob('*')):
+                    if not odir.is_dir() or odir.is_symlink():
+                        continue
+                    files = sorted(odir.glob('*.json'))
+                    if not files:
+                        continue
+                    try:
+                        rel = str(odir.relative_to(base)) + '/' + files[0].name
+                        data = read(paths.resolve_within(base, rel))
+                    except (ValueError, OSError):
+                        continue
+                    ops.append(_op_summary(odir, data))
+                if ops:
+                    dirs.append({'name': ddir.name, 'ops': ops})
+            if dirs:
+                libs.append({'name': ldir.name, 'dirs': dirs})
+        if libs:
+            versions.append({'version': vdir.name, 'libraries': libs})
+    return {'versions': versions}
+
+
+def _coverage_detail(base, rel_parts, kind):
+    """按四级相对路径读取单算子报告。rel_parts=(版本, 算子库, 算子目录, 算子名称)；kind=coverage|analysis。"""
+    rel = '/'.join(rel_parts)
+    opdir = paths.resolve_within(base, rel)
+    if kind == 'coverage':
+        files = sorted(opdir.glob('*.json'))
+        if not files:
+            raise FileNotFoundError('没有覆盖报告')
+        return read(paths.resolve_within(base, rel + '/' + files[0].name))
+    md_files = sorted(opdir.glob('*.md'))
+    if not md_files:
+        raise FileNotFoundError('没有分析文档')
+    doc = paths.resolve_within(base, rel + '/' + md_files[0].name)
+    return {'filename': doc.name, 'content': doc.read_text(encoding='utf-8')}
+
+
 def get(root, parts, query, token):
     if parts == ['runs']:
         result = []
@@ -67,57 +159,19 @@ def get(root, parts, query, token):
                     raise paths.PathEscapeError('拒绝符号链接修改副本')
                 data['_review'] = {'base_sha256': hashlib.sha256(raw_bytes).hexdigest(), 'copy_sha256': digest(copy_path), 'token': token}
             return data
-        # 任务内嵌覆盖率：runs/<run>/ops_cov_report/<报告目录>/ — 按路径关联，不做名称匹配
+        # 任务内嵌覆盖率：runs/<run>/ops_cov_report/<版本>/<算子库>/<算子目录>/<算子名称>/（同全局四级结构）
         if parts[2] == 'cover':
             base = run / 'ops_cov_report'
-            if parts[3:] == ['dirs']:
-                result = []
-                if base.is_dir():
-                    for d in sorted(base.glob('*')):
-                        if not d.is_dir() or d.is_symlink():
-                            continue
-                        files = sorted(d.glob('*_coverage.json'))
-                        if files:
-                            try:
-                                data = read(paths.resolve_within(base, d.name + '/' + files[0].name))
-                                result.append({'dir_name': d.name, 'operator': data.get('operator', d.name), 'has_analysis': (d / 'analysis.md').is_file()})
-                            except (ValueError, OSError):
-                                continue
-                return result
-            if len(parts) == 5 and parts[4] in ('coverage', 'analysis'):
-                directory = paths.resolve_within(base, parts[3])
-                if parts[4] == 'coverage':
-                    files = sorted(directory.glob('*_coverage.json'))
-                    if not files:
-                        raise FileNotFoundError('该任务暂无覆盖报告')
-                    return read(paths.resolve_within(base, parts[3] + '/' + files[0].name))
-                doc = paths.resolve_within(base, parts[3] + '/analysis.md')
-                return {'filename': doc.name, 'content': doc.read_text(encoding='utf-8')}
-    if parts == ['cover', 'dirs']:
-        base = root / 'ops_cov_report'
-        result = []
-        for d in sorted(base.glob('*')):
-            if not d.is_dir() or d.is_symlink():
-                continue
-            files = sorted(d.glob('*_coverage.json'))
-            if files:
-                try:
-                    data = read(paths.resolve_within(base, d.name + '/' + files[0].name))
-                    result.append({'dir_name': d.name, 'operator': data.get('operator', d.name), 'has_analysis': (d / 'analysis.md').is_file()})
-                except (ValueError, OSError):
-                    continue
-        return result
-    if len(parts) == 3 and parts[0] == 'cover':
-        base = root / 'ops_cov_report'
-        directory = paths.resolve_within(base, parts[1])
-        if parts[2] == 'coverage':
-            files = sorted(directory.glob('*_coverage.json'))
-            if not files:
-                raise FileNotFoundError('没有覆盖报告')
-            return read(paths.resolve_within(base, parts[1] + '/' + files[0].name))
-        if parts[2] == 'analysis':
-            path = paths.resolve_within(base, parts[1] + '/analysis.md')
-            return {'filename': path.name, 'content': path.read_text(encoding='utf-8')}
+            if parts[3:] == ['tree']:
+                return _coverage_tree(base)
+            if len(parts) == 8 and parts[7] in ('coverage', 'analysis'):
+                return _coverage_detail(base, parts[3:7], parts[7])
+    if parts and parts[0] == 'cover':
+        base = root / 'ops_final_cov_report'
+        if parts == ['cover', 'tree']:
+            return _coverage_tree(base)
+        if len(parts) == 6 and parts[5] in ('coverage', 'analysis'):
+            return _coverage_detail(base, parts[1:5], parts[5])
     raise FileNotFoundError('未知审核接口')
 
 def save(root, run_id, iteration, request):

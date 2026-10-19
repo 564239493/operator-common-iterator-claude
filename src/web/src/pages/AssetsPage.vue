@@ -68,13 +68,13 @@ onMounted(load)
 
 <template>
   <div class="assets-page">
+    <TopBar view="assets">
+      <button v-if="catalog" class="refresh-content" :disabled="loading" @click="load">{{ loading ? ui.refreshing : ui.refresh }}</button>
+    </TopBar>
     <!-- Bootstrap messages must remain available when the sole content file is unreadable. -->
     <div v-if="!catalog && loading" class="empty-state" role="status">正在加载页面内容…</div>
     <div v-else-if="!catalog && error" class="empty-state" role="alert"><p>暂时无法加载页面内容，请稍后重试。</p><button class="action" @click="load">重试</button></div>
     <template v-if="catalog">
-      <TopBar view="assets">
-        <button class="refresh-content" :disabled="loading" @click="load">{{ loading ? ui.refreshing : ui.refresh }}</button>
-      </TopBar>
       <div class="page-heading"><div><h1>{{ ui.title }}</h1><p>{{ ui.subtitle }}</p></div><div class="totals"><b>{{ catalog.agents.length }}</b> {{ ui.agents_unit }} · <b>{{ catalog.skills.length }}</b> {{ ui.skills_unit }} · <b>{{ catalog.knowledge.length }}</b> {{ ui.knowledge_unit }}</div></div>
       <div v-if="error" class="notice" role="alert">{{ ui.refresh_failed }}</div>
       <div class="agent-band" role="group" :aria-label="ui.select_agent">

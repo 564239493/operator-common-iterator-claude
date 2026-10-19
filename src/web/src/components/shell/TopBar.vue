@@ -54,13 +54,15 @@ function go(route: string) {
   padding: 0 36px;
   gap: 42px;
   flex-shrink: 0;
+  /* 固定顶栏字体基准，避免继承各页面根容器的 font-size（如资产页 13px）导致导航字号变化 */
+  font-size: 14px;
 }
 .brand { font-size: 20px; font-weight: 750; letter-spacing: 0.5px; display: flex; align-items: center; white-space: nowrap; }
 .logo { display: inline-grid; grid-template-columns: repeat(2, 9px); gap: 3px; margin-right: 12px; }
 .logo i { width: 9px; height: 9px; border-radius: 2px; background: var(--wb-blue); }
 nav { height: 100%; display: flex; align-items: center; gap: 30px; }
-nav span { height: 100%; display: flex; align-items: center; color: var(--wb-muted); cursor: pointer; }
-nav span.active { color: var(--wb-blue); border-bottom: 3px solid var(--wb-blue); font-weight: 650; }
+nav span { height: 100%; display: flex; align-items: center; color: var(--wb-muted); cursor: pointer; border-bottom: 3px solid transparent; }
+nav span.active { color: var(--wb-blue); border-bottom-color: var(--wb-blue); }
 .top-actions { margin-left: auto; display: flex; gap: 16px; align-items: center; min-width: 0; }
 .theme-toggle { border: 0; background: transparent; color: var(--wb-ink); padding: 8px 0; white-space: nowrap; }
 @media (max-width: 850px) {

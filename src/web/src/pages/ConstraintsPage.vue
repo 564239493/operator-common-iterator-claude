@@ -1059,7 +1059,7 @@ export default {
                                              :filters="statusFilterOptions"
                                              :filter-method="(val, row) => !val ? true : (val === 'pass' ? !row._pflErrors.length : row._pflErrors.length)">
                                 <template #default="{ row }">
-                                    <el-tag :type="row._pflErrors.length ? 'danger' : 'info'" size="small">
+                                    <el-tag :type="row._pflErrors.length ? 'danger' : 'success'" size="small">
                                         {{ row._pflErrors.length ? '失败' : '通过' }}
                                     </el-tag>
                                 </template>
@@ -1248,8 +1248,6 @@ export default {
 
 <style scoped>
 * {
-    margin: 0;
-    padding: 0;
     box-sizing: border-box;
 }
 
