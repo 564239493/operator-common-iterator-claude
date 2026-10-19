@@ -10,10 +10,16 @@ const props = defineProps<{ view: 'workbench' | 'assets' | 'constraints' | 'cove
 const router = useRouter()
 const { theme, toggle } = useTheme()
 
-const VIEW_LABELS = { workbench: '工作台', assets: '智能体资产', constraints: '约束审核', coverage: '覆盖率展示' } as const
+/** 四个视图统一常驻导航：全部可点击，当前视图高亮。 */
+const NAV_ITEMS: { view: 'workbench' | 'assets' | 'constraints' | 'coverage'; label: string; route: string }[] = [
+  { view: 'workbench', label: '工作台', route: '/' },
+  { view: 'assets', label: '智能体资产', route: '/assets' },
+  { view: 'constraints', label: '约束审核', route: '/constraints' },
+  { view: 'coverage', label: '覆盖率展示', route: '/coverage' },
+]
 
-function go(target: 'workbench' | 'assets') {
-  router.push(target === 'workbench' ? '/' : '/assets')
+function go(route: string) {
+  router.push(route)
 }
 </script>
 
@@ -21,10 +27,12 @@ function go(target: 'workbench' | 'assets') {
   <header class="topbar">
     <div class="brand"><span class="logo" aria-hidden="true"><i /><i /><i /><i /></span>算子自主测试智能体工作台</div>
     <nav aria-label="页面">
-      <span :class="{ active: view === 'workbench' }" @click="go('workbench')">工作台</span>
-      <span :class="{ active: view === 'assets' }" @click="go('assets')">智能体资产</span>
-      <!-- 非导航视图（约束审核/覆盖率）显示为当前所在位置，不可点 -->
-      <span v-if="view !== 'workbench' && view !== 'assets'" class="active static">{{ VIEW_LABELS[view] }}</span>
+      <span
+        v-for="item in NAV_ITEMS"
+        :key="item.view"
+        :class="{ active: view === item.view }"
+        @click="go(item.route)"
+      >{{ item.label }}</span>
     </nav>
     <div class="top-actions"><slot /></div>
     <button class="theme-toggle" :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" @click="toggle">
@@ -53,7 +61,6 @@ function go(target: 'workbench' | 'assets') {
 nav { height: 100%; display: flex; align-items: center; gap: 30px; }
 nav span { height: 100%; display: flex; align-items: center; color: var(--wb-muted); cursor: pointer; }
 nav span.active { color: var(--wb-blue); border-bottom: 3px solid var(--wb-blue); font-weight: 650; }
-nav span.static { cursor: default; }
 .top-actions { margin-left: auto; display: flex; gap: 16px; align-items: center; min-width: 0; }
 .theme-toggle { border: 0; background: transparent; color: var(--wb-ink); padding: 8px 0; white-space: nowrap; }
 @media (max-width: 850px) {
