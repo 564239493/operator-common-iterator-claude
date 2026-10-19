@@ -22,6 +22,7 @@ import json
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import webbrowser
 from pathlib import Path
@@ -30,7 +31,9 @@ ROOT = Path(__file__).resolve().parent.parent
 PORT = 8899  # 与 scripts/dashboard_server.py 保持一致
 SERVER_SCRIPT = ROOT / "scripts" / "dashboard_server.py"
 RUN_STATE_SCRIPT = ROOT / "scripts" / "run_state.py"
-SERVER_LOG = Path("/tmp") / f"dsh_dashboard_server_{PORT}.log"
+# Windows 无 /tmp（Path("/tmp") 解析为盘符根 \tmp，目录不存在 → 开日志即
+# FileNotFoundError）；用 tempfile.gettempdir()：Windows=%TEMP%，POSIX=/tmp。
+SERVER_LOG = Path(tempfile.gettempdir()) / f"dsh_dashboard_server_{PORT}.log"
 
 
 def _port_open(host: str = "127.0.0.1", port: int = PORT, timeout: float = 0.5) -> bool:
@@ -45,7 +48,10 @@ def _ensure_server() -> tuple[bool, bool]:
     """返回 (started_by_us, server_up)。已监听则不重复启动。"""
     if _port_open():
         return False, True
-    log = SERVER_LOG.open("ab")
+    try:
+        log = SERVER_LOG.open("ab")
+    except OSError:
+        log = subprocess.DEVNULL  # 日志尽力而为：开不了（目录缺失/无权限）不阻断拉起
     subprocess.Popen(
         [sys.executable, str(SERVER_SCRIPT)],
         stdout=log,
