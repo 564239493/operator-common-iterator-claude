@@ -1,22 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
-import { useTask } from '../composables/useTask';
 import TaskPicker from '../components/task/TaskPicker.vue';
 import TopBar from '../components/shell/TopBar.vue';
 import CoverageList from '../components/coverage/CoverageList.vue';
 import RingChart from '../components/coverage/RingChart.vue';
 
-const { selectedRunId } = useTask();
-const runContext = computed(() => selectedRunId.value.trim());
-// 数据源：全局最终报告（ops_final_cov_report）默认；任务内嵌（runs/<run>/ops_cov_report）切换
+// 数据源：全局最终报告（ops_final_cov_report）默认；任务内嵌（runs/*/ops_cov_report）切换
 const source = ref<'global' | 'run'>('global');
-const isRunSource = computed(() => source.value === 'run' && !!runContext.value);
 
 /* ===== 数据树（四级：版本/算子库/算子目录/算子名称） ===== */
 const tree = ref<{ versions: any[] }>({ versions: [] });
 const loading = ref(true);
-const path = ref<string[]>([]); // [] 根 / [libKey] / [libKey,dir] / [libKey,dir,opKey]
+const path = ref<string[]>([]); // [] 版本 / [版本] 算子库 / [版本,库] 目录 / [版本,库,目录] 算子 / [版本,库,目录,算子] 详情
 
 const detailLoading = ref(false);
 const coverData = ref<any>(null);
@@ -24,16 +20,24 @@ const uncoveredReasons = ref<Record<string, any>>({});
 const coveredUncoveredLines = ref<Record<string, any>>({});
 const expandedFunc = ref('');
 
-const treeUrl = () => isRunSource.value
-  ? '/api/review/runs/' + encodeURIComponent(runContext.value) + '/cover/tree'
-  : '/api/review/cover/tree';
-const detailUrl = (v: string, lib: string, dir: string, op: string, kind: string) => {
-  const seg = [v, lib, dir, op].map(encodeURIComponent).join('/');
-  return isRunSource.value
-    ? '/api/review/runs/' + encodeURIComponent(runContext.value) + '/cover/' + seg + '/' + kind
-    : '/api/review/cover/' + seg + '/' + kind;
-};
-function switchSource(s: 'global' | 'run') { source.value = s; loadTree(); }
+// 任务内嵌：任务名称列表 + 当前选中的任务
+const runList = ref<any[]>([]);
+const runSel = ref('');
+
+const treeUrl = () => '/api/review/cover/tree';
+const detailUrl = (v: string, lib: string, dir: string, op: string, kind: string) =>
+  '/api/review/cover/' + [v, lib, dir, op].map(encodeURIComponent).join('/') + '/' + kind;
+const runsUrl = () => '/api/review/cover/runs';
+const runDetailUrl = (runId: string, kind: string) => '/api/review/runs/' + encodeURIComponent(runId) + '/cover/' + kind;
+
+function switchSource(s: 'global' | 'run') {
+  source.value = s;
+  path.value = [];
+  runSel.value = '';
+  coverData.value = null;
+  if (s === 'global') loadTree();
+  else loadRunList();
+}
 
 /* ===== 扁平化 ===== */
 const LIBS = computed(() => tree.value.versions.flatMap((v: any) =>
@@ -41,9 +45,18 @@ const LIBS = computed(() => tree.value.versions.flatMap((v: any) =>
 const allOps = computed(() => LIBS.value.flatMap((l: any) =>
   l.dirs.flatMap((d: any) => d.ops.map((o: any) => ({ ...o, version: l.version, lib: l.name, dir: d.name })))));
 
-const currentLib = computed(() => path.value.length >= 1 ? LIBS.value.find(l => l.key === path.value[0]) : null);
-const currentDir = computed(() => path.value.length >= 2 && currentLib.value ? currentLib.value.dirs.find((d: any) => d.name === path.value[1]) : null);
-const currentOpKey = computed(() => path.value.length >= 3 ? path.value[2] : '');
+const currentVersion = computed(() => path.value.length >= 1 ? path.value[0] : '');
+const currentLib = computed(() => path.value.length >= 2 ? LIBS.value.find(l => l.version === path.value[0] && l.name === path.value[1]) : null);
+const currentDir = computed(() => path.value.length >= 3 && currentLib.value ? currentLib.value.dirs.find((d: any) => d.name === path.value[2]) : null);
+const currentOpKey = computed(() => path.value.length >= 4 ? path.value[3] : '');
+const currentOpName = computed(() => {
+  const d = currentDir.value;
+  const o = d && d.ops.find((oo: any) => oo.dir_name === currentOpKey.value);
+  return o ? o.operator : currentOpKey.value;
+});
+const detailTitle = computed(() => source.value === 'run' ? (coverData.value ? coverData.value.operator : runSel.value) : currentOpName.value);
+const detailMeta = computed(() => source.value === 'run' ? runSel.value : `${currentVersion.value} · ${currentLib.value ? currentLib.value.name : ''} / ${currentDir.value ? currentDir.value.name : ''}`);
+const showDetail = computed(() => (source.value === 'global' && path.value.length === 4) || (source.value === 'run' && !!runSel.value));
 
 /* ===== 聚合与统计 ===== */
 const _avg = (arr: number[]) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : 0;
@@ -81,12 +94,27 @@ function dirAgg(dir: any) {
   return { func: _avg(dir.ops.map((o: any) => o.func)), line: _avg(dir.ops.map((o: any) => o.line)), branch: _avg(dir.ops.map((o: any) => o.branch)) };
 }
 
-/* 归一化各级卡片数据，供 CoverageList 渲染 */
-const libCards = computed(() => LIBS.value.map((lib: any) => {
-  const a = libAgg(lib);
-  return { key: lib.key, title: lib.name, badge: '仅覆盖率', badgeType: 'cov-only',
-    meta: `${lib.version} · ${lib.dirs.length} 个算子目录 · ${a.ops} 个算子`, func: a.func, line: a.line, branch: a.branch };
+/* 版本维度：版本目录无直接 md/json，按目录下算子覆盖率聚合 */
+const versionCards = computed(() => tree.value.versions.map((v: any) => {
+  const ops = v.libraries.flatMap((l: any) => l.dirs.flatMap((d: any) => d.ops));
+  return {
+    key: v.version, title: v.version, badge: '仅覆盖率', badgeType: 'cov-only',
+    meta: `${v.libraries.length} 个算子库 · ${ops.length} 个算子报告`,
+    func: _avg(ops.map((o: any) => o.func)),
+    line: _avg(ops.map((o: any) => o.line)),
+    branch: _avg(ops.map((o: any) => o.branch)),
+  };
 }));
+
+/* 归一化各级卡片数据，供 CoverageList 渲染 */
+const libCards = computed(() => {
+  const libs = currentVersion.value ? LIBS.value.filter((l: any) => l.version === currentVersion.value) : LIBS.value;
+  return libs.map((lib: any) => {
+    const a = libAgg(lib);
+    return { key: lib.name, title: lib.name, badge: '仅覆盖率', badgeType: 'cov-only',
+      meta: `${lib.dirs.length} 个算子目录 · ${a.ops} 个算子`, func: a.func, line: a.line, branch: a.branch };
+  });
+});
 const dirCards = computed(() => currentLib.value ? currentLib.value.dirs.map((d: any) => ({
   key: d.name, title: '📂 ' + d.name , meta: `${d.ops.length} 个算子报告 · 含分析文档`,
   func: dirAgg(d).func, line: dirAgg(d).line, branch: dirAgg(d).branch,
@@ -96,32 +124,39 @@ const opCards = computed(() => currentDir.value ? currentDir.value.ops.map((o: a
   key: o.dir_name, title: o.operator, badge: o.has_analysis ? '含分析' : '', badgeType: 'has-md',
   meta: `${o.domain || '-'} · ${o.dir_name}`, func: o.func, line: o.line, branch: o.branch,
 })) : []);
+const runCards = computed(() => runList.value.map((r: any) => ({
+  key: r.run_id, title: r.run_id, badge: r.has_analysis ? '含分析' : '内嵌', badgeType: 'has-md',
+  meta: `${r.operator} · ${r.domain || '-'}`, func: r.func, line: r.line, branch: r.branch,
+})));
 
 function rateHex(r: number) { return r >= 80 ? '#159b78' : r >= 50 ? '#df8a27' : '#da5961'; }
 function rateCls(r: number) { return r >= 80 ? 'ok' : r >= 50 ? 'mid' : 'bad'; }
 
 /* ===== 面包屑 ===== */
 const crumbs = computed(() => {
-  const out: { label: string; go: 'lib' | 'dir' }[] = [];
-  if (path.value.length >= 1 && currentLib.value) out.push({ label: currentLib.value.version + ' · ' + currentLib.value.name, go: 'lib' });
-  if (path.value.length >= 2 && currentDir.value) out.push({ label: currentDir.value.name, go: 'dir' });
+  const out: { label: string; go: 'version' | 'lib' | 'dir' }[] = [];
+  if (path.value.length >= 1) out.push({ label: path.value[0], go: 'version' });
+  if (path.value.length >= 2 && currentLib.value) out.push({ label: currentLib.value.name, go: 'lib' });
+  if (path.value.length >= 3 && currentDir.value) out.push({ label: currentDir.value.name, go: 'dir' });
   return out;
 });
 
 /* ===== 导航 ===== */
 function goRoot() { path.value = []; coverData.value = null; }
-function goLib(key: string) { path.value = [key]; coverData.value = null; }
-function goDir(key: string, dir: string) { path.value = [key, dir]; coverData.value = null; }
-function goOp(key: string, dir: string, op: string) {
-  path.value = [key, dir, op];
-  const lib = LIBS.value.find(l => l.key === key);
-  const d = lib && lib.dirs.find((dd: any) => dd.name === dir);
-  const o = d && d.ops.find((oo: any) => oo.dir_name === op);
+function goVersion(v: string) { path.value = [v]; coverData.value = null; }
+function goLib(v: string, libName: string) { path.value = [v, libName]; coverData.value = null; }
+function goDir(v: string, libName: string, dirName: string) { path.value = [v, libName, dirName]; coverData.value = null; }
+function goOp(v: string, libName: string, dirName: string, opDirName: string) {
+  path.value = [v, libName, dirName, opDirName];
+  const lib = LIBS.value.find(l => l.version === v && l.name === libName);
+  const d = lib && lib.dirs.find((dd: any) => dd.name === dirName);
+  const o = d && d.ops.find((oo: any) => oo.dir_name === opDirName);
   if (lib && d && o) loadDetail(lib, d, o);
 }
 function crumbGo(i: number) {
-  if (i === 0) goLib(path.value[0]);
-  else if (i === 1) goDir(path.value[0], path.value[1]);
+  if (i === 0) goVersion(path.value[0]);
+  else if (i === 1) goLib(path.value[0], path.value[1]);
+  else if (i === 2) goDir(path.value[0], path.value[1], path.value[2]);
 }
 
 /* ===== 加载树 ===== */
@@ -150,6 +185,40 @@ async function loadDetail(lib: any, dir: any, op: any) {
     const [covRes, anaRes] = await Promise.all([
       fetch(detailUrl(lib.version, lib.name, dir.name, op.dir_name, 'coverage')).then(r => r.json()),
       fetch(detailUrl(lib.version, lib.name, dir.name, op.dir_name, 'analysis')).then(r => r.json()).catch(() => null),
+    ]);
+    if (covRes && !covRes.error) coverData.value = covRes;
+    else ElMessage.error('加载覆盖率失败: ' + (covRes && covRes.error ? covRes.error : '未知'));
+    if (anaRes && !anaRes.error && anaRes.content) {
+      const parsed = parseAnalysis(anaRes.content);
+      uncoveredReasons.value = parsed.reasons;
+      coveredUncoveredLines.value = parsed.linesDetail;
+    }
+  } catch (e: any) { ElMessage.error('请求失败: ' + e.message); }
+  finally { detailLoading.value = false; }
+}
+
+/* ===== 任务内嵌：加载任务列表 + 选中任务详情 ===== */
+async function loadRunList() {
+  loading.value = true;
+  try {
+    const res = await fetch(runsUrl());
+    const data = await res.json();
+    runList.value = (data && data.runs) ? data.runs : [];
+  } catch (e: any) { ElMessage.error('加载任务列表失败: ' + e.message); }
+  finally { loading.value = false; }
+}
+
+async function selectRun(runId: string) {
+  runSel.value = runId;
+  detailLoading.value = true;
+  coverData.value = null;
+  uncoveredReasons.value = {};
+  coveredUncoveredLines.value = {};
+  expandedFunc.value = '';
+  try {
+    const [covRes, anaRes] = await Promise.all([
+      fetch(runDetailUrl(runId, 'coverage')).then(r => r.json()),
+      fetch(runDetailUrl(runId, 'analysis')).then(r => r.json()).catch(() => null),
     ]);
     if (covRes && !covRes.error) coverData.value = covRes;
     else ElMessage.error('加载覆盖率失败: ' + (covRes && covRes.error ? covRes.error : '未知'));
@@ -318,7 +387,7 @@ function parseAnalysis(content: string) {
 }
 
 /* ===== 初始化 ===== */
-watch(runContext, () => loadTree(), { immediate: true });
+onMounted(loadTree);
 </script>
 
 <template>
@@ -330,23 +399,32 @@ watch(runContext, () => loadTree(), { immediate: true });
   <div class="cov-wrap">
     <!-- 数据源切换 -->
     <div class="src-tabs">
-      <button :class="{ on: source === 'global' }" @click="switchSource('global')">全局最终报告（ops_final_cov_report）</button>
-      <button :class="{ on: source === 'run' }" @click="switchSource('run')">任务内嵌报告（runs/&lt;run&gt;/ops_cov_report）</button>
+      <button :class="{ on: source === 'global' }" @click="switchSource('global')">全局最终报告</button>
+      <button :class="{ on: source === 'run' }" @click="switchSource('run')">任务内嵌报告</button>
     </div>
 
     <!-- 面包屑 -->
     <nav class="crumb" v-if="!loading">
-      <span class="step" :class="{ cur: path.length === 0 }" @click="goRoot">整体统计</span>
-      <template v-for="(c, i) in crumbs" :key="i">
-        <span class="sep">›</span>
-        <span class="step" :class="{ cur: i === crumbs.length - 1 && path.length < 3 }" @click="crumbGo(i)">{{ c.label }}</span>
+      <template v-if="source === 'global'">
+        <span class="step" :class="{ cur: path.length === 0 }" @click="goRoot">整体统计</span>
+        <template v-for="(c, i) in crumbs" :key="i">
+          <span class="sep">›</span>
+          <span class="step" :class="{ cur: i === crumbs.length - 1 && path.length < 4 }" @click="crumbGo(i)">{{ c.label }}</span>
+        </template>
+        <span class="sep" v-if="path.length === 4">›</span>
+        <span class="step cur" v-if="path.length === 4">{{ currentOpName }}</span>
       </template>
-      <span class="sep" v-if="path.length === 3">›</span>
-      <span class="step cur" v-if="path.length === 3">{{ currentOpKey }}</span>
+      <template v-else>
+        <span class="step" :class="{ cur: !runSel }" @click="runSel = ''">任务内嵌</span>
+        <template v-if="runSel">
+          <span class="sep">›</span>
+          <span class="step cur">{{ runSel }}</span>
+        </template>
+      </template>
     </nav>
 
-    <!-- 整体 KPI（仅根视图） -->
-    <div class="kpi-row" v-if="path.length === 0 && !loading">
+    <!-- 整体 KPI（仅全局根视图） -->
+    <div class="kpi-row" v-if="source === 'global' && path.length === 0 && !loading">
       <div class="kpi" v-for="k in kpiItems" :key="k.l">
         <div class="num" :style="k.color ? { color: k.color } : {}">{{ k.n }}<span class="unit">{{ k.u }}</span></div>
         <div class="lbl">{{ k.l }}</div>
@@ -357,26 +435,33 @@ watch(runContext, () => loadTree(), { immediate: true });
     <main class="cov-main">
       <div v-if="loading" class="cov-empty">正在加载覆盖率数据…</div>
 
-      <!-- 根：算子库列表 -->
-      <template v-else-if="path.length === 0">
-        <CoverageList tag="点击查看该库下的算子目录" :items="libCards" @select="goLib($event.key)" />
+      <!-- 全局：四级列表 -->
+      <template v-else-if="source === 'global' && !showDetail">
+        <template v-if="path.length === 0">
+          <CoverageList title="版本" tag="点击查看该版本下的算子库" :items="versionCards" @select="goVersion($event.key)" />
+        </template>
+        <template v-else-if="path.length === 1 && currentVersion">
+          <CoverageList :title="`${currentVersion} → 算子库`" tag="点击查看该库下的算子目录" :items="libCards" @select="goLib(path[0], $event.key)" />
+        </template>
+        <template v-else-if="path.length === 2 && currentLib">
+          <CoverageList :title="`${currentVersion} · ${currentLib.name} → 算子目录`" tag="点击查看该目录下的算子" :items="dirCards" @select="goDir(path[0], path[1], $event.key)" />
+        </template>
+        <template v-else-if="path.length === 3 && currentDir">
+          <CoverageList :title="`${currentVersion} · ${currentLib.name} / ${currentDir.name} → 算子`" tag="点击查看算子详情" :items="opCards" @select="goOp(path[0], path[1], path[2], $event.key)" />
+        </template>
       </template>
 
-      <!-- 库：算子目录列表 -->
-      <template v-else-if="path.length === 1 && currentLib">
-        <CoverageList tag="点击查看该目录下的算子" :items="dirCards" @select="goDir(path[0], $event.key)" />
+      <!-- 任务内嵌：任务名称列表 -->
+      <template v-else-if="source === 'run' && !showDetail">
+        <CoverageList title="任务" tag="点击任务名称查看该任务内嵌覆盖率" :items="runCards" @select="selectRun($event.key)" />
       </template>
 
-      <!-- 目录：算子列表 -->
-      <template v-else-if="path.length === 2 && currentDir">
-        <CoverageList :title="`${currentLib.version} · ${currentLib.name} / ${currentDir.name} → 算子`" tag="点击查看算子详情" :items="opCards" @select="goOp(path[0], path[1], $event.key)" />
-      </template>
-
-      <!-- 算子详情 -->
-      <template v-else-if="path.length === 3">
+      <!-- 详情（全局与任务内嵌共用） -->
+      <template v-else-if="showDetail">
+        <button v-if="source === 'run'" class="back-btn" @click="runSel = ''">← 返回任务列表</button>
         <div v-if="detailLoading" class="cov-empty">加载中…</div>
         <template v-else-if="coverData">
-          <div class="detail-head"><h2>{{ currentOpKey }}</h2><span class="detail-meta">{{ currentLib.version }} · {{ currentLib.name }} / {{ currentDir.name }}</span></div>
+          <div class="detail-head"><h2>{{ detailTitle }}</h2><span class="detail-meta">{{ detailMeta }}</span></div>
 
           <div class="panel">
             <h3>模块覆盖率</h3>
@@ -485,6 +570,8 @@ watch(runContext, () => loadTree(), { immediate: true });
 
 /* 主内容 */
 .cov-main { flex: 1; overflow-y: auto; padding: 0 22px 28px; }
+.back-btn { border: 1px solid var(--border); background: var(--panel-bg); color: var(--accent); border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; margin-bottom: 14px; }
+.back-btn:hover { background: var(--wb-hover); }
 
 /* 详情 */
 .detail-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
