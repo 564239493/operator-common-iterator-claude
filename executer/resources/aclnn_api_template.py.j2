@@ -600,6 +600,21 @@ class {{ class_name }}(AclnnBaseApi):
             return
 
 
+        for config in self.task_result.case_config.inputs:
+            if isinstance(config, list):
+                # aclTensorList: kwargs[name] 是 List[Tensor]，逐项按各自配置转置
+                if not config:
+                    continue
+                name = config[0].name
+                input_data.kwargs[name] = [
+                    tensor.permute(*item.transpose_id)
+                    if getattr(item, "is_transpose", False) else tensor
+                    for item, tensor in zip(config, input_data.kwargs[name])
+                ]
+            elif getattr(config, "is_transpose", False):
+                input_data.kwargs[config.name] = input_data.kwargs[
+                    config.name].permute(*config.transpose_id)
+
 
     def parse_operator_params(self, func_signature: str):
         """
