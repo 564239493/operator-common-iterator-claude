@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus';
 import TaskPicker from '../components/task/TaskPicker.vue';
 import TopBar from '../components/shell/TopBar.vue';
 import CoverageList from '../components/coverage/CoverageList.vue';
-import RingChart from '../components/coverage/RingChart.vue';
+import ModuleTreemap from '../components/coverage/ModuleTreemap.vue';
 import CoverageTreemap from '../components/coverage/CoverageTreemap.vue';
 
 // 数据源：全局最终报告（ops_final_cov_report）默认；任务内嵌（runs/*/ops_cov_report）切换
@@ -25,8 +25,8 @@ const expandedFunc = ref('');
 const runList = ref<any[]>([]);
 const runSel = ref('');
 
-// 全局视图：列表下钻 / 矩形树图
-const viewMode = ref<'list' | 'treemap'>('list');
+// 全局视图：列表下钻 / 矩阵视图（树图）
+const viewMode = ref<'list' | 'treemap'>('treemap');
 
 const treeUrl = () => '/api/review/cover/tree';
 const detailUrl = (v: string, lib: string, dir: string, op: string, kind: string) =>
@@ -244,16 +244,10 @@ function curGran() {
   if (!g) return null;
   return g.func || g.file || null;
 }
-function metricsOf(mod: string) {
+const moduleCoverage = computed(() => {
   const g = curGran();
-  if (!g || !g.coverage || !g.coverage[mod]) return [];
-  return g.coverage[mod].metrics || [];
-}
-function modCount(mod: string) {
-  const g = curGran();
-  return (g && g.coverage && g.coverage[mod]) ? g.coverage[mod].count : null;
-}
-const coverModules = ['host', 'kernel', 'tiling', 'op'];
+  return (g && g.coverage) ? g.coverage : {};
+});
 
 const uncoveredRows = computed(() => {
   const g = curGran();
@@ -445,8 +439,13 @@ onMounted(loadTree);
       <!-- 全局：四级列表 / 矩形树图 -->
       <template v-else-if="source === 'global' && !showDetail">
         <div v-if="path.length === 0" class="view-tabs">
-          <button :class="{ on: viewMode === 'list' }" @click="viewMode = 'list'">列表视图</button>
-          <button :class="{ on: viewMode === 'treemap' }" @click="viewMode = 'treemap'">矩形树图</button>
+          <el-switch
+            v-model="viewMode"
+            active-value="treemap"
+            inactive-value="list"
+            active-text="矩阵视图"
+            inactive-text="列表视图"
+          />
         </div>
         <template v-if="path.length === 0">
           <div v-if="viewMode === 'treemap'" class="tm-grid">
@@ -480,14 +479,7 @@ onMounted(loadTree);
 
           <div class="panel">
             <h3>模块覆盖率</h3>
-            <div class="mods">
-              <div v-for="mod in coverModules" :key="mod" class="mod">
-                <h4>{{ mod }} <span v-if="modCount(mod) !== null">{{ modCount(mod) }} 函数</span></h4>
-                <div class="mod-rings">
-                  <RingChart v-for="m in metricsOf(mod)" :key="m.name" :name="m.name" :rate="m.rate" :covered="m.covered" :total="m.total" :size="92" />
-                </div>
-              </div>
-            </div>
+            <ModuleTreemap :coverage="moduleCoverage" />
           </div>
 
           <div class="panel" v-if="uncoveredRows.length">
@@ -567,9 +559,7 @@ onMounted(loadTree);
 .src-tabs button.on { color: var(--accent); border-color: var(--accent); background: var(--accent-light); font-weight: 600; }
 
 /* 视图切换（列表/树图） */
-.view-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
-.view-tabs button { border: 1px solid var(--border); background: var(--panel-bg); color: var(--text-secondary); border-radius: 8px; padding: 5px 13px; font-size: 13px; cursor: pointer; }
-.view-tabs button.on { color: var(--accent); border-color: var(--accent); background: var(--accent-light); font-weight: 600; }
+.view-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
 .tm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 1200px) { .tm-grid { grid-template-columns: 1fr; } }
 
