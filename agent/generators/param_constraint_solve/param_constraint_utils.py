@@ -265,6 +265,8 @@ class ParamConstraintUtils(CommonDispatcher):
                                                                    is_generate_real_data=is_generate_real_data)
         self.dtype_domain_data, self.format_domain_data = self.get_param_domain_value()
         self._LEN_REF_RE = re.compile(r"\blen\(\s*([A-Za-z_]\w*)\s*\)")
+        # H-5：识别「秩被跨参数关系式约束」的参数（len(P.shape) 形态引用）
+        self._RANK_COUPLED_RE = re.compile(r"len\(\s*(\w+)\.shape\s*\)")
 
     def get_param_domain_value(self) -> tuple[Dict[str, List], Dict[str, List]]:
         """
@@ -584,29 +586,31 @@ class ParamConstraintUtils(CommonDispatcher):
             # 三级丢弃优先级：输出 > 派生 > 原版顺序；但（`len(X.shape) in/== N`）从输出优先豁免、降为保底。
             def _is_rank_pin(expr_str):
                 return bool(re.match(r'^len\(\w+(\.shape)?\)\s*(in\b|==)', expr_str or ''))
-            output_candidates = [t for t in candidates
-                                 if param_of_tag.get(t) in output_param_names
-                                 and not _is_rank_pin(
-                                     next((e for e, tg in tag_of.items() if tg is t), ''))]
-            derived_candidates = [t for t in candidates
-                                  if param_of_tag.get(t) in derived_param_names]
 
-            # seed 保护（I-2，2026-10-19）：冲突候选同时含 scalar seed（组合层
+            def _expr_of(tag):
+                return next((e for e, tg in tag_of.items() if tg is tag), '')
+
+            # 冲突候选同时含 scalar seed（组合层
             # 多样性意图载体）与非 seed 物化候选时，优先弃非 seed——seed 注册
-            # 晚于 shape 静态式，注册顺序兜底会反向弃 seed（12:01 实证：glt
-            # seed 0/2 被 drop 128/127 次）。仅在 I-1 回归后 seed drop 率仍高时启用。
+            # 晚于 shape 静态式，注册顺序兜底会反向弃 seed
             def _is_scalar_seed(expr_str):
                 return bool(re.match(r'^(\w+)\.range_value == ', expr_str or ''))
 
-            seed_tags = {t for t in candidates
-                         if _is_scalar_seed(next((e for e, tg in tag_of.items() if tg is t), ''))}
-            non_seed = [t for t in candidates if t not in seed_tags]
-            if seed_tags and non_seed:
-                to_remove = non_seed[0]
-                logger.info(
-                    f"[choice_core] drop-priority: scalar-seed protected, "
-                    f"dropping non-seed candidate instead")
-            elif output_candidates:
+            # 种子最后扔。先把本轮冲突候选分成种子与非种子，
+            # 只要还有非种子候选，三级规则就只在非种子里选，种子不进入候选池。
+            # 旧 I-2 的触发条件是「本轮冲突候选里同时有种子和非种子」，而矛盾核
+            # 构成不稳定, 扔种子那轮核里只剩种子，旧条件不触发），
+            # 故改为无条件优先非种子。仅当本轮冲突候选全是种子（说明种子与硬约束
+            # 本身矛盾）时，候选池回落到全部候选。
+            seed_candidates = [t for t in candidates if _is_scalar_seed(_expr_of(t))]
+            pool = [t for t in candidates if t not in set(seed_candidates)] or candidates
+
+            output_candidates = [t for t in pool
+                                 if param_of_tag.get(t) in output_param_names
+                                 and not _is_rank_pin(_expr_of(t))]
+            derived_candidates = [t for t in pool
+                                  if param_of_tag.get(t) in derived_param_names]
+            if output_candidates:
                 to_remove = output_candidates[0]
                 logger.info(
                     f"[choice_core] drop-priority: output-side static preferred, "
@@ -617,10 +621,20 @@ class ParamConstraintUtils(CommonDispatcher):
                     f"[choice_core] drop-priority: derived-side static preferred, "
                     f"param : '{param_of_tag.get(to_remove)}'")
             else:
-                to_remove = candidates[0]
-            assume.remove(to_remove)
+                to_remove = pool[0]
             dropped_expr = next(
                 (expr for expr, tag in tag_of.items() if tag is to_remove), None)
+            # 只打印被丢的那一条无法定位"和谁冲突"：补打本轮 unsat_core 全量
+            # 表达式，才能看出矛盾是 seed 与 JSON 硬约束、还是两条偏好静态互斥。
+            core_exprs = [_expr_of(tag) for tag in candidates]
+            # 注意：candidates 只是 core ∩ assume，core 里可能还含 JSON 硬约束
+            # （assert_and_track 的约束编号）与 hard domain static（perm: 前缀）——
+            # 这些 tag 不在 assume 中，会被过滤掉，导致"单条 static 独自冲突"的假象。
+            # 因此必须打印完整 core，才能看出到底撞的是哪条硬约束。
+            logger.warning(
+                f"[choice_core] unsat_core iters={iters} ({len(core_exprs)} static): {core_exprs} "
+                f"| full_core({len(core_list)}): {[str(t) for t in core_list]}")
+            assume.remove(to_remove)
             logger.warning(
                 f"[choice_core] drop conflicting static : '{dropped_expr}'")
 
@@ -797,7 +811,7 @@ class ParamConstraintUtils(CommonDispatcher):
                 else:
                     if isinstance(value_rule, (list, tuple)) and len(value_rule) >= 2:
                         param_range_value_expr_list.append(
-                            f"({param_name}.{range_value_attr_name} > {value_rule[0]} and {param_name}.{range_value_attr_name} < {value_rule[1]})")
+                            f"({param_name}.{range_value_attr_name} >= {value_rule[0]} and {param_name}.{range_value_attr_name} <= {value_rule[1]})")
                     elif isinstance(value_rule, (int, float, bool)):
                         # Some extracted torch_npu defaults are represented as
                         # an exact scalar even when the outer rule is tagged
@@ -951,6 +965,25 @@ class ParamConstraintUtils(CommonDispatcher):
             else:
                 logger.warning(f"Can't get valid tensor dimension data, param name : {param_name}")
                 continue
+            # 文档 dimensions 是多值域时如[1,2]，上面
+            # 的 in/== 只表达"合法秩的范围"，表达不了组合行这一轮选的是几维。这里把组合行的 dim_count 追加为一条硬断言，
+            # 与文档域是"范围 + 具体值"的关系，不冲突（dim_count 必落在文档域内）。
+            # 若某个组合行本身与该断言矛盾，whole solve 会 UNSAT → 本轮拒产并换下一个
+            intent_dim = None
+            if self.param_combinations is not None:
+                property_data = self.param_combinations.get(param_name)
+                shape_property = getattr(property_data, "shape_property", None)
+                intent_dim = getattr(shape_property, "dim_count", None)
+            if (isinstance(param_shape_dimension, list)
+                    and isinstance(intent_dim, int)
+                    and intent_dim in param_shape_dimension):
+                intent_expr = f"len({param_name}.shape) == {intent_dim}"
+                if hard_static_expr_list is not None:
+                    hard_static_expr_list.append(intent_expr)
+                else:
+                    shape_len_static_value_expr_list.append(intent_expr)
+                logger.debug(
+                    f"Rank intent pinned, param name : '{param_name}', expr : '{intent_expr}'")
             if hard_static_expr_list is not None:
                 hard_static_expr_list.append(shape_len_expr)
             else:
