@@ -97,8 +97,9 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
   1. 文档支持的设备：读 `<run-dir>/inputs/<doc>.md` "产品支持情况"章节，列出设备全称；
   2. 执行机支持的平台：读 `servers.json` 各服务器 `platforms` 并集，标注哪些文档设备有执行机；
   3. 文中出现的量化场景关键词（非量化/全量化-xx/伪量化…，按文档实际内容列举）。
-  用户输入格式建议：**设备类型（必要）+ 量化场景 + 参数取值**，如
-  `A2非量化groupListType等于2`。
+  用户输入格式建议：**设备类型（必要）+ 量化场景（文档有量化维度时）+ 参数取值**，如
+  `A2非量化groupListType等于2`；文档无场景或量化关键词（场景清单为空）时
+  仅设备即可（如 `A2`）。
 
 **文字匹配与回显确认**（两种入口合流，逐项执行）：
 - **设备（硬性必要项）**：用户文本包含设备关键字（"A2"/"A3"/"910B" 或设备名子串）→
@@ -107,7 +108,11 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
   `platforms` 并集比对：无执行机 → 警示"该设备无执行机，real 执行无法进行"
   （**不阻断**，约束提取仍可进行）。
 - **量化场景**：文本命中文档中出现的量化关键词（非量化/全量化-xx/伪量化…）；匹配不上 →
-  展示关键词清单让用户挑选；非量化算子允许不填。
+  展示关键词清单让用户挑选（**有量化维度的算子必须选出场景**）。
+  **文档无场景或量化关键词（场景清单为空）→ 该设备无场景维度：不选场景、
+  仅选设备即可，无需也不得用"非量化"等模板名代替**——"文档没有该维度"不等于
+  "在该维度上选了非量化"。"不选"的落盘形态：selection 该设备值写 `null`（设备级，
+  "仅选设备"形态）。
 - **参数取值（含大白话区间，解析细则）**：
   - 等值："等于2" / "=2" / "取2" → 单值 → `fix [2]`；
   - 枚举："取0和3" / "=0,3" / "0,1,2" → 多值 → `expand [0,3]`；
@@ -123,19 +128,22 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
   （如 `x: [2,3,4,5,6]（维度数）`、`groupList: [4,5,6]`），用户确认后才写入
   selection.json。
 - **回显确认（强制一次）**：把解析结果以表格（设备全称 / 量化场景 / 参数取值列表）展示，
-  AskUserQuestion 让用户【确认/修改】；确认后才允许落盘。
+  无场景维度设备的量化场景列显示"（无场景维度）"；AskUserQuestion 让用户
+  【确认/修改】；确认后才允许落盘。
 
 **设备必选硬门槛（强制）**：未选出至少一个可对齐文档"产品支持情况"的设备全称之前，
 禁止写 `selection.json`、禁止渲染 `scene_directive.md`、禁止推进 EXTRACT；用户明确
 拒绝提供设备时，向用户确认是否停止任务（不得静默跳过场景步骤继续提取）。
 `render_scene_directive.py` 以 `DEVICE_REQUIRED`（device_types 为空）/
-`EMPTY_SCENE`（无选中场景）exit 2 硬拦截——收到该返回时回到文字匹配重新征询，
+`EMPTY_SCENE`（selection 无任何有效设备条目——设备值 `null` 是合法条目，
+全"仅设备"选择不触发）exit 2 硬拦截——收到该返回时回到文字匹配重新征询，
 不得伪造 selection 绕过。
 
 **落盘**：确认后写 `<run-dir>/inputs/selection.json`（**值级形态**）：
-`{"device_types": [<设备全称>], "selection": {<设备全称>: {<量化场景>: null | {参数: [值...]}}}}`
-（"保持自动" → `null`；显式参数 → `{param: [values]}`；文本模式**不支持** `fix_all_default`
-——无场景参数枚举，需要固定全部默认值时请显式列出各参数）。
+`{"device_types": [<设备全称>], "selection": {<设备全称>: null | {<量化场景>: null | {参数: [值...]}}}}`
+（设备值 `null` = 该设备**无场景维度**（文档无场景或量化关键词），仅按设备收窄；
+模板值 `null` = "保持自动"；显式参数 → `{param: [values]}`；文本模式**不支持**
+`fix_all_default`——无场景参数枚举，需要固定全部默认值时请显式列出各参数）。
 
 **渲染**：
 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
@@ -143,7 +151,8 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
 legacy 参数；仅做结构校验、无枚举交叉校验；exit 2 阻断并按 `code`/`errors` 提示修正。
 设备支撑：无执行机的设备仅警示不阻断——约束仍可提取，real 执行阶段自然失败。）
 渲染产出 `inputs/scene_directive.md`（机读块
-`<!-- scene: {device_types, selection, param_modes, selection_policy} -->`）并回写
+`<!-- scene: {device_types, selection, param_modes, no_scene_devices, selection_policy} -->`，
+`no_scene_devices` 为无场景维度设备清单）并回写
 `run_state.scene`（`scene.source` = scenes_param / interactive_input）。
 
 **EXTRACT 消费**：EXTRACT 调度消息须把 `inputs/scene_directive.md` 路径一并传入
@@ -151,7 +160,9 @@ constraint-extractor；extractor 读 directive 的 `device_types` 收窄 `produc
 （与文档 √ 行取交集，无"通用"展开）；按 `param_modes` 产 `allowed_range_value`
 （`expand` 用取值清单、`fix` 单值、缺键按文档和已选场景适配）；已选场景禁止的
 Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场景的约束**——未选
-设备、未选场景专属条目不产出（与所选场景共用的基础约束保留）。该 `product_support`
+设备、未选场景专属条目不产出（与所选场景共用的基础约束保留）；`no_scene_devices`
+设备（无场景维度）不做场景屏蔽，仅按设备收窄，不得虚构量化/非量化区分。该
+`product_support`
 随后驱动 `generate_cases.py` 逐平台生成——**设备选择经约束提取驱动生成，不直接改
 生成逻辑**。执行反馈轮不重写 prompt 或 directive，constraint-updater 继续读取同一
 场景指令，保持跨轮稳定。

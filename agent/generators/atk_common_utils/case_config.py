@@ -42,6 +42,11 @@ class InputCaseConfig(MyBaseModel):
     # 以 permute(*transpose_id) 得到约束体系使用的逻辑视图 L。
     is_transpose: Optional[bool] = False
     transpose_id: Optional[List[int]] = None
+    # 分块存储（NZ 等）物理 storageShape；None/缺省 = storage==view（旧产物
+    # 行为不变）。shape 字段承载逻辑 viewShape；生成阶段按参数卡
+    # storage_layout 轴表达式求值写入，执行侧 get_storage_shape 读本字段
+    # 上报物理形状。
+    storage_shape: Optional[List] = None
 
     def __hash__(self):
         dtype_hash = hash(self.dtype)

@@ -404,22 +404,28 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 来源为 `--scenes "<场景描述>"` 或用户交互文本输入）。
 形态 `{device_types, selection}`，
 `device_types` 为文档"产品支持情况"**设备全称非空清单（硬性必要项）**，
-`selection` 为 `{device: {template: <tpl_value>}}`，
+`selection` 为 `{device: null | {template: <tpl_value>}}`，
+设备值 `null`（或空 dict）= 该设备**无场景维度**（文档无场景或量化关键词、无可选
+场景模板——无场景即**不选场景**，无需也不虚构"非量化"等模板名；仅按设备收窄
+`product_support`，不做场景屏蔽）；
 `<tpl_value>` ∈ `null`（保持自动）| `{param:[values]}`（文本匹配的显式取值；
 `"fix_all_default"` 文本模式不支持——无场景参数枚举）。
 
-供 `render_scene_directive.py` 解析 `param_modes`。
+供 `render_scene_directive.py` 解析 `param_modes` 与 `no_scene_devices`。
 无独立结构校验命令——`render_scene_directive.py` 对其内容的解析是唯一门禁
-（`device_types` 空 → `DEVICE_REQUIRED` exit 2）。由主协调器产出。
+（`device_types` 空 → `DEVICE_REQUIRED` exit 2；selection 无任何有效设备条目 →
+`EMPTY_SCENE` exit 2，设备值 `null` 是合法条目）。由主协调器产出。
 
 ## scene_directive.md
 
 `render_scene_directive.py` 渲染，落 `<run-dir>/inputs/scene_directive.md`（仅 `scope=subset`时存在）。
 逐设备列出选定设备/量化场景/参数取值，末尾附机读块
-`<!-- scene: {device_types, selection, param_modes, selection_policy, known_conflicts} -->`
-（文本直输模式 `known_conflicts` 恒为 `[]`）。
+`<!-- scene: {device_types, selection, param_modes, no_scene_devices, selection_policy, known_conflicts} -->`
+（文本直输模式 `known_conflicts` 恒为 `[]`；`no_scene_devices` 为未选出任何模板的
+无场景维度设备清单——这些设备不做场景屏蔽，仅按设备收窄）。
 `param_modes[device][param]` ∈ `{"expand": [取值清单]}` | `{"fix": X}`；
-缺键 = 按文档和已选场景自动适配，已选场景禁止的 Optional 参数显式生成 `param is None`。
+缺键 = 按文档和已选场景自动适配，已选场景禁止的 Optional 参数显式生成 `param is None`
+（无场景维度设备不存在"未选场景专属参数"，不虚构量化/非量化区分）。
 
 `constraint-extractor` 消费（按 `param_modes` 收窄 `allowed_range_value`，按 `device_types` 收窄 `product_support`，消费规则见
 `extract-constraints` skill 场景屏蔽规则段）；
@@ -432,7 +438,7 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 ## run_state.scene
 
 `init_run` 写 `null`，SCENE_SCAN 子步骤由 `render_scene_directive.py` 回写。
-形态`{enabled, scope, device_types, selection, param_modes, selection_policy, known_conflicts, directive, scan, source}`。
+形态`{enabled, scope, device_types, selection, param_modes, no_scene_devices, selection_policy, known_conflicts, directive, scan, source}`。
 `scope=subset` 时 `directive` 指向 `inputs/scene_directive.md`；
 `scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件（extractor 见无 directive 即按全场景提取，行为不变）。
 `source` ∈ `scenes_param`（`--scenes` 直输）/ `interactive_input`（交互文本输入）。

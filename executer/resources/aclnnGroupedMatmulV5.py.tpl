@@ -516,15 +516,48 @@ class AclnnGroupedMatmulV5(AclnnBaseApi):
                 elif type in ("char", "const char") or arg_name == "activation":
                     input_args.append(None)
                 else:
-                    input_args.append(ctypes.c_void_p(None))
-
+                    # by-value 标量（int64_t/double/bool 等）在 C ABI 中按值传参，
+                    # 不存在空指针语义：按签名解析出的 C 类型构造类型正确的零值
+                    # （等价 aclnn attr 默认值，如 innerPrecise 缺省 0=高精度）。
+                    # ctypes 按实例类型选择 ABI 寄存器类：c_void_p 会把 double
+                    # 参数放进整型寄存器，被调方从 FP 寄存器读到垃圾；int64 传
+                    # NULL 仅因 0 位模式恰为数值 0 而侥幸。查不到映射时保持旧行为。
+                    try:
+                        scalar_ctype = self.get_ctype(type)
+                    except ValueError:
+                        scalar_ctype = None
+                    if scalar_ctype is None:
+                        input_args.append(ctypes.c_void_p(None))
+                    else:
+                        input_args.append(scalar_ctype(0))
+        # === 处理标杆输出 ===
+        # 收集算子输出，并储存根据输出中的shape和dtype信息生成的AclTensorStruct数据结构
+        # 输出数据结构说明：
         output_list = self.output.split(',')
         for index, output in enumerate(output_list):
             data = input_tmp.get(output)
             if isinstance(data, list):
                 output_packages.append(data[0])
-            else:
+            elif data is not None:
                 output_packages.append(data)
+            else:
+                # 缺席的可选输出（KV merge/rope 缺省等文档合法场景）：与上方
+                # 入参 nullptr 回退对称，出参数据包放空指针占位结构体。
+                # pyaclnn before_run 逐包校验必须是 AclTensorStruct/AclTensorlistStruct，
+                # 裸 None 会让 case 死在调用之前；kernel 对 nullptr 出参不写数据，
+                # after_call 对占位包做 0 字节拷贝（addr=0/data_size=0），无副作用。
+                if param_type.get(output) == "aclTensorList":
+                    AclTensorListPtr = ctypes.POINTER(AclTensorList)
+                    output_packages.append(AclTensorlistStruct(
+                        tensorlist=AclTensorListPtr(), tensors=[]))
+                else:
+                    AclTensorPtr = ctypes.POINTER(AclTensor)
+                    null_tensor_ptr = ctypes.cast(ctypes.c_void_p(None), AclTensorPtr)
+                    output_packages.append(AclTensorStruct(
+                        tensor=null_tensor_ptr,
+                        addr=0,
+                        pytensor=torch.empty(0),
+                        data_size=0))
 
         return input_args, output_packages
 

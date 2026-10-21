@@ -454,6 +454,26 @@ def _outer_tuple(parts: list[str]) -> str:
     return "(" + ",".join(parts) + ")"
 
 
+def _storage_shape_spec(item: dict[str, Any], view_shape: Any) -> str:
+    """Per-slot spec for the ``tensor_storage_shapes`` column.
+
+    cases.json 张量条目带 ``storage_shape``（物理分块布局，如 NZ 的
+    (batch,k1,n1,n0,k0)）且与逻辑视图 shape 不同（view/storage 分离）时输出
+    物理元组片段；未分离（无字段 / 与视图相等 / 非法值）输出 ``None`` ——
+    TTK 侧 ``None`` 槽位走缺省 view==storage 路径，与不写该列语义一致，
+    避免触发远端 ``_build_non_contiguous_tensor`` 的随机非连续推断。
+    """
+    storage = item.get("storage_shape") if isinstance(item, dict) else None
+    if not isinstance(storage, list) or not storage or any(
+        isinstance(dim, bool) or not isinstance(dim, int) for dim in storage
+    ):
+        return "None"
+    view = view_shape if isinstance(view_shape, list) else None
+    if view == storage:
+        return "None"
+    return repr(tuple(storage))
+
+
 def _format_dtype(dtype_str: str | None) -> str:
     """Map ATK dtype string to TTK dtype string."""
     if dtype_str is None:
@@ -579,6 +599,7 @@ def convert_case(
     shapes_parts: list[str] = []
     dtypes_parts: list[str] = []
     formats_parts: list[str] = []
+    storage_parts: list[str] = []
     data_ranges: list[tuple[Any, Any]] = []
     output_indexes: list[int] = []
 
@@ -600,6 +621,7 @@ def convert_case(
                 shapes_parts.append("None")
                 dtypes_parts.append("None")
                 formats_parts.append("None")
+                storage_parts.append("None")
                 data_ranges.append((None, None))
                 continue
             sub_shapes = [_logical_view_shape(sub) for sub in item]
@@ -610,6 +632,19 @@ def convert_case(
             formats_parts.append(
                 repr(tuple(_format_tensor_format(sub.get("format")) for sub in item))
             )
+            # TensorList 的 storage 仅在全部在场子张量都 view/storage 分离时
+            # 输出嵌套元组（与 _format_tensor_list_shapes 同样过滤缺席槽）；
+            # 任一子张量未分离则整槽 None，避免槽位错位。
+            sub_storages = []
+            for sub, sub_view in zip(item, sub_shapes):
+                spec = _storage_shape_spec(sub, sub_view)
+                sub_storages.append(
+                    list(sub.get("storage_shape")) if spec != "None" else None
+                )
+            if sub_storages and all(s is None for s in sub_storages):
+                storage_parts.append("None")
+            else:
+                storage_parts.append(_format_tensor_list_shapes(sub_storages))
             data_ranges.append(_merge_sub_ranges(item))
             if is_output:
                 output_indexes.append(idx)
@@ -620,12 +655,14 @@ def convert_case(
             shapes_parts.append("None")
             dtypes_parts.append("None")
             formats_parts.append("None")
+            storage_parts.append("None")
             data_ranges.append((None, None))
             continue
 
         shape = _logical_view_shape(item)
         dtype_ttk = _format_dtype(item.get("dtype"))
         format_ttk = _format_tensor_format(item.get("format"))
+        storage_spec = _storage_shape_spec(item, shape)
 
         if is_tensor_list:
             count = _tensor_list_element_count(item)
@@ -646,6 +683,15 @@ def convert_case(
                 shapes_parts.append("None")
             dtypes_parts.append(repr(tuple(dtype_ttk for _ in range(count))))
             formats_parts.append(repr(tuple(format_ttk for _ in range(count))))
+            # 紧凑 TensorList（length 展开语义）：子张量共享同一卡面，storage
+            # 分离时按同样倍数复制；未分离输出 None。
+            if storage_spec != "None":
+                storage_list = list(item.get("storage_shape"))
+                storage_parts.append(
+                    _format_tensor_list_shapes([storage_list] * count)
+                )
+            else:
+                storage_parts.append("None")
             # TTK ACLNN 对 None 槽无差别填 (-2,2),不按 dtype/role 挑默认,
             # 会退化 int 权重并丢弃 ATK 写死的 range_values;按顶层参数解析
             # 真实范围(标量→(v,v)、[lo,hi]→(lo,hi)、clamp 到 dtype 界)。
@@ -656,6 +702,7 @@ def convert_case(
             shapes_parts.append(_format_single_tensor_shape(shape))
             dtypes_parts.append(f"'{dtype_ttk}'")
             formats_parts.append(f"'{format_ttk}'")
+            storage_parts.append(storage_spec)
             data_ranges.append(_tensor_data_range(item))
 
         if is_output:
@@ -666,6 +713,7 @@ def convert_case(
     tensor_view_shapes = _outer_tuple(shapes_parts)
     tensor_dtypes = _outer_tuple(dtypes_parts)
     tensor_formats = _outer_tuple(formats_parts)
+    tensor_storage_shapes = _outer_tuple(storage_parts)
 
     attrs = _format_attrs(case, attr_specs)
     # A8W4 with offset=null is interpreted by CANN as count mode regardless
@@ -697,6 +745,7 @@ def convert_case(
         "tensor_view_shapes": tensor_view_shapes,
         "tensor_dtypes": tensor_dtypes,
         "tensor_formats": tensor_formats,
+        "tensor_storage_shapes": tensor_storage_shapes,
         "attributes": repr(attrs),
         "input_data_ranges": repr(tuple(data_ranges)),
         "output_tensor_indexes": output_tensor_indexes,
@@ -798,6 +847,7 @@ HEADERS = (
     "tensor_view_shapes",
     "tensor_dtypes",
     "tensor_formats",
+    "tensor_storage_shapes",
     "attributes",
     "input_data_ranges",
     "precision_tolerances",

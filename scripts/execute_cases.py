@@ -35,6 +35,7 @@ import ast
 import csv
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -457,6 +458,24 @@ def _retarget_ttk_e2e_csv(
     }
 
 
+_DEVICE_FAMILY_RE = re.compile(r"(atlas|ascend)\s+([a-z0-9]+)", re.IGNORECASE)
+
+
+def _device_family(platform: str) -> str | None:
+    """Return the hardware family token of a platform name.
+
+    Operator docs use product-table names (``Atlas A2系列产品``) while
+    ``servers.json`` often uses the execution-host naming
+    (``Atlas A2 训练系列产品/Atlas A2 推理系列产品``).  Both describe the
+    same A2 hardware; compare their family token (``atlas a2``) when the
+    exact strings do not match.
+    """
+    match = _DEVICE_FAMILY_RE.search(str(platform or ""))
+    if not match:
+        return None
+    return f"{match.group(1).lower()} {match.group(2).lower()}"
+
+
 def _select_server_for_execution(
     servers: list[dict[str, Any]],
     requested_platform: str | None,
@@ -467,11 +486,19 @@ def _select_server_for_execution(
     Without ``--platform``, selection follows ``servers.json`` order:
     iterate servers in file order, then each server's ``platforms`` array in
     priority order, and pick the first product supported by the operator.
+    Exact string matches win; otherwise platform names are matched by device
+    family token (doc table name vs execution-host name for the same SoC).
     """
     if requested_platform:
         for server in servers:
             if requested_platform in (server.get("platforms") or []):
                 return server, requested_platform, None
+        requested_family = _device_family(requested_platform)
+        if requested_family:
+            for server in servers:
+                for platform in server.get("platforms") or []:
+                    if _device_family(platform) == requested_family:
+                        return server, platform, None
         return (
             None,
             None,
@@ -492,6 +519,16 @@ def _select_server_for_execution(
         for platform in server_platforms:
             if platform in supported:
                 return server, platform, None
+
+    supported_families = {
+        family for family in (_device_family(p) for p in operator_platforms)
+        if family
+    }
+    if supported_families:
+        for server in servers:
+            for platform in server.get("platforms") or []:
+                if _device_family(platform) in supported_families:
+                    return server, platform, None
 
     return (
         None,
