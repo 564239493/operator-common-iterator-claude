@@ -39,8 +39,22 @@ def _cov_rate(metrics, *names):
     return 0.0
 
 
+def _cov_pair(metrics, *names):
+    """从 metrics 列表按名称取 (covered, total)，取不到返回 (0, 0)。"""
+    if not isinstance(metrics, list):
+        return 0, 0
+    by_name = {}
+    for m in metrics:
+        if isinstance(m, dict) and m.get('name'):
+            by_name[m['name']] = (m.get('covered', 0), m.get('total', 0))
+    for n in names:
+        if n in by_name:
+            return by_name[n]
+    return 0, 0
+
+
 def _op_summary(odir, data, name=None, dir_name=None):
-    """从单份 coverage.json 提取算子摘要（op 模块 函数/行/分支覆盖率）。
+    """从单份 coverage.json 提取算子摘要（op 模块 函数/行/分支覆盖率 + 覆盖数/总数）。
 
     name/dir_name 用于平坦结构（任务内嵌）时自定义算子名与目录名；默认取目录名。
     """
@@ -50,14 +64,24 @@ def _op_summary(odir, data, name=None, dir_name=None):
     op = cov.get('op') or {}
     metrics = op.get('metrics') or []
     oi = data.get('operatorInfo') or {}
+    func_c, func_t = _cov_pair(metrics, '函数覆盖率')
+    line_c, line_t = _cov_pair(metrics, '行覆盖率', '语句覆盖率')
+    branch_c, branch_t = _cov_pair(metrics, '分支覆盖率')
     return {
         'dir_name': dir_name or odir.name,
         'operator': name or odir.name,
         'domain': oi.get('domain', ''),
         'has_analysis': bool(list(odir.glob('*.md'))),
+        'count': op.get('count', 0) or func_t,
         'func': _cov_rate(metrics, '函数覆盖率'),
+        'func_covered': func_c,
+        'func_total': func_t,
         'line': _cov_rate(metrics, '行覆盖率', '语句覆盖率'),
+        'line_covered': line_c,
+        'line_total': line_t,
         'branch': _cov_rate(metrics, '分支覆盖率'),
+        'branch_covered': branch_c,
+        'branch_total': branch_t,
     }
 
 
@@ -224,7 +248,8 @@ def get(root, parts, query, token):
                     continue
                 s = _op_summary(cov_base, data, name=data.get('operator'), dir_name=run_dir.name)
                 result.append({'run_id': run_dir.name, 'operator': s['operator'], 'domain': s['domain'],
-                               'has_analysis': s['has_analysis'], 'func': s['func'], 'line': s['line'], 'branch': s['branch']})
+                               'has_analysis': s['has_analysis'], 'count': s['count'],
+                               'func': s['func'], 'line': s['line'], 'branch': s['branch']})
             return {'runs': result}
         if len(parts) == 6 and parts[5] in ('coverage', 'analysis'):
             return _coverage_detail(base, parts[1:5], parts[5])

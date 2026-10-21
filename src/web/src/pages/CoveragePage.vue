@@ -5,6 +5,7 @@ import TaskPicker from '../components/task/TaskPicker.vue';
 import TopBar from '../components/shell/TopBar.vue';
 import CoverageList from '../components/coverage/CoverageList.vue';
 import RingChart from '../components/coverage/RingChart.vue';
+import CoverageTreemap from '../components/coverage/CoverageTreemap.vue';
 
 // 数据源：全局最终报告（ops_final_cov_report）默认；任务内嵌（runs/*/ops_cov_report）切换
 const source = ref<'global' | 'run'>('global');
@@ -23,6 +24,9 @@ const expandedFunc = ref('');
 // 任务内嵌：任务名称列表 + 当前选中的任务
 const runList = ref<any[]>([]);
 const runSel = ref('');
+
+// 全局视图：列表下钻 / 矩形树图
+const viewMode = ref<'list' | 'treemap'>('list');
 
 const treeUrl = () => '/api/review/cover/tree';
 const detailUrl = (v: string, lib: string, dir: string, op: string, kind: string) =>
@@ -152,6 +156,9 @@ function goOp(v: string, libName: string, dirName: string, opDirName: string) {
   const d = lib && lib.dirs.find((dd: any) => dd.name === dirName);
   const o = d && d.ops.find((oo: any) => oo.dir_name === opDirName);
   if (lib && d && o) loadDetail(lib, d, o);
+}
+function goOpFromTreemap(p: { version: string; lib: string; dir: string; op: string }) {
+  goOp(p.version, p.lib, p.dir, p.op);
 }
 function crumbGo(i: number) {
   if (i === 0) goVersion(path.value[0]);
@@ -435,10 +442,18 @@ onMounted(loadTree);
     <main class="cov-main">
       <div v-if="loading" class="cov-empty">正在加载覆盖率数据…</div>
 
-      <!-- 全局：四级列表 -->
+      <!-- 全局：四级列表 / 矩形树图 -->
       <template v-else-if="source === 'global' && !showDetail">
+        <div v-if="path.length === 0" class="view-tabs">
+          <button :class="{ on: viewMode === 'list' }" @click="viewMode = 'list'">列表视图</button>
+          <button :class="{ on: viewMode === 'treemap' }" @click="viewMode = 'treemap'">矩形树图</button>
+        </div>
         <template v-if="path.length === 0">
-          <CoverageList title="版本" tag="点击查看该版本下的算子库" :items="versionCards" @select="goVersion($event.key)" />
+          <div v-if="viewMode === 'treemap'" class="tm-grid">
+            <CoverageTreemap :tree="tree" metric="func" @select="goOpFromTreemap" />
+            <CoverageTreemap :tree="tree" metric="line" @select="goOpFromTreemap" />
+          </div>
+          <CoverageList v-else title="版本" tag="点击查看该版本下的算子库" :items="versionCards" @select="goVersion($event.key)" />
         </template>
         <template v-else-if="path.length === 1 && currentVersion">
           <CoverageList :title="`${currentVersion} → 算子库`" tag="点击查看该库下的算子目录" :items="libCards" @select="goLib(path[0], $event.key)" />
@@ -550,6 +565,13 @@ onMounted(loadTree);
 .src-tabs { display: flex; gap: 8px; padding: 14px 22px 0; flex-shrink: 0; }
 .src-tabs button { border: 1px solid var(--border); background: var(--panel-bg); color: var(--text-secondary); border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
 .src-tabs button.on { color: var(--accent); border-color: var(--accent); background: var(--accent-light); font-weight: 600; }
+
+/* 视图切换（列表/树图） */
+.view-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.view-tabs button { border: 1px solid var(--border); background: var(--panel-bg); color: var(--text-secondary); border-radius: 8px; padding: 5px 13px; font-size: 13px; cursor: pointer; }
+.view-tabs button.on { color: var(--accent); border-color: var(--accent); background: var(--accent-light); font-weight: 600; }
+.tm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1200px) { .tm-grid { grid-template-columns: 1fr; } }
 
 /* 面包屑 */
 .crumb { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary);
