@@ -22,6 +22,8 @@ from agent.generators.operator_param_combine.combination_result_generator.model.
 from agent.generators.operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
 from agent.generators.operator_param_combine.combination_result_generator.constraint.evaluator import \
     ConstraintEvaluator
+from agent.generators.operator_param_combine.combination_result_generator.constraint.exceptions import \
+    describe_binding_cause
 
 _PARAMETER_ATTRIBUTE_KEYS = frozenset({
     "dtype", "range_value", "is_present", "length",
@@ -72,9 +74,23 @@ def build_constraint(constraints: tuple[str, ...]) -> ConstraintProtocol | None:
             logger.error(f"Failed to compile constraint, expr : '{expr}', error : {e}")
 
     class CombinedConstraint:
+        """多约束合取求值。
+
+        语义边界（两种情形后果相反，日志必须能区分，否则极易误导定位）：
+          - 不满足：evaluate 返回 False → 该行被拒绝，记入 failed_exprs；
+          - 求值异常：如引用了缺席参数的属性 → 该约束本次未生效，
+            行被放行，记入 skipped_exprs。
+        异常分支保留“宽松放行”的历史行为（与 Z3 侧空泛满足的意图一致），
+        但必须留下可定位痕迹：只打 debug 时日志里只剩“通过”，会被误读成
+        “约束已校验且满足”，实际是这条约束从头到尾没起作用。
+        """
+
         def __init__(self):
             self.compiled = compiled
             self.failed_exprs = set()
+            # {expression: {"reason": str, "count": int, "code": str,
+            #               "param": str | None, "attr": str | None, "cause": str}}
+            self.skipped_exprs: dict[str, dict] = {}
 
         def evaluate(self, context) -> bool:
             for constraint_compile in compiled:
@@ -83,10 +99,40 @@ def build_constraint(constraints: tuple[str, ...]) -> ConstraintProtocol | None:
                         self.failed_exprs.add(constraint_compile.expression)
                         return False
                 except Exception as e:
-                    logger.debug(f"Failed to evaluate constraint : {constraint_compile.expression}, error : {str(e)}")
-                    self.failed_exprs.add(constraint_compile.expression)
-                    continue
+                    self._record_skip(constraint_compile.expression, e)
             return True
+
+        def _record_skip(self, expression: str, error: Exception) -> None:
+            """记录一次“求值异常导致该约束本次未生效”。
+
+            同一表达式只打印一次 WARNING，后续命中仅累计次数，避免单批上千行时刷屏；
+            计数可据 skipped_exprs 判断哪条约束实际从未参与筛选。
+            除完整消息外还留存 code/param/attr/cause，供上层按“哪个参数的哪个属性”
+            分组汇总，避免调用方再从消息文本里正则提取。
+
+            :param expression: 约束原始表达式，作为统计键
+            :param error: 求值抛出的异常，其消息即日志中的根因
+            """
+            record = self.skipped_exprs.get(expression)
+            if record is not None:
+                # 同一表达式在同一批次会命中成百上千次，只累计不再刷屏
+                record["count"] += 1
+                return
+            info = {
+                "reason": f"[{type(error).__name__}] {error}",
+                "count": 1,
+                "code": getattr(error, "error_code", "") or type(error).__name__,
+                "param": getattr(error, "param", None),
+                "attr": getattr(error, "attr", None),
+                "cause": getattr(error, "cause", "") or "",
+            }
+            self.skipped_exprs[expression] = info
+            logger.warning(
+                f"Constraint SKIPPED (row KEPT, this constraint took no effect): "
+                f"[{info['code']}] "
+                f"{describe_binding_cause(info['param'], info['attr'], info['cause'])} "
+                f"| expr: {expression} | later hits are counted, not logged"
+            )
 
     return CombinedConstraint()
 
