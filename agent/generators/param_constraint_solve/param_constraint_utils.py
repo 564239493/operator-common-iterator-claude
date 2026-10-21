@@ -265,6 +265,8 @@ class ParamConstraintUtils(CommonDispatcher):
                                                                    is_generate_real_data=is_generate_real_data)
         self.dtype_domain_data, self.format_domain_data = self.get_param_domain_value()
         self._LEN_REF_RE = re.compile(r"\blen\(\s*([A-Za-z_]\w*)\s*\)")
+        # H-5：识别「秩被跨参数关系式约束」的参数（len(P.shape) 形态引用）
+        self._RANK_COUPLED_RE = re.compile(r"len\(\s*(\w+)\.shape\s*\)")
 
     def get_param_domain_value(self) -> tuple[Dict[str, List], Dict[str, List]]:
         """
@@ -584,11 +586,29 @@ class ParamConstraintUtils(CommonDispatcher):
             # 三级丢弃优先级：输出 > 派生 > 原版顺序；但（`len(X.shape) in/== N`）从输出优先豁免、降为保底。
             def _is_rank_pin(expr_str):
                 return bool(re.match(r'^len\(\w+(\.shape)?\)\s*(in\b|==)', expr_str or ''))
-            output_candidates = [t for t in candidates
+
+            def _expr_of(tag):
+                return next((e for e, tg in tag_of.items() if tg is tag), '')
+
+            # 冲突候选同时含 scalar seed（组合层
+            # 多样性意图载体）与非 seed 物化候选时，优先弃非 seed——seed 注册
+            # 晚于 shape 静态式，注册顺序兜底会反向弃 seed
+            def _is_scalar_seed(expr_str):
+                return bool(re.match(r'^(\w+)\.range_value == ', expr_str or ''))
+
+            # 种子最后扔。先把本轮冲突候选分成种子与非种子，
+            # 只要还有非种子候选，三级规则就只在非种子里选，种子不进入候选池。
+            # 旧 I-2 的触发条件是「本轮冲突候选里同时有种子和非种子」，而矛盾核
+            # 构成不稳定, 扔种子那轮核里只剩种子，旧条件不触发），
+            # 故改为无条件优先非种子。仅当本轮冲突候选全是种子（说明种子与硬约束
+            # 本身矛盾）时，候选池回落到全部候选。
+            seed_candidates = [t for t in candidates if _is_scalar_seed(_expr_of(t))]
+            pool = [t for t in candidates if t not in set(seed_candidates)] or candidates
+
+            output_candidates = [t for t in pool
                                  if param_of_tag.get(t) in output_param_names
-                                 and not _is_rank_pin(
-                                     next((e for e, tg in tag_of.items() if tg is t), ''))]
-            derived_candidates = [t for t in candidates
+                                 and not _is_rank_pin(_expr_of(t))]
+            derived_candidates = [t for t in pool
                                   if param_of_tag.get(t) in derived_param_names]
             if output_candidates:
                 to_remove = output_candidates[0]
@@ -601,10 +621,20 @@ class ParamConstraintUtils(CommonDispatcher):
                     f"[choice_core] drop-priority: derived-side static preferred, "
                     f"param : '{param_of_tag.get(to_remove)}'")
             else:
-                to_remove = candidates[0]
-            assume.remove(to_remove)
+                to_remove = pool[0]
             dropped_expr = next(
                 (expr for expr, tag in tag_of.items() if tag is to_remove), None)
+            # 只打印被丢的那一条无法定位"和谁冲突"：补打本轮 unsat_core 全量
+            # 表达式，才能看出矛盾是 seed 与 JSON 硬约束、还是两条偏好静态互斥。
+            core_exprs = [_expr_of(tag) for tag in candidates]
+            # 注意：candidates 只是 core ∩ assume，core 里可能还含 JSON 硬约束
+            # （assert_and_track 的约束编号）与 hard domain static（perm: 前缀）——
+            # 这些 tag 不在 assume 中，会被过滤掉，导致"单条 static 独自冲突"的假象。
+            # 因此必须打印完整 core，才能看出到底撞的是哪条硬约束。
+            logger.warning(
+                f"[choice_core] unsat_core iters={iters} ({len(core_exprs)} static): {core_exprs} "
+                f"| full_core({len(core_list)}): {[str(t) for t in core_list]}")
+            assume.remove(to_remove)
             logger.warning(
                 f"[choice_core] drop conflicting static : '{dropped_expr}'")
 
@@ -781,7 +811,7 @@ class ParamConstraintUtils(CommonDispatcher):
                 else:
                     if isinstance(value_rule, (list, tuple)) and len(value_rule) >= 2:
                         param_range_value_expr_list.append(
-                            f"({param_name}.{range_value_attr_name} > {value_rule[0]} and {param_name}.{range_value_attr_name} < {value_rule[1]})")
+                            f"({param_name}.{range_value_attr_name} >= {value_rule[0]} and {param_name}.{range_value_attr_name} <= {value_rule[1]})")
                     elif isinstance(value_rule, (int, float, bool)):
                         # Some extracted torch_npu defaults are represented as
                         # an exact scalar even when the outer rule is tagged
@@ -818,11 +848,12 @@ class ParamConstraintUtils(CommonDispatcher):
         per-row 多样性全链路丢失。dtype/format/shape/length 四个静态通道都读
         per-row 值，唯独 range_value 缺失 —— 本方法补上这条通道。
 
-        种子表达式形态（per-row 值的两种形态）：
-        - list（如 [-2,-1]）  -> "{param}.range_value == [-2, -1]"
-          整数组取值钉住（Seq==List 比较，转换器 334-344 行支持）
-        - 标量（如 128）      -> "{param}.range_value[0] == 128"
-          维度代表值钉住首元素，其余元素仍由 JSON 约束（如 0<x<=100000）限定
+        # 按 Z3 变量类型分流：
+            # - tensor / tensor_list：range_value 是数据内容区间，不走等值钉值（维持现状跳过）
+            # - list（attrs/scalars 数组型）：走已有的「整数组等值」钉值（L850-861 现状保留）
+            # - scalar（枚举型标量，如 groupListType/actType）：新增——组合层选定的枚举值
+            #   必须以软静态种子钉入 Z3，否则在语义等价类（如 C-019 中 glt∈{0,1} 同分支）
+            #   内被 Z3 模型偏好覆盖，组合多样性在物化层丢失（2026-10-17 glt 全灭为 1 实证）。
 
         安全性：走偏好静态通道（choice_core 冲突消解），种子与 JSON 约束冲突时
         丢弃种子保 JSON 约束，不会整 case UNSAT —— 与 dtype/length 通道同模式。
@@ -831,7 +862,26 @@ class ParamConstraintUtils(CommonDispatcher):
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
             case_input = self.case_input_map.get(param)
-            # 仅处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
+            # 这里处理标量参数
+            z3_var_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(case_input.type)
+            if z3_var_type in ("tensor", "tensor_list"):
+                logger.debug(
+                    f"Range value seed skipped, tensor-type param uses content-range "
+                    f"semantics, param name : '{param}', seed : '{case_input.range_values}'")
+                continue
+            if z3_var_type in ParamModelConfig.SCALAR_ATK_TYPE:
+                scalar_seed = case_input.range_values
+                # 仅构建「数值/布尔字面量」形态（组合层物化的枚举值）；profile 名
+                # （'Pos' 等）与 None 不钉——它们本就不是具体取值
+                if isinstance(scalar_seed, (int, float, bool)):
+                    seed_expr = "{param_name}.range_value == {seed_value}".format(
+                        param_name=param, seed_value=scalar_seed)
+                    logger.debug(
+                        f"Range value seed constraint (scalar), param name : '{param}', "
+                        f"seed expr : '{seed_expr}'")
+                    seed_static_value_expr_list.append(seed_expr)
+                continue
+            # 这里处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
             # 自己的取值通道（tensor 的 range_value 是数据内容区间，scalar 的
             # build_param_range_value_constraint 已按源 JSON 域处理）
             if case_input.type not in ParamModelConfig.LIST_ATK_TYPE:
@@ -915,6 +965,25 @@ class ParamConstraintUtils(CommonDispatcher):
             else:
                 logger.warning(f"Can't get valid tensor dimension data, param name : {param_name}")
                 continue
+            # 文档 dimensions 是多值域时如[1,2]，上面
+            # 的 in/== 只表达"合法秩的范围"，表达不了组合行这一轮选的是几维。这里把组合行的 dim_count 追加为一条硬断言，
+            # 与文档域是"范围 + 具体值"的关系，不冲突（dim_count 必落在文档域内）。
+            # 若某个组合行本身与该断言矛盾，whole solve 会 UNSAT → 本轮拒产并换下一个
+            intent_dim = None
+            if self.param_combinations is not None:
+                property_data = self.param_combinations.get(param_name)
+                shape_property = getattr(property_data, "shape_property", None)
+                intent_dim = getattr(shape_property, "dim_count", None)
+            if (isinstance(param_shape_dimension, list)
+                    and isinstance(intent_dim, int)
+                    and intent_dim in param_shape_dimension):
+                intent_expr = f"len({param_name}.shape) == {intent_dim}"
+                if hard_static_expr_list is not None:
+                    hard_static_expr_list.append(intent_expr)
+                else:
+                    shape_len_static_value_expr_list.append(intent_expr)
+                logger.debug(
+                    f"Rank intent pinned, param name : '{param_name}', expr : '{intent_expr}'")
             if hard_static_expr_list is not None:
                 hard_static_expr_list.append(shape_len_expr)
             else:
