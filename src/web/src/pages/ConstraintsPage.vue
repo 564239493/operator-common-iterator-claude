@@ -1,7 +1,7 @@
 <script>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { marked } from 'marked';
 import { useTask } from '../composables/useTask';
 import TaskPicker from '../components/task/TaskPicker.vue';
@@ -34,7 +34,7 @@ function relStatusType(st) {
 }
 
 function relStatusLabel(st) {
-    if (st === 'pass') return '未关联失败';
+    if (st === 'pass') return '通过';
     if (st === 'fail') return '失败';
     if (st === 'warn') return '警告';
     return '通过';
@@ -43,6 +43,9 @@ function relStatusLabel(st) {
 export default {
     components: { TaskPicker, TopBar },
     setup() {
+        // 返回工作台：本页由工作台「查看约束情况」卡进入，任务/轮次上下文经共享选择与深链携带
+        const router = useRouter();
+        function backToWorkbench() { router.push('/'); }
         const DATA = ref({});
         const currentProduct = ref('');
         // 任务身份来自全站共享选择（算子名 × 测试运行），不再本页拉任务列表
@@ -196,8 +199,8 @@ export default {
         }
 
         const statusFilterOptions = [
-            {text: '未关联失败', value: 'pass'},
-            {text: '关联失败', value: 'fail'}
+            {text: '通过', value: 'pass'},
+            {text: '失败', value: 'fail'}
         ];
 
         function paramRows(section) {
@@ -842,7 +845,7 @@ export default {
             statusFilterOptions,
             inputRows, outputRows, cellText, boolText,
             statPass, statFail, statWarn, taskStats,
-            onIterChange, queryProgress,
+            onIterChange, queryProgress, backToWorkbench,
             editConstraints, editMode, submitLoading, exprTypeOptions,
             enterEditMode, cancelEdit,
             addConstraint, removeConstraint, addParam, removeParam,
@@ -857,6 +860,7 @@ export default {
     }
 };
 </script>
+
 <template>
 <div class="legacy-review">
     <!-- 顶栏: 共享 TopBar（品牌/导航/主题）+ 任务情况汇总 + 覆盖率展示入口 -->
@@ -872,15 +876,17 @@ export default {
     <!-- 副信息栏: 任务/轮次/产品系列 一组选择器 + 约束统计 -->
     <div class="info-bar">
         <div class="info-left">
+            <button type="button" class="back-btn" @click="backToWorkbench"
+                    title="返回工作台轮次汇总">← 返回工作台</button>
             <span class="field-label">算子任务</span>
             <TaskPicker :disabled="editMode" />
             <span class="field-label">轮次</span>
-            <el-select v-model="currentIter" placeholder="迭代" style="width:120px" :disabled="!selectedRunId || editMode"
+            <el-select v-model="currentIter" class="iter-select" placeholder="迭代" :disabled="!selectedRunId || editMode"
                        @change="onIterChange">
                 <el-option v-for="d in iterList" :key="d" :label="d" :value="d"></el-option>
             </el-select>
             <span class="field-label">产品系列</span>
-            <el-select v-model="currentProduct" :disabled="editMode" style="width:280px" filterable @change="syncEditConstraints">
+            <el-select v-model="currentProduct" class="product-select" :disabled="editMode" @change="syncEditConstraints">
                 <el-option v-for="p in productOptions" :key="p" :label="p" :value="p"></el-option>
             </el-select>
             <el-tag v-if="currentTaskState" :type="currentTaskStateType" effect="light" class="state-tag"
@@ -889,8 +895,8 @@ export default {
             </el-tag>
         </div>
         <div class="info-right">
-            <div class="stat-item stat-pass"><span class="stat-num">{{ statPass }}</span> 未关联失败</div>
-            <div class="stat-item stat-fail"><span class="stat-num">{{ statFail }}</span> 关联失败</div>
+            <div class="stat-item stat-pass"><span class="stat-num">{{ statPass }}</span> 通过</div>
+            <div class="stat-item stat-fail"><span class="stat-num">{{ statFail }}</span> 失败</div>
         </div>
     </div>
 
@@ -921,7 +927,7 @@ export default {
 
     <div class="constraint-toolbar">
         <span class="toolbar-hint">
-            {{ editMode ? '编辑模式 — 保存人工修改副本；不会直接启动执行' : '浏览模式 · 未关联失败不等于验证通过'}}
+            {{ editMode ? '编辑模式 — 保存人工修改副本；不会直接启动执行' : '浏览模式 · 通过仅表示未关联到失败用例，非已验证'}}
         </span>
         <div style="display:flex;gap:8px">
             <template v-if="!editMode">
@@ -1053,8 +1059,8 @@ export default {
                                              :filters="statusFilterOptions"
                                              :filter-method="(val, row) => !val ? true : (val === 'pass' ? !row._pflErrors.length : row._pflErrors.length)">
                                 <template #default="{ row }">
-                                    <el-tag :type="row._pflErrors.length ? 'danger' : 'info'" size="small">
-                                        {{ row._pflErrors.length ? '关联失败' : '未关联失败' }}
+                                    <el-tag :type="row._pflErrors.length ? 'danger' : 'success'" size="small">
+                                        {{ row._pflErrors.length ? '失败' : '通过' }}
                                     </el-tag>
                                 </template>
                             </el-table-column>
@@ -1236,13 +1242,12 @@ export default {
             <el-button @click="docDialogVisible = false">关闭</el-button>
         </template>
     </el-dialog>
-    
+
 </div>
 </template>
+
 <style scoped>
 * {
-    margin: 0;
-    padding: 0;
     box-sizing: border-box;
 }
 
@@ -1360,28 +1365,55 @@ export default {
     font-size: 13px;
     color: var(--text-secondary);
     font-weight: 500;
+}
+
+/* 轮次 / 产品系列下拉框：圆角描边 + hover/focus 高亮，统一商务风
+   （Element Plus ≥2.5 起 el-select 内部结构由 .el-input__wrapper 改为 .el-select__wrapper，
+     旧选择器已失效，导致下拉框退回默认样式） */
+.iter-select { width: 120px; }
+.product-select { width: 280px; }
+.info-left .el-select :deep(.el-select__wrapper) {
+    border-radius: 8px;
+    box-shadow: 0 0 0 1px var(--border) inset;
+    transition: box-shadow .15s;
+    background: var(--panel-bg);
+}
+.info-left .el-select :deep(.el-select__wrapper.is-hovering:not(.is-focused)) {
+    box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.info-left .el-select :deep(.el-select__wrapper.is-focused) {
+    box-shadow: 0 0 0 1px var(--accent) inset, 0 0 0 3px var(--wb-blue-soft, rgba(39,116,237,.12));
+}
+.info-left .el-select :deep(.el-select__selected-item),
+.info-left .el-select :deep(.el-select__placeholder) {
+    color: var(--text);
+    font-size: 13px;
+}
+.info-left .el-select.is-disabled :deep(.el-select__wrapper) {
+    background: var(--wb-hover);
+    box-shadow: 0 0 0 1px var(--border) inset;
+}
+
+/* 返回工作台：本页由工作台汇总卡「查看约束情况」进入，提供明确的回退入口 */
+.back-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--accent);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
     white-space: nowrap;
 }
+.back-btn:hover { background: var(--wb-hover, rgba(255, 255, 255, 0.06)); }
 
 /* 响应式: 小屏适配 (时间线间距固定 56px, 超出时水平滚动) */
 @media (max-width: 1600px) {
-    .info-left .el-select {
-        width: 240px !important;
-    }
-
-    .info-right .el-select {
-        width: 240px !important;
-    }
+    .product-select { width: 240px; }
 }
 
 @media (max-width: 1400px) {
-    .info-left .el-select {
-        width: 200px !important;
-    }
-
-    .info-right .el-select {
-        width: 200px !important;
-    }
+    .product-select { width: 200px; }
 }
 
 @media (max-width: 1100px) {
@@ -1389,13 +1421,7 @@ export default {
         gap: 10px;
     }
 
-    .info-left .el-select {
-        width: 160px !important;
-    }
-
-    .info-right .el-select {
-        width: 160px !important;
-    }
+    .product-select { width: 180px; }
 
     .timeline-node {
         min-width: 44px;
@@ -1407,13 +1433,7 @@ export default {
 }
 
 @media (max-width: 900px) {
-    .info-left .el-select {
-        width: 130px !important;
-    }
-
-    .info-right .el-select {
-        width: 130px !important;
-    }
+    .product-select { width: 150px; }
 
     .node-time {
         display: none;
@@ -1425,17 +1445,7 @@ export default {
 }
 
 @media (max-width: 700px) {
-    .info-left .el-select {
-        width: 110px !important;
-    }
-
-    .info-right .el-select {
-        width: 110px !important;
-    }
-
-    .field-label {
-        font-size: 12px;
-    }
+    .product-select { width: 120px; }
 
     .field-label {
         font-size: 12px;
@@ -1901,6 +1911,17 @@ html[data-theme='dark'] .doc-md :deep(.doc-md-hit) {
 /* el-tag 状态色 */
 .state-tag {
     font-weight: 600;
+    padding: 0 14px !important;
+    height: 30px !important;
+    line-height: 28px !important;
+    border-radius: 7px !important;
+}
+/* 表格状态列 el-tag：适度内边距，突出通过/失败 */
+.op-table .el-tag {
+    padding: 0 12px !important;
+    height: 24px !important;
+    line-height: 22px !important;
+    border-radius: 6px !important;
 }
 
 /* ===== 轮次对比: 表格上方数量差异统计 ===== */

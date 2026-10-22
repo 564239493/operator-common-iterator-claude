@@ -123,6 +123,23 @@ const WAITING_STATES = new Set([
   'HUMAN_CHECKPOINT',
 ])
 
+// 状态机 → 中文标签（与 ConstraintsPage 的 STATE_LABELS 对齐，无幽灵态）
+const STATE_LABELS: Record<string, string> = {
+  PLAN: '规划', EXTRACT: '约束提取',
+  GENERATE: '用例生成',
+  EXECUTE: '用例执行', GATE: '质量门禁', DIAGNOSE: '根因诊断',
+  UPDATE_CONSTRAINTS: '增量更新', MIXED_FAILURE_REVIEW: '混合复核',
+  NEEDS_HUMAN_EVIDENCE: '待人工证据', HUMAN_CHECKPOINT: '人工检查',
+  AWAITING_HUMAN_CONSTRAINTS: '等待人工约束',
+  SUCCESS: '成功', MAX_ITERATIONS: '轮次耗尽',
+  STOP_GENERATOR_BUG: '生成器止损', STOP_EXECUTOR_BUG: '执行器止损',
+  STOPPED_BY_USER: '用户终止', BLOCKED: '阻断',
+}
+
+function stateLabel(s?: string | null): string {
+  return (s && STATE_LABELS[s]) || s || ''
+}
+
 const STATUS_CHIP: Record<string, { text: string; cls: string }> = {
   SUCCESS: { text: '✓ 流程已完成', cls: 'ok' },
   MAX_ITERATIONS: { text: '◷ 达到最大轮数', cls: 'warn' },
@@ -136,9 +153,10 @@ const STATUS_CHIP: Record<string, { text: string; cls: string }> = {
   AWAITING_HUMAN_CONSTRAINTS: { text: '◷ 等待人工补充约束', cls: 'warn' },
   HUMAN_CHECKPOINT: { text: '◷ 等待人工检查点', cls: 'warn' },
 }
+
 const statusChip = computed(() => {
   const s = runView.value?.state
-  return STATUS_CHIP[s] || { text: `● ${s || '…'}`, cls: 'run' }
+  return STATUS_CHIP[s] || { text: `● ${stateLabel(s) || '…'}`, cls: 'run' }
 })
 
 const metrics = computed(() => {
@@ -255,7 +273,10 @@ function fmtTime(at?: string | null) {
 
 function segStates(seg: any): string {
   const states = (seg.events || []).map((e: any) => e.state).filter(Boolean)
-  return states.filter((v: string, i: number) => i === 0 || states[i - 1] !== v).join(' → ')
+  return states
+    .filter((v: string, i: number) => i === 0 || states[i - 1] !== v)
+    .map((v: string) => stateLabel(v))
+    .join(' → ')
 }
 </script>
 
@@ -347,7 +368,7 @@ function segStates(seg: any): string {
           <template v-else>
             <span class="rsb-dot rsb-running"></span>
             <b>任务进行中</b>
-            <span>当前阶段 {{ runView?.state || '…' }} · 最后活动 {{ fmtTime(runView?.last_activity) }}</span>
+            <span>当前阶段 <strong class="stage-name">{{ stateLabel(runView?.state) || '…' }}</strong> · 最后活动 {{ fmtTime(runView?.last_activity) }}</span>
           </template>
         </div>
         <HandoffBoard
@@ -374,25 +395,27 @@ function segStates(seg: any): string {
 
           <!-- 方案A（layout=bottom）：汇总沉底——流程内容之后、页脚之前 -->
           <template v-if="layoutMode === 'bottom'">
-            <div class="round-heading">第 {{ selectedRound ?? '—' }} 轮汇总 <span>以下结果属于当前所选轮次</span></div>
-            <div class="summary">
-              <div v-for="(m, i) in metrics" :key="i" class="metric">
-                <span class="icon">{{ m.icon }}</span>
-                <div>
-                  <small>{{ m.label }}</small>
-                  <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
+            <div class="round-summary">
+              <div class="round-heading">第 {{ selectedRound ?? '—' }} 轮汇总 <span>以下结果属于当前所选轮次</span></div>
+              <div class="summary">
+                <div v-for="(m, i) in metrics" :key="i" class="metric">
+                  <span class="icon">{{ m.icon }}</span>
+                  <div>
+                    <small>{{ m.label }}</small>
+                    <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
+                  </div>
                 </div>
               </div>
+              <details class="run-context"><summary>任务背景与状态历史</summary>
+                <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
+                <p>提示词快照：{{ runView.current_prompt || '—' }} · 用例预算：{{ runView.case_count ?? '—' }} · 装配知识：{{ (runView.current_prompt_modules || []).length }} 项</p>
+                <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
+                <p v-for="(seg, i) in runView.segments || []" :key="i">{{ fmtTime(seg.from_at) }} → {{ fmtTime(seg.to_at) }} · <span class="stage-seq">{{ segStates(seg) }}</span></p>
+              </details>
             </div>
             <div v-if="outcomes.length" class="outcomes">
               <div v-for="(c, i) in outcomes" :key="i" class="outcome" :class="c.tone"><strong>{{ c.title }}</strong><span>{{ c.text }}</span><a v-if="c.link" class="outcome-link" :href="c.link.href">{{ c.link.label }} →</a></div>
             </div>
-            <details class="run-context"><summary>任务背景与状态历史</summary>
-              <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
-              <p>提示词快照：{{ runView.current_prompt || '—' }} · 用例预算：{{ runView.case_count ?? '—' }} · 装配知识：{{ (runView.current_prompt_modules || []).length }} 项</p>
-              <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
-              <p v-for="(seg, i) in runView.segments || []" :key="i">{{ fmtTime(seg.from_at) }} → {{ fmtTime(seg.to_at) }} · {{ segStates(seg) }}</p>
-            </details>
           </template>
         </template>
         <div v-else v-loading="true" style="height: 300px" />
@@ -492,7 +515,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .expand-btn:hover { color: var(--wb-blue); }
 
 .screen-board { background: var(--wb-bg); }
-.board-area { padding: 0 36px 30px; max-width: 1800px; width: 100%; margin: 0 auto; }
+.board-area { padding: 0 36px 30px; max-width: 1800px; width: 100%; margin: 16px; }
 .section-title { display: flex; align-items: center; gap: 16px; margin: 4px 0 12px; }
 .section-title h2 { font-size: 20px; margin: 0; }
 .section-title > span { color: var(--wb-muted); font-size: 12px; }
@@ -548,8 +571,9 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 @media(max-width:900px){.band-shell{padding:0 16px}.band-grid{grid-template-columns:minmax(0,1fr);gap:0}.band-actions{position:absolute;right:20px;top:-32px}.band-actions button{font-size:11px;padding:4px 10px}}
 
 .board-area { transition: transform .1s ease-out; }
-.run-status-bar { display:flex; align-items:center; gap:10px; padding:8px 16px; margin:12px 16px 0; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-card); font-size:12.5px; color:var(--wb-muted); }
+.run-status-bar { display:flex; align-items:center; gap:10px; padding:8px 16px; margin: 6px 0; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-card); font-size:12.5px; color:var(--wb-muted); }
 .run-status-bar b { color: var(--wb-ink); }
+.run-status-bar .stage-name { color: var(--wb-blue); font-weight: 700; }
 .rsb-dot { width:9px; height:9px; border-radius:50%; }
 .rsb-running { background: var(--wb-orange); animation: rsbPulse 1.6s ease-in-out infinite; }
 .rsb-terminal { background: var(--wb-green); }
@@ -564,7 +588,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .band-grid > :first-child { margin:0; width:100%; }
 .band-actions { position:absolute; right:8px; top:-31px; }
 .band-actions button { padding:4px 10px; font-size:11px; }
-.board-area { max-width:none; padding:0 0 24px; width:100%; }
+.board-area { max-width:none; padding:0 0 24px; width:calc(100% - 200px); }
 .outcomes,.page-foot { margin-left:16px; margin-right:16px; }
 
 /* 轮次导航独立于横向泳道，滚动不会改变当前轮次。 */
@@ -618,19 +642,26 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 @media(max-width:900px){.view-switcher{top:-20px;padding-bottom:14px;margin-bottom:18px}.view-heading,.view-switcher button span{display:none}.view-switcher button{justify-content:center;padding:10px 0}}
 
 .screen-board { min-height:0; }
-.summary { margin:12px 0; }
-.board-area .outcomes { margin:10px 0 0; gap:10px; }
+/* 轮次汇总分组：标题 + 指标 + 任务背景收进同一卡片，对齐节点详情卡片样式
+   （.detail：--wb-card 底 + --wb-line 边 + 14px 圆角 + 18px 内边距） */
+.round-summary {
+  padding:18px 0;
+}
+.round-summary .summary { margin:12px 0 0; }
+.board-area .outcomes { margin:0 0 14px; gap:10px; }
 .board-area .outcome { padding:10px 14px; }
-.round-heading { font-size:13px; font-weight:650; color:var(--wb-ink); }
+.round-heading { font-size:13px; font-weight:650; color:var(--wb-ink); margin-bottom:4px; }
 .round-heading span { margin-left:10px; font-size:11px; font-weight:400; color:var(--wb-muted); }
-.run-context { margin-top:12px; font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }
-.run-context summary { cursor:pointer; }.run-context p { margin:8px 0; }
+/* 任务背景用节点详情 .skill-record 同款分隔（顶部细线 + 8px 留白） */
+.run-context { margin-top:16px; padding:8px 10px 0; border-top:1px solid var(--wb-line); font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }
+.run-context summary { cursor:pointer; color:var(--wb-blue); }.run-context p { margin:8px 0; }
+.run-context .stage-seq { color: var(--wb-blue); font-weight: 600; }
 
 /* 固定顶部区域，用剩余高度承载流程与详情，避免依赖固定汇总高度。 */
 .snap-container { display:flex; flex-direction:column; overflow:hidden; }
 .topbar { position:relative; top:auto; flex:0 0 72px; }
 .band-dock { position:relative; top:auto; flex:0 0 auto; }
-.screen-board { flex:1 1 0; min-height:0; overflow:auto; overscroll-behavior:contain; scroll-margin-top:0; }
+.screen-board { flex:1 1 0; min-height:0; width:100%; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; scroll-margin-top:0; }
 .board-area { flex:0 0 auto; }
 .screen-board :deep(.scroller) { max-height:none; }
 .screen-board :deep(.unified-detail) { scroll-margin-top:12px; }

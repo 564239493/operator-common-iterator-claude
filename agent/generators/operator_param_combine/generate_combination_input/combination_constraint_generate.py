@@ -206,6 +206,18 @@ class CombinationConstraintGenerate:
         :param atom_valid: 原子子句可表达性判定函数，由各修复点注入
         :return: 降级后的表达式；无法安全降级时返回 ``None``
         """
+        # IfExp 结构感知降级（I-1，2026-10-19）：``X if C else Y`` 不属于顶层
+        # or/and，此前落「单原子」路径——含不可表达原子（如 orelse 的
+        # ``shape[1] == 2``）时整条返回 None，C-019 类「枚举参数 ↔ tensor 秩」
+        # 联动约束被整体 drop（2026-10-19 12:01 重生成实证：domain 缺 C-019 →
+        # PICT 零联动行 → 组合矛盾态 → seed 被消解清除）。
+        # IfExp 逻辑等价 ``(C and X) or (not C and Y)``，三分支独立降级安全：
+        # - C 不可表达 → None（保守，与顶层 or 规则一致）；
+        # - X / Y 各自递归降级（复用 or/and/原子路径；and 摘除只放宽不收紧）；
+        # - 均非 None 时重组。语义损失仅为被摘原子（如第二维=2），多生成的组合
+        if_exp = cls._try_prune_if_exp(expr, atom_valid)
+        if if_exp is not None:
+            return if_exp
         top_or = cls._split_top_level(expr, "or")
         if len(top_or) > 1:
             # 全部析取项均可表达：原样返回。
@@ -254,6 +266,30 @@ class CombinationConstraintGenerate:
             )
 
         return expr if atom_valid(expr) else cls._prune_bracketed_subclause(expr, atom_valid)
+
+    @classmethod
+    def _try_prune_if_exp(cls, expr: str, atom_valid: Callable[[str], bool]) -> Optional[str]:
+        """顶层 IfExp（``X if C else Y``）的结构感知降级；非 IfExp 顶层返回 None 交回主流程。
+
+        示例：``(len(gl.shape) == 1) if (glt in [0, 1]) else (len(gl.shape) == 2 and gl.shape[1] == 2)``
+              -> ``(len(gl.shape) == 1) if (glt in [0, 1]) else ((len(gl.shape) == 2))``
+              （orelse 的 and 摘除下标原子，只放宽不收紧）
+        """
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            return None
+        node = tree.body
+        if not isinstance(node, ast.IfExp):
+            return None
+        cond_str = ast.unparse(node.test)
+        if not atom_valid(cond_str):
+            return None
+        body_degraded = cls._prune_invalid_subclauses(ast.unparse(node.body), atom_valid)
+        else_degraded = cls._prune_invalid_subclauses(ast.unparse(node.orelse), atom_valid)
+        if body_degraded is None or else_degraded is None:
+            return None
+        return "({}) if ({}) else ({})".format(body_degraded, cond_str, else_degraded)
 
     @classmethod
     def _is_fully_wrapped(cls, expr: str) -> bool:

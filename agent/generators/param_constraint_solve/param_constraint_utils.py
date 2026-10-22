@@ -401,6 +401,8 @@ class ParamConstraintUtils(CommonDispatcher):
                                                                    is_generate_real_data=is_generate_real_data)
         self.dtype_domain_data, self.format_domain_data = self.get_param_domain_value()
         self._LEN_REF_RE = re.compile(r"\blen\(\s*([A-Za-z_]\w*)\s*\)")
+        # H-5：识别「秩被跨参数关系式约束」的参数（len(P.shape) 形态引用）
+        self._RANK_COUPLED_RE = re.compile(r"len\(\s*(\w+)\.shape\s*\)")
 
     def get_param_domain_value(self) -> tuple[Dict[str, List], Dict[str, List]]:
         """
@@ -720,11 +722,29 @@ class ParamConstraintUtils(CommonDispatcher):
             # 三级丢弃优先级：输出 > 派生 > 原版顺序；但（`len(X.shape) in/== N`）从输出优先豁免、降为保底。
             def _is_rank_pin(expr_str):
                 return bool(re.match(r'^len\(\w+(\.shape)?\)\s*(in\b|==)', expr_str or ''))
-            output_candidates = [t for t in candidates
+
+            def _expr_of(tag):
+                return next((e for e, tg in tag_of.items() if tg is tag), '')
+
+            # 冲突候选同时含 scalar seed（组合层
+            # 多样性意图载体）与非 seed 物化候选时，优先弃非 seed——seed 注册
+            # 晚于 shape 静态式，注册顺序兜底会反向弃 seed
+            def _is_scalar_seed(expr_str):
+                return bool(re.match(r'^(\w+)\.range_value == ', expr_str or ''))
+
+            # 种子最后扔。先把本轮冲突候选分成种子与非种子，
+            # 只要还有非种子候选，三级规则就只在非种子里选，种子不进入候选池。
+            # 旧 I-2 的触发条件是「本轮冲突候选里同时有种子和非种子」，而矛盾核
+            # 构成不稳定, 扔种子那轮核里只剩种子，旧条件不触发），
+            # 故改为无条件优先非种子。仅当本轮冲突候选全是种子（说明种子与硬约束
+            # 本身矛盾）时，候选池回落到全部候选。
+            seed_candidates = [t for t in candidates if _is_scalar_seed(_expr_of(t))]
+            pool = [t for t in candidates if t not in set(seed_candidates)] or candidates
+
+            output_candidates = [t for t in pool
                                  if param_of_tag.get(t) in output_param_names
-                                 and not _is_rank_pin(
-                                     next((e for e, tg in tag_of.items() if tg is t), ''))]
-            derived_candidates = [t for t in candidates
+                                 and not _is_rank_pin(_expr_of(t))]
+            derived_candidates = [t for t in pool
                                   if param_of_tag.get(t) in derived_param_names]
             if output_candidates:
                 to_remove = output_candidates[0]
@@ -737,10 +757,23 @@ class ParamConstraintUtils(CommonDispatcher):
                     f"[choice_core] drop-priority: derived-side static preferred, "
                     f"param : '{param_of_tag.get(to_remove)}'")
             else:
-                to_remove = candidates[0]
-            assume.remove(to_remove)
+                to_remove = pool[0]
             dropped_expr = next(
                 (expr for expr, tag in tag_of.items() if tag is to_remove), None)
+            # full_core 全量转 debug；真正需要人看的是"被丢静态撞上了不在 assume
+            # 中的硬约束"（json: / perm_domain: 标签）——candidates 只是 core ∩ assume，
+            # 这些硬约束标签会被过滤掉，造成"单条 static 独自冲突"的假象，
+            # 故对此情形打精准告警。
+            hard_tags = [t for t in core_list if t not in set(assume)]
+            if hard_tags:
+                logger.warning(
+                    f"[choice_core] static '{dropped_expr}' conflicts with hard constraint(s) "
+                    f"{[str(t) for t in hard_tags]} — dropping static, hard constraints kept")
+            logger.debug(
+                f"[choice_core] unsat_core iters={iters} ({len(candidates)} static): "
+                f"{[_expr_of(t) for t in candidates]} | full_core({len(core_list)}): "
+                f"{[str(t) for t in core_list]}")
+            assume.remove(to_remove)
             logger.warning(
                 f"[choice_core] drop conflicting static : '{dropped_expr}'")
 
@@ -850,6 +883,10 @@ class ParamConstraintUtils(CommonDispatcher):
         static_value_exprs = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
+            if param not in builder.var_map:
+                logger.debug(
+                    f"Skip dtype constraint of undeclared param : '{param}'")
+                continue
             param_dtype = self.case_input_map.get(param).dtype
             # 仅对可识别的张量 dtype 生成静态约束。None/NoneType 等占位(例如仅支持 None
             # 的预留 tensor 参数)不是可求解 dtype，若原样注入 `param.dtype == 'NoneType'`
@@ -883,6 +920,10 @@ class ParamConstraintUtils(CommonDispatcher):
         list_tensor_range_value_attr_name = "range_value[0]"
         relation_params = list(self.case_input_map.keys())
         for param_name in relation_params:
+            if param_name not in builder.var_map:
+                logger.debug(
+                    f"Skip range value constraint of undeclared param : '{param_name}'")
+                continue
             param_attr = self.operator_rule_data.inputs.get(param_name)
             if param_attr is None:
                 param_attr = self.operator_rule_data.outputs.get(param_name)
@@ -917,7 +958,7 @@ class ParamConstraintUtils(CommonDispatcher):
                 else:
                     if isinstance(value_rule, (list, tuple)) and len(value_rule) >= 2:
                         param_range_value_expr_list.append(
-                            f"({param_name}.{range_value_attr_name} > {value_rule[0]} and {param_name}.{range_value_attr_name} < {value_rule[1]})")
+                            f"({param_name}.{range_value_attr_name} >= {value_rule[0]} and {param_name}.{range_value_attr_name} <= {value_rule[1]})")
                     elif isinstance(value_rule, (int, float, bool)):
                         # Some extracted torch_npu defaults are represented as
                         # an exact scalar even when the outer rule is tagged
@@ -954,11 +995,12 @@ class ParamConstraintUtils(CommonDispatcher):
         per-row 多样性全链路丢失。dtype/format/shape/length 四个静态通道都读
         per-row 值，唯独 range_value 缺失 —— 本方法补上这条通道。
 
-        种子表达式形态（per-row 值的两种形态）：
-        - list（如 [-2,-1]）  -> "{param}.range_value == [-2, -1]"
-          整数组取值钉住（Seq==List 比较，转换器 334-344 行支持）
-        - 标量（如 128）      -> "{param}.range_value[0] == 128"
-          维度代表值钉住首元素，其余元素仍由 JSON 约束（如 0<x<=100000）限定
+        # 按 Z3 变量类型分流：
+            # - tensor / tensor_list：range_value 是数据内容区间，不走等值钉值（维持现状跳过）
+            # - list（attrs/scalars 数组型）：走已有的「整数组等值」钉值（L850-861 现状保留）
+            # - scalar（枚举型标量，如 groupListType/actType）：新增——组合层选定的枚举值
+            #   必须以软静态种子钉入 Z3，否则在语义等价类（如 C-019 中 glt∈{0,1} 同分支）
+            #   内被 Z3 模型偏好覆盖，组合多样性在物化层丢失（2026-10-17 glt 全灭为 1 实证）。
 
         安全性：走偏好静态通道（choice_core 冲突消解），种子与 JSON 约束冲突时
         丢弃种子保 JSON 约束，不会整 case UNSAT —— 与 dtype/length 通道同模式。
@@ -966,8 +1008,35 @@ class ParamConstraintUtils(CommonDispatcher):
         seed_static_value_expr_list = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
+            if param not in builder.var_map:
+                logger.debug(
+                    f"Skip range value seed of undeclared param : '{param}'")
+                continue
             case_input = self.case_input_map.get(param)
-            # 仅处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
+            # 这里处理标量参数
+            z3_var_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(case_input.type)
+            if z3_var_type in ("tensor", "tensor_list"):
+                logger.debug(
+                    f"Range value seed skipped, tensor-type param uses content-range "
+                    f"semantics, param name : '{param}', seed : '{case_input.range_values}'")
+                continue
+            if z3_var_type in ParamModelConfig.SCALAR_ATK_TYPE:
+                scalar_seed = case_input.range_values
+                # 仅构建「数值/布尔字面量」形态（组合层物化的枚举值）；profile 名
+                # （'Pos' 等）与 None 不钉——它们本就不是具体取值
+                if isinstance(scalar_seed, (int, float, bool)):
+                    seed_expr = "{param_name}.range_value == {seed_value}".format(
+                        param_name=param, seed_value=scalar_seed)
+                    logger.debug(
+                        f"Range value seed constraint (scalar), param name : '{param}', "
+                        f"seed expr : '{seed_expr}'")
+                    seed_static_value_expr_list.append(seed_expr)
+                else:
+                    logger.debug(
+                        f"Range value seed skipped, non-literal scalar seed (profile name?), "
+                        f"param name : '{param}', seed : '{scalar_seed}'")
+                continue
+            # 这里处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
             # 自己的取值通道（tensor 的 range_value 是数据内容区间，scalar 的
             # build_param_range_value_constraint 已按源 JSON 域处理）
             if case_input.type not in ParamModelConfig.LIST_ATK_TYPE:
@@ -1032,6 +1101,12 @@ class ParamConstraintUtils(CommonDispatcher):
         shape_len_static_value_expr_list = []
         relation_params = list(self.case_input_map.keys())
         for param_name in relation_params:
+            # is_present=False 的参数不会在 Z3 声明（declare_param_in_z3 跳过），
+            # 引用其 .shape 的静态式在 AST→Z3 转换期必抛异常，直接不生成。
+            if param_name not in builder.var_map:
+                logger.debug(
+                    f"Skip shape len constraint of undeclared param : '{param_name}'")
+                continue
             param_ori_data = self.operator_rule_data.inputs.get(
                 param_name) if param_name in self.operator_rule_data.inputs else self.operator_rule_data.outputs.get(
                 param_name)
@@ -1051,6 +1126,25 @@ class ParamConstraintUtils(CommonDispatcher):
             else:
                 logger.warning(f"Can't get valid tensor dimension data, param name : {param_name}")
                 continue
+            # 文档tensor的秩数值域（len(shape) in/== N）是结构硬约束，走 hard_static_expr_list
+            # 由 solve_z3_constraints 以 perm_domain 永久断言（防静默降秩，见 docstring）。
+            # 组合行的 dim_count 是 PICT 看不到跨参数关系式下的盲采先验，与 JSON 关系式
+            # （如 len(biasOptional.shape) == 2 and ...）可能矛盾（实测 biasOptional 1 vs 2），
+            # 故钉值走软静态通道：与硬约束冲突时由 choice_no_conflicts_expr_core 摘除
+            # （_is_rank_pin 使其在丢弃序中垫底），秩由硬约束接管；硬约束集合自身矛盾
+            # （文档秩域 × JSON 关系式互斥）则 whole solve UNSAT fail-fast，由用户修数据。
+            intent_dim = None
+            if self.param_combinations is not None:
+                property_data = self.param_combinations.get(param_name)
+                shape_property = getattr(property_data, "shape_property", None)
+                intent_dim = getattr(shape_property, "dim_count", None)
+            if (isinstance(param_shape_dimension, list)
+                    and isinstance(intent_dim, int)
+                    and intent_dim in param_shape_dimension):
+                intent_expr = f"len({param_name}.shape) == {intent_dim}"
+                shape_len_static_value_expr_list.append(intent_expr)
+                logger.debug(
+                    f"Rank intent pinned (soft), param name : '{param_name}', expr : '{intent_expr}'")
             if hard_static_expr_list is not None:
                 hard_static_expr_list.append(shape_len_expr)
             else:
@@ -1074,6 +1168,10 @@ class ParamConstraintUtils(CommonDispatcher):
         shape_static_value_expr_list = []
         relation_params = list(self.case_input_map.keys())
         for param_name in relation_params:
+            if param_name not in builder.var_map:
+                logger.debug(
+                    f"Skip shape constraint of undeclared param : '{param_name}'")
+                continue
             if param_name not in self.case_input_map:
                 continue
             case_param_shape = self.case_input_map.get(param_name).shape
@@ -1099,6 +1197,10 @@ class ParamConstraintUtils(CommonDispatcher):
         format_static_value_expr_list = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
+            if param not in builder.var_map:
+                logger.debug(
+                    f"Skip format constraint of undeclared param : '{param}'")
+                continue
             if self.case_input_map.get(param).format is not None:
                 format_static_value_expr_list.append(f"{param}.format == '{self.case_input_map.get(param).format}'")
         if check:
@@ -1112,6 +1214,10 @@ class ParamConstraintUtils(CommonDispatcher):
         length_static_value_expr_list = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
+            if param not in builder.var_map:
+                logger.debug(
+                    f"Skip length constraint of undeclared param : '{param}'")
+                continue
             if self.case_input_map.get(param).type in ParamModelConfig.LIST_ATK_TYPE and self.case_input_map.get(
                     param).length is not None:
                 logger.debug(
@@ -1481,6 +1587,10 @@ class ParamConstraintUtils(CommonDispatcher):
         if not solver_result:
             logger.error(
                 f"Z3 solver error, no solution can satisfy constraints, operator name : {self.operator_name}")
+            logger.error(
+                "Hard constraint set itself is conflicting (see 'Causes of Constraint Conflicts' "
+                "unsat_core entries above, json:/perm_domain:) — please check the constraint set "
+                "in the input data")
             return False
         logger.info(f"End solving solution of constraints by Z3, operator name : {self.operator_name}")
 

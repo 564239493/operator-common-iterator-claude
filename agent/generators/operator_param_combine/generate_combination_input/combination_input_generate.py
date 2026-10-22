@@ -277,6 +277,16 @@ class CombinationInputGenerate:
                     continue
                 low = select_allowed_value[0]
                 high = select_allowed_value[1]
+                # 小跨度整型区间直接物化为枚举值（如 [[0,2]] -> [0,1,2]），
+                # 避免符号化后被 SHAPE_DIM_VALUES 替换丢失原区间语义（groupListType 案例，G-1）。
+                inner_dtype = DataMatchMap.ACL_DTYPE_TRANSFER_SCALAR_MAP.get(dtype)
+                if inner_dtype in ParamModelConfig.INT_DTYPE and isinstance(low, int) and isinstance(high, int) \
+                        and 0 <= high - low <= ParamModelConfig._SMALL_RANGE_ENUM_MAX_SPAN:
+                    valid_range_data.extend(range(low, high + 1))
+                    logger.debug(
+                        f"Small int range enumerated, param name : '{param_name}', "
+                        f"range : [{low}, {high}] -> {list(range(low, high + 1))}")
+                    continue
                 range_value_profile_list = CombinationInputGenerate.get_range_model_by_range(data_type=data_type,
                                                                                              dtype=dtype, low=low,
                                                                                              high=high)
@@ -327,9 +337,22 @@ class CombinationInputGenerate:
         seen = set()
         deduped = []
         for item in total_range_value_data:
-            key = tuple(item) if isinstance(item, list) else item
-            if key not in seen:
-                seen.add(key)
+            # 去重键构造：list 需可哈希。扁平数值数组（如 tuningConfig 的 [256,0,-1]、
+            # alltoAllAxes 的 [-2,-1]）tuple 化即可；嵌套 list（如 [[128,512],0,-1]）
+            # 的 tuple 内含 list，哈希时才报 TypeError——用 hash() 探测，不可哈希则
+            # 放弃去重直接保留（数量级小，重复无害），避免 'unhashable type: list'
+            # 崩溃（2026-10-16 G-2 落地教训）。
+            key = item
+            if isinstance(item, list):
+                candidate = tuple(item)
+                try:
+                    hash(candidate)
+                    key = candidate
+                except TypeError:
+                    key = None
+            if key is None or key not in seen:
+                if key is not None:
+                    seen.add(key)
                 deduped.append(item)
         return deduped
 
@@ -354,7 +377,7 @@ class CombinationInputGenerate:
         )
         if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
             return False
-        return all(v in ParamModelConfig.INT_TENSOR_DATA_PROFILE for v in values)
+        return bool(values) and all(v in ParamModelConfig.INT_TENSOR_DATA_PROFILE for v in values)
 
     def generate_is_present_property(self, param_name):
         """
