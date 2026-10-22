@@ -7,12 +7,13 @@
 - 探测 8420 端口；未监听则后台拉起 ``src/serve.py``（脱离会话的子进程）并等就绪。
   ``src/serve.py`` 托管已构建的 ``src/web/dist``（Vue3 工作台），未构建时仅 API 可用、
   根路径返回「前端尚未构建」占位页——人工修复编辑前必须先构建前端。
-- 读 ``run_state.dashboard_raised``：为 false 时打开浏览器一次并置 true；
+- 读 ``run_state.dashboard_raised``：为 false 且带 ``--web`` 时打开浏览器一次并置 true；
+  不带 ``--web`` 时只确保 server + 返回 URL，**不自动打开浏览器**（默认）；
   为 true 时不再重复开浏览器，仅确保 server + 返回 URL。
-- 人工修复检查点再次调用时，页面已拉起 → 只返回 URL 供主协调器提示用户去网页修改。
+- 人工修复检查点再次调用时（需实际弹出网页），加 ``--web``；页面已拉起则只返回 URL。
 
 用法:
-    python scripts/raise_dashboard.py --run-dir <run-dir> --iter <iter_dir> [--page run|constraints]
+    python scripts/raise_dashboard.py --run-dir <run-dir> --iter <iter_dir> [--page run|constraints] [--web]
 stdout: JSON {"ok", "url", "server_started", "browser_opened", "dashboard_raised", "dist_built"}
 失败（server 起不来）exit 1，stdout 给出手动启动命令提示。
 """
@@ -97,6 +98,10 @@ def main() -> int:
         "--page", choices=["run", "constraints"], default="run",
         help="拉起的页面：run=工作台监控（默认）；constraints=约束审核（人工修复编辑用）",
     )
+    parser.add_argument(
+        "--web", action="store_true",
+        help="打开浏览器拉起页面；缺省仅确保 server 就绪并返回 URL，不自动打开浏览器",
+    )
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -125,7 +130,7 @@ def main() -> int:
     url = _build_url(args.page, dir_name, args.iter)
 
     browser_opened = False
-    if not raised:
+    if args.web and not raised:
         browser_opened = _open_browser(url)  # best-effort：无桌面/无浏览器时返回 False
         _set_raised(run_dir)
         raised = True
