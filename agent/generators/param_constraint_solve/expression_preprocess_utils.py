@@ -666,12 +666,133 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         if not (isinstance(step, z3.IntNumRef) and step.as_long() == 1):
             bounds = z3.And(bounds, (k - start) % step == 0)
 
+        # 守护式定长展开：上界可由文档的维度个数范围推出时，把 range() 量词改写成逐下标
+        # 子句，避免 Z3 对含 shape 索引的量词反复实例化导致超时。
+        unrolled = self._try_unroll_range(start, stop, step, k, cond_expr, quantifier_op)
+        if unrolled is not None:
+            return unrolled
+
         if quantifier_op == z3.ForAll:
             return z3.ForAll([k], z3.Implies(bounds, cond_expr))
         else:
             return z3.Exists([k], z3.And(bounds, cond_expr))
 
+    @staticmethod
+    def _short_expr(expr, limit=3000):
+        """日志用：压成单行并截断，让每条转后子句都能完整打印。"""
+        text = " ".join(str(expr).split())
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}...(truncated, total {len(text)} chars)"
+
+    def _int_bounds(self, expr, depth=0):
+        """整数表达式的保守区间 (lo, hi)；推不出返回 None（一律回退量词）。
+
+        只处理确定性的取值来源：整数常量、``Length(<shape seq>)``（上界来自
+        已硬断言的文档维度个数范围）、max/min 译成的 If 链、以及 + - * 的区间运算。
+        任何不认识的形态都返回 None —— 宁可不展开，也不用猜测的界改变语义。
+        """
+        if depth > 8:
+            return None
+        if isinstance(expr, int) and not isinstance(expr, bool):
+            return (expr, expr)
+        if z3.is_int_value(expr):
+            value = expr.as_long()
+            return (value, value)
+        if not z3.is_app(expr):
+            return None
+        kind = expr.decl().kind()
+        args = expr.children()
+        if kind == z3.Z3_OP_SEQ_LENGTH and len(args) == 1:
+            seq = args[0]
+            if z3.is_const(seq):
+                rank_max = self.builder.get_rank_max(seq.decl().name())
+                if rank_max:
+                    # 维度个数由 len(p.shape) in dimensions 硬断言；下界保守取 0，
+                    # 不依赖文档是否允许 0 维（下界只影响展开起点，取小只会多出被 guard 短路成真的子句，不会漏掉任何可达下标）。
+                    return (0, rank_max)
+            return None
+        if kind == z3.Z3_OP_ITE and len(args) == 3:
+            then_bounds = self._int_bounds(args[1], depth + 1)
+            else_bounds = self._int_bounds(args[2], depth + 1)
+            if then_bounds and else_bounds:
+                return (min(then_bounds[0], else_bounds[0]),
+                        max(then_bounds[1], else_bounds[1]))
+            return None
+        children = [self._int_bounds(arg, depth + 1) for arg in args]
+        if not children or any(bound is None for bound in children):
+            return None
+        if kind == z3.Z3_OP_SUB and len(children) == 2:
+            return (children[0][0] - children[1][1], children[0][1] - children[1][0])
+        if kind == z3.Z3_OP_ADD:
+            return (sum(bound[0] for bound in children), sum(bound[1] for bound in children))
+        if kind == z3.Z3_OP_MUL and all(bound[0] >= 0 for bound in children):
+            lo, hi = 1, 1
+            for bound in children:
+                lo, hi = lo * bound[0], hi * bound[1]
+            return (lo, hi)
+        return None
+
+    def _try_unroll_range(self, start, stop, step, loop_var, cond_expr, quantifier_op):
+        """range() 量词守护式展开；返回 None 表示保持原量词。
+
+        等价性：设 ``[lo, hi)`` 覆盖所有可达模型里 ``[start, stop)`` 的取值，则
+
+            ForAll(k, start<=k<stop => P(k))  ==  And(Implies(i>=start & i<stop, P(i)) for i in [lo,hi))
+            Exists(k, start<=k<stop &  P(k))  ==  Or (And     (i>=start & i<stop, P(i)) for i in [lo,hi))
+
+        区间外的下标由 guard 短路，不改变约束力。``lo/hi`` 推不出、或展开宽度
+        超过 ``builder.unroll_limit`` 时返回 None（继续用量词）。
+        """
+        if not (z3.is_int_value(step) and step.as_long() == 1):
+            return None
+        start_bounds = self._int_bounds(start)
+        stop_bounds = self._int_bounds(stop)
+        if not start_bounds or not stop_bounds:
+            return None
+        lo = start_bounds[0]
+        hi = stop_bounds[1]
+        if lo < 0 or hi <= lo:
+            return None
+        unroll_limit = getattr(self.builder, "unroll_limit", 128)
+        if hi - lo > unroll_limit:
+            logger.debug(f"[Unroll] range width {hi - lo} exceeds limit {unroll_limit}, keep quantifier")
+            return None
+
+        terms = []
+        for value in range(lo, hi):
+            guard = z3.And(z3.IntVal(value) >= start, z3.IntVal(value) < stop)
+            body = z3.simplify(z3.substitute(cond_expr, (loop_var, z3.IntVal(value))))
+            terms.append(z3.Implies(guard, body) if quantifier_op == z3.ForAll
+                         else z3.And(guard, body))
+        kind = "all" if quantifier_op == z3.ForAll else "any"
+        if quantifier_op == z3.ForAll:
+            unrolled = z3.And(*terms)
+        else:
+            unrolled = z3.Or(*terms)
+        self.builder.record_unroll("range", kind, hi - lo)
+
+        # 逐条打印转后子句，方便核对下标替换是否正确；单行打印过宽会被截断，
+        # 超过 16 条时只打首 8 + 尾 4。
+        logger.info(f"[Unroll-Range] 转后表达式 ({hi - lo} 条, {kind}) :")
+        total = len(terms)
+        for index, (value, term) in enumerate(zip(range(lo, hi), terms), 1):
+            if total > 16 and 8 < index <= total - 4:
+                if index == 9:
+                    logger.info(f"[Unroll-Range]   ...（省略 {total - 12} 条）...")
+                continue
+            logger.info(f"[Unroll-Range]   [{index}/{total}] k={value} : {self._short_expr(term, 1500)}")
+        return unrolled
     # --- 量词与 Max/Min 内部实现 ---
+    @staticmethod
+    def _iter_param_name(node):
+        """量词迭代对象对应的参数名（Name / p.range_value / p.shape），其余形态返回 None。"""
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            return node.value.id
+        return None
+
     def _handle_quantifier(self, gen_node, quantifier_op):
         try:
             comprehension = gen_node.generators[0]
@@ -680,6 +801,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             if isinstance(comprehension.iter, ast.Call) and isinstance(comprehension.iter.func, ast.Name) and comprehension.iter.func.id == 'range':
                 return self._handle_range_quantifier(comprehension, gen_node.elt, quantifier_op)
 
+            iter_param_name = self._iter_param_name(comprehension.iter)
             iter_target = self.visit(comprehension.iter)
             if iter_target is None: raise ValueError("Quantifier iter target is None")
 
@@ -721,6 +843,20 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             cond_expr = TempVisitor(self.builder, loop_var_name, placeholder).visit(condition_ast)
             actual_val = target_obj[k] if is_sequence else z3.Select(target_obj, k)
             final_cond = z3.substitute(cond_expr, (placeholder, actual_val))
+
+            # 定长展开：Seq 长度已确定时把量词改成逐元素 And/Or——
+            # ForAll(k, 0<=k<N => P(k)) ≡ And(P(0..N-1))，Exists 同理变 Or（N>=1）。
+            # 约束文本仍是 all()/any()，求解器只看到点对点子句。
+            static_len = self.builder.get_static_length(iter_param_name) if iter_param_name else None
+            if is_sequence and static_len:
+                elements = [
+                    z3.substitute(cond_expr, (placeholder, target_obj[index]))
+                    for index in range(static_len)
+                ]
+                kind = "all" if quantifier_op == z3.ForAll else "any"
+                self.builder.record_unroll(iter_param_name, kind, static_len)
+                logger.debug(f"[Unroll] {kind}() over '{iter_param_name}' unrolled to {static_len} elements")
+                return z3.And(*elements) if quantifier_op == z3.ForAll else z3.Or(*elements)
 
             if quantifier_op == z3.ForAll:
                 bounds = z3.And(k >= 0, k < z3.Length(target_obj)) if is_sequence else (k >= 0)

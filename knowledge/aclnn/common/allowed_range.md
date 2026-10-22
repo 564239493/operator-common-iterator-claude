@@ -105,6 +105,7 @@ bool 参数（`is_xxx`/`xxxFlag` / `transposeX*` 等）**必须**产出 `allowed
   `value=[]`，并用可执行 expr 表达。
 - `aclDataType` 的文档 dtype 候选是参数值域，写 `allowed_range_value(enum)`；其自身
   `dtype.value=["string"]`。
-- `aclIntArray` 的元素 dtype 固定为 int；文档若列关联 Tensor dtype，不得写进数组
-  dtype 或值域。
+- 非 Tensor 数组（`aclIntArray` / `aclFloatArray` / `aclBoolArray`）的元素 dtype 与
+  Tensor 参数同规则：文档"数据类型"列有值就逐字提取进 `dtype.value`（如 `INT64`），
+  不再一律改写为 int；仅当该列缺失、为空、为 `-` / `N/A` 时才回落int / float32 / bool。列值只进 `dtype`，不得写进本字段的值域。
 - 块尺寸、shape 轴范围和跨参数取值关系不得塞进 `allowed_range_value`。

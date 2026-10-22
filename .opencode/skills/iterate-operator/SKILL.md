@@ -1,7 +1,7 @@
 ---
 name: iterate-operator
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path] [--web]
+argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
 ---
 
 # 算子闭环迭代
@@ -213,6 +213,61 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      下一次约束更新前运行
      `python scripts/apply_conflict_resolution.py <iter>/constraints.json --candidates <inputs>/conflict_candidates.json --resolution <inputs>/conflict_resolution.json`
      把 source-wins 并入（replace patch + revalidate）。
+   - **PARAM PIN PROBE（CHECK 前，非阻塞，交互模式只问一次）**：运行
+     `python scripts/probe_param_pins.py probe <iter>/constraints.json --decisions <inputs>/param_pins.json --output <iter>/param_probe.json`
+     （`param_pins.json` 不存在时脚本按空决策处理，路径可直接传），
+     检测「`array_length` 未固定 + 被跨参数 `len(p)` 引用 + 无传递上界」的列表参数。
+     这类长度在生成侧只剩 `z3.Length >= 1`，是已知的求解变慢来源。
+     本步 exit 2 只表示 constraints 缺失或非法，属上游产物问题：报告 stdout 的 `code` 并阻断，
+     不得继续 CHECK。读 `param_probe.json`：
+     - `warnings` 非空时逐条转述（如 `zero_length_conflict`：`len(p)==0` 与生成侧的
+       `Length>=1` 冲突；`mapping_anomaly`：该类型的长度约束不生效），只提示、不改约束；
+     - `candidates` 为空或没有 `askable=true` 的组 → 直接进 CHECK；
+     - 有 askable 组 → **只发起一次 AskUserQuestion**（不论几组、几参数，绝不逐参数轮询）；
+       仅当 Other 输入整句解析失败时，允许带格式清单重问一次（全程最多两次，仍不逐参数轮询）。
+       题面列出每组参数、耦合证据（`evidence`），并说明“当前无上界、Z3 只取 len>=1；可跳过，不影响继续”。
+       选项给常规预设 `全部固定为 len == {v0}（推荐）` / `全部固定为 len == {v1}` / `全部保持自动（跳过）`。
+       `{v0}`/`{v1}` 取该组 `param_probe.json` 的 `suggested_values`（脚本按约束下界 + 文档原文里的 batch 数确定性推导，
+       见 `suggestion_basis`，不需要额外问询或模型判断）；
+       多组建议不一致时题面逐组列出建议值，预设用第一组的值。
+       用户可用 Other 自由输入，受支持格式是闭集，题面同时列出（不只出现在拒绝消息里）：
+       `a=2`；`a=[2,3]` 或 `a=2,3`；`a=2~4` 或 `a=2-4`（闭区间展开为 2、3、4 三个候选）；
+       `a,b=2` 或 `a=b=2`（多参数同值）；`全部=2` 或 `统一=2`（所有 askable 组）。
+       逗号规则：`a=2,3` 的逗号属于取值列表，`a=2, b=3` 的逗号分隔两个赋值，
+       区别是逗号后的片段是否带 `<参数名>=`；全角符号、中文逗号/顿号由脚本归一。
+       解析一律交给脚本，模型不判断“大概是什么意思”：
+       `python scripts/probe_param_pins.py parse --text "<用户原文>" --probe <iter>/param_probe.json --output <iter>/param_pins_parse.json --decisions <inputs>/param_pins.json --decisions-output <inputs>/param_pins.json`
+       exit 0 且 `ok=true` 时，脚本已把本轮决策并入 `inputs/param_pins.json`，
+       同 `group_id`/`leader` 原位替换、其它组保留，模型不得手工抄写或改写该文件；
+       exit 2 表示**整句未被完整解析**（全有或全无），此时脚本不写 `param_pins.json`、不产 patch，
+       下一轮仍会问；同一条消息回显 `errors[].message` 与 `suggestions`（格式清单），请用户按格式重填一次；
+       第二次仍失败则本轮保持自动、直接进 CHECK，不阻断、不继续追问。
+       只有用户显式选择「全部保持自动（跳过）」才记 `mode=auto` 抑制后续提问；
+       用户未作答或关闭问询则本轮照常保持自动、不记 `auto`（下一轮仍会问）。
+       同一参数出现两个不同值、等长组内取值不一致时整句拒绝，不再“取第一个”。
+       组内 `quantifier_constraints` 非空时题面注明：所选长度 ≤ 128 时，生成期会把 `all()/any()` 定长展开成逐元素 And/Or（求解快）；
+       > 128 仍走量词、明显变慢，因此默认推荐 2/3。
+     - 答案统一落 `<run>/inputs/param_pins.json`。预设「全部固定为 len == {v}」等价于文本
+       `全部={v}`，同样交给上面的 `parse` 命令合并落盘，模型不手写该文件；
+       只有「全部保持自动（跳过）」需要协调器直接写条目（每个 askable 组一条
+       `{group_id, params, leader, mode:"auto", platform:"all", decided_by:"user"}`）。
+       字段约定：`fix` 用 `length`、`set` 用 `lengths`、`range` 用 `min_length`/`max_length`，
+       `source` 记用户原始片段便于审计；`auto` 只留档抑制重复提问、不产 patch。
+       该文件是 run 内审计与跨迭代抑制重复提问的唯一依据。
+     - 存在非 `auto` 决策时依次运行
+       `python scripts/probe_param_pins.py patch <iter>/constraints.json --decisions <inputs>/param_pins.json --output <iter>/param_pins_patch.json`、
+       `python scripts/validate_artifacts.py constraints_patch <iter>/param_pins_patch.json`、
+       `python scripts/apply_supplement_constraints.py <iter>/constraints.json <iter>/param_pins_patch.json --origin param_pin`，
+       再重跑 `probe` 后进 CHECK：期望不再有 `askable=true` 的组——已固定的组变为
+       `has_upper_bound`，选了「保持自动」的组显示为 `reason=already_decided`。
+       合并出的条目带 `origin=param_pin`、`src_text` 取 patch 的 `basis`、不带 `src_txt_line`
+       （用户裁决没有文档条款），这是预期的，不要手工补行号。
+       patch 为空（`n_patch=0`）或校验不通过时跳过并如实记录，不阻断流程。
+     - 批处理（`iterate-directory`）或无头场景：只写 `param_probe.json` 作 advisory，不问询、不产 patch。
+     - 本步在 CHECK 前落盘，不触发 `set-constraint-check` 重置规则；
+       若 pin 是 CHECK `passed` 之后才补的，按 CONSTRAINT CHECK/REPAIR 第 5 条的重置规则重检。
+     - 只固定长度，不得写 `x[0] < x[1]` 这类逐元素展开式；
+       量词展开由生成器在长度静态确定（≤128）时自动完成，约束文本保持文档原样。
    - **CONSTRAINT CHECK/REPAIR（每个新约束版本的内部子循环，强制）**：初始化首轮在
      SUPPLEMENT 和已有 conflict resolution 合并完成、最终 `constraints.json` 已通过
      normalize/validate 后执行；执行反馈轮在 constraint-updater 完成版本化最小更新后执行。
@@ -304,12 +359,14 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
           （某平台一完成其 JSONL 即被 convert 删掉转成 `cases_<plat>.json`、从进度里"消失"），
           **绝不**据此停掉生成进程。**`per_platform` 语义（关键，防误判调查）**：running 期间 `per_platform`
           列出的是**当前正在被生成的目标平台**（`generate_platform_outputs` 按 `product_support` 顺序逐平台
-          生成全部平台，每个产 `cases_<plat>.json`），**不是执行/canonical 平台**；canonical/CSV 平台是在
-          生成**全部完成后**由 `_select_ttk_platform` 按 `servers.json` 服务器顺序及各 `platforms` 顺序选定的，
-          与 running 期间 `per_platform` 出现哪个平台无关。故 `per_platform` 里出现 `servers.json` 未覆盖的
-          平台（如 A3 训练/推理）属**正常**、不是选错平台，**禁止**据此调查 `generate_cases.py` 平台选择逻辑
+          生成全部平台，每个产 `cases_<plat>.json`），**不是执行平台**；执行平台（`cases.json`/CSV
+          指向的那个）是在生成**全部完成后**由 `_select_execution_platform` 选定的（`--platform` →
+          场景阶段单选设备 → `servers.json` 服务器顺序及各 `platforms` 顺序；无服务器配置时才退回
+          首个生成平台），与 running 期间 `per_platform` 出现哪个平台无关。
+          故 `per_platform` 里出现 `servers.json` 未覆盖的平台（如 A3 训练/推理）属**正常**、
+          不是选错平台，**禁止**据此调查 `generate_cases.py` 平台选择逻辑
           或 kill 重启——平台是否选对只在 `state=complete` 后、`generation_summary.json.selected_platform`
-          不符 `servers.json` 时才处理（EXECUTE 前的事）。
+          与预期执行平台（场景单选设备，或 `servers.json` 首个可执行平台）不符时才处理（EXECUTE 前的事）。
        4. `state=complete`（`generation_summary.json` 已产出）后跑
           `python scripts/validate_artifacts.py cases <cases 路径>`，通过后运行
           `python scripts/flow_control.py advance --run-dir <run-dir>` 进入 EXECUTE；
@@ -402,6 +459,7 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
            - **选项 3**：用户手动修改约束后继续（主协调器等待用户提供修改后的 constraints.json，
              收到后重新运行 `validate_constraint_regression.py --attempt 1`，通过后运行 finalize，再进入 CHECK/REPAIR）
          - 若 `limit_reached=false` 且 `ok=true`：无回归，继续。
+     4b. 对新版本重跑一次 **PARAM PIN PROBE**（同上文规则：最多一次问询、`inputs/param_pins.json` 已裁决的组不再问、`--origin param_pin` 合并），再重置 CHECK。
      5. 运行 `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --reset`
         重置 `run_state.constraint_check` 到新 iteration，复用上文 CHECK/REPAIR 子循环；
         checker 必须验证所有 finding 的 expected_effect。passed 后直接 GENERATE → EXECUTE，
@@ -470,7 +528,9 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      向用户转述错误，用户改完 `iter_<N>/constraints_copy.json` 重新上传/保存即可再次触发（监听器
      下一轮重新挂起后会再检测）。`MAX_ITERATIONS_REACHED` 时可用 `--max-iterations N` 提升上限
      后重跑该脚本（或让用户重新发起）。
-8. **CHECK/REPAIR 子循环**：人工来源无 findings 清单，checker 做**首轮式完整语义检查**
+8. **CHECK/REPAIR 子循环**：人工提交的是新约束版本，进 CHECK 前先按第 6 步规则跑一次
+   PARAM PIN PROBE（`inputs/param_pins.json` 已裁决的组不再问，`--origin param_pin` 合并）。
+   人工来源无 findings 清单，checker 做**首轮式完整语义检查**
    （文档快照 + prompt + 场景指令 + 补充证据）；`failed` → `BLOCKED` 照旧。
    `passed` → GENERATE → EXECUTE → GATE → DIAGNOSE。若再次以 constraint_extraction 失败且
    `current_iteration >= human_checkpoint_round` → **回到 human-checkpoint 检查点重新弹四选一**
@@ -503,7 +563,7 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
    - 应用后重跑 `validate_aclnn_knowledge`、路由测试（`init_run`）和
      `validate_prompt_assembly.py --record`（`build_*_prompt_base.py` 已退场归档于
      `archive/builders/`，base 直接编辑后不再 `--check`），并把决定与验证结果落入当前 run。
-11. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
+11. 每次委派前后都按 `AGENTS.md`「调度可见性」的格式在主会话报告。所有交接必须落盘，
    不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
 12. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
     `STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 或 `STOPPED_BY_USER` 后，调用

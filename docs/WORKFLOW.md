@@ -195,6 +195,33 @@ Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判 + `--scan`/`
 诊断 findings 产生的 patch 在合并前额外运行 `validate_supplement_effect.py`：所有 finding
 必须被 patch 覆盖且 patch 不能全量 noop；constraint-checker 再验证失败 case 的预期效果。
 
+### PARAM PIN PROBE（CHECK 前，advisory，非独立状态）
+
+SUPPLEMENT 之后、CONSTRAINT CHECK 之前，运行
+`scripts/probe_param_pins.py probe <iter>/constraints.json --decisions <inputs>/param_pins.json`
+（文件不存在则省略）。该步检测「`array_length.value` 未固定 + 被跨参数 `len(p)` 引用 + 无传递上界」的列表参数：
+生成侧对它们只加 `z3.Length >= 1`，长度完全释放，求解显著变慢。
+
+- 有候选且为交互模式：主协调器**只发起一次** `AskUserQuestion`，题面列出所有候选参数与耦合证据，
+  预设 `全部固定为 len == {v0}` / `全部固定为 len == {v1}` / `全部保持自动`
+  （`{v0}`/`{v1}` 取组内 `suggested_values`：脚本由约束下界与文档原文中的 batch 数推导，无线索时回落 2/3）。
+  Other 支持闭集格式 `a=2`、`a=[2,3]`/`a=2,3`、`a=2~4`/`a=2-4`、`a,b=2`/`a=b=2`、`全部=2`/`统一=2`；
+  解析交给 `probe_param_pins.py parse --text "<用户原文>" --probe <iter>/param_probe.json --decisions <inputs>/param_pins.json --decisions-output <inputs>/param_pins.json` 确定性完成；
+  **全有或全无**：任一片段失败即整句拒绝（exit 2），不产 patch、不写决策文件并回显格式清单，
+  允许带格式重问一次，仍失败则本轮保持自动继续进 CHECK；显式选“保持自动”才记 `auto`。
+  解析成功时脚本把决策与已有 `inputs/param_pins.json` 合并落盘，同组原位替换、其它组保留，
+  协调器不手工抄写；之后该 run 不再重复提问。
+- 存在非 `auto` 决策：`patch` 子命令渲染标准 `constraints_patch`，
+  依次执行 `python scripts/validate_artifacts.py constraints_patch <iter>/param_pins_patch.json`
+  与 `python scripts/apply_supplement_constraints.py <iter>/constraints.json <iter>/param_pins_patch.json --origin param_pin`，
+  再重跑 `probe` 复核 `candidates` 为空，随后进 CHECK。
+- 批处理/无头：只写 `<iter>/param_probe.json` 作 advisory，不问询、不产 patch。
+- 本步只固定长度，不写逐元素约束；`all()/any()` 量词由生成器在长度静态确定时定长展开为
+  逐元素 `And`/`Or`（上限 128，超限仍走量词并在 patch 中发 `large_length_quantifier` 警告）。
+  patch 为空、校验失败或合并失败都如实记录但不阻断流程。
+- 每个新约束版本（初始化首轮 + 每次 UPDATE_CONSTRAINTS）进 CHECK 前都跑一次；该步先于
+  CHECK `passed`，不触发重检规则，若在 `passed` 之后补 pin 则必须重置 CHECK。
+
 ### CONSTRAINT CHECK/REPAIR（每个新约束版本的内部子循环）
 
 初始化完整 EXTRACT 在 SUPPLEMENT 和已裁决 conflict 合并完成后，对最终
