@@ -102,7 +102,7 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
      `GetWorkspaceSize`，不得伪造 ACLNN 名称；`*` 和默认值决定 optional。
    - `aclnn`：看"函数原型"章节是否含 `aclnnXxxGetWorkspaceSize`。
    - 含 → 两段式（默认）。
-   - 不含、只有 `aclnnXxx(...)` 单函数 → 一段式：按当前提示词 §4.4 一段式分支取 `function_signature`（唯一函数声明，不含 `workspaceSize`/`executor`）；标量指针输出（如 `uint64_t*`）进 `outputs`，不当流程参数排除（见提示词 §4.6.1 一段式例外、§4.6.3 aclIntArray 固定 dtype 规则）。**不得**在 JSON 中写入 `is_single_function_mode` 字段。
+   - 不含、只有 `aclnnXxx(...)` 单函数 → 一段式：按当前提示词 §4.4 一段式分支取 `function_signature`（唯一函数声明，不含 `workspaceSize`/`executor`）；标量指针输出（如 `uint64_t*`）进 `outputs`，不当流程参数排除（见提示词 §4.6.1 一段式例外、§4.6.3 非 Tensor 数组参数 dtype 规则）。**不得**在 JSON 中写入 `is_single_function_mode` 字段。
 
 2.5 维度委派判定（强制）：按三个维度派发独立子 Agent：
    AttrsAgent=inputs&outputs 参数属性 / ExprAgent=constraints_in_parameters 关系式 / OtherAgent=其余参数；

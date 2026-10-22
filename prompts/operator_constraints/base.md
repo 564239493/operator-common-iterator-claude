@@ -246,7 +246,8 @@ python scripts/validate_artifacts.py constraints <constraints.json>
 
 **dtype 为空时的类型回填规则**：
 - 优先使用文档明确给出的 dtype；只有未提取到任何 dtype、即 `dtype.value=[]` 时才执行回填；
-- `aclIntArray` → `["int"]`，`aclFloatArray` → `["float"]`，`aclBoolArray` → `["bool"]`；
+- `aclIntArray` → `["int"]`，`aclFloatArray` → `["float"]`，`aclBoolArray` → `["bool"]`
+  （仅当文档"数据类型"列缺失、为空、为 `-` / `N/A` 时才启用该回落；列有值时一律逐字提取列值，见下方「非 Tensor 数组参数的 dtype 提取规则」）；
 - 其他非 Tensor 参数使用 `type.value` 回填，例如 `type.value="int"` 时输出 `dtype.value=["int"]`；
 - `aclTensor` / `aclTensorList` 不得用类型名回填 dtype；其 dtype 必须来自文档，确实未说明时保持 `[]`；
 - 文档明确参数"只支持传空指针""必须为空指针"或"仅支持空指针"时，`dtype.value` 保持 `[]`
@@ -254,7 +255,8 @@ python scripts/validate_artifacts.py constraints <constraints.json>
   "enum"}` 承载，`src_text` 摘含 `nullptr`/`空指针` 的原文（见 §4.6「"支持/仅支持输入 nullptr"」
   规则与 §6.32 自检）；
 - 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`。
-- 注：`aclIntArray` 的 dtype 不走"文档张量 dtype 列回填"——见下方「aclIntArray 参数的固定 dtype 规则」（`dtype.value` 固定 `["int"]`）。
+- 注：`aclIntArray` / `aclFloatArray` / `aclBoolArray` 的 dtype 与 Tensor 参数同规则——
+  文档"数据类型"列有值就逐字提取，列缺失/为空才按上表回落（见下方「非 Tensor 数组参数的dtype 提取规则」）。
 
 **dtype / value 候选逐字一致性硬规则**：
 
@@ -270,10 +272,11 @@ python scripts/validate_artifacts.py constraints <constraints.json>
 - 其余字段按标量非 Tensor 处理：`format.value="N/A"`、`dimensions.value=[]`（非 `aclTensor`/`aclTensorList`，按下方"类型前置规则"恒为空）、`is_support_discontinuous.value="N/A"`、`array_length="N/A"`。
 - 典型场景：`aclnnCalculateMatmulWeightSizeV2` 的 `dataType`（函数原型 `aclDataType dataType`，文档"数据类型"列 `FLOAT16、BFLOAT16、INT8`）→ `type.value="aclDataType"`、`dtype.value=["string"]`、`allowed_range_value.value=["FLOAT16","BFLOAT16","INT8"]`（`type="enum"`）。错误反例：把候选抄进 `dtype.value=["FLOAT16","BFLOAT16","INT8"]`（与 `allowed_range_value` 重复，且使 `dtype` 语义从"参数自身类型"退化为"取值候选"）——`dtype` 应只表达参数自身类型，取值候选由 `allowed_range_value` 承载。注意：本规则只修正 `dtype` 字段的语义错误，**不**改变 `allowed_range_value.type=enum` 这一合规表达；若下游生成器对字符串枚举 `allowed_range_value` 仍有 Z3 求解缺陷，属生成器侧 bug，不在此规则范围内。
 
-**aclIntArray 参数的固定 dtype 规则**：
-- 当 `type.value == "aclIntArray"` 时，`dtype.value` **固定**为 `["int"]`。`aclIntArray` 是 int 元素的数组，其"自身元素 dtype"恒为 `int`，与数组元素的语义含义无关。此规则**优先级高于**上面的"类型回填规则"——无论文档"数据类型"列是否给出候选都强制执行，**不**因列值非空而改写为张量 dtype。
-- 文档"数据类型"列若给 `aclIntArray` 参数列出张量 dtype（如 `FLOAT16`/`BFLOAT16`），这些列值描述的是**关联张量**的 dtype（应由独立的 `aclDataType` 参数承载，如 `aclnnCalculateMatmulWeightSizeV2.dataType`，见上方 aclDataType 规则），**不**是该数组参数的元素类型；**禁止**把它们写进 `dtype.value`（`dtype.value=["FLOAT16","BFLOAT16"]` 是把关联张量 dtype 错当成数组元素 dtype 的错误表达），也**不**写进 `allowed_range_value`（`aclIntArray` 的取值域是数组值本身，如 `[-2,-1]`，见 `knowledge/aclnn/common/allowed_range.md` §aclIntArray特殊取值）。
-- 典型场景：`aclnnCalculateMatmulWeightSize` 的 `tensorShape`（`aclIntArray`，文档"数据类型"列 `FLOAT16`/`BFLOAT16`）→ `type.value="aclIntArray"`、`dtype.value=["int"]`；列里的 `FLOAT16`/`BFLOAT16` 描述该 shape 所属权重张量的 dtype，不是数组元素类型，不写入 `tensorShape` 的 `dtype` 或 `allowed_range_value`。错误反例：`dtype.value=["FLOAT16","BFLOAT16"]`（把关联张量 dtype 错当成数组元素 dtype）。注意：本规则只修正 `dtype` 字段的语义错误，**不**改变 `allowed_range_value` 的合规表达。
+**非 Tensor 数组参数的 dtype 提取规则（`aclIntArray` / `aclFloatArray` / `aclBoolArray`）**：
+- 与 Tensor 参数同规则：文档"数据类型"列给出该数组参数的元素 dtype 时，**逐字**提取写入 `dtype.value`，`src_text` 摘录该列原文。例：列写 `INT64` → `dtype.value=["INT64"]`；列写 `INT32` → `dtype.value=["INT32"]`；列写多个候选（如 `INT32/INT64`）→ `dtype.value=["INT32","INT64"]`。**不得**再一律改写成 `["int"]`，也不得做数值宽度换算（`INT64` 不得写成 `int` / `int64`）。
+- 列值形态照抄，不做语义改写：即使该列给的是张量 dtype 候选（如 `FLOAT16`/`BFLOAT16`），也按列原文提取，不在提取期替文档做"这是关联张量 dtype"的判断。仅在该列**缺失、为空、为 `-` / `N/A`**（未给出任何元素类型）时，才按上方"类型回填规则"回落：`aclIntArray` → `["int"]`、`aclFloatArray` → `["float"]`、`aclBoolArray` → `["bool"]`；回填不得伪造 `dtype.src_text`。
+- 列值只用于 `dtype.value`，**不**写进 `allowed_range_value`（`aclIntArray` 的取值域是数组值本身，如 `[-2,-1]`，见 `knowledge/aclnn/common/allowed_range.md` §aclIntArray特殊取值）。
+- 典型场景一：`aclnnNsaCompressAttention` 的 `actualSeqQLenOptional`（`aclIntArray`，文档"数据类型"列 `INT64`）→ `dtype.value=["INT64"]`、`src_text="INT64"`。典型场景二：`aclnnCalculateMatmulWeightSize` 的 `tensorShape`（`aclIntArray`，文档"数据类型"列 `FLOAT16`/`BFLOAT16`）→ 按列原文 `dtype.value=["FLOAT16","BFLOAT16"]`。仅当该列没有内容时才回落到 `["int"]`。
 
 **类型前置规则（必须先于下表执行）**：
 - 仅当 `type.value` 为 `aclTensor` 或 `aclTensorList` 时，才从文档提取并填写 `dimensions.value`；
@@ -727,7 +730,7 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
 | **`shape_value_dependency` 按 `<param>_transposed` 隐式 bool 写轴位 if/else 门控（旧写法）** | 已废止：改按 §4.6.3 I 在该张量卡声明 `transpose_id`，轴等式/ceil 关系统一按逻辑视图 L 改写为**单条无分支** `shape_equality`/`shape_value_dependency`（bool 仅保留场景 `value_dependency`）；参考 `knowledge/aclnn/features/transpose_shape.md`；`src_text` 同时摘录"非转置 NZ (b, n1, k1, k0, n0)" 与 "转置 NZ (b, k1, n1, n0, k0)" 原文 |
 | **一段式算子：函数原型无 `GetWorkspaceSize`** | `function_signature` 取唯一函数声明；参数列表无 `workspaceSize`/`executor`。不得伪造 `GetWorkspaceSize` 段；**不得**写入 `is_single_function_mode` 字段 |
 | **一段式算子：输出为标量指针（`uint64_t*`/`int64_t*` 等）** | 该参数**进 `outputs`**（`type.value` 去 `*`、`format="N/A"`、`dimensions=[]`、`is_operator_param=true`），**不**当流程参数排除；`aclnnCalculateMatmulWeightSize` 的 `weightTensorSize` 即此 |
-| **aclIntArray 参数的 dtype 固定为 int** | `type.value="aclIntArray"` → `dtype.value=["int"]`（固定，见 §4.6.3 aclIntArray 规则）；文档"数据类型"列若列张量 dtype（如 `FLOAT16`/`BFLOAT16`）描述的是关联张量，**不**写入 `dtype`（不得写成 `dtype.value=["FLOAT16","BFLOAT16"]`） |
+| **非 Tensor 数组参数的 dtype 按文档提取** | `aclIntArray` / `aclFloatArray` / `aclBoolArray` 的 `dtype.value` 逐字取文档"数据类型"列（如列 `INT64` → `["INT64"]`，不得改写成 `["int"]`）；仅当该列缺失、为空、为 `-` / `N/A` 时才回落 `["int"]` / `["float"]` / `["bool"]`（见 §4.6.3 非 Tensor 数组 dtype 规则） |
 | **aclIntArray / aclFloatArray / aclBoolArray 的 expr 禁用 `.shape`** | 这类非 Tensor 数组无 `.shape` 属性；长度约束写 `len(paramName)`（如 `2 <= len(tensorShape) <= 6`、`len(tensorShape) >= 1`），**禁止** `len(paramName.shape)` / `paramName.shape[i]`（运行期 `AttributeError`）；`.shape` 仅 `aclTensor`/`aclTensorList` 可用 |
 | **aclTensorList 参数 P 写“长度与 Q 相同”** | P 为 Optional 时生成 `(P is None) or (len(P) == len(Q))`，否则生成 `len(P) == len(Q)`；禁止 `.array_length` 和 `len(P.shape)`；相同文案出现在多个参数行时逐参数生成，不能去重 |
 | **backward / grad 文档写“gradOutput 与 self/input 维度一致”，同时末尾轴由 padding 等参数派生** | 按 `knowledge/aclnn/features/backward_partial.md` §4.6.6 / `knowledge/aclnn/common/expression_language.md` §常用模式 模式 7 拆分：①前缀切片相等；②rank 相等；③文档明确的派生轴公式。禁止只提取末维公式，也禁止用 `gradInput.shape == self.shape` 替代 gradOutput 跟随关系 |

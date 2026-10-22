@@ -18,6 +18,8 @@ depends_on: []
 - `aclTensor` 管理张量；`aclTensorList` 管理多个张量。
 - `aclScalar` 管理标量；`aclScalarList` 管理多个标量。
 - `aclIntArray`、`aclFloatArray`、`aclBoolArray` 分别是 int、float32、bool 数组。
+  提取时以算子文档"数据类型"列为准（列写 `INT64` 即 `dtype.value=["INT64"]`），
+  仅当该列缺失、为空、为 `-` / `N/A` 时才按 int / float32 / bool 回落。
 - `aclOpExecutor` 与 `aclrtStream` 是两段式调用流程对象，不是业务输入/输出。
 
 ## 数据类型
