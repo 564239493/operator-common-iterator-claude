@@ -1,8 +1,7 @@
 ---
 name: iterate-operator
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path]
-argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path] [--web]
+argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
 ---
 
 # 算子闭环迭代
