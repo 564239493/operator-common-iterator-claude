@@ -15,7 +15,7 @@ import type { ReplayEvent } from '../api/types'
 const router = useRouter()
 const { loadError, ready, selectedRunId } = useTask()
 // 汇总位置 A/B 对比（临时开关，选定后删除）：bottom=沉到流程区末尾；rail=收进左侧轮次栏
-const layoutMode = ref<'bottom' | 'rail'>('bottom')
+const layoutMode = ref<'bottom' | 'rail'>('rail')
 function toggleLayout() { layoutMode.value = layoutMode.value === 'bottom' ? 'rail' : 'bottom' }
 const flowBoard = ref<InstanceType<typeof HandoffBoard>>()
 const flowScroll = ref(0)
@@ -319,7 +319,7 @@ function segStates(seg: any): string {
           <span>{{ c.text }}</span>
           <a v-if="c.link" :href="c.link.href">{{ c.link.label }} →</a>
         </div>
-        <details class="run-context"><summary>任务背景与状态历史</summary>
+        <details class="run-context" open><summary>任务背景与状态历史</summary>
           <p>文档：{{ runView.operator_doc }}</p>
           <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
         </details>
@@ -406,7 +406,7 @@ function segStates(seg: any): string {
                   </div>
                 </div>
               </div>
-              <details class="run-context"><summary>任务背景与状态历史</summary>
+              <details class="run-context" open><summary>任务背景与状态历史</summary>
                 <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
                 <p>提示词快照：{{ runView.current_prompt || '—' }} · 用例预算：{{ runView.case_count ?? '—' }} · 装配知识：{{ (runView.current_prompt_modules || []).length }} 项</p>
                 <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>

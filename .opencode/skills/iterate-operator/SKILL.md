@@ -2,6 +2,7 @@
 name: iterate-operator
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
 argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path] [--web]
 ---
 
 # 算子闭环迭代
@@ -51,6 +52,10 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    `--source-analysis-knowledge` 默认关闭；显式传入时，仅对 ACLNN 自动提示词装配
    启用 `source_analysis` 类知识，并继续要求 `operator_name_eq` 精准命中。不得与
    `--prompt` 同用，也不得用于 torch_npu。
+
+    `--web` 默认关闭；开启时在「首轮 CHECK 通过后 DASHBOARD 拉起」步骤把 `--web`
+    透传给 `raise_dashboard.py` 打开浏览器；不传则仅确保 server 就绪并返回 URL、
+    **不自动打开浏览器**。该旗标只影响是否自动开浏览器，不影响 server 与工作台可用性。
 2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
    `--supplement-constraints`、`--source-analysis-knowledge`、`--operator-family`、`--test-framework`、
    `--hs-scenario-mode`、`--constraint-check-rounds`、`--scenes "<场景描述>"` 等参数，
@@ -312,10 +317,10 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
       CHECK/REPAIR `passed` 后，运行
       `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_001`（默认 `--page run`；
       探测 8420 未监听则后台拉起 `src/serve.py` 托管的工作台 `src/web/dist`；
-      `run_state.dashboard_raised=false` 时打开浏览器一次并置 true，
-      已拉起则仅返回 URL）。把返回的 URL 提示给用户「可在工作台 `#/run` 监控本轮约束/执行/诊断；人工修复时
-      到 `#/constraints` 编辑提交」。页面轮询会自动跟随 EXECUTE/DIAGNOSE 到终态，无需手动刷新。仅首轮拉起一次；
-      后续轮次 `dashboard_raised=true`，人工修复检查点再调该脚本（`--page constraints`）时仅返回 URL。
+      仅当用户命令含 `--web` 时追加 `--web` 参数，`run_state.dashboard_raised=false` 时打开浏览器一次并置 true；
+      未传 `--web` 时不自动打开浏览器、仅确保 server 就绪并返回 URL；已拉起则仅返回 URL）。把返回的 URL 提示给用户「可在工作台 `#/run` 监控本轮约束/执行/诊断；人工修复时
+      到 `#/constraints` 编辑提交」（未传 `--web` 时用户可自行打开该 URL）。页面轮询会自动跟随 EXECUTE/DIAGNOSE 到终态，无需手动刷新。仅首轮拉起一次；
+      后续轮次 `dashboard_raised=true`，人工修复检查点再调该脚本（`--page constraints --web`）时仅返回 URL。
       工作台需 `src/web/dist` 已构建（新机器首次 `cd src/web && npm install && npm run build`）。
    - **constraints-only 终止**：若 `run_state.test_framework="constraints"`，在 EXTRACT
      和可能的 SUPPLEMENT、CONSTRAINT CHECK/REPAIR 完成后运行 constraints
@@ -416,7 +421,7 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      并把`human_checkpoint_resolved_iteration` 置为 `current_iteration`（防上下文压缩后对同一轮 重复询问）：
      1. **人工修复**（仅 `human_constraints_upload == true` 时可选；false 时该选项标注"需带
         `--human-constraints-upload` 启用"）：先运行
-        `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N> --page constraints`（页面已拉起则仅返回 URL、
+        `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N> --page constraints --web`（页面已拉起则仅返回 URL、
         未拉起则拉起浏览器一次），把返回的 URL 提示给用户「请到工作台 `#/constraints` 编辑约束并提交，网页提交会自动生成
         `<run>/iter_<N>/constraints_copy.json`」；随后挂起 `AWAITING_HUMAN_CONSTRAINTS` + 挂监听器，
         监听器仍检测 `iter_<N>/constraints_copy.json` 出现+稳定后唤醒（文件来源由手动上传改为网页提交，
@@ -492,7 +497,7 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
    `recommended_action`、`overall_action`、`constraint_findings`、`root_cause_summary`），
    明确告诉用户「这些是发现的问题，请在约束文件里据此修改」。
 3. **提示用户到网页修改（agent 不创建文件）**：**不复制**任何文件。运行
-   `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N> --page constraints`（页面已拉起则仅返回 URL、
+   `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N> --page constraints --web`（页面已拉起则仅返回 URL、
    未拉起则拉起浏览器一次），把返回的 URL 提示给用户：「请到工作台 `#/constraints` 编辑约束并提交，网页提交会自动生成
    `<run>/iter_<N>/constraints_copy.json`」；当前轮约束只读基线是 `<run>/iter_<N>/constraints.json`。
    文件出现即代表用户已在网页提交、准备开启下一轮；文件尚未出现即代表用户仍在修改，继续等待。
