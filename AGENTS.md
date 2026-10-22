@@ -185,6 +185,11 @@ opencode  # 启动 opencode
 - `common_model_definition.py` → `OperatorRule` Pydantic 模型，constraints.json 必须满足此校验
 - `operator_handle_main.py` → `single_operator_handle` 正式生成逻辑
 - `param_constraint_solve/z3_expression_solver_utils.py` → Z3 solver
+- `param_constraint_solve/` 的量词展开：长度可静态确定且 ≤128 时，
+  `all()/any()` 展开为逐元素 `And`/`Or`；
+  `range()` 的上界能由 `len(p.shape) in dimensions`这类维度个数断言与常数推出时，改写成带 guard 的 `Implies` 合取。
+  推不出或超限则回退 `ForAll`/`Exists`，求解失败仍 fail-closed；
+  日志 `[Unroll]` / `[Unroll-Range]` 只表示发生展开，不是报错。
 
 **executer/** — 执行适配层（SSH + ATK 上传运行）：
 
@@ -205,6 +210,17 @@ opencode  # 启动 opencode
 - `execute_cases.py` — 调 executer 执行用例
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）
 - `verify_relation_exprs.py` — Z3 正反例验证：`constraints_in_parameters` 逐条采 satisfy/violate 实例 + 整桶矛盾检测，产 `relation_examples.json`（CHECK 阶段 checker 步骤 0 自跑，仅 aclnn；语法错误 exit 2，其余 advisory）
+- `probe_param_pins.py` — 列表参数长度探测（CHECK 前 advisory，纯标准库）：
+  `probe` 找出「`array_length` 未固定 + 被跨参数 `len(p)` 引用 + 无传递上界」的列表参数，产出 `param_probe.json`；
+  `patch` 把 `inputs/param_pins.json` 的决策渲染成标准 `constraints_patch`，
+  形如 `len(x) == N`、`len(x) in [2, 3]`、`2 <= len(x) <= 4`，
+  交 `apply_supplement_constraints.py --origin param_pin` 合并；
+  `parse` 把用户在问询中自由输入的文本按闭集语法解析成 `decisions`，
+  语法为 `a=2`、`a=[2,3]`、`a=2~4`、`a,b=2`（同 `a=b=2`）、`全部=2`（同 `统一=2`），
+  全角符号与中文标点先归一；
+  全有或全无：任一片段失败即整句拒绝并回显格式清单；
+  `--decisions-output` 在解析成功时合并落盘，决策与已有 `inputs/param_pins.json` 按组对齐，
+  同 `group_id`/`leader` 原位替换、其余组保留，协调器无需抄写 JSON。
 - `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验

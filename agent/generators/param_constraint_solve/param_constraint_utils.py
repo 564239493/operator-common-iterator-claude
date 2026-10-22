@@ -29,7 +29,11 @@ from agent.generators.operator_param_combine.generate_combination_input.combinat
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
 from agent.generators.param_constraint_solve.case_expr_evaluator import build_namespace, eval_constraint
-from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
+from agent.generators.param_constraint_solve.z3_expression_solver_utils import (
+    Z3ConstraintBuilder,
+    ASTtoZ3Converter,
+    MAX_STATIC_UNROLL,
+)
 
 logger = LazyLogger()
 
@@ -40,6 +44,138 @@ class ParamSetValueFlag(BaseModel):
     range_values: bool = False
     format: bool = False
     length: bool = False
+
+
+# ---------------------------------------------------------------------------
+# all()/any() 定长展开：静态长度解析
+# ---------------------------------------------------------------------------
+# 背景：`array_length` 固定（或约束写了 `len(p) == N`）之后，`all(<pred> for v in p.range_value)`
+# 仍被编码成 `ForAll(k, 0<=k<Length(p) => ...)`，Z3 不会因为长度有常数上界就退化成点对点
+# 子句，长数组求解明显变慢。这里用纯 AST 解析出「唯一确定的长度」，交给 builder 在转换期
+# 展开成 And/Or，约束文件保持紧凑写法。
+# 只认**合取式**里的事实：带 `or`/`not`/`if-else` 的约束可能只是某个分支成立，不能据此断言长度。
+
+
+def _is_static_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _len_target_name(node):
+    """把 `len(p)` / `p.length` 归一成参数名，其余形态返回 None。"""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "len"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+    ):
+        return node.args[0].id
+    if isinstance(node, ast.Attribute) and node.attr == "length" and isinstance(node.value, ast.Name):
+        return node.value.id
+    return None
+
+
+def _is_conjunctive(tree) -> bool:
+    """表达式是否只由 and/比较组成（无 or、not、条件表达式）。"""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BoolOp) and not isinstance(node.op, ast.And):
+            return False
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return False
+        if isinstance(node, ast.IfExp):
+            return False
+    return True
+
+
+def _exact_len_facts(tree) -> tuple[dict, list]:
+    """抽取 `len(p) == N` 常量事实与 `len(p) == len(q)` 等长边（支持链式比较）。"""
+    constants: dict[str, set] = {}
+    edges: list[tuple[str, str]] = []
+
+    def add_constant(name, value):
+        constants.setdefault(name, set()).add(value)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        left_node = node.left
+        for op, right_node in zip(node.ops, node.comparators):
+            if isinstance(op, ast.Eq):
+                left_name = _len_target_name(left_node)
+                right_name = _len_target_name(right_node)
+                if left_name and isinstance(right_node, ast.Constant) and _is_static_int(right_node.value):
+                    add_constant(left_name, right_node.value)
+                elif right_name and isinstance(left_node, ast.Constant) and _is_static_int(left_node.value):
+                    add_constant(right_name, left_node.value)
+                elif left_name and right_name:
+                    edges.append((left_name, right_name))
+            left_node = right_node
+    return constants, edges
+
+
+def resolve_static_lengths(exprs, hard_lengths=None) -> dict:
+    """从约束表达式与组合期硬钉长度解析出「唯一确定的长度」。
+
+    :param exprs: 约束表达式文本列表
+    :param hard_lengths: 已在变量声明期硬钉的长度（非 free-length 参数的组合长度）
+    :return: param -> length；只返回能唯一确定且 1..MAX_STATIC_UNROLL 的参数
+    """
+    hard = {
+        str(name): value
+        for name, value in (hard_lengths or {}).items()
+        if _is_static_int(value) and value >= 1
+    }
+    parent: dict[str, str] = {}
+
+    def find(name):
+        parent.setdefault(name, name)
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    def union(left, right):
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    constants: dict[str, set] = {}
+    for expr in exprs or []:
+        if not isinstance(expr, str) or not expr.strip():
+            continue
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            continue
+        if not _is_conjunctive(tree):
+            continue
+        expr_constants, edges = _exact_len_facts(tree)
+        for name, values in expr_constants.items():
+            constants.setdefault(name, set()).update(values)
+        for left, right in edges:
+            union(left, right)
+
+    members = set(parent) | set(hard) | set(constants)
+    by_root: dict[str, list[str]] = {}
+    for name in members:
+        by_root.setdefault(find(name), []).append(name)
+
+    resolved: dict[str, int] = {}
+    for names in by_root.values():
+        values = set()
+        for name in names:
+            if name in hard:
+                values.add(hard[name])
+            values.update(constants.get(name, set()))
+        if len(values) != 1:
+            continue
+        value = values.pop()
+        if 1 <= value <= MAX_STATIC_UNROLL:
+            for name in names:
+                resolved[name] = value
+        else:
+            logger.debug(f"Static length {value} exceeds unroll limit {MAX_STATIC_UNROLL}, keep quantifier")
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -1066,6 +1202,68 @@ class ParamConstraintUtils(CommonDispatcher):
                     coupled.add(param_name)
         return coupled
 
+    def _static_lengths_for_unroll(self, constraints, free_len) -> dict:
+        """收集可静态确定长度的 list 参数，供 all()/any() 定长展开。
+
+        两类来源（都要求参数在本组合中 present 且 Z3 类型为 list/Seq）：
+        - 变量声明期已硬钉的组合长度（非 free-length 参数的 `length`）；
+        - 合取约束里唯一可推的 `len(p) == N` / `len(p) == len(q)` 常量。
+        free-length 参数的组合长度是 PICT 软偏好，不能当作硬事实。
+        """
+        hard_lengths = {}
+        for param_name, param_info in self.case_input_map.items():
+            if param_name in free_len:
+                continue
+            if DataMatchMap.Z3_VAR_TYPE_MAP.get(param_info.type) != "list":
+                continue
+            combination = self.param_combinations.get(param_name) if self.param_combinations else None
+            if combination is not None and not combination.is_present:
+                continue
+            length = getattr(param_info, "length", None)
+            if _is_static_int(length) and length >= 1:
+                hard_lengths[param_name] = length
+        return resolve_static_lengths(
+            [getattr(constraint, "expr", "") or "" for constraint in constraints or []],
+            hard_lengths,
+        )
+
+    def _static_rank_max_for_unroll(self) -> dict:
+        """收集文档声明的张量维度个数上限，供 range() 量词守护式展开。
+
+        来源是文档 `dimensions` 列（如 2-8，指 len(p.shape) 的上界，不是某个轴的长度）。
+        这个值已被 ``build_param_shape_len_constraint`` 写成 `len(p.shape) in [...]` 永久
+        断言，属确定性事实，不会被冲突消解丢弃。
+
+        :return: shape seq 常量名（``"<param>.shape"``，命名同 param_var_definition）-> 上界
+        """
+        rank_max = {}
+        for param_name in self.case_input_map.keys():
+            param_ori_data = (self.operator_rule_data.inputs.get(param_name)
+                              if param_name in self.operator_rule_data.inputs
+                              else self.operator_rule_data.outputs.get(param_name))
+            if param_ori_data is None:
+                continue
+            dims, _ = DataHandleUtil.get_relevant_attribute_value(
+                param_name, param_ori_data.dimensions, "dimensions")
+            if isinstance(dims, int) and not isinstance(dims, bool):
+                values = [dims]
+            elif isinstance(dims, list):
+                values = [v for v in dims if isinstance(v, int) and not isinstance(v, bool)]
+            else:
+                # None / 非法形态：推不出维度个数上限，对应量词保持原样。
+                continue
+            if values:
+                # tensor_list 的 ``p.shape`` 落到单个元素的 shape seq 常量
+                # ``<name>.elem.shape``（TensorListVar.elem_shape），普通 tensor 才是
+                # ``<name>.shape``。键必须与 param_var_definition 一致，否则转换器
+                # 查表落空、range() 量词不会展开（ScatterList C-002 实测）。
+                case_input = self.case_input_map.get(param_name)
+                z3_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(
+                    getattr(case_input, "type", None)) if case_input is not None else None
+                suffix = "elem.shape" if z3_type == "tensor_list" else "shape"
+                rank_max[f"{param_name}.{suffix}"] = max(values)
+        return rank_max
+
     def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False, free_length_params=None):
         """
         声明每个变量，指定变量的type(Tensor, scalar，list)，以及数据类型(float, int, string, bool)
@@ -1187,6 +1385,17 @@ class ParamConstraintUtils(CommonDispatcher):
             logger.info(f"Free (Z3-solved) lengths for cross-parameter coupled params : '{sorted(free_len)}'")
         self.declare_param_in_z3(builder=builder, is_print_log=True, free_length_params=free_len)
         constraint_after_solve_no = self.solve_no_present_param_in_constraint(z3_constraints)
+        # all()/any() 定长展开：长度已确定的参数，量词在转换期展开成逐元素 And/Or
+        # （约束文本不变，逻辑见 resolve_static_lengths）。
+        static_lengths = self._static_lengths_for_unroll(constraint_after_solve_no, free_len)
+        if static_lengths:
+            builder.set_static_lengths(
+                {name: value for name, value in static_lengths.items() if name in builder.var_map}
+            )
+        # range() 展开的循环上界：文档 dimensions 已作为硬约束断言，可据此推出取值范围。
+        rank_max = self._static_rank_max_for_unroll()
+        if rank_max:
+            builder.set_static_rank_max(rank_max)
         expr_list = []
         for constraint_expr in constraint_after_solve_no:
             expr = constraint_expr.expr

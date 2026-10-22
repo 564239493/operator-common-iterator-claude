@@ -40,6 +40,10 @@ from agent.generators.param_constraint_solve.param_var_definition import TensorL
 
 logger = LazyLogger()
 
+# all()/any() 定长展开的上限：超过该长度继续用量词，避免展开后子句数爆炸。
+MAX_STATIC_UNROLL = 128
+
+
 class Z3ConstraintBuilder:
     _VAR_FACTORY = {
         'tensor': (TensorVar, lambda self, kwargs: (self.solver, kwargs.get("dtype"), kwargs.get('allowed_dtypes'),
@@ -64,10 +68,53 @@ class Z3ConstraintBuilder:
         # 仅用于兼容历史 constraints 中已经存在的 ``# TODO:`` 前缀。
         # 新版 torch_npu 提示词禁止再生成该前缀，但恢复旧任务时不能因列表未初始化崩溃。
         self.dropped_constraints = []
+        # 静态长度表：param -> 唯一确定的长度（确定性事实），供 all()/any() 定长展开。
+        self.static_lengths = {}
+        # 维度个数上限表：shape seq 常量名（如 "self.shape"）-> 文档声明的最大维度个数，
+        # 来自已硬断言的 len(p.shape) in dimensions；仅供 range() 量词展开推导循环上界。
+        self.static_rank_max = {}
+        # 单次展开的元素上限，供转换器读取（避免反向 import 造成循环依赖）。
+        self.unroll_limit = MAX_STATIC_UNROLL
+        # 展开审计：(param, kind, length) 供日志与测试核对。
+        self.unrolled_quantifiers = []
 
     def get_next_slice_id(self):
         self._slice_counter += 1
         return self._slice_counter
+
+    def set_static_lengths(self, lengths):
+        """设置静态长度表；只接受 1..MAX_STATIC_UNROLL 的整数。"""
+        self.static_lengths = {
+            str(name): int(value)
+            for name, value in (lengths or {}).items()
+            if isinstance(value, int) and not isinstance(value, bool)
+            and 1 <= value <= MAX_STATIC_UNROLL
+        }
+        if self.static_lengths:
+            logger.info(f"[Unroll] Static lengths for quantifier unroll : '{self.static_lengths}'")
+
+    def get_static_length(self, var_name):
+        """返回可直接用于展开的长度；未知或超上限返回 None（继续用量词）。"""
+        return self.static_lengths.get(var_name)
+
+    def set_static_rank_max(self, bounds):
+        """设置 shape 维度个数上限表；键为 var_definition 的 ``f"{name}.shape"``，
+        只接受 1..MAX_STATIC_UNROLL 的整数。"""
+        self.static_rank_max = {
+            str(name): int(value)
+            for name, value in (bounds or {}).items()
+            if isinstance(value, int) and not isinstance(value, bool)
+            and 1 <= value <= MAX_STATIC_UNROLL
+        }
+        if self.static_rank_max:
+            logger.info(f"[Unroll] Static shape rank bounds for range quantifier : '{self.static_rank_max}'")
+
+    def get_rank_max(self, seq_name):
+        """返回 shape seq 的维度个数上限；未知返回 None（继续用量词）。"""
+        return self.static_rank_max.get(str(seq_name))
+
+    def record_unroll(self, var_name, kind, length):
+        self.unrolled_quantifiers.append({"param": var_name, "kind": kind, "length": length})
 
     def declare_var(self, var_name, type_hint="scalar", dtype=None, allowed_dtypes=None, allowed_formats=None,
                     range_value=None, length=None, is_print_log=False):
