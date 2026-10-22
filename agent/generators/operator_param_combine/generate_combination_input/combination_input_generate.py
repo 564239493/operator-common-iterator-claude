@@ -281,7 +281,7 @@ class CombinationInputGenerate:
                 # 避免符号化后被 SHAPE_DIM_VALUES 替换丢失原区间语义（groupListType 案例，G-1）。
                 inner_dtype = DataMatchMap.ACL_DTYPE_TRANSFER_SCALAR_MAP.get(dtype)
                 if inner_dtype in ParamModelConfig.INT_DTYPE and isinstance(low, int) and isinstance(high, int) \
-                        and 0 < high - low <= ParamModelConfig._SMALL_RANGE_ENUM_MAX_SPAN:
+                        and 0 <= high - low <= ParamModelConfig._SMALL_RANGE_ENUM_MAX_SPAN:
                     valid_range_data.extend(range(low, high + 1))
                     logger.debug(
                         f"Small int range enumerated, param name : '{param_name}', "
