@@ -71,6 +71,7 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 /iterate-operator D:\operator_docs\aclnnFoo.md  # 支持项目外路径
 /iterate-operator operator_docs/aclnnFoo.md --scenes "A2非量化groupListType等于2"  # 场景文本直输（设备类型必选）；未传则交互征询
 /iterate-operator operator_docs/aclnnFoo.md --human-constraints-upload --max-iterations 5  # 人工约束上传通道：检查点选人工修复后挂起等用户上传 constraints_copy.json，监听触发下一轮
+/iterate-operator operator_docs/aclnnFoo.md --web  # 默认不自动打开工作台页面；加 --web 才在首轮 CHECK 通过后自动拉起浏览器
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
 /show-workforce  # 查看可用技能、子智能体和调度拓扑
