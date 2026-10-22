@@ -169,15 +169,16 @@ def _array_length_state(attributes: dict) -> str:
     if isinstance(raw, list):
         if all(isinstance(item, int) and not isinstance(item, bool) for item in raw):
             return "pinned"
-        # 区间形态 [[min, max]] 也是合法的“已给长度范围”。
-        if (
-            len(raw) == 1
-            and isinstance(raw[0], list)
-            and len(raw[0]) == 2
+        # 区间形态 [[min, max], ...]（可多段）也是合法的“已给长度范围”，
+        # 与 validate_artifacts.py 的口径一致；生成侧会把每段端点都收进 length 候选。
+        if all(
+            isinstance(item, list)
+            and len(item) == 2
             and all(
-                isinstance(item, int) and not isinstance(item, bool)
-                for item in raw[0]
+                isinstance(value, int) and not isinstance(value, bool)
+                for value in item
             )
+            for item in raw
         ):
             return "pinned"
         return "invalid"
