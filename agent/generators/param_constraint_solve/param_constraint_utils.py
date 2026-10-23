@@ -1370,6 +1370,108 @@ class ParamConstraintUtils(CommonDispatcher):
                 rank_max[f"{param_name}.{suffix}"] = max(values)
         return rank_max
 
+    def _static_scalar_ranges_for_unroll(self, constraints, builder) -> dict:
+        """从硬约束解析标量参数的取值区间，供 range() 量词的符号界展开。
+
+        只认合取上下文里的四种形态（``p`` 指 ``p.range_value`` 或裸参数名）：
+        ``lo <= p <= hi``（含链式）、``p <= hi``、``lo <= p``、``p in [v1, ...]``。
+        边界表达式必须能用 ``_int_bounds`` 推出静态区间（如 ``len(x.shape) - 1``，
+        依赖已登记的维度个数上限）；推不出就整条丢弃，宁可不展开。
+
+        这些区间展开时会一并断言进求解器，所以本方法只决定「能否展开」，
+        不改变约束本身的强弱。
+
+        :return: param -> (lo, hi)
+        """
+        converter = ASTtoZ3Converter(builder)
+        lower_bounds, upper_bounds = {}, {}
+
+        def note_lower(name, value):
+            lower_bounds[name] = max(lower_bounds.get(name, value), value)
+
+        def note_upper(name, value):
+            upper_bounds[name] = min(upper_bounds.get(name, value), value)
+
+        def expr_bounds(node):
+            try:
+                converted = converter.visit(node)
+            except Exception:  # noqa: BLE001 推导期失败只是放弃展开
+                return None
+            if converted is None:
+                return None
+            return converter._int_bounds(converted)
+
+        def param_name(node):
+            """比较项是标量参数取值时返回参数名。"""
+            if isinstance(node, ast.Attribute) and node.attr == "range_value" \
+                    and isinstance(node.value, ast.Name):
+                return node.value.id
+            if isinstance(node, ast.Name):
+                return node.id
+            return None
+
+        def is_scalar(name):
+            case_input = self.case_input_map.get(name)
+            if case_input is None:
+                return False
+            return DataMatchMap.Z3_VAR_TYPE_MAP.get(getattr(case_input, "type", None)) == "scalar"
+
+        for constraint_expr in constraints or []:
+            text = getattr(constraint_expr, "expr", None)
+            if not isinstance(text, str) or not text.strip():
+                continue
+            try:
+                tree = ast.parse(text, mode="eval")
+            except SyntaxError:
+                continue
+            if not _is_conjunctive(tree):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Compare):
+                    continue
+                left, ops = node.left, node.ops
+                for op, right in zip(ops, node.comparators):
+                    if isinstance(op, ast.In) and isinstance(right, (ast.List, ast.Tuple)):
+                        name = param_name(left)
+                        values = [item.value for item in right.elts
+                                  if isinstance(item, ast.Constant)
+                                  and isinstance(item.value, int)
+                                  and not isinstance(item.value, bool)]
+                        if name and is_scalar(name) and len(values) == len(right.elts) and values:
+                            note_lower(name, min(values))
+                            note_upper(name, max(values))
+                        left = right
+                        continue
+                    if not isinstance(op, (ast.LtE, ast.Lt, ast.GtE, ast.Gt)):
+                        left = right
+                        continue
+                    # `left <op> p` → 由 left 定界；`p <op> right` → 由 right 定界。
+                    # 取边界的保守端当超集：下界用 min(left)，上界用 max(right)，
+                    # 严格不等式因此天然成立（只是区间略宽，不改变约束力）。
+                    left_name, right_name = param_name(left), param_name(right)
+                    if right_name and is_scalar(right_name):
+                        bounds = expr_bounds(left)
+                        if bounds is not None:
+                            if isinstance(op, (ast.LtE, ast.Lt)):
+                                note_lower(right_name, bounds[0])
+                            else:
+                                note_upper(right_name, bounds[1])
+                    elif left_name and is_scalar(left_name):
+                        bounds = expr_bounds(right)
+                        if bounds is not None:
+                            if isinstance(op, (ast.LtE, ast.Lt)):
+                                note_upper(left_name, bounds[1])
+                            else:
+                                note_lower(left_name, bounds[0])
+                    left = right
+
+        ranges = {}
+        for name in set(lower_bounds) & set(upper_bounds):
+            lo, hi = lower_bounds[name], upper_bounds[name]
+            if lo <= hi:
+                ranges[name] = (lo, hi)
+        return ranges
+
     def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False, free_length_params=None):
         """
         声明每个变量，指定变量的type(Tensor, scalar，list)，以及数据类型(float, int, string, bool)
@@ -1502,6 +1604,12 @@ class ParamConstraintUtils(CommonDispatcher):
         rank_max = self._static_rank_max_for_unroll()
         if rank_max:
             builder.set_static_rank_max(rank_max)
+        # range() 量词的符号界（如 range(0, axis.range_value)）：标量参数没有文档声明的
+        # 取值范围，只能从硬约束 `lo <= p.range_value <= hi` 推；必须在 rank_max 之后，
+        # 因为界本身常用 len(p.shape) 表达。
+        param_ranges = self._static_scalar_ranges_for_unroll(constraint_after_solve_no, builder)
+        if param_ranges:
+            builder.set_static_param_ranges(param_ranges)
         expr_list = []
         for constraint_expr in constraint_after_solve_no:
             expr = constraint_expr.expr
