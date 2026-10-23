@@ -165,6 +165,8 @@ async def _run_aclnn(
     timeout: float = 600,
     proc_timeout: int = 180,
     plugin_path: Path | None = None,
+    devices_arg: str | None = None,
+    process_count: int | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     ttk = server.get("ttk") or {}
@@ -182,16 +184,23 @@ async def _run_aclnn(
     remote_dir = f"{remote_root}/{_safe_name(op_name)}_{stamp}"
     remote_csv = f"{remote_dir}/{csv_path.name}"
     remote_results = f"{remote_dir}/results.csv"
+    # 远端 plugin 直用：--plugin 传远端绝对路径（以 / 开头）时不上传，命令直接引用。
+    plugin_is_remote = plugin_path is not None and str(plugin_path).startswith("/")
     remote_plugin = (
-        f"{remote_dir}/{plugin_path.name}" if plugin_path is not None else None
+        f"{remote_dir}/{Path(plugin_path).name}"
+        if plugin_path is not None and not plugin_is_remote
+        else None
     )
 
     ttk_args = (
         f"-i {shlex.quote(csv_path.name)} "
         f"--plat={shlex.quote(plat)} "
     )
-    if remote_plugin is not None:
-        ttk_args += f" --plugin {shlex.quote(plugin_path.name)}"
+    if plugin_path is not None:
+        plugin_arg = (
+            str(plugin_path) if plugin_is_remote else str(Path(plugin_path).name)
+        )
+        ttk_args += f" --plugin {shlex.quote(plugin_arg)}"
     if mode == "validate":
         ttk_args += " --validate"
     if test_indexes:
@@ -200,6 +209,10 @@ async def _run_aclnn(
         ttk_args += f" --proc-timeout {proc_timeout}"
     if mode == "npu":
         ttk_args += " --warmup False"
+    if devices_arg:
+        ttk_args += f" --devices {shlex.quote(devices_arg)}"
+    if process_count:
+        ttk_args += f" --pc {process_count}"
 
     parts = []
     if env_init:
@@ -230,10 +243,11 @@ async def _run_aclnn(
         if mkdir.exit_code != 0:
             raise SSHEngineError(f"mkdir failed: {mkdir.stderr}")
         await upload_file(conn, csv_path, remote_csv)
-        if plugin_path is not None:
-            if not plugin_path.is_file():
+        if plugin_path is not None and not plugin_is_remote:
+            plugin_local = Path(plugin_path)
+            if not plugin_local.is_file():
                 raise SSHEngineError(f"golden plugin not found: {plugin_path}")
-            await upload_file(conn, plugin_path, remote_plugin)
+            await upload_file(conn, plugin_local, remote_plugin)
 
         execution_started = mode == "npu"
         result = await run(conn, command, timeout=timeout)
@@ -382,7 +396,27 @@ def main() -> None:
         default=180,
         help="Single-case timeout in seconds; 0 disables it (default: 180)",
     )
-    parser.add_argument("--plugin", type=Path, default=None)
+    parser.add_argument(
+        "--plugin",
+        type=str,
+        default=None,
+        help=(
+            "TTK golden/runtime 插件。本地文件路径（相对/绝对）会上传到远端执行目录；"
+            "以 / 开头的远端绝对路径直接用于远端 ttk 命令（不上传）。"
+        ),
+    )
+    parser.add_argument(
+        "--devices",
+        type=str,
+        default=None,
+        help="TTK 使用的设备（如 '0' 或 '0,1'）；限制设备数可规避多进程并发加载 C++ 扩展崩溃。",
+    )
+    parser.add_argument(
+        "--pc",
+        type=int,
+        default=None,
+        help="TTK 每设备进程数；--pc 1 配合单设备可避免 fork 后扩展加载竞争。",
+    )
     args = parser.parse_args()
     if args.proc_timeout < 0:
         parser.error("--proc-timeout must be >= 0")
@@ -409,6 +443,8 @@ def main() -> None:
         mode=mode, test_indexes=args.ti, timeout=args.timeout,
         proc_timeout=args.proc_timeout,
         plugin_path=args.plugin,
+        devices_arg=args.devices,
+        process_count=args.pc,
     )
 
     print(f"Status:   {result['status']}")
