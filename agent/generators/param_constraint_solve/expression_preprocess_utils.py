@@ -114,6 +114,13 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         'len': '_handle_len', 'all': '_handle_all', 'any': '_handle_any',
         'max': '_handle_max_min', 'min': '_handle_max_min',
         'sum': '_handle_sum', 'prod': '_handle_prod',
+        # 向上取整除法（ceil(a/b) 及文档同义记号）
+        'ceil': '_handle_ceil_div', 'Ceil': '_handle_ceil_div',
+        'ceildiv': '_handle_ceil_div', 'ceilDiv': '_handle_ceil_div',
+        'CeilDiv': '_handle_ceil_div',
+        # 向上对齐到 b 的倍数：ceil(a/b)*b
+        'CeilAlign': '_handle_ceil_align', 'AlignUp': '_handle_ceil_align',
+        'RoundUp': '_handle_ceil_align',
     }
     def __init__(self, builder):
         self.builder = builder
@@ -531,6 +538,106 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         if z3.is_real(left) or z3.is_real(right):
             return z3.ToInt(left / right)
         raise TypeError(f"Floor division not supported for types: {type(left)}, {type(right)}")
+
+    # --- 向上取整除法 / 向上对齐（ceil(a/b) 及文档同义记号） ---
+    def _ceil_div_int(self, left, right):
+        """向上取整除法 ceil(left / right)，返回整数表达式 q。
+
+        做法：新建一个整数变量 q 代表结果，用一对不等式把它卡在唯一取值上——
+        right > 0 时 `(q-1)*right < left <= q*right`（也就是
+        `q-1 < left/right <= q`），right < 0 时不等号方向翻过来：
+        `q*right <= left < (q-1)*right`。整个过程只用整数运算，不碰实数除法；
+        除数是常量时每项都是常数乘 q，属于线性约束。
+
+        除数正负未知时，把“正/负/零”的判断写成 If 放进约束内部；不单独写一条
+        `right > 0` 断言，因为断言不受外层 If/Implies 条件约束，会让本该被
+        条件挡掉的“除数为 0”组合直接判成无解（unsat）。
+
+        除数为 0：常量在转换期抛 ValueError；符号除数时这条约束不限制 q。
+        两边都是 Python 整数常量时按整除语义直接算出结果，不建约束。
+        """
+        if isinstance(left, TensorElementProxy):
+            left = left._scalar()
+        if isinstance(right, TensorElementProxy):
+            right = right._scalar()
+        if (isinstance(left, int) and isinstance(right, int)
+                and not isinstance(left, bool) and not isinstance(right, bool)):
+            if right == 0:
+                raise ValueError("Integer division by zero")
+            return -((-left) // right)
+
+        left = left if z3.is_expr(left) else z3.IntVal(left)
+        right = right if z3.is_expr(right) else z3.IntVal(right)
+        if not (z3.is_int(left) and z3.is_int(right)):
+            raise TypeError(
+                f"Ceil division requires Int operands, got {left.sort()}/{right.sort()}")
+
+        # 缓存挂在 builder 上：每条约束都会 new 一个转换器，挂在转换器上等于不去重。
+        cache = getattr(self.builder, "_div_cache", None)
+        if cache is None:
+            cache = {}
+            self.builder._div_cache = cache
+        key = (str(left), str(right), "ceil")
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
+        div_id = self.builder.get_next_slice_id()
+        q = z3.Int(f"__div_{div_id}")
+        pos_band = z3.And((q - 1) * right < left, left <= q * right)
+        neg_band = z3.And(q * right <= left, left < (q - 1) * right)
+        if z3.is_int_value(right):                     # 常量除数：正负已知，只加对应方向的不等式
+            rv = right.as_long()
+            if rv == 0:
+                raise ValueError("Integer division by zero (constant divisor)")
+            band = pos_band if rv > 0 else neg_band
+        else:
+            band = z3.If(right > 0, pos_band, z3.If(right < 0, neg_band, z3.BoolVal(True)))
+
+        self.builder.solver.assert_and_track(band, f"__div_{div_id}:band")
+        cache[key] = q
+        return q
+
+    def _ceil_div_expr(self, left, right, func_name):
+        if isinstance(left, TensorElementProxy):
+            left = left._scalar()
+        if isinstance(right, TensorElementProxy):
+            right = right._scalar()
+        if isinstance(left, bool) or isinstance(right, bool):
+            raise TypeError(f"{func_name}() does not accept bool operands")
+        return self._ceil_div_int(left, right)
+
+    def _handle_ceil_div(self, node, func_name):
+        """ceil(a/b)、Ceil(a/b)、ceildiv(a,b)、CeilDiv(a,b)、ceilDiv(a,b) → 向上取整除法。"""
+        args = node.args
+        if len(args) == 2:
+            return self._ceil_div_expr(self.visit(args[0]), self.visit(args[1]), func_name)
+        if len(args) != 1:
+            raise ValueError(f"{func_name}() expects 1 or 2 arguments, got {len(args)}")
+
+        inner = args[0]
+        if isinstance(inner, ast.BinOp) and isinstance(inner.op, (ast.Div, ast.FloorDiv)):
+            # 必须分别取分子分母：若先 visit(inner)，会先做一次向下取整，
+            # ceil(floor(a/b)) 恒等于 floor(a/b)，非整除时差 1。
+            return self._ceil_div_expr(
+                self.visit(inner.left), self.visit(inner.right), func_name)
+
+        value = self.visit(inner)
+        if isinstance(value, TensorElementProxy):
+            value = value._scalar()
+        if isinstance(value, bool) or not (isinstance(value, int) or z3.is_int(value)):
+            raise TypeError(f"{func_name}() on non-integer operand: {type(value).__name__}")
+        return value                                  # ceil(整数) = 本身
+
+    def _handle_ceil_align(self, node, func_name):
+        """CeilAlign(a,b) / AlignUp(a,b) / RoundUp(a,b) = ceil(a/b)*b。"""
+        if len(node.args) != 2:
+            raise ValueError(f"{func_name}() expects 2 arguments (value, align)")
+        value = self.visit(node.args[0])
+        align = self.visit(node.args[1])
+        if isinstance(align, TensorElementProxy):
+            align = align._scalar()
+        return self._ceil_div_expr(value, align, func_name) * align
 
     # --- 下标与切片 ---
     def visit_Subscript(self, node):
