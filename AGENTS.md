@@ -207,8 +207,10 @@ opencode  # 启动 opencode
 - `init_batch.py` — 初始化批次目录
 - `batch_state.py` — 批次状态迁移
 - `flow_control.py` — **阶段迁移唯一通道**：迭代流程的阶段推进（EXTRACT→GENERATE→EXECUTE→GATE→…）必须用 `python scripts/flow_control.py advance`，由其按状态机条件表裁决去向与迭代轮次递增；`run_state.py set-state` 仅限人工调试场景，流程中禁止用它做阶段迁移（iterate-operator 技能同款硬守卫）
-- `generate_cases.py` — 调 facade 生成用例
-- `execute_cases.py` — 调 executer 执行用例
+- `generate_cases.py` — 调 facade 生成用例；TTK 时自动扫描算子知识目录的 `aux_params.json`，向 cases.json 注入辅助参数（如 `groupListData`），并在 CSV 转换后调用 `materialize_group_list_data.py`
+- `execute_cases.py` — 调 executer 执行用例；TTK ACLNN 检测到 `group_list_data_report.json` 时自动加载算子 `__input__` 插件（`golden_resolution=input_plugin`）
+- `operator_aux_params.py` — 扫描 `knowledge/aclnn/operators/**/aux_params.json`，按 `operator_name` 匹配并把辅助参数（string attr）注入 cases.json
+- `materialize_group_list_data.py` — 从 CSV `attributes.groupListData` 取显式序列（支持 JSON 字符串），校验非负/单调/sum 约束，写回 list 并可选清空 groupList 的 `input_data_ranges`；供 generation 自动调用
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）
 - `verify_relation_exprs.py` — Z3 正反例验证：`constraints_in_parameters` 逐条采 satisfy/violate 实例 + 整桶矛盾检测，产 `relation_examples.json`（CHECK 阶段 checker 步骤 0 自跑，仅 aclnn；语法错误 exit 2，其余 advisory）
 - `probe_param_pins.py` — 列表参数长度探测（CHECK 前 advisory，纯标准库）：

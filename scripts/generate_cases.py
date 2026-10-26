@@ -834,6 +834,31 @@ def _main() -> int:
             or per_platform_execution_paths[selected_platform]
         )
 
+    aux_report: dict[str, Any] = {
+        "operator_name": operator_name,
+        "specs": [],
+        "updated_cases": 0,
+        "updated_params": 0,
+    }
+    if args.test_framework == "ttk":
+        from scripts.operator_aux_params import inject_aux_params_into_file
+
+        aux_report = inject_aux_params_into_file(selected_source, operator_name)
+        if aux_report.get("updated_params"):
+            logger.info(
+                "injected auxiliary params: %s",
+                json.dumps(
+                    {
+                        "specs": [
+                            spec.get("name") for spec in aux_report.get("specs", [])
+                        ],
+                        "updated_cases": aux_report.get("updated_cases"),
+                        "updated_params": aux_report.get("updated_params"),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
     # Framework-neutral cases.json: written for atk and ttk alike,
     # and before generation_summary.json, so completion detection (which
     # watches the summary) never reports a finished generation without
@@ -852,6 +877,26 @@ def _main() -> int:
             conversion = convert_file(
                 cases_json_path, ttk_temporary, constraints=constraints
             )
+            group_list_report = None
+            if aux_report.get("updated_params"):
+                from scripts.materialize_group_list_data import materialize_csv
+
+                group_list_report = materialize_csv(
+                    ttk_temporary,
+                    ttk_temporary,
+                    target="aclnn",
+                    clear_range=True,
+                    api_name=operator_name,
+                    report_json=output_dir / "group_list_data_report.json",
+                )
+                if not group_list_report.get("ok"):
+                    raise SystemExit(
+                        "groupListData materialization failed: "
+                        + json.dumps(
+                            group_list_report.get("errors", []),
+                            ensure_ascii=False,
+                        )
+                    )
             csv_validation = validate_csv(ttk_temporary)
             conversion_failures = [
                 entry for entry in conversion["audit"] if entry["issues"]
@@ -870,6 +915,13 @@ def _main() -> int:
             conversion = {**conversion, "csv_validation": csv_validation}
             ttk_temporary.replace(ttk_output)
             conversion["destination"] = str(ttk_output)
+            if group_list_report is not None:
+                group_list_report["input_csv"] = str(ttk_output)
+                group_list_report["output_csv"] = str(ttk_output)
+                _atomic_write_json(
+                    output_dir / "group_list_data_report.json",
+                    group_list_report,
+                )
             summary = {
                 "operator_name": operator_name,
                 "test_framework": "ttk",
@@ -891,6 +943,11 @@ def _main() -> int:
                 "semantically_clean_count": conversion["semantically_clean_count"],
                 "output": str(ttk_output),
                 "adapter": "scripts.atk_to_ttk_aclnn.convert_file",
+                "aux_params": aux_report,
+                "group_list_data_report": (
+                    str(output_dir / "group_list_data_report.json")
+                    if group_list_report is not None else None
+                ),
                 "ttk_materialization": (
                     str(output_dir / "ttk_materialization_report.json")
                     if materialization_report is not None else None

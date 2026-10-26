@@ -185,7 +185,11 @@ async def _run_aclnn(
     remote_csv = f"{remote_dir}/{csv_path.name}"
     remote_results = f"{remote_dir}/results.csv"
     # 远端 plugin 直用：--plugin 传远端绝对路径（以 / 开头）时不上传，命令直接引用。
-    plugin_is_remote = plugin_path is not None and str(plugin_path).startswith("/")
+    plugin_is_remote = (
+        plugin_path is not None
+        and str(plugin_path).startswith("/")
+        and not Path(plugin_path).is_file()
+    )
     remote_plugin = (
         f"{remote_dir}/{Path(plugin_path).name}"
         if plugin_path is not None and not plugin_is_remote

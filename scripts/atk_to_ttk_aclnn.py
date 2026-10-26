@@ -509,6 +509,12 @@ def _format_attrs(case: dict[str, Any], attr_specs: list[dict[str, str]]) -> dic
     # Build lookup: name -> c_type
     attr_type_map = {spec["name"]: spec.get("type", "") for spec in attr_specs}
     attr_name_set = set(attr_type_map.keys())
+    aux_attr_names = {
+        item.get("name")
+        for item in case.get("inputs", [])
+        if isinstance(item, dict)
+        and (item.get("aux") is True or item.get("type") == "aux_attr")
+    }
 
     for item in case.get("inputs", []):
         if isinstance(item, list):
@@ -523,7 +529,17 @@ def _format_attrs(case: dict[str, Any], attr_specs: list[dict[str, str]]) -> dic
         if not isinstance(item, dict):
             continue
         name = item.get("name", "")
-        if name not in attr_name_set:
+        if not name:
+            continue
+        if item.get("aux") is True or item.get("type") == "aux_attr":
+            value = item.get("range_values")
+            if not isinstance(value, str):
+                value = json.dumps(
+                    value, ensure_ascii=False, separators=(",", ":"),
+                )
+            attrs[name] = value
+            continue
+        if name not in attr_name_set and name not in aux_attr_names:
             continue
         value = item.get("range_values")
         length = item.get("length") or 0
