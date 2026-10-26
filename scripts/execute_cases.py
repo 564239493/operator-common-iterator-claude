@@ -703,11 +703,18 @@ def main() -> int:
             from scripts.validate_ttk_aclnn_csv import validate_csv
 
             iter_dir = cases_path.parent
+            # Auxiliary-parameter runs (groupListData) need the operator's
+            # __input__ hook even when precision golden is disabled.
+            aux_input_flow = (iter_dir / "group_list_data_report.json").is_file()
             golden_plugin = _resolve_aclnn_golden_plugin(
-                iter_dir, csv_api_name, disabled=args.no_golden,
+                iter_dir,
+                csv_api_name,
+                disabled=args.no_golden and not aux_input_flow,
             )
-            if args.no_golden:
+            if args.no_golden and not aux_input_flow:
                 golden_resolution = "disabled"
+            elif aux_input_flow and args.no_golden:
+                golden_resolution = "input_plugin"
             elif golden_plugin == iter_dir / "golden.py":
                 golden_resolution = "iteration"
             elif golden_plugin is not None:
