@@ -2,19 +2,22 @@
 import { computed } from 'vue';
 
 const props = defineProps<{ tree: any; metric?: 'func' | 'line' }>();
-const emit = defineEmits<{ select: [payload: { version: string; lib: string; dir: string; op: string }] }>();
+const emit = defineEmits<{ select: [payload: { path: string[] }] }>();
 
 const W = 1000, H = 460;
 const metric = computed(() => props.metric || 'func');
 /* 每个实例唯一前缀，避免同一页面两个树图的 clipPath id 冲突 */
 const uid = 'tm' + Math.random().toString(36).slice(2, 8);
 
-/* ===== 布局令牌 ===== */
+/* ===== 布局令牌（递归树：深度索引 + 超深回退默认值） ===== */
 const OUTER = 2;                                    // 整体外边距（收紧）
-const GAP = 18;                                     // 同层兄弟间距（再加大，格子更小）
-const PAD: Record<number, number> = { 0: 4, 1: 3, 2: 2, 3: 0 };      // 每层容器内边距（收紧）
-const HEADER: Record<number, number> = { 0: 34, 1: 32, 2: 28, 3: 0 }; // 每层容器标题栏高度
-const RADIUS: Record<number, number> = { 0: 10, 1: 8, 2: 7, 3: 6 };  // 每层圆角
+const GAP = 18;                                     // 同层兄弟间距
+const PAD_SEQ = [4, 3, 2, 2, 1];                    // 每层容器内边距（收紧）
+const HEADER_SEQ = [34, 32, 28, 24, 22];            // 每层容器标题栏高度
+const RADIUS_SEQ = [10, 8, 7, 6, 5];                // 每层圆角
+const PAD = (d: number) => PAD_SEQ[Math.min(d, PAD_SEQ.length - 1)];
+const HEADER = (d: number) => HEADER_SEQ[Math.min(d, HEADER_SEQ.length - 1)];
+const RADIUS = (d: number) => RADIUS_SEQ[Math.min(d, RADIUS_SEQ.length - 1)];
 
 /* ===== 参考图配色：明亮薄荷绿 / 浅橙 + 深墨字（低饱和、轻盈） ===== */
 const GREEN = { tile: '#5ac1b2', tileLine: '#74d0c2', body: '#e5faf4', head: '#abe7dc', pct: '#2b8d8c' };
@@ -39,36 +42,27 @@ function headShade(r: number, depth: number) {
 function rateFixed1(r: number) { return (Math.round((Number(r) || 0) * 10) / 10).toFixed(1); }
 function rateInt(r: number) { return String(Math.round(Number(r) || 0)); }
 
-/* 指标取值 */
-function mRate(it: any) { return metric.value === 'line' ? it.line : it.func; }
-function mCovered(it: any) { return metric.value === 'line' ? it.line_covered : it.func_covered; }
-function mTotal(it: any) { return metric.value === 'line' ? it.line_total : it.func_total; }
+/* 指标取值（递归树：每节点 summary 带 func/line/branch + covered/total） */
+const S = (it: any) => (it && it.summary) || {};
+function mRate(it: any) { const s = S(it); return metric.value === 'line' ? (s.line || 0) : (s.func || 0); }
+function mCovered(it: any) { const s = S(it); return metric.value === 'line' ? (s.line_covered || 0) : (s.func_covered || 0); }
+function mTotal(it: any) { const s = S(it); return metric.value === 'line' ? (s.line_total || 0) : (s.func_total || 0); }
+
+function childrenOf(it: any) { return (it && Array.isArray(it.children)) ? it.children : []; }
 
 function nodeSize(it: any): number {
-  if (it.count != null && it.count > 0) return it.count;
-  if (it.ops) return it.ops.reduce((s: number, o: any) => s + (o.count || 1), 0);
-  if (it.dirs) return it.dirs.reduce((s: number, d: any) => s + nodeSize(d), 0);
-  if (it.libraries) return it.libraries.reduce((s: number, l: any) => s + nodeSize(l), 0);
-  return 1;
+  const ch = childrenOf(it);
+  if (!ch.length) return mTotal(it) || 1;   // 叶子：总行数/函数数作面积
+  return ch.reduce((s, c) => s + nodeSize(c), 0);
 }
-function childrenOf(it: any) { return it.ops || it.dirs || it.libraries; }
 function labelOf(it: any) {
-  if (it.operator) return it.operator;
-  if (it.version) return it.version;
-  return it.name || '';
+  return (it.operator && (it.kind === 'merged' || it.kind === 'leaf')) ? it.operator : (it.name || '');
 }
 
-/* 组聚合：覆盖率 + 汇总 covered/total */
+/* 组聚合：汇总 covered/total（中间节点直接读其预聚合 summary） */
 function groupStats(it: any): { rate: number; covered: number; total: number } {
-  const leaves: any[] = [];
-  (function collect(n: any) {
-    if (n.ops) n.ops.forEach((o: any) => leaves.push(o));
-    else if (n.dirs) n.dirs.forEach((d: any) => collect(d));
-    else if (n.libraries) n.libraries.forEach((l: any) => collect(l));
-  })(it);
-  if (!leaves.length) return { rate: 0, covered: 0, total: 0 };
-  const cov = leaves.reduce((s, o) => s + (metric.value === 'line' ? (o.line_covered || 0) : (o.func_covered || 0)), 0);
-  const tot = leaves.reduce((s, o) => s + (metric.value === 'line' ? (o.line_total || 0) : (o.func_total || 0)), 0);
+  const s = S(it);
+  const cov = mCovered(it), tot = mTotal(it);
   return { rate: tot ? +(cov / tot * 100).toFixed(1) : 0, covered: cov, total: tot };
 }
 
@@ -148,20 +142,19 @@ function layout(items: any[], x: number, y: number, w: number, h: number, depth:
   const inset = GAP / 2;
   for (const cell of cells) {
     const it = cell.it;
-    const leaf = it.count != null;
+    const ch = childrenOf(it);
+    const leaf = !ch.length;
     const rect = {
       x: cell.x + inset,
       y: cell.y + inset,
       w: Math.max(1, cell.w - inset * 2),
       h: Math.max(1, cell.h - inset * 2),
     };
-    const childCtx = { ...ctx };
-    if (depth === 0) childCtx.version = it.version;
-    if (depth === 1) childCtx.lib = it.name;
-    if (depth === 2) childCtx.dir = it.name;
+    // 递归树：叶子 = 无 children 的节点；ctx 携带从根到当前的名称路径（用于 select）
+    const childCtx = { ...ctx, path: [...(ctx.path || []), it.name] };
 
-    const pad = leaf ? 0 : PAD[depth];
-    const headerH = (!leaf && rect.w > 100 && rect.h > 52) ? HEADER[depth] : 0;
+    const pad = leaf ? 0 : PAD(depth);
+    const headerH = (!leaf && rect.w > 100 && rect.h > 52) ? HEADER(depth) : 0;
     const topGap = headerH > 0 ? headerH + 2 : pad;
     const stats = leaf
       ? { rate: mRate(it), covered: mCovered(it) || 0, total: mTotal(it) || 0 }
@@ -174,8 +167,7 @@ function layout(items: any[], x: number, y: number, w: number, h: number, depth:
       headerH, pad,
     });
 
-    const ch = childrenOf(it);
-    if (ch && ch.length) {
+    if (ch.length) {
       layout(ch, rect.x + pad, rect.y + topGap, rect.w - pad * 2, rect.h - topGap - pad, depth + 1, childCtx, out);
     }
   }
@@ -191,23 +183,17 @@ const rects = computed<Rect[]>(() => {
 const leafRects = computed(() => rects.value.filter(r => r.leaf));
 const midRects = computed(() => rects.value.filter(r => !r.leaf));
 
-/* 整体汇总（头部用） */
+/* 整体汇总（头部用）：版本节点是顶层，直接读其预聚合 summary */
 const overall = computed(() => {
-  const leaves: any[] = [];
-  (function collect(nodes: any[]) {
-    nodes.forEach((n: any) => {
-      if (n.ops) n.ops.forEach((o: any) => leaves.push(o));
-      else if (n.dirs) collect(n.dirs);
-      else if (n.libraries) collect(n.libraries);
-    });
-  })(props.tree ? props.tree.versions || [] : []);
-  const mc = leaves.reduce((s, o) => s + (metric.value === 'line' ? (o.line_covered || 0) : (o.func_covered || 0)), 0);
-  const mt = leaves.reduce((s, o) => s + (metric.value === 'line' ? (o.line_total || 0) : (o.func_total || 0)), 0);
+  const versions = (props.tree && props.tree.versions) || [];
+  const mc = versions.reduce((s, v) => s + mCovered(v), 0);
+  const mt = versions.reduce((s, v) => s + mTotal(v), 0);
   return { rate: mt ? +(mc / mt * 100).toFixed(1) : 0, covered: mc, total: mt };
 });
 
 function leafLines(r: Rect) {
-  return r.node.line_total != null ? r.node.line_total : (r.node.count || 0);
+  const s = S(r.node);
+  return s.line_total != null ? s.line_total : (mTotal(r.node) || 0);
 }
 
 /* 标题字号随层级递减 */
@@ -217,13 +203,13 @@ function headerTotalFont(depth: number) { return depth === 0 ? 16 : depth === 1 
 
 /* 容器标题带：仅上方圆角，下方直边 */
 function headBand(r: Rect): string {
-  const rad = Math.min(RADIUS[r.depth], r.headerH / 2, r.w / 2);
+  const rad = Math.min(RADIUS(r.depth), r.headerH / 2, r.w / 2);
   const x = r.x, y = r.y, w = r.w, h = r.headerH;
   return `M${x + rad},${y} L${x + w - rad},${y} Q${x + w},${y} ${x + w},${y + rad} L${x + w},${y + h} L${x},${y + h} L${x},${y + rad} Q${x},${y} ${x + rad},${y} Z`;
 }
 
 function onSelect(r: Rect) {
-  emit('select', { version: r.ctx.version || '', lib: r.ctx.lib || '', dir: r.ctx.dir || '', op: r.node.dir_name });
+  emit('select', { path: r.ctx.path || [] });
 }
 </script>
 
@@ -242,7 +228,7 @@ function onSelect(r: Rect) {
       <!-- 容器：浅色底 + 略深标题带 + 名称/百分比/covered-total -->
       <g v-for="(r, i) in midRects" :key="'m' + i">
         <rect :x="r.x" :y="r.y" :width="Math.max(1, r.w)" :height="Math.max(1, r.h)"
-          :fill="rateBody(r.rate)" :stroke="rateHead(r.rate)" stroke-width="1" :rx="RADIUS[r.depth]" />
+          :fill="rateBody(r.rate)" :stroke="rateHead(r.rate)" stroke-width="1" :rx="RADIUS(r.depth)" />
         <path v-if="r.headerH > 0" :d="headBand(r)" :fill="headShade(r.rate, r.depth)" />
         <title>{{ labelOf(r.node) }} · {{ r.rate }}% ({{ r.covered }}/{{ r.total }})</title>
         <template v-if="r.headerH > 0">
@@ -264,24 +250,24 @@ function onSelect(r: Rect) {
       <!-- 叶子：算子实心色块，深墨字（按格子大小分级，并裁剪防溢出） -->
       <g v-for="(r, i) in leafRects" :key="'l' + i" class="leaf" @click="onSelect(r)">
         <rect :x="r.x" :y="r.y" :width="Math.max(1, r.w)" :height="Math.max(1, r.h)"
-          :fill="rateFill(r.rate)" :stroke="rateLine(r.rate)" stroke-width="1.5" :rx="RADIUS[r.depth]" />
-        <title>{{ r.node.operator }} · {{ r.rate }}% ({{ r.covered }}/{{ r.total }})</title>
+          :fill="rateFill(r.rate)" :stroke="rateLine(r.rate)" stroke-width="1.5" :rx="RADIUS(r.depth)" />
+        <title>{{ labelOf(r.node) }} · {{ r.rate }}% ({{ r.covered }}/{{ r.total }})</title>
         <defs>
           <clipPath :id="uid + '-lc' + i">
-            <rect :x="r.x" :y="r.y" :width="Math.max(1, r.w)" :height="Math.max(1, r.h)" :rx="RADIUS[r.depth]" />
+            <rect :x="r.x" :y="r.y" :width="Math.max(1, r.w)" :height="Math.max(1, r.h)" :rx="RADIUS(r.depth)" />
           </clipPath>
         </defs>
         <g :clip-path="'url(#' + uid + '-lc' + i + ')'">
           <!-- 大格子：名称 + 大号% + covered/total + 底部行数 -->
           <template v-if="r.w > 190 && r.h > 118">
-            <text :x="r.x + 18" :y="r.y + 26" font-size="18" :fill="INK" font-weight="700">{{ fit(r.node.operator, r.w - 36, 18) }}</text>
+            <text :x="r.x + 18" :y="r.y + 26" font-size="18" :fill="INK" font-weight="700">{{ fit(labelOf(r.node), r.w - 36, 18) }}</text>
             <text :x="r.x + 18" :y="r.y + 68" font-size="38" :fill="INK" font-weight="750">{{ rateInt(r.rate) }}%</text>
             <text :x="r.x + 18" :y="r.y + 92" font-size="16" :fill="INK" fill-opacity="0.62">{{ r.covered }} / {{ r.total }}</text>
             <text :x="r.x + 18" :y="r.y + r.h - 14" font-size="15" :fill="INK" fill-opacity="0.62">{{ fmt(leafLines(r)) }} 行</text>
           </template>
           <!-- 中格子：名称 + 中号%（够高再加行数） -->
           <template v-else-if="r.w > 100 && r.h > 70">
-            <text :x="r.x + 13" :y="r.y + 22" font-size="15" :fill="INK" font-weight="700">{{ fit(r.node.operator, r.w - 26, 15) }}</text>
+            <text :x="r.x + 13" :y="r.y + 22" font-size="15" :fill="INK" font-weight="700">{{ fit(labelOf(r.node), r.w - 26, 15) }}</text>
             <text :x="r.x + 13" :y="r.y + 52" font-size="26" :fill="INK" font-weight="750">{{ rateInt(r.rate) }}%</text>
             <text v-if="r.h > 100" :x="r.x + 13" :y="r.y + r.h - 12" font-size="13" :fill="INK" fill-opacity="0.6">{{ fmt(leafLines(r)) }} 行</text>
           </template>
