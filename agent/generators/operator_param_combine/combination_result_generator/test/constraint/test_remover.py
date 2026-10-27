@@ -86,11 +86,14 @@ class TestRemoveMissingParamExprs:
         result = remove_missing_param_exprs(expr, existing)
         assert result == "True"
 
-    def test_ifexp_missing_test_returns_body(self):
+    def test_ifexp_undecidable_test_is_vacuously_true(self):
+        # 测试式引用了缺失参数的取值（非存在性判断），条件无法判定 →
+        # 整条折成 True（空泛满足）。旧实现取 body，会把
+        # `A if p is not None else B` 在 p 缺失时错取 A。
         expr = "('A') if (transposeX2.range_value == False) else ('B')"
         existing = {}
         result = remove_missing_param_exprs(expr, existing)
-        assert result == "'A'"
+        assert result == "True"
 
     def test_function_name_not_treated_as_param(self):
         expr = "len(x.shape) == 2"

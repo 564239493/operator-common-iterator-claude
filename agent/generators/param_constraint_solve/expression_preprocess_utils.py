@@ -114,6 +114,13 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         'len': '_handle_len', 'all': '_handle_all', 'any': '_handle_any',
         'max': '_handle_max_min', 'min': '_handle_max_min',
         'sum': '_handle_sum', 'prod': '_handle_prod',
+        # 向上取整除法（ceil(a/b) 及文档同义记号）
+        'ceil': '_handle_ceil_div', 'Ceil': '_handle_ceil_div',
+        'ceildiv': '_handle_ceil_div', 'ceilDiv': '_handle_ceil_div',
+        'CeilDiv': '_handle_ceil_div',
+        # 向上对齐到 b 的倍数：ceil(a/b)*b
+        'CeilAlign': '_handle_ceil_align', 'AlignUp': '_handle_ceil_align',
+        'RoundUp': '_handle_ceil_align',
     }
     def __init__(self, builder):
         self.builder = builder
@@ -532,6 +539,106 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             return z3.ToInt(left / right)
         raise TypeError(f"Floor division not supported for types: {type(left)}, {type(right)}")
 
+    # --- 向上取整除法 / 向上对齐（ceil(a/b) 及文档同义记号） ---
+    def _ceil_div_int(self, left, right):
+        """向上取整除法 ceil(left / right)，返回整数表达式 q。
+
+        做法：新建一个整数变量 q 代表结果，用一对不等式把它卡在唯一取值上——
+        right > 0 时 `(q-1)*right < left <= q*right`（也就是
+        `q-1 < left/right <= q`），right < 0 时不等号方向翻过来：
+        `q*right <= left < (q-1)*right`。整个过程只用整数运算，不碰实数除法；
+        除数是常量时每项都是常数乘 q，属于线性约束。
+
+        除数正负未知时，把“正/负/零”的判断写成 If 放进约束内部；不单独写一条
+        `right > 0` 断言，因为断言不受外层 If/Implies 条件约束，会让本该被
+        条件挡掉的“除数为 0”组合直接判成无解（unsat）。
+
+        除数为 0：常量在转换期抛 ValueError；符号除数时这条约束不限制 q。
+        两边都是 Python 整数常量时按整除语义直接算出结果，不建约束。
+        """
+        if isinstance(left, TensorElementProxy):
+            left = left._scalar()
+        if isinstance(right, TensorElementProxy):
+            right = right._scalar()
+        if (isinstance(left, int) and isinstance(right, int)
+                and not isinstance(left, bool) and not isinstance(right, bool)):
+            if right == 0:
+                raise ValueError("Integer division by zero")
+            return -((-left) // right)
+
+        left = left if z3.is_expr(left) else z3.IntVal(left)
+        right = right if z3.is_expr(right) else z3.IntVal(right)
+        if not (z3.is_int(left) and z3.is_int(right)):
+            raise TypeError(
+                f"Ceil division requires Int operands, got {left.sort()}/{right.sort()}")
+
+        # 缓存挂在 builder 上：每条约束都会 new 一个转换器，挂在转换器上等于不去重。
+        cache = getattr(self.builder, "_div_cache", None)
+        if cache is None:
+            cache = {}
+            self.builder._div_cache = cache
+        key = (str(left), str(right), "ceil")
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
+        div_id = self.builder.get_next_slice_id()
+        q = z3.Int(f"__div_{div_id}")
+        pos_band = z3.And((q - 1) * right < left, left <= q * right)
+        neg_band = z3.And(q * right <= left, left < (q - 1) * right)
+        if z3.is_int_value(right):                     # 常量除数：正负已知，只加对应方向的不等式
+            rv = right.as_long()
+            if rv == 0:
+                raise ValueError("Integer division by zero (constant divisor)")
+            band = pos_band if rv > 0 else neg_band
+        else:
+            band = z3.If(right > 0, pos_band, z3.If(right < 0, neg_band, z3.BoolVal(True)))
+
+        self.builder.solver.assert_and_track(band, f"__div_{div_id}:band")
+        cache[key] = q
+        return q
+
+    def _ceil_div_expr(self, left, right, func_name):
+        if isinstance(left, TensorElementProxy):
+            left = left._scalar()
+        if isinstance(right, TensorElementProxy):
+            right = right._scalar()
+        if isinstance(left, bool) or isinstance(right, bool):
+            raise TypeError(f"{func_name}() does not accept bool operands")
+        return self._ceil_div_int(left, right)
+
+    def _handle_ceil_div(self, node, func_name):
+        """ceil(a/b)、Ceil(a/b)、ceildiv(a,b)、CeilDiv(a,b)、ceilDiv(a,b) → 向上取整除法。"""
+        args = node.args
+        if len(args) == 2:
+            return self._ceil_div_expr(self.visit(args[0]), self.visit(args[1]), func_name)
+        if len(args) != 1:
+            raise ValueError(f"{func_name}() expects 1 or 2 arguments, got {len(args)}")
+
+        inner = args[0]
+        if isinstance(inner, ast.BinOp) and isinstance(inner.op, (ast.Div, ast.FloorDiv)):
+            # 必须分别取分子分母：若先 visit(inner)，会先做一次向下取整，
+            # ceil(floor(a/b)) 恒等于 floor(a/b)，非整除时差 1。
+            return self._ceil_div_expr(
+                self.visit(inner.left), self.visit(inner.right), func_name)
+
+        value = self.visit(inner)
+        if isinstance(value, TensorElementProxy):
+            value = value._scalar()
+        if isinstance(value, bool) or not (isinstance(value, int) or z3.is_int(value)):
+            raise TypeError(f"{func_name}() on non-integer operand: {type(value).__name__}")
+        return value                                  # ceil(整数) = 本身
+
+    def _handle_ceil_align(self, node, func_name):
+        """CeilAlign(a,b) / AlignUp(a,b) / RoundUp(a,b) = ceil(a/b)*b。"""
+        if len(node.args) != 2:
+            raise ValueError(f"{func_name}() expects 2 arguments (value, align)")
+        value = self.visit(node.args[0])
+        align = self.visit(node.args[1])
+        if isinstance(align, TensorElementProxy):
+            align = align._scalar()
+        return self._ceil_div_expr(value, align, func_name) * align
+
     # --- 下标与切片 ---
     def visit_Subscript(self, node):
         value = self.visit(node.value)
@@ -689,8 +796,12 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         """整数表达式的保守区间 (lo, hi)；推不出返回 None（一律回退量词）。
 
         只处理确定性的取值来源：整数常量、``Length(<shape seq>)``（上界来自
-        已硬断言的文档维度个数范围）、max/min 译成的 If 链、以及 + - * 的区间运算。
+        已硬断言的文档维度个数范围）、max/min 译成的 If 链、标量参数的声明区间、
+        一元负号、以及 + - * 的区间运算。
         任何不认识的形态都返回 None —— 宁可不展开，也不用猜测的界改变语义。
+
+        取自参数声明区间的界会被 ``_try_unroll_range`` 一并断言进求解器：只有模型
+        取不到区间外的值，展开才是精确的。
         """
         if depth > 8:
             return None
@@ -719,6 +830,15 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                 return (min(then_bounds[0], else_bounds[0]),
                         max(then_bounds[1], else_bounds[1]))
             return None
+        # 一元负号：区间取反（-min(...) 这类尾部窗口的起点）
+        if kind == z3.Z3_OP_UMINUS and len(args) == 1:
+            inner = self._int_bounds(args[0], depth + 1)
+            if inner is None:
+                return None
+            return (-inner[1], -inner[0])
+        # 标量参数：取声明区间（如 range(0, axis.range_value) 的上界）
+        if kind == z3.Z3_OP_UNINTERPRETED and not args:
+            return self._param_int_range(expr)
         children = [self._int_bounds(arg, depth + 1) for arg in args]
         if not children or any(bound is None for bound in children):
             return None
@@ -733,6 +853,43 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             return (lo, hi)
         return None
 
+    def _param_int_range(self, expr):
+        """标量参数声明的整数区间 (lo, hi)；不是带整数区间的标量返回 None。
+
+        优先取 ``builder.static_param_ranges``（由硬约束 ``lo <= p.range_value <= hi``
+        解析而来，是确定性事实）；否则退回 ``_range_spec`` 恰为 ``[lo, hi]`` 二元整数
+        且 lo <= hi 的声明区间。生成期的组合种子（单个整数）不是取值范围，不能用。
+        """
+        if not z3.is_const(expr) or expr.sort() != z3.IntSort():
+            return None
+        declared = self.builder.get_param_range(expr.decl().name())
+        if declared is not None:
+            return declared
+        var = self.builder.var_map.get(expr.decl().name())
+        spec = getattr(var, "_range_spec", None)
+        if not (isinstance(spec, (list, tuple)) and len(spec) == 2):
+            return None
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in spec):
+            return None
+        if spec[0] > spec[1]:
+            return None
+        return (int(spec[0]), int(spec[1]))
+
+    def _param_domain_assertions(self, expr, depth=0):
+        """收集 expr 中出现的、声明区间已知的标量参数。
+
+        :return: ``(参数名, (lo, hi), 区间断言)`` 三元组列表。
+        """
+        if depth > 8 or not z3.is_app(expr):
+            return []
+        bounds = self._param_int_range(expr)
+        if bounds is not None:
+            return [(expr.decl().name(), bounds, z3.And(expr >= bounds[0], expr <= bounds[1]))]
+        found = []
+        for arg in expr.children():
+            found.extend(self._param_domain_assertions(arg, depth + 1))
+        return found
+
     def _try_unroll_range(self, start, stop, step, loop_var, cond_expr, quantifier_op):
         """range() 量词守护式展开；返回 None 表示保持原量词。
 
@@ -743,6 +900,12 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
         区间外的下标由 guard 短路，不改变约束力。``lo/hi`` 推不出、或展开宽度
         超过 ``builder.unroll_limit`` 时返回 None（继续用量词）。
+
+        ``lo < 0`` 同样允许展开：下标转换已把负索引归一成 ``If(idx < 0, Len+idx, idx)``，
+        代入负常量后与执行期的 Python 负索引语义一致（``range(-2, 0)`` 对应末两维）。
+
+        界的区间可能来自标量参数的声明区间；此时把该区间断言进求解器，否则模型可以
+        取到区间外的值，展开就会漏掉可达下标、悄悄削弱约束。
         """
         if not (z3.is_int_value(step) and step.as_long() == 1):
             return None
@@ -752,12 +915,17 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             return None
         lo = start_bounds[0]
         hi = stop_bounds[1]
-        if lo < 0 or hi <= lo:
+        if hi <= lo:
             return None
         unroll_limit = getattr(self.builder, "unroll_limit", 128)
         if hi - lo > unroll_limit:
             logger.debug(f"[Unroll] range width {hi - lo} exceeds limit {unroll_limit}, keep quantifier")
             return None
+
+        # 区间可能由参数声明区间推出：断言进去，保证展开覆盖所有可达下标。
+        for bound_expr in (start, stop):
+            for name, bounds, assertion in self._param_domain_assertions(bound_expr):
+                self.builder.assert_param_domain(name, bounds, assertion)
 
         terms = []
         for value in range(lo, hi):
