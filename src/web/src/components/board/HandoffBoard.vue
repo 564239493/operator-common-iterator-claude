@@ -553,6 +553,6 @@ html[data-theme='dark'] .activity.kind-unconfirmed { background: #2c2816; border
 .board { border-left:0; border-right:0; border-radius:0; }
 .scroller { scrollbar-width:none; }.scroller::-webkit-scrollbar{display:none}
 .unified-detail { scroll-margin-top:230px; }
-.detail-toolbar { display:flex; justify-content:space-between; align-items:center; margin:0 0 10px; font-size:12px; color:var(--wb-muted); }
+.detail-toolbar { display:flex; justify-content:space-between; align-items:center; margin:10px 0; font-size:12px; color:var(--wb-muted); }
 .detail-toolbar button { border:1px solid var(--wb-line); border-radius:6px; background:var(--wb-card); color:var(--wb-blue); padding:6px 12px; cursor:pointer; }
 </style>

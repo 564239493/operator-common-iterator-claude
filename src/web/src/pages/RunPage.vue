@@ -288,7 +288,7 @@ function segStates(seg: any): string {
     </TopBar>
 
     <aside class="round-rail" aria-label="测试轮次">
-      <div class="rail-heading">测试轮次 <span>{{ rounds.length }}</span></div>
+      <div class="rail-heading">测试轮次 <span class="cu-count">{{ rounds.length }}</span></div>
       <p class="rail-caption">选择轮次，查看过程</p>
       <nav class="round-list" aria-label="轮次选择">
         <button v-for="item in roundItems" :key="item.n" class="round-item"
@@ -309,7 +309,7 @@ function segStates(seg: any): string {
 
       <!-- 方案B（layout=rail）：汇总收进左栏，轮次列表下方紧凑竖排 -->
       <div v-if="runView && layoutMode === 'rail'" class="rail-summary">
-        <div class="rail-heading">轮次汇总</div>
+        <div class="rail-heading" style="padding-bottom: 10px;">轮次汇总</div>
         <div v-for="(m, i) in metrics" :key="i" class="rail-metric">
           <span class="rail-metric-label">{{ m.label }}</span>
           <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
@@ -562,7 +562,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
   .expand-btn { padding: 5px 12px; font-size: 11px; }
   .page-foot { flex-direction: column; gap: 6px; }
 }
-.band-dock { position: sticky; top: 72px; z-index: 19; background: var(--wb-card); border-bottom: 1px solid var(--wb-line); box-shadow: 0 4px 12px #152b4909; }
+.band-dock { position: sticky; top: 72px; z-index: 19; background: var(--wb-card); }
 .band-shell { max-width: 1800px; margin: auto; padding: 0 36px; }
 .band-grid { display: grid; grid-template-columns: minmax(0, 1fr) clamp(260px,24vw,330px); gap:18px; }
 .band-grid > :first-child { min-width:0; margin:0 1px; }
@@ -583,18 +583,38 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .screen-board { scroll-margin-top: 72px; }
 @media(prefers-reduced-motion: reduce){.board-area{transition:none}}
 /* Full-width shared table: no reserved detail column or centered max-width. */
-.band-shell { max-width:none; padding:0; width:100%; }
+.band-shell { max-width:none; padding:16px; width:100%; background: #f5f7fb}
 .band-grid { display:block; position:relative; }
 .band-grid > :first-child { margin:0; width:100%; }
 .band-actions { position:absolute; right:8px; top:-31px; }
 .band-actions button { padding:4px 10px; font-size:11px; }
-.board-area { max-width:none; padding:0 0 24px; width:calc(100% - 200px); }
-.outcomes,.page-foot { margin-left:16px; margin-right:16px; }
+.board-area { max-width:none; padding:0; width:calc(100% - 200px); }
 
 /* 轮次导航独立于横向泳道，滚动不会改变当前轮次。 */
 .round-rail { position:fixed; top:72px; bottom:0; left:0; width:174px; z-index:18; background:var(--wb-card); border-right:1px solid var(--wb-line); padding:24px 10px; overflow-y:auto; }
 .rail-heading { padding:0 10px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; color:var(--wb-ink); }
 .rail-heading span { color:var(--wb-muted); font-weight:400; }
+.cu-count {
+    margin-left: auto !important;
+    margin-right: 0 !important;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 8px !important;
+    border-radius: 9px !important;
+    border: 1px solid var(--cu-line, var(--blue-line, var(--wb-blue-line, #c9dcfa))) !important;
+    background: var(--cu-bg, var(--blue-bg, var(--wb-blue-soft, #edf4ff))) !important;
+    color: var(--cu-ink, var(--blue, var(--wb-blue, #2774ed))) !important;
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Consolas, monospace !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    line-height: 1 !important;
+    letter-spacing: .5px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
 .rail-caption { padding:0 10px; font-size:11px; color:var(--wb-muted); margin:8px 0 22px; }
 .round-list { display:flex; flex-direction:column; align-items:stretch; gap:0; height:auto; }
 .round-item { position:relative; display:flex; gap:10px; width:100%; min-height:112px; padding:14px 10px; border:0; border-radius:9px; background:transparent; color:var(--wb-ink); text-align:left; cursor:pointer; }
@@ -622,7 +642,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .rail-outcome.bad strong { color:var(--wb-red); }
 .rail-outcome.info strong { color:var(--wb-blue); }
 .rail-summary .run-context { font-size:10px; }
-.round-pager { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:24px 16px; color:var(--wb-muted); font-size:12px; }
+.round-pager { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:24px 0; color:var(--wb-muted); font-size:12px; }
 .round-pager button { border:1px solid var(--wb-line); border-radius:8px; padding:9px 16px; background:var(--wb-card); color:var(--wb-blue); cursor:pointer; }.round-pager button:disabled { opacity:.4; cursor:default; }
 .round-item:focus-visible,.latest-round:focus-visible,.round-pager button:focus-visible { outline:2px solid var(--wb-blue); outline-offset:2px; }
 .band-dock,.screen-board { margin-left:174px; }
@@ -653,7 +673,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .round-heading { font-size:13px; font-weight:650; color:var(--wb-ink); margin-bottom:4px; }
 .round-heading span { margin-left:10px; font-size:11px; font-weight:400; color:var(--wb-muted); }
 /* 任务背景用节点详情 .skill-record 同款分隔（顶部细线 + 8px 留白） */
-.run-context { margin-top:16px; padding:8px 10px 0; border-top:1px solid var(--wb-line); font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }
+.run-context { margin-top:16px; padding:8px 0; border-top:1px solid var(--wb-line); font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }
 .run-context summary { cursor:pointer; color:var(--wb-blue); }.run-context p { margin:8px 0; }
 .run-context .stage-seq { color: var(--wb-blue); font-weight: 600; }
 

@@ -10,10 +10,11 @@ import CoverageTreemap from '../components/coverage/CoverageTreemap.vue';
 // 数据源：全局最终报告（ops_final_cov_report）默认；任务内嵌（runs/*/ops_cov_report）切换
 const source = ref<'global' | 'run'>('global');
 
-/* ===== 数据树（四级：版本/算子库/算子目录/算子名称） ===== */
+/* ===== 数据树（递归：版本/算子库/域/目录/算子，每节点带 summary + children） ===== */
 const tree = ref<{ versions: any[] }>({ versions: [] });
 const loading = ref(true);
-const path = ref<string[]>([]); // [] 版本 / [版本] 算子库 / [版本,库] 目录 / [版本,库,目录] 算子 / [版本,库,目录,算子] 详情
+// path：节点名称列表（变长）。[] = 整体统计；[版本] / [版本,库] / … / […叶子名]
+const path = ref<string[]>([]);
 
 const detailLoading = ref(false);
 const coverData = ref<any>(null);
@@ -29,8 +30,8 @@ const runSel = ref('');
 const viewMode = ref<'list' | 'treemap'>('treemap');
 
 const treeUrl = () => '/api/review/cover/tree';
-const detailUrl = (v: string, lib: string, dir: string, op: string, kind: string) =>
-  '/api/review/cover/' + [v, lib, dir, op].map(encodeURIComponent).join('/') + '/' + kind;
+const detailUrl = (nodePath: string[], kind: string) =>
+  '/api/review/cover/' + nodePath.map(encodeURIComponent).join('/') + '/' + kind;
 const runsUrl = () => '/api/review/cover/runs';
 const runDetailUrl = (runId: string, kind: string) => '/api/review/runs/' + encodeURIComponent(runId) + '/cover/' + kind;
 
@@ -43,38 +44,86 @@ function switchSource(s: 'global' | 'run') {
   else loadRunList();
 }
 
-/* ===== 扁平化 ===== */
-const LIBS = computed(() => tree.value.versions.flatMap((v: any) =>
-  v.libraries.map((l: any) => ({ ...l, version: v.version, key: v.version + '|' + l.name }))));
-const allOps = computed(() => LIBS.value.flatMap((l: any) =>
-  l.dirs.flatMap((d: any) => d.ops.map((o: any) => ({ ...o, version: l.version, lib: l.name, dir: d.name })))));
+/* ===== 节点辅助（递归树，统一 children 形状） ===== */
+const childrenOf = (n: any) => (n && Array.isArray(n.children) ? n.children : []);
 
-const currentVersion = computed(() => path.value.length >= 1 ? path.value[0] : '');
-const currentLib = computed(() => path.value.length >= 2 ? LIBS.value.find(l => l.version === path.value[0] && l.name === path.value[1]) : null);
-const currentDir = computed(() => path.value.length >= 3 && currentLib.value ? currentLib.value.dirs.find((d: any) => d.name === path.value[2]) : null);
-const currentOpKey = computed(() => path.value.length >= 4 ? path.value[3] : '');
-const currentOpName = computed(() => {
-  const d = currentDir.value;
-  const o = d && d.ops.find((oo: any) => oo.dir_name === currentOpKey.value);
-  return o ? o.operator : currentOpKey.value;
+// 按名称序列在递归树中定位节点（path 末位 = 当前选中节点）
+function findNode(namePath: string[]): any {
+  if (!namePath.length) return null;
+  let node: any = tree.value.versions.find((v: any) => v.name === namePath[0]) || null;
+  for (let i = 1; i < namePath.length && node; i++) {
+    node = childrenOf(node).find((c: any) => c.name === namePath[i]) || null;
+  }
+  return node;
+}
+// 当前选中节点（path 末位）；path=[] 时为 null
+const current = computed(() => (path.value.length ? findNode(path.value) : null));
+// 当前节点是否带 coverage json（merged/leaf）→ 展示覆盖率 + 未覆盖详情
+const hasCoverage = (n: any) => !!n && (n.kind === 'merged' || n.kind === 'leaf');
+// 当前节点的子目录（供下拉切换）；path=[] 时为版本列表
+const currentChildren = computed(() => {
+  if (!path.value.length) return tree.value.versions;
+  const node = findNode(path.value);
+  return node ? childrenOf(node) : [];
 });
-const detailTitle = computed(() => source.value === 'run' ? (coverData.value ? coverData.value.operator : runSel.value) : currentOpName.value);
-const detailMeta = computed(() => source.value === 'run' ? runSel.value : `${currentVersion.value} · ${currentLib.value ? currentLib.value.name : ''} / ${currentDir.value ? currentDir.value.name : ''}`);
-const showDetail = computed(() => (source.value === 'global' && path.value.length === 4) || (source.value === 'run' && !!runSel.value));
+// 展示模式：detail（本目录覆盖率+未覆盖详情）/ children（子目录卡片列表）
+// 有 coverage json 的节点默认 detail；否则（agg 汇总层）只能 children
+const mode = ref<'detail' | 'children'>('children');
+function ensureMode(n: any) {
+  if (!n) { mode.value = 'children'; return; }
+  if (hasCoverage(n)) mode.value = 'detail';
+  else mode.value = 'children';
+}
 
-/* ===== 聚合与统计 ===== */
-const _avg = (arr: number[]) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : 0;
+const detailTitle = computed(() => {
+  if (source.value === 'run') return coverData.value ? coverData.value.operator : runSel.value;
+  const c = current.value;
+  return c ? (hasCoverage(c) ? (c.operator || c.name) : c.name) : '';
+});
+const detailMeta = computed(() => {
+  if (source.value === 'run') return runSel.value;
+  return path.value.join(' / ');
+});
+// 下拉切换选项：当前节点各子目录名（稳定不随本目录详情/子列表切换而消失），选中即跳到该子目录
+const subOptions = computed(() => currentChildren.value.map((c: any) => ({
+  value: c.name,
+  label: c.name,
+})));
+const showDropdown = computed(() => source.value === 'global' && path.value.length > 0 && subOptions.value.length > 0);
+// el-select 的受控值：用独立 ref 而非固定空串，避免选择后下拉无法再次展开
+const subSel = ref('');
+const showDetail = computed(() => (source.value === 'global' && mode.value === 'detail' && hasCoverage(current.value)) || (source.value === 'run' && !!runSel.value));
+
+/* ===== 聚合与统计（读节点 summary，不再从叶子平均） ===== */
+const _sum = (nodes: any[], key: string) => nodes.reduce((s, n) => s + ((n && n.summary && n.summary[key]) || 0), 0);
+
+function countLeaves(n: any): number {
+  if (!n) return 0;
+  if (!childrenOf(n).length) return 1;
+  return childrenOf(n).reduce((s, c) => s + countLeaves(c), 0);
+}
+function countNodes(n: any): number {
+  if (!n) return 0;
+  return 1 + childrenOf(n).reduce((s, c) => s + countNodes(c), 0);
+}
 
 const stats = computed(() => {
-  const ops = allOps.value;
+  const versions = tree.value.versions;
+  const leaves = versions.flatMap((v: any) => {
+    const out: any[] = [];
+    (function walk(n: any) { if (!childrenOf(n).length) out.push(n); childrenOf(n).forEach(walk); })(v);
+    return out;
+  });
+  const f = { c: _sum(versions, 'func_covered'), t: _sum(versions, 'func_total') };
+  const l = { c: _sum(versions, 'line_covered'), t: _sum(versions, 'line_total') };
+  const b = { c: _sum(versions, 'branch_covered'), t: _sum(versions, 'branch_total') };
   return {
-    ver: tree.value.versions.length,
-    libs: LIBS.value.length,
-    dirs: LIBS.value.flatMap((l: any) => l.dirs).length,
-    ops: ops.length,
-    func: _avg(ops.map((o: any) => o.func)),
-    line: _avg(ops.map((o: any) => o.line)),
-    branch: _avg(ops.map((o: any) => o.branch)),
+    ver: versions.length,
+    libs: versions.reduce((s, v) => s + childrenOf(v).length, 0),
+    leaves: leaves.length,
+    func: f.t ? +(f.c / f.t * 100).toFixed(1) : 0,
+    line: l.t ? +(l.c / l.t * 100).toFixed(1) : 0,
+    branch: b.t ? +(b.c / b.t * 100).toFixed(1) : 0,
   };
 });
 
@@ -83,51 +132,32 @@ const kpiItems = computed(() => {
   return [
     { n: s.ver, u: '个', l: '版本', color: '' },
     { n: s.libs, u: '个', l: '算子库', color: '' },
-    { n: s.ops, u: '个', l: '算子报告', color: '' },
-    { n: s.func, u: '%', l: '平均函数覆盖率', color: rateHex(s.func) },
-    { n: s.line, u: '%', l: '平均行覆盖率', color: rateHex(s.line) },
-    { n: s.branch, u: '%', l: '平均分支覆盖率', color: rateHex(s.branch) },
+    { n: s.leaves, u: '个', l: '算子报告', color: '' },
+    { n: s.func, u: '%', l: '整体函数覆盖率', color: rateHex(s.func) },
+    { n: s.line, u: '%', l: '整体行覆盖率', color: rateHex(s.line) },
+    { n: s.branch, u: '%', l: '整体分支覆盖率', color: rateHex(s.branch) },
   ];
 });
 
-function libAgg(lib: any) {
-  const lo = lib.dirs.flatMap((d: any) => d.ops);
-  return { func: _avg(lo.map((o: any) => o.func)), line: _avg(lo.map((o: any) => o.line)), branch: _avg(lo.map((o: any) => o.branch)), ops: lo.length };
-}
-function dirAgg(dir: any) {
-  return { func: _avg(dir.ops.map((o: any) => o.func)), line: _avg(dir.ops.map((o: any) => o.line)), branch: _avg(dir.ops.map((o: any) => o.branch)) };
-}
-
-/* 版本维度：版本目录无直接 md/json，按目录下算子覆盖率聚合 */
-const versionCards = computed(() => tree.value.versions.map((v: any) => {
-  const ops = v.libraries.flatMap((l: any) => l.dirs.flatMap((d: any) => d.ops));
-  return {
-    key: v.version, title: v.version, badge: '仅覆盖率', badgeType: 'cov-only',
-    meta: `${v.libraries.length} 个算子库 · ${ops.length} 个算子报告`,
-    func: _avg(ops.map((o: any) => o.func)),
-    line: _avg(ops.map((o: any) => o.line)),
-    branch: _avg(ops.map((o: any) => o.branch)),
-  };
+/* 当前节点的子级卡片（统一归一化，供 CoverageList 渲染）
+ * - 有子目录的节点（agg 汇总 / merged 目录）：标题=目录名，点击继续下钻
+ * - 无子目录的叶子（真实算子）：标题=算子名，点击进详情
+ */
+const childCards = computed(() => currentChildren.value.map((n: any) => {
+  const s = n.summary || {};
+  const kids = childrenOf(n);
+  const cov = hasCoverage(n);
+  const title = cov ? (n.operator || n.name) : n.name;
+  const badge = cov
+    ? (n.has_analysis ? '含分析' : '算子')
+    : (n.kind === 'merged' ? '目录·合并' : '汇总');
+  const meta = kids.length
+    ? `${kids.length} 个子项 · ${countLeaves(n)} 个算子`
+    : (n.domain || '-');
+  const sub = kids.length ? kids.map((c: any) => (c.operator || c.name)).join('、') : (cov ? (n.domain || '') : '');
+  return { key: n.name, title, badge, badgeType: 'has-md', meta,
+    func: s.func || 0, line: s.line || 0, branch: s.branch || 0, sub: sub || undefined };
 }));
-
-/* 归一化各级卡片数据，供 CoverageList 渲染 */
-const libCards = computed(() => {
-  const libs = currentVersion.value ? LIBS.value.filter((l: any) => l.version === currentVersion.value) : LIBS.value;
-  return libs.map((lib: any) => {
-    const a = libAgg(lib);
-    return { key: lib.name, title: lib.name, badge: '仅覆盖率', badgeType: 'cov-only',
-      meta: `${lib.dirs.length} 个算子目录 · ${a.ops} 个算子`, func: a.func, line: a.line, branch: a.branch };
-  });
-});
-const dirCards = computed(() => currentLib.value ? currentLib.value.dirs.map((d: any) => ({
-  key: d.name, title: '📂 ' + d.name , meta: `${d.ops.length} 个算子报告 · 含分析文档`,
-  func: dirAgg(d).func, line: dirAgg(d).line, branch: dirAgg(d).branch,
-  sub: '算子：' + d.ops.map((o: any) => o.operator).join('、'),
-})) : []);
-const opCards = computed(() => currentDir.value ? currentDir.value.ops.map((o: any) => ({
-  key: o.dir_name, title: o.operator, badge: o.has_analysis ? '含分析' : '', badgeType: 'has-md',
-  meta: `${o.domain || '-'} · ${o.dir_name}`, func: o.func, line: o.line, branch: o.branch,
-})) : []);
 const runCards = computed(() => runList.value.map((r: any) => ({
   key: r.run_id, title: r.run_id, badge: r.has_analysis ? '含分析' : '内嵌', badgeType: 'has-md',
   meta: `${r.operator} · ${r.domain || '-'}`, func: r.func, line: r.line, branch: r.branch,
@@ -136,40 +166,37 @@ const runCards = computed(() => runList.value.map((r: any) => ({
 function rateHex(r: number) { return r >= 80 ? '#159b78' : r >= 50 ? '#df8a27' : '#da5961'; }
 function rateCls(r: number) { return r >= 80 ? 'ok' : r >= 50 ? 'mid' : 'bad'; }
 
-/* ===== 面包屑 ===== */
-const crumbs = computed(() => {
-  const out: { label: string; go: 'version' | 'lib' | 'dir' }[] = [];
-  if (path.value.length >= 1) out.push({ label: path.value[0], go: 'version' });
-  if (path.value.length >= 2 && currentLib.value) out.push({ label: currentLib.value.name, go: 'lib' });
-  if (path.value.length >= 3 && currentDir.value) out.push({ label: currentDir.value.name, go: 'dir' });
-  return out;
-});
+/* ===== 面包屑（变长） ===== */
+const crumbs = computed(() => path.value.map((name, i) => ({ label: name, index: i })));
 
-/* ===== 导航 ===== */
-function goRoot() { path.value = []; coverData.value = null; }
-function goVersion(v: string) { path.value = [v]; coverData.value = null; }
-function goLib(v: string, libName: string) { path.value = [v, libName]; coverData.value = null; }
-function goDir(v: string, libName: string, dirName: string) { path.value = [v, libName, dirName]; coverData.value = null; }
-function goOp(v: string, libName: string, dirName: string, opDirName: string) {
-  path.value = [v, libName, dirName, opDirName];
-  const lib = LIBS.value.find(l => l.version === v && l.name === libName);
-  const d = lib && lib.dirs.find((dd: any) => dd.name === dirName);
-  const o = d && d.ops.find((oo: any) => oo.dir_name === opDirName);
-  if (lib && d && o) loadDetail(lib, d, o);
+/* ===== 导航（变长 path + 本目录/子目录模式） =====
+ * 进入某节点：有 coverage json → 展示本目录详情（可再下拉切到子目录）；
+ * 无 coverage json（agg 汇总层）→ 只能展示子目录列表。
+ */
+function enterNode(nodePath: string[]) {
+  path.value = [...nodePath];
+  coverData.value = null;
+  subSel.value = '';
+  const node = findNode(path.value);
+  ensureMode(node);
+  if (mode.value === 'detail' && hasCoverage(node)) loadDetail(path.value);
 }
-function goOpFromTreemap(p: { version: string; lib: string; dir: string; op: string }) {
-  goOp(p.version, p.lib, p.dir, p.op);
+function goRoot() { path.value = []; mode.value = 'children'; coverData.value = null; subSel.value = ''; }
+// 列表卡片点击：进入该子节点
+function goNode(name: string) { enterNode([...path.value, name]); }
+// 下拉切换：仅子目录名 → 进入该子目录（返回上一级走面包屑）；选中后清空受控值，保证下拉可再次展开
+function switchSub(value: string) {
+  subSel.value = '';
+  enterNode([...path.value, value]);
 }
-function crumbGo(i: number) {
-  if (i === 0) goVersion(path.value[0]);
-  else if (i === 1) goLib(path.value[0], path.value[1]);
-  else if (i === 2) goDir(path.value[0], path.value[1], path.value[2]);
-}
+function goOpFromTreemap(p: { path: string[] }) { enterNode(p.path); }
+function crumbGo(i: number) { enterNode(path.value.slice(0, i + 1)); }
 
 /* ===== 加载树 ===== */
 async function loadTree() {
   loading.value = true;
   path.value = [];
+  mode.value = 'children';
   coverData.value = null;
   try {
     const res = await fetch(treeUrl());
@@ -181,8 +208,8 @@ async function loadTree() {
   finally { loading.value = false; }
 }
 
-/* ===== 加载算子详情 ===== */
-async function loadDetail(lib: any, dir: any, op: any) {
+/* ===== 加载节点详情（coverage + analysis） ===== */
+async function loadDetail(nodePath: string[]) {
   detailLoading.value = true;
   coverData.value = null;
   uncoveredReasons.value = {};
@@ -190,8 +217,8 @@ async function loadDetail(lib: any, dir: any, op: any) {
   expandedFunc.value = '';
   try {
     const [covRes, anaRes] = await Promise.all([
-      fetch(detailUrl(lib.version, lib.name, dir.name, op.dir_name, 'coverage')).then(r => r.json()),
-      fetch(detailUrl(lib.version, lib.name, dir.name, op.dir_name, 'analysis')).then(r => r.json()).catch(() => null),
+      fetch(detailUrl(nodePath, 'coverage')).then(r => r.json()),
+      fetch(detailUrl(nodePath, 'analysis')).then(r => r.json()).catch(() => null),
     ]);
     if (covRes && !covRes.error) coverData.value = covRes;
     else ElMessage.error('加载覆盖率失败: ' + (covRes && covRes.error ? covRes.error : '未知'));
@@ -272,19 +299,25 @@ const coveredFuncRows = computed(() => {
   // 兼容两种结构：新结构为列表 [{func,file,dir,total_lines,cov_lines,cov_rate,covered_lines,uncovered_lines}]，旧结构为 {items:[...]}
   const list = Array.isArray(cfl) ? cfl : (cfl.items || []);
   const linesMap = coveredUncoveredLines.value;
-  return list.map((it: any) => {
-    const name = it.func || it.name || '';
-    const la = linesMap[name] || {};
-    return {
-      name,
-      dir: it.dir || it.file || '',
-      lineCount: it.cov_lines ?? it.lineCount ?? 0,
-      totalLines: it.total_lines ?? it.lineCount ?? 0,
-      covRate: it.cov_rate,
-      uncoveredLines: Array.isArray(it.uncovered_lines) ? it.uncovered_lines : (la.uncoveredLines || ''),
-      hasAnalysis: !!(la.details && la.details.length),
-    };
-  });
+  // cov_rate 为 100 视为已全部覆盖：忽略 uncovered_lines，且不展示进未覆盖行详情列表
+  return list
+    .filter((it: any) => {
+      const r = Number(it.cov_rate);
+      return !(Number.isFinite(r) && r >= 100);
+    })
+    .map((it: any) => {
+      const name = it.func || it.name || '';
+      const la = linesMap[name] || {};
+      return {
+        name,
+        dir: it.dir || it.file || '',
+        lineCount: it.cov_lines ?? it.lineCount ?? 0,
+        totalLines: it.total_lines ?? it.lineCount ?? 0,
+        covRate: it.cov_rate,
+        uncoveredLines: Array.isArray(it.uncovered_lines) ? it.uncovered_lines : (la.uncoveredLines || ''),
+        hasAnalysis: !!(la.details && la.details.length),
+      };
+    });
 });
 function funcDetails(name: string) {
   const la = coveredUncoveredLines.value[name];
@@ -404,16 +437,14 @@ onMounted(loadTree);
       <button :class="{ on: source === 'run' }" @click="switchSource('run')">任务内嵌报告</button>
     </div>
 
-    <!-- 面包屑 -->
+    <!-- 面包屑（变长） -->
     <nav class="crumb" v-if="!loading">
       <template v-if="source === 'global'">
         <span class="step" :class="{ cur: path.length === 0 }" @click="goRoot">整体统计</span>
         <template v-for="(c, i) in crumbs" :key="i">
           <span class="sep">›</span>
-          <span class="step" :class="{ cur: i === crumbs.length - 1 && path.length < 4 }" @click="crumbGo(i)">{{ c.label }}</span>
+          <span class="step" :class="{ cur: i === crumbs.length - 1 }" @click="crumbGo(i)">{{ c.label }}</span>
         </template>
-        <span class="sep" v-if="path.length === 4">›</span>
-        <span class="step cur" v-if="path.length === 4">{{ currentOpName }}</span>
       </template>
       <template v-else>
         <span class="step" :class="{ cur: !runSel }" @click="runSel = ''">任务内嵌</span>
@@ -436,9 +467,9 @@ onMounted(loadTree);
     <main class="cov-main">
       <div v-if="loading" class="cov-empty">正在加载覆盖率数据…</div>
 
-      <!-- 全局：四级列表 / 矩形树图 -->
-      <template v-else-if="source === 'global' && !showDetail">
-        <div v-if="path.length === 0" class="view-tabs">
+      <!-- 全局：根视图（treemap/列表） -->
+      <template v-else-if="source === 'global' && path.length === 0">
+        <div class="view-tabs">
           <el-switch
             v-model="viewMode"
             active-value="treemap"
@@ -447,21 +478,92 @@ onMounted(loadTree);
             inactive-text="列表视图"
           />
         </div>
-        <template v-if="path.length === 0">
-          <div v-if="viewMode === 'treemap'" class="tm-grid">
-            <CoverageTreemap :tree="tree" metric="func" @select="goOpFromTreemap" />
-            <CoverageTreemap :tree="tree" metric="line" @select="goOpFromTreemap" />
-          </div>
-          <CoverageList v-else title="版本" tag="点击查看该版本下的算子库" :items="versionCards" @select="goVersion($event.key)" />
+        <div v-if="viewMode === 'treemap'" class="tm-grid">
+          <CoverageTreemap :tree="tree" metric="func" @select="goOpFromTreemap" />
+          <CoverageTreemap :tree="tree" metric="line" @select="goOpFromTreemap" />
+        </div>
+        <CoverageList v-else title="版本" tag="点击查看该版本下的算子库" :items="childCards" @select="goNode($event.key)" />
+      </template>
+
+      <!-- 全局：节点视图（本目录详情 / 子目录列表，可下拉切换） -->
+      <template v-else-if="source === 'global' && path.length > 0">
+        <div class="node-toolbar">
+          <span class="nt-label">{{ path.join(' / ') }}</span>
+          <el-select
+            v-if="showDropdown"
+            v-model="subSel"
+            size="small"
+            class="nt-select"
+            placeholder="切换子目录"
+            @change="switchSub"
+          >
+            <el-option v-for="o in subOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </div>
+
+        <!-- 本目录详情：覆盖率 + 未覆盖详情 -->
+        <template v-if="mode === 'detail' && hasCoverage(current)">
+          <div v-if="detailLoading" class="cov-empty">加载中…</div>
+          <template v-else-if="coverData">
+            <div class="detail-head"><h2>{{ detailTitle }}</h2><span class="detail-meta">{{ detailMeta }}</span></div>
+            <div class="panel">
+              <h3>模块覆盖率</h3>
+              <ModuleTreemap :coverage="moduleCoverage" />
+            </div>
+            <div class="panel" v-if="uncoveredRows.length">
+              <h3>未覆盖函数（analysis.md 提取）</h3>
+              <table>
+                <thead><tr><th>模块</th><th>函数名</th><th>分类</th><th>能否覆盖</th><th>原因</th></tr></thead>
+                <tbody>
+                  <tr v-for="(r, i) in uncoveredRows" :key="i">
+                    <td><span class="pill" :class="r.module === 'kernel' ? 'warn' : ''">{{ r.module }}</span></td>
+                    <td class="mono">{{ r.name }}</td>
+                    <td>{{ r.category || '-' }}</td>
+                    <td><span class="pill" :class="coverTypeOf(r.coverable)">{{ r.coverable || '-' }}</span></td>
+                    <td class="reason">{{ r.reason || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel" v-if="coveredFuncRows.length">
+              <h3>已覆盖函数中的未覆盖行</h3>
+              <table>
+                <thead><tr><th>函数名</th><th>文件</th><th>覆盖率</th><th>未覆盖行号</th></tr></thead>
+                <tbody>
+                  <template v-for="(r, i) in coveredFuncRows" :key="i">
+                    <tr class="expandable" @click="toggleFunc(r.name)">
+                      <td class="mono">{{ r.name }}</td>
+                      <td class="mono path">{{ r.dir }}</td>
+                      <td :style="{ color: rateHex(r.covRate ?? 0) }">{{ r.covRate != null ? r.covRate + '%' : '-' }}</td>
+                      <td class="mono unc-lines">{{ Array.isArray(r.uncoveredLines) ? r.uncoveredLines.join(', ') : (r.uncoveredLines || '-') }}</td>
+                    </tr>
+                    <tr v-if="expandedFunc === r.name && funcDetails(r.name).length">
+                      <td colspan="4">
+                        <div v-for="(d, j) in funcDetails(r.name)" :key="j" class="line-card" :class="coverTypeOf(d.coverable)">
+                          <span class="lc-lineno mono">L{{ d.lineno }}</span>
+                          <span class="lc-src mono" v-if="d.src">{{ d.src }}</span>
+                          <span class="lc-cat" v-if="d.category">{{ d.category }}</span>
+                          <span class="lc-reason" v-if="d.reason">原因：{{ d.reason }}</span>
+                          <span class="lc-suggest" v-if="d.suggest">建议：{{ d.suggest }}</span>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+            <div class="hint" v-if="!uncoveredRows.length && !coveredFuncRows.length">该目录有覆盖率数据；未覆盖详情需对应 analysis.md（本目录未提供时仅展示覆盖率）。</div>
+          </template>
+          <div v-else class="cov-empty">该目录无有效覆盖率数据</div>
         </template>
-        <template v-else-if="path.length === 1 && currentVersion">
-          <CoverageList :title="`${currentVersion} → 算子库`" tag="点击查看该库下的算子目录" :items="libCards" @select="goLib(path[0], $event.key)" />
-        </template>
-        <template v-else-if="path.length === 2 && currentLib">
-          <CoverageList :title="`${currentVersion} · ${currentLib.name} → 算子目录`" tag="点击查看该目录下的算子" :items="dirCards" @select="goDir(path[0], path[1], $event.key)" />
-        </template>
-        <template v-else-if="path.length === 3 && currentDir">
-          <CoverageList :title="`${currentVersion} · ${currentLib.name} / ${currentDir.name} → 算子`" tag="点击查看算子详情" :items="opCards" @select="goOp(path[0], path[1], path[2], $event.key)" />
+
+        <!-- 子目录列表 -->
+        <template v-else>
+          <CoverageList
+            :title="path.join(' / ') + ' → 子项'"
+            tag="点击子项下钻；带 coverage 的目录可看本目录覆盖率 + 未覆盖详情"
+            :items="childCards"
+            @select="goNode($event.key)" />
         </template>
       </template>
 
@@ -526,7 +628,7 @@ onMounted(loadTree);
             </table>
           </div>
 
-          <div class="hint">算子库层仅覆盖率（无 md）；算子目录/算子名称层才有覆盖率 + analysis.md 分析文档。</div>
+          <div class="hint">目录级合并 / 算子叶子层才有覆盖率 + analysis.md 分析文档；汇总层（版本/库/域）仅展示预聚合覆盖率。</div>
         </template>
         <div v-else class="cov-empty">该算子无有效覆盖率数据</div>
       </template>
@@ -560,6 +662,10 @@ onMounted(loadTree);
 
 /* 视图切换（列表/树图） */
 .view-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+/* 节点工具栏：当前路径 + 本目录/子目录切换下拉 */
+.node-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.node-toolbar .nt-label { font-size: 14px; font-weight: 650; color: var(--wb-ink); }
+.node-toolbar .nt-select { width: 240px; }
 .tm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 1200px) { .tm-grid { grid-template-columns: 1fr; } }
 
