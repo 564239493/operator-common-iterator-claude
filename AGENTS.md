@@ -46,8 +46,11 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 > `no_scene_devices`/
 > `selection_policy`）回写 `run_state.scene`。**设备类型是硬性必要项**：未选出至少
 > 一个文档"产品支持情况"设备全称，禁止落盘/渲染/进 EXTRACT
-> （`DEVICE_REQUIRED`/`EMPTY_SCENE` exit 2 硬拦截）；批处理（`iterate-directory`）
-> 无头不收集场景，纯文档驱动提取。legacy 三级场景扫描（scene-scanner Agent +
+> （`DEVICE_REQUIRED`/`EMPTY_SCENE` exit 2 硬拦截）。批处理（`iterate-directory`）
+> 同样强制场景：未传 `--scenes` 时先展示批次全部文档的设备并集让用户选设备或输入
+> 场景文本，再由 `scripts/batch_scene.py resolve` 校验并检查每个文档是否支持该设备；
+> 明确不支持/未列出的文档提示用户后跳过或继续，确认后的场景随 claim 以
+> `--scenes` 传入每个单算子 run。legacy 三级场景扫描（scene-scanner Agent +
 > `scan-scenes` Skill + Q1→Q2→Q3 征询 + `check_scene_conflicts.py`）**已下线删除，
 > 禁止调用**（原实现仅存 git 历史）。
 > constraint-extractor 读 directive 按 `param_modes` 收窄（`{"fix": X}` 单值、
@@ -72,7 +75,8 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 /iterate-operator operator_docs/aclnnFoo.md --scenes "A2非量化groupListType等于2"  # 场景文本直输（设备类型必选）；未传则交互征询
 /iterate-operator operator_docs/aclnnFoo.md --human-constraints-upload --max-iterations 5  # 人工约束上传通道：检查点选人工修复后挂起等用户上传 constraints_copy.json，监听触发下一轮
 /iterate-operator operator_docs/aclnnFoo.md --web  # 默认不自动打开工作台页面；加 --web 才在首轮 CHECK 通过后自动拉起浏览器
-/iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子
+/iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子；未传 --scenes 时先列出设备并征询
+/iterate-directory operator_docs --scenes "A2非量化"  # 批次级场景确认后逐文档透传
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
 /show-workforce  # 查看可用技能、子智能体和调度拓扑
 ```
@@ -205,7 +209,8 @@ opencode  # 启动 opencode
 - `init_run.py` — 创建 run 目录 + `run_state.json`；校验文档和 servers.json
 - `run_state.py` — `run_state.json` 唯一写入器：主协调器 CLI 子命令（set-state / set-fields / set-constraint-check）+ 供脚本 import 的落盘库函数；其中 set-state 仅限人工调试——流程内的阶段迁移一律走 `flow_control.py advance`
 - `init_batch.py` — 初始化批次目录
-- `batch_state.py` — 批次状态迁移
+- `batch_state.py` — 批次状态迁移；场景未确认时 claim 返回 `needs_scene`
+- `batch_scene.py` — 批次设备清单（并集 + 逐文档支持矩阵）与场景确认；`resolve` 写入 `batch_state.scene`，可 `--skip-unsupported` 跳过不支持该设备的文档
 - `flow_control.py` — **阶段迁移唯一通道**：迭代流程的阶段推进（EXTRACT→GENERATE→EXECUTE→GATE→…）必须用 `python scripts/flow_control.py advance`，由其按状态机条件表裁决去向与迭代轮次递增；`run_state.py set-state` 仅限人工调试场景，流程中禁止用它做阶段迁移（iterate-operator 技能同款硬守卫）
 - `generate_cases.py` — 调 facade 生成用例；TTK 时自动扫描算子知识目录的 `aux_params.json`，向 cases.json 注入辅助参数（如 `groupListData`），并在 CSV 转换后调用 `materialize_group_list_data.py`
 - `execute_cases.py` — 调 executer 执行用例；TTK ACLNN 检测到 `group_list_data_report.json` 时自动加载算子 `__input__` 插件（`golden_resolution=input_plugin`）

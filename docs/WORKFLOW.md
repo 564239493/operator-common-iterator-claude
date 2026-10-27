@@ -144,7 +144,8 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
 selection 无任何有效设备条目返回 `EMPTY_SCENE` exit 2（设备值 `null` = 无场景维度，
 是合法条目，全"仅设备"选择不触发），此时回到文字匹配重新征询。
 `--scope off` 显式禁用场景（不产 directive，纯文档驱动）；批处理
-（`iterate-directory`）无头不能 AskUserQuestion，默认不收集场景。
+（`iterate-directory`）在认领首个算术前执行**批次级场景确认**（见 §8），确认后把
+场景文本透传给每个单算子 run，内层不再重复征询。
 
 **legacy 已下线**：三级场景扫描流程（scene-scanner Agent 扫 `scene_scan.json` +
 Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判 + `--scan`/`--scope all`
@@ -431,8 +432,28 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 扫描 torch_npu 文档目录时，已知导航页 `torch_npu.md`、`torch_npu_list.md` 会被排除，
 不会为没有 callable 的索引创建 run。
 
+**批次场景确认（强制，认领前）**：批次不能纯文档驱动提取全部场景。`init_batch` 可带
+`--scenes`，但无论是否带，首次 `claim` 在场景未落地时返回 `action=needs_scene`，不会
+认领算子。主协调器读取 `inventory.devices` 向用户展示目录内**全部文档的设备并集**
+（含别名与逐文档支持情况），让用户选择设备或直接输入场景文本（与单算子 `--scenes`
+语义一致），再调用：
+
+```text
+python scripts/batch_scene.py --batch-dir <batch-dir> resolve --scenes "<场景原文>" [--device "<设备族>"] [--skip-unsupported]
+```
+
+`batch_scene.py` 解析每篇文档“产品支持情况”（bullet 与表格两种格式），把设备名变体
+归并为设备族，输出 `supported` / `partial` / `unsupported` / `not_listed` / `unparsed`
+五类逐文档状态。存在不支持、未列出、仅部分支持或无法解析的文档时，必须把算子清单和
+原因提示给用户，由用户选择“跳过不支持的文档”（`--skip-unsupported`，标记
+`SKIPPED_UNSUPPORTED_DEVICE`）、“仍然全部执行”或“取消批次”。确认后的场景写入
+`batch_state.scene`；claim 返回的 `scenes` 为“该文档设备别名 + 用户场景原文”，
+`iterate-directory` 必须透传 `--scenes`，使每个单算子 run 与单文档场景流程一致地
+收窄 `product_support`，内层不再重复 AskUserQuestion。
+
 默认 `continue-on-error`：`SUCCESS` 计为成功，`BLOCKED`、`MAX_ITERATIONS`、
-`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计为失败，但不会阻止后续文档执行。
+`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计为失败，但不会阻止后续文档执行；
+`SKIPPED_UNSUPPORTED_DEVICE` 单独计入 skipped，不算失败也不触发 fail-fast。
 `--fail-fast` 会在首个非 SUCCESS 终态后把批次置为 STOPPED。这里的“全部执行完毕”
 表示所有队列项都进入终态，不等价于全部成功。
 

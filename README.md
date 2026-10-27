@@ -73,7 +73,12 @@ paged-attention 场景拆分和投影时才显式指定：
 ```text
 /iterate-directory operator_docs --max-iterations 3 --case-count 10
 /iterate-directory operator_docs --constraint-check-rounds 3
+/iterate-directory operator_docs --scenes "A2非量化"
 ```
+
+批次开始前必须先确认设备/场景：未传 `--scenes` 时会列出目录内全部文档的设备并集让
+用户选择（也可直接输入场景文本）；确认后还会检查每篇文档是否支持该设备，不支持/
+未列出的文档会提示用户跳过或继续。传了 `--scenes` 也会做同样的支持性检查。
 
 默认某个算子失败后继续执行下一个；需要首个失败即停止时增加 `--fail-fast`，需要扫描
 子目录时增加 `--recursive`。会话中断后可用批次目录恢复：
