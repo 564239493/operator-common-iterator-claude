@@ -705,7 +705,13 @@ def main() -> int:
             iter_dir = cases_path.parent
             # Auxiliary-parameter runs (groupListData) need the operator's
             # __input__ hook even when precision golden is disabled.
-            aux_input_flow = (iter_dir / "group_list_data_report.json").is_file()
+            aux_input_flow = any(
+                (iter_dir / name).is_file()
+                for name in (
+                    "group_list_data_report.json",
+                    "aux_params_report.json",
+                )
+            )
             golden_plugin = _resolve_aclnn_golden_plugin(
                 iter_dir,
                 csv_api_name,
