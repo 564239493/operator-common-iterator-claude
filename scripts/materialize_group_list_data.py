@@ -63,6 +63,20 @@ def _shape_at(shapes: Any, index: int, label: str) -> list[int] | None:
     return _first_shape(shapes[index])
 
 
+def _all_shape_at(shapes: Any, index: int, label: str) -> list[list[int]]:
+    if not isinstance(shapes, (list, tuple)):
+        raise ValueError(f"{label}: tensor_view_shapes must be a tuple")
+    if index >= len(shapes):
+        return []
+    value = shapes[index]
+    if isinstance(value, (list, tuple)) and value and isinstance(
+        value[0], (list, tuple),
+    ):
+        return [list(sub) for sub in value if isinstance(sub, (list, tuple))]
+    first = _first_shape(value)
+    return [first] if first is not None else []
+
+
 def _attr(attrs: dict[str, Any], camel: str, snake: str) -> Any:
     if camel in attrs:
         return attrs[camel]
@@ -83,10 +97,9 @@ def _balanced_counts(m: int, g: int) -> list[int]:
     return [base + (1 if index < remainder else 0) for index in range(g)]
 
 
-def _build_group_list(
-    group_type: int, group_list_type: int, m: int, g: int,
+def _build_from_counts(
+    counts: list[int], group_type: int, group_list_type: int,
 ) -> list[Any]:
-    counts = _balanced_counts(m, g)
     if group_list_type == 0:
         data: list[Any] = []
         running = 0
@@ -101,6 +114,14 @@ def _build_group_list(
     raise ValueError(
         f"unsupported groupType/groupListType combination: "
         f"groupType={group_type}, groupListType={group_list_type}"
+    )
+
+
+def _build_group_list(
+    group_type: int, group_list_type: int, m: int, g: int,
+) -> list[Any]:
+    return _build_from_counts(
+        _balanced_counts(m, g), group_type, group_list_type,
     )
 
 
@@ -276,6 +297,17 @@ def _preview(data: list[Any], full: bool) -> list[Any]:
     return [*head, "...", *tail]
 
 
+def _validate_non_negative_monotonic(
+    data: Any, expected_len: int, label: str,
+) -> list[int]:
+    values = _require_int_list(data, expected_len, label)
+    if any(value < 0 for value in values):
+        raise ValueError(f"{label} must be non-negative")
+    if any(values[index] > values[index + 1] for index in range(len(values) - 1)):
+        raise ValueError(f"{label} must be non-decreasing")
+    return values
+
+
 def _process_row(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any]:
     testcase_name = row.get("testcase_name", "")
     api_name = row.get("api_name", "")
@@ -285,66 +317,160 @@ def _process_row(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any
     attrs = _parse_literal(row.get("attributes", ""), f"{testcase_name}.attributes")
     if not isinstance(attrs, dict):
         raise ValueError(f"{testcase_name}.attributes must be a dict")
-    group_type = _attr(attrs, "groupType", "group_type")
-    group_list_type = _attr(attrs, "groupListType", "group_list_type")
-    if group_type is None or group_list_type is None:
-        return {"testcase_name": testcase_name, "action": "skipped_missing_attrs"}
-    if isinstance(group_type, bool) or not isinstance(group_type, int):
-        raise ValueError(f"{testcase_name}.groupType must be an integer")
-    if isinstance(group_list_type, bool) or not isinstance(group_list_type, int):
-        raise ValueError(f"{testcase_name}.groupListType must be an integer")
-    if group_type not in (0, 2):
-        return {"testcase_name": testcase_name, "action": "skipped_group_type"}
+    attr_name = args.attr_name
+    validator = args.validator
+    existing = attrs.get(attr_name)
+    if existing is None and attr_name == "groupListData":
+        existing = attrs.get("group_list_data")
+    if existing is not None:
+        existing = _coerce_group_list_data(existing, f"{testcase_name}.{attr_name}")
 
     shapes = _parse_literal(
         row.get("tensor_view_shapes", ""), f"{testcase_name}.tensor_view_shapes"
     )
-    m, g = _derive_m_and_g(
-        group_type, shapes, args.x_index, args.weight_index, args.out_index
-    )
-    group_shape = _shape_at(shapes, args.group_list_index, "groupListOptional")
-    expected_shape = (g, 2) if group_list_type == 2 else (g,)
-    if group_shape is not None and tuple(group_shape) != expected_shape:
-        raise ValueError(
-            f"groupListOptional shape {tuple(group_shape)} does not match "
-            f"groupListType={group_list_type} expected {expected_shape}"
-        )
+    detail_extra: dict[str, Any] = {"attr_name": attr_name, "validator": validator}
 
-    existing = _attr(attrs, "groupListData", "group_list_data")
-    if existing is not None:
-        existing = _coerce_group_list_data(
-            existing, f"{testcase_name}.groupListData"
-        )
-    if existing is None:
-        if not args.compute_missing:
+    if validator == "group_list_data":
+        target_shape = _shape_at(shapes, args.group_list_index, attr_name)
+        if target_shape is None:
+            return {
+                "testcase_name": testcase_name,
+                "action": "skipped_missing_target",
+                "attr_name": attr_name,
+                "validator": validator,
+            }
+        group_type = _attr(attrs, "groupType", "group_type")
+        group_list_type = _attr(attrs, "groupListType", "group_list_type")
+        if group_type is None or group_list_type is None:
+            return {"testcase_name": testcase_name, "action": "skipped_missing_attrs"}
+        if isinstance(group_type, bool) or not isinstance(group_type, int):
+            raise ValueError(f"{testcase_name}.groupType must be an integer")
+        if isinstance(group_list_type, bool) or not isinstance(group_list_type, int):
+            raise ValueError(f"{testcase_name}.groupListType must be an integer")
+        if group_type not in (0, 2):
+            return {"testcase_name": testcase_name, "action": "skipped_group_type"}
+
+        g = int(target_shape[0])
+        if g <= 0:
+            raise ValueError(f"{attr_name} length must be positive, got {g}")
+        expected_shape = (g, 2) if group_list_type == 2 else (g,)
+        if tuple(target_shape) != expected_shape:
             raise ValueError(
-                "groupListData is missing; provide it in the CSV or pass "
-                "--compute-missing"
+                f"{attr_name} shape {tuple(target_shape)} does not match "
+                f"groupListType={group_list_type} expected {expected_shape}"
             )
-        data = _build_group_list(group_type, group_list_type, m, g)
-        action = "computed"
-    elif args.recompute:
-        data = _build_group_list(group_type, group_list_type, m, g)
-        action = "recomputed"
-    else:
+
+        x_shapes = _all_shape_at(shapes, args.x_index, "x")
+        if not x_shapes:
+            raise ValueError(f"{testcase_name}.x shape is missing")
+        if len(x_shapes) > 1:
+            if group_type != 0:
+                raise ValueError(
+                    "multi-TensorList groupListData is only supported for "
+                    "groupType=0"
+                )
+            if g != len(x_shapes):
+                raise ValueError(
+                    f"{attr_name} length {g} must equal x TensorList length "
+                    f"{len(x_shapes)}"
+                )
+            counts = [int(shape[0]) for shape in x_shapes]
+            m = sum(counts)
+        else:
+            if group_type == 0:
+                m = int(x_shapes[0][0])
+            else:
+                out_shape = _shape_at(shapes, args.out_index, "out")
+                if out_shape is not None and len(out_shape) >= 2:
+                    m = int(out_shape[1])
+                elif len(x_shapes[0]) >= 2:
+                    m = int(x_shapes[0][1])
+                else:
+                    m = int(x_shapes[0][0])
+            counts = _balanced_counts(m, g)
+
+        if existing is None:
+            if not args.compute_missing:
+                raise ValueError(
+                    f"{attr_name} is missing; provide it in the CSV or pass "
+                    "--compute-missing"
+                )
+            data = _build_from_counts(counts, group_type, group_list_type)
+            action = "computed"
+        elif args.recompute:
+            data = _build_from_counts(counts, group_type, group_list_type)
+            action = "recomputed"
+        else:
+            data = _validate_group_list(
+                existing,
+                group_type=group_type,
+                group_list_type=group_list_type,
+                m=m,
+                g=g,
+            )
+            action = "preserved"
         data = _validate_group_list(
-            existing,
+            data,
             group_type=group_type,
             group_list_type=group_list_type,
             m=m,
             g=g,
         )
-        action = "preserved"
-    data = _validate_group_list(
-        data,
-        group_type=group_type,
-        group_list_type=group_list_type,
-        m=m,
-        g=g,
-    )
-    _set_attr(attrs, "groupListData", data)
-    if args.target in ("e2e", "both"):
-        attrs["groupListOptional"] = data
+        if len(x_shapes) > 1:
+            expected = _build_from_counts(
+                counts, group_type, group_list_type,
+            )
+            if data != expected:
+                raise ValueError(
+                    f"{attr_name} must match per-x group sizes for "
+                    f"multi-TensorList x: expected {expected!r}, got {data!r}"
+                )
+        detail_extra.update({
+            "group_type": group_type,
+            "group_list_type": group_list_type,
+            "m": m,
+            "g": g,
+            "counts": counts,
+        })
+    elif validator == "non_negative_monotonic":
+        target_shape = _shape_at(shapes, args.group_list_index, attr_name)
+        if target_shape is None or not target_shape:
+            return {
+                "testcase_name": testcase_name,
+                "action": "skipped_missing_target",
+                "attr_name": attr_name,
+                "validator": validator,
+            }
+        expected_len = int(target_shape[0])
+        if existing is None:
+            if not args.compute_missing:
+                raise ValueError(
+                    f"{attr_name} is missing; provide it in the CSV or pass "
+                    "--compute-missing"
+                )
+            data = list(range(expected_len))
+            action = "computed"
+        elif args.recompute:
+            data = list(range(expected_len))
+            action = "recomputed"
+        else:
+            data = _validate_non_negative_monotonic(
+                existing, expected_len, attr_name,
+            )
+            action = "preserved"
+        data = _validate_non_negative_monotonic(
+            data, expected_len, attr_name,
+        )
+        detail_extra["expected_len"] = expected_len
+    else:
+        raise ValueError(f"unsupported validator: {validator}")
+
+    if attr_name == "groupListData":
+        _set_attr(attrs, attr_name, data)
+    else:
+        attrs[attr_name] = data
+    if args.target in ("e2e", "both") and args.target_param:
+        attrs[args.target_param] = data
     row["attributes"] = repr(attrs)
 
     range_cleared = False
@@ -362,13 +488,10 @@ def _process_row(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any
     return {
         "testcase_name": testcase_name,
         "action": action,
-        "group_type": group_type,
-        "group_list_type": group_list_type,
-        "m": m,
-        "g": g,
         "range_cleared": range_cleared,
         "value_count": len(data),
         "values": _preview(data, args.full_values),
+        **detail_extra,
     }
 
 
@@ -388,6 +511,9 @@ def materialize_csv(
     recompute: bool = False,
     clear_range: bool = False,
     api_name: str = "aclnnGroupedMatmulV5",
+    attr_name: str = "groupListData",
+    validator: str = "group_list_data",
+    target_param: str = "groupListOptional",
     x_index: int = 0,
     weight_index: int = 1,
     out_index: int = 12,
@@ -407,6 +533,9 @@ def materialize_csv(
 
     args = argparse.Namespace(
         api_name=api_name,
+        attr_name=attr_name,
+        validator=validator,
+        target_param=target_param,
         x_index=x_index,
         weight_index=weight_index,
         out_index=out_index,
@@ -440,6 +569,9 @@ def materialize_csv(
         "input_csv": str(input_path),
         "output_csv": str(output_path),
         "target": target,
+        "attr_name": attr_name,
+        "validator": validator,
+        "target_param": target_param,
         "clear_range": bool(clear_range),
         "rows": len(rows),
         "changed": changed,
@@ -476,6 +608,13 @@ def main() -> int:
             "attributes.groupListOptional for TTK framework_api override."
         ),
     )
+    parser.add_argument("--attr-name", default="groupListData")
+    parser.add_argument(
+        "--validator",
+        choices=("group_list_data", "non_negative_monotonic"),
+        default="group_list_data",
+    )
+    parser.add_argument("--target-param", default="groupListOptional")
     parser.add_argument(
         "--compute-missing",
         action="store_true",
@@ -498,7 +637,10 @@ def main() -> int:
     parser.add_argument("--x-index", type=int, default=0)
     parser.add_argument("--weight-index", type=int, default=1)
     parser.add_argument("--out-index", type=int, default=12)
-    parser.add_argument("--group-list-index", type=int, default=8)
+    parser.add_argument(
+        "--tensor-index", "--group-list-index",
+        dest="group_list_index", type=int, default=8,
+    )
     parser.add_argument("--report-json")
     parser.add_argument(
         "--full-values",
@@ -519,6 +661,9 @@ def main() -> int:
         recompute=args.recompute,
         clear_range=args.clear_range,
         api_name=args.api_name,
+        attr_name=args.attr_name,
+        validator=args.validator,
+        target_param=args.target_param,
         x_index=args.x_index,
         weight_index=args.weight_index,
         out_index=args.out_index,
