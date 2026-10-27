@@ -555,7 +555,9 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 `scope=subset` 时 `directive` 指向 `inputs/scene_directive.md`；
 `scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件（extractor 见无 directive 即按全场景提取，行为不变）。
 `source` ∈ `scenes_param`（`--scenes` 直输）/ `interactive_input`（交互文本输入）。
-批处理（`iterate-directory`）不收集场景，`run_state.scene=null`。
+批处理（`iterate-directory`）在认领首个算术前写批次级 `batch_state.scene`，并把
+“设备别名 + 场景原文”作为 `--scenes` 透传给每个单算子 run；单算子 `run_state.scene`
+仍由 `render_scene_directive.py` 正常回写（`source` 由该次 run 的入口决定）。
 
 无独立结构校验命令——`render_scene_directive.py` 写入时校验合法性，`init_run` 读取时校验初始 `null`。由
 `render_scene_directive.py` 回写。
@@ -736,12 +738,20 @@ runs/batches/<batch-id>/
 `batch_state.json` 必须冻结 source_directory、glob、recursive、prompt、
 `prompt_explicit`、`prompt_sources`、operator_family、test_framework、max_iterations、
 case_count、constraint_check_rounds、mode、server_config、supplement_constraints（可选，整批共享）、
-continue_on_error 和有序 operators。`prompt` 只在用户显式指定原样 prompt 时非空；
+continue_on_error、`scenes`、`scenes_from_cli`、`scene` 和有序 operators。`prompt` 只在用户显式指定原样 prompt 时非空；
 自动模式通过 `prompt_sources` 记录初始化时可用的各 family baseline，并让每个单算子
 `init_run` 自行选择/装配，防止混合目录把一个 family 的 prompt 传给另一个 family。
-每个 operator 包含原文档绝对路径、PENDING/RUNNING/COMPLETED 状态、单算子 run_id、
-run_dir 与 terminal_state。任意时刻最多只能有一个 RUNNING 项。
+`scene` 在批次场景确认前为 `null`；确认后形如
+`{source, raw, device, resolved_at, skip_unsupported, support:{supported,partial,unsupported,not_listed,unparsed}, inventory}`，
+其中 `inventory` 为设备并集与逐文档支持矩阵。未确认场景时 `batch_state.py claim`
+返回 `action=needs_scene`，不会认领算子。
+每个 operator 包含原文档绝对路径、PENDING/RUNNING/COMPLETED/SKIPPED 状态、单算子 run_id、
+run_dir 与 terminal_state；场景确认后还会写 `scene_status`
+（supported/partial/unsupported/not_listed/unparsed）和 `scene_text`（该文档设备别名 +
+用户场景原文，claim 时作为 `--scenes` 透传）。被批次因设备不支持而跳过的算子状态为
+`SKIPPED`、terminal_state 为 `SKIPPED_UNSUPPORTED_DEVICE`。任意时刻最多只能有一个 RUNNING 项。
 
 `batch_summary.json` 是由批次状态确定性生成的只读汇总视图，包含 total、pending、
-running、completed、success 和 failed。仅 `SUCCESS` 计入 success；`BLOCKED`、
-`MAX_ITERATIONS`、`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计入 failed。
+running、completed、skipped、success 和 failed。仅 `SUCCESS` 计入 success；`BLOCKED`、
+`MAX_ITERATIONS`、`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计入 failed；
+`SKIPPED_UNSUPPORTED_DEVICE` 计入 skipped，不算成功也不算失败。

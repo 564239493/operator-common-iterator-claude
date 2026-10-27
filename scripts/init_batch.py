@@ -59,6 +59,15 @@ def main() -> int:
             "内层 /iterate-operator 会将其透传给 init_run.py 复制为各 run 快照。"
         ),
     )
+    parser.add_argument(
+        "--scenes",
+        dest="scenes",
+        default=None,
+        help=(
+            "整批测试场景文本描述（可选）；提供后仍需用 batch_scene.py resolve "
+            "确认设备并检查各文档支持情况。省略时批次会要求先选择设备/场景。"
+        ),
+    )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument(
         "--constraint-check-rounds",
@@ -137,6 +146,12 @@ def main() -> int:
         return print_error(
             "INVALID_BATCH_ARGUMENT",
             "max-iterations、constraint-check-rounds 和 case-count 必须为正整数。",
+        )
+    scenes = (args.scenes or "").strip()
+    if args.scenes is not None and not scenes:
+        return print_error(
+            "INVALID_SCENES",
+            "--scenes 不能为空字符串；省略该参数以进入交互式设备/场景选择。",
         )
 
     server_config: Path | None = None
@@ -234,6 +249,9 @@ def main() -> int:
         "mode": args.mode,
         "server_config": str(server_config) if server_config else "",
         "supplement_constraints": str(supplement_path) if supplement_path else "",
+        "scenes": scenes,
+        "scenes_from_cli": bool(scenes),
+        "scene": None,
         "continue_on_error": args.continue_on_error,
         "state": "RUNNING",
         "current_index": None,
@@ -270,6 +288,8 @@ def main() -> int:
             "total": len(documents),
             "continue_on_error": args.continue_on_error,
             "constraint_check_rounds": args.constraint_check_rounds,
+            "scenes": scenes,
+            "requires_scene_resolution": True,
             "prompt_mode": "explicit_raw" if explicit_prompt else "per_document_family_auto",
             "prompt_sources": prompt_sources,
             "skipped_catalog_documents": [str(path) for path in skipped_catalogs],
