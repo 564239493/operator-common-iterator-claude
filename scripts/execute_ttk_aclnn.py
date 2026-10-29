@@ -82,9 +82,35 @@ def _parse_results(path: Path) -> dict[str, Any]:
         """Whether the NPU produced a result, independent of precision."""
         precision_text = str(row.get("precision") or "").strip()
         upper = precision_text.upper()
-        # 负向排除：算子执行被拒 / 无输出 / 工具链崩溃（错误原文在 precision 列）
-        if upper.startswith(("ACLNN_EXECUTE_FAILED", "NO_OUTPUT")) or "TRACEBACK" in upper:
+        # 负向排除：算子执行被拒 / 无输出 / 输入生成失败 / NPU 预处理失败 /
+        # profiling 崩溃或超时 / 工具链 traceback。这些行即使另有
+        # precision_status=FAIL 也不代表 NPU 成功产出结果（PROFILE_CRASH
+        # 曾被误判为执行 PASS）。
+        if upper.startswith(
+            (
+                "ACLNN_EXECUTE_FAILED",
+                "NO_OUTPUT",
+                "INPUT_GEN_FAILURE",
+                "NPU_PREPROCESS_FAILURE",
+            )
+        ) or any(
+            tag in upper
+            for tag in (
+                "TRACEBACK",
+                "PROFILE_CRASH",
+                "PROCESS TIMEOUT",
+                "CRASHED AT PROFILING",
+            )
+        ):
             return False
+        for key in (
+            "precision_metrics",
+            "perf_status",
+            "batch_consistency_id",
+            "deterministic_status",
+        ):
+            if "PROFILE_CRASH" in str(row.get(key) or "").upper():
+                return False
         # 正向证据：计时字段是数字（崩溃行填字面量 'FAILURE'，不可作数）
         for key in ("api_perf_us", "op_perf_us"):
             try:

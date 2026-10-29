@@ -30,7 +30,7 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--scenes "<�
 3. 展示批次目录、文档总数、执行策略、单算子
    参数和终止条件。目录外输入只读；每个单算子 run 仍由 `/iterate-operator` 创建
    自己的输入快照。
-4. **批次场景选择（强制，认领前完成）**：调用
+4. **批次设备选择（强制，认领前完成）**：调用
 
    ```text
    python scripts/batch_state.py --batch-dir <batch-dir> claim
@@ -38,14 +38,15 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--scenes "<�
 
    - `action=needs_scene`：**不得继续认领算子**。若本次调用带了 `--scenes`，或
      claim 返回的 `scenes` 非空（`scenes_from_cli=true`），先用该文本运行下方
-     resolve 做设备识别与支持性检查，**不再重复询问场景**；仅当 resolve 返回
+     resolve 做设备识别与支持性检查；文本中若还带量化场景/参数，只作为后续单算子
+     run 的预填文本，**批次阶段不要求选场景**。仅当 resolve 返回
      `DEVICE_REQUIRED` / `DEVICE_AMBIGUOUS` 或用户需要补充时才询问。
      若没有可用的场景文本，用返回的 `inventory.devices` 向用户展示全部设备（设备族 +
-     别名 + 支持/不支持/未列出的算子数量），并说明“批处理未指定测试场景”。使用
-     question 工具询问一次：
+     别名 + 支持/不支持/未列出的算子数量），并说明“批处理先确认设备，量化场景在
+     每个算子文档内再选择”。使用 question 工具询问一次：
      - 选项列出每个设备，用户选设备 = 只按设备收窄；
-     - 用户也可在自定义回答里直接输入场景文本（如
-       `A2非量化groupListType等于2`），与单算子 `--scenes` 语义一致；
+     - 用户也可在自定义回答里直接输入完整场景文本（如
+       `A2非量化groupListType等于2`），作为后续单算子 run 的场景预填；
      - 用户拒绝提供设备时确认是否取消批次，不得静默跳过场景步骤。
    - 用户确认后运行（`--scenes` 为用户原文；只选设备时用设备名）：
 
@@ -68,19 +69,25 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--scenes "<�
      `跳过不支持的文档（推荐）` / `仍然全部执行` / `取消批次`。
      选“跳过”时重新运行 resolve 并追加 `--skip-unsupported`；选“全部执行”则保留
      原结果继续（后续失败按正常迭代处理）；选“取消”则停止批次。
-   - `action=start` / `action=resume`：场景已确认，继续认领流程。
+   - **逐算子量化场景（强制）**：批次只确认设备；每个单算子 run 创建后，由该 run
+     读取自己的文档识别**已选设备下**的量化场景并征询用户选择（见
+     `iterate-operator` SCENE_SCAN 第 2 段）。用户也可在批次阶段直接给出完整场景
+     文本，此时内层 run 只做匹配与回显确认；匹配不上仍回落到逐算子征询，不得跳过。
+   - `action=start` / `action=resume`：设备已确认，继续认领流程。
 5. 处理 `action=start`：使用 skill 工具调用 `iterate-operator`，参数为返回的
    `operator_doc_source` 与 `--batch-dir <batch-dir>`；透传 claim 返回的
    `operator_family`、`test_framework`、`scenes`（**始终透传
-   `--scenes "<scenes>"`**，值为该算子文档的设备别名 + 用户场景原文；这是批次级
-   场景确认结果，内层 run 不再交互收集场景）。仅当 `prompt_explicit=true` 时透传
+   `--scenes "<scenes>"`**，值为该算子文档的设备别名 + 用户场景原文；内层 run
+   复用设备，并在文本未含可用量化场景时读本文档征询该设备下的场景）。仅当
+   `prompt_explicit=true` 时透传
    `--prompt <prompt>`，自动模式不得把某一 family 的 baseline 当作显式 prompt
    传给另一 family；始终透传 `--hs-scenario-mode <hs_scenario_mode>`；若
    `supplement_constraints` 非空，一并透传 `--supplement-constraints <path>`；
    始终透传 claim 返回的
    `--constraint-check-rounds <constraint_check_rounds>`，使每个算子的首轮 EXTRACT 与后续
    UPDATE_CONSTRAINTS 新版本都执行同样的 check/repair 门禁；默认透传
-   `--human-checkpoint-round 0`（批处理无头不能 AskUserQuestion，禁用人工补充检查点）。
+   `--human-checkpoint-round 0`（批处理默认禁用人工补充检查点；场景征询不属于该
+   检查点，仍按 SCENE_SCAN 执行）。
    - `action=resume`：若已有 `run_dir`，读取其 `run_state.json`，按
      `/iterate-operator` 的恢复协议从最后完成状态继续；若尚无 `run_dir`，按 start 处理
      （使用 claim 返回的 `scenes`）。

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Batch-level scene inventory and selection.
+"""Batch-level device inventory and selection.
 
-Batch runs must narrow by an explicit device/scene before the first operator is
+Batch runs must narrow by an explicit device before the first operator is
 claimed. This module deterministically scans every document in a batch for its
 "产品支持情况" section, exposes the union of devices together with per-document
-support, and records the resolved scene on ``batch_state.json``.
+support, and records the resolved device on ``batch_state.json``.
 
-The coordinator still performs the text matching/confirmation UX (same as a
+The coordinator still performs the confirmation UX (same device-first flow as a
 single ``/iterate-operator`` run); this script only owns the deterministic
 parts: parsing device tables, validating the selected device, and skipping
-documents that do not support it.
+documents that do not support it. Quantization scenes are NOT selected here:
+each single-operator run reads its own document and asks for the scenes under
+the already-confirmed device.
 """
 
 from __future__ import annotations

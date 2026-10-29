@@ -170,8 +170,15 @@ def validate_csv(csv_path: Path) -> dict:
                         continue
                     if not isinstance(s, tuple):
                         issues.append(f"{prefix}: shape[{j}] is not a tuple: {s}")
-                    elif not all(isinstance(d, int) and d > 0 for d in s):
-                        bad = [d for d in s if not (isinstance(d, int) and d > 0)]
+                    elif not all(
+                        isinstance(d, int) and (d > 0 or d == -1) for d in s
+                    ):
+                        # -1 is the sentinel for a prerequisite-operator output
+                        # filled by the TTK --plugin; concrete dims must be > 0.
+                        bad = [
+                            d for d in s
+                            if not (isinstance(d, int) and (d > 0 or d == -1))
+                        ]
                         issues.append(f"{prefix}: shape[{j}]={s} has non-positive dims: {bad}")
 
             # --- tensor_dtypes ---

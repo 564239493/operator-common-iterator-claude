@@ -1,7 +1,7 @@
 ---
 name: iterate-operator
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
+argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--ttk-plugin path] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
 ---
 
 # 算子闭环迭代
@@ -36,15 +36,18 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    前 `human_checkpoint_round` 轮仍纯自动迭代，检查点之后每个失败轮都重新弹该四选一 （可逐轮切换）。 
    未开启`human-constraints-upload`时检查点退化为三选一（人工修复不可选）。详见下方「挂起、监听与唤醒」节。
 
-   `--scenes "<场景描述>"` 可选；提供时直接以该文本为场景描述（原文存
-   `run_state.scenes`），由主协调器做简单文字匹配（设备/量化场景/参数取值）对齐文档后
-   写 selection.json。未提供时进入手动输入模式（先展示文档设备/量化场景/执行机建议
-   面板，再让用户文本输入场景描述）。场景收集是强制步骤：**至少选择出设备类型**才
-   允许进入 EXTRACT。详见 SCENE_SCAN 子步骤。
+   `--scenes "<场景描述>"` 可选；提供时原文存 `run_state.scenes`，作为场景预填文本。
+   场景收集强制分三段且**设备优先**：先让用户从文档"产品支持情况"支持的设备中选择
+   设备类型（硬性必要项），设备确定后主协调器再读文档识别**该设备下**的量化场景并
+   让用户选择，最后可选填写参数取值。未提供 `--scenes` 时同样先选设备。场景收集是
+   强制步骤，至少选择出设备类型才允许进入 EXTRACT。详见 SCENE_SCAN 子步骤。
 
    `hs-scenario-mode=original`；只有用户显式传入
    `--hs-scenario-mode planned` 时，torch_npu + TTK 才启用 TND/BSND/
    paged-attention 场景拆分和投影。该参数对 ACLNN/ATK 不生效。
+   `--ttk-plugin <路径>` 可选，仅 TTK：建 run 时写入 `run_state.ttk_plugin`，
+   EXECUTE 阶段由 `execute_cases.py` 自动读取并作为 ttk 的 `--plugin` 传入
+   （本地文件或 `/` 开头的远端绝对路径）。非 TTK 传入即报错，不要与 ATK 混用。
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
@@ -55,7 +58,7 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
     `--web` 默认关闭；开启时在「首轮 CHECK 通过后 DASHBOARD 拉起」步骤把 `--web`
     透传给 `raise_dashboard.py` 打开浏览器；不传则仅确保 server 就绪并返回 URL、
     **不自动打开浏览器**。该旗标只影响是否自动开浏览器，不影响 server 与工作台可用性。
-2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
+2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、`--ttk-plugin`、
    `--supplement-constraints`、`--source-analysis-knowledge`、`--operator-family`、`--test-framework`、
    `--hs-scenario-mode`、`--constraint-check-rounds`、`--scenes "<场景描述>"` 等参数，
    `--scenes` 原文存 `run_state.scenes`（场景直输模式标记），
@@ -87,41 +90,49 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
    最小修改上一轮约束，不再委派 constraint-extractor。
 
-**SCENE_SCAN 子步骤（文本直输模式，唯一路径）**：场景信息只走**用户文本输入 +
-简单文字匹配**。legacy 三级场景扫描流程（scene-scanner Agent 扫 `scene_scan.json`
-+ Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判）**已整体下线并删除，
-禁止再调用**——`scene-scanner` Agent 与 `scan-scenes` skill 已从注册表移除、
-`prompts/scan_scenes.md` 与 `scripts/check_scene_conflicts.py` 已删除、
-`render_scene_directive.py` 已移除 `--scan` 参数与 `--scope all`（原实现仅存 git
-历史）。场景信息二选一：
+**SCENE_SCAN 子步骤（设备优先的三段场景收集，唯一路径）**：场景信息来自
+`--scenes "<场景描述>"` 预填文本或交互输入。legacy 全量场景扫描管线（scene-scanner
+Agent 扫 `scene_scan.json` + `check_scene_conflicts.py` 冲突预判 + `--scan`/
+`--scope all`）已下线删除，禁止调用（原实现仅存 git 历史）。现行流程固定按
+**设备类型 → 量化场景 → 参数取值** 三段收集，且**后两段只能在设备确定之后进行**。
 
-- `--scenes "<场景描述>"` 已传入：直接以该文本为场景描述（原文已存 `run_state.scenes`）；
-- 未传：主协调器先组装【建议面板】展示给用户（全部来自落盘文件/配置，非模型记忆），
-  然后请用户**文本输入**场景描述。建议面板内容：
-  1. 文档支持的设备：读 `<run-dir>/inputs/<doc>.md` "产品支持情况"章节，列出设备全称；
-  2. 执行机支持的平台：读 `servers.json` 各服务器 `platforms` 并集，标注哪些文档设备有执行机；
-  3. 文中出现的量化场景关键词（非量化/全量化-xx/伪量化…，按文档实际内容列举）。
-  用户输入格式建议：**设备类型（必要）+ 量化场景（文档有量化维度时）+ 参数取值**，如
-  `A2非量化groupListType等于2`；文档无场景或量化关键词（场景清单为空）时
-  仅设备即可（如 `A2`）。
+**第 1 段（强制）：选择设备类型**
+- 读 `<run-dir>/inputs/<doc>.md` 的"产品支持情况"章节，列出该算子**支持（√）**的
+  设备全称；文档未列出或明确不支持的设备不得作为候选。
+- `--scenes` 非空时先**只做设备对齐**：文本含设备关键字（"A2"/"A3"/"910B" 或设备名
+  子串）→ 对齐到支持设备全称；对不上或命中多个 → 列出候选让用户重选，不得放行。
+- 未传 `--scenes`、或文本中没有可用设备 → 用 AskUserQuestion 让用户从支持设备中
+  选择（可多选；文档仅 1 个支持设备时回显该设备并确认一次）。**设备未选定前，禁止
+  读取/展示量化场景清单、禁止写 selection.json、禁止渲染 directive、禁止推进
+  EXTRACT。**
+- 对齐后与 `servers.json` 各服务器 `platforms` 并集比对：无执行机 → 警示"该设备无
+  执行机，real 执行无法进行"（**不阻断**，约束提取仍可进行）。
+- 用户拒绝提供设备时，向用户确认是否停止任务（不得静默跳过场景步骤继续提取）。
 
-**文字匹配与回显确认**（两种入口合流，逐项执行）：
-> **批处理例外**：由 `iterate-directory` 传入 `--scenes` 且带 `--batch-dir` 时，
-> 设备/场景已在该批次认领前统一问询确认（含“哪些文档不支持该设备”的提示），本 run
-> **不再 AskUserQuestion**；直接按文本对齐本文档设备全称并落盘。若文本对不上本文档
-> 任何设备（理论上已被批次跳过），本 run 不得猜测，按 `BLOCKED` 回报批次。
-- **设备（硬性必要项）**：用户文本包含设备关键字（"A2"/"A3"/"910B" 或设备名子串）→
-  对齐到文档"产品支持情况"的**设备全称**；**对不上任何设备 → 追问重输**，并列出文档
-  支持的设备全称清单作为提示（不得自行猜测或放行）。对齐后与 servers.json
-  `platforms` 并集比对：无执行机 → 警示"该设备无执行机，real 执行无法进行"
-  （**不阻断**，约束提取仍可进行）。
-- **量化场景**：文本命中文档中出现的量化关键词（非量化/全量化-xx/伪量化…）；匹配不上 →
-  展示关键词清单让用户挑选（**有量化维度的算子必须选出场景**）。
-  **文档无场景或量化关键词（场景清单为空）→ 该设备无场景维度：不选场景、
-  仅选设备即可，无需也不得用"非量化"等模板名代替**——"文档没有该维度"不等于
-  "在该维度上选了非量化"。"不选"的落盘形态：selection 该设备值写 `null`（设备级，
-  "仅选设备"形态）。
-- **参数取值（含大白话区间，解析细则）**：
+**第 2 段（设备确定后）：识别并选择该设备下的量化场景**
+- 主协调器重新读文档快照（产品支持情况、参数说明、约束说明、量化相关小节），
+  **只针对已选设备**识别量化场景。提取规则（沿用历史三段式的量化模板规则）：
+  - 场景 = 具体量化模板，名称直接编码量化方式/位宽（如 `非量化`/`伪量化`/
+    `全量化-A8W8`/`全量化-A4W4`/`K-C量化（A4W4）`/`全量化-GQA`），按文档实际用词；
+    "量化模式"等上级分类词不是场景，其下说明/约束拆入各真实模板；
+  - 无设备标注的通用场景合并到已选设备；文档标注"与 X 相同"时按 X 的场景集；
+  - 只保留**文档不仅提到、而且给出了该场景下参数取值约束**的场景；
+    ACLNN_ERR_*/参数校验失败场景一律跳过；
+  - 不得凭算子名/参数名臆造；**其它设备专属场景不得出现在本设备候选里**。
+- 若 `--scenes` 文本已包含场景关键词 → 先与上述该设备场景清单匹配：唯一命中则
+  预填；匹配不上或命中多个 → 列出候选让用户选择，不得静默接受。
+- 用 AskUserQuestion 让用户选择该设备下的量化场景（可多选；可提供"全部"并展开为
+  实际场景名）。多设备时逐设备识别、逐设备征询。
+- 若该设备在文档中**没有任何量化场景** → 该设备无场景维度：不选场景，selection
+  该设备值写 `null`，明确告知"仅按设备收窄"；不得用"非量化"等模板名代替
+  （"文档没有该维度"不等于"在该维度上选了非量化"）。文档含量化参数信号但识别不到
+  具体场景 → 只作 advisory 提示（可能遗漏剪枝），仍按无场景维度处理，不补造场景。
+
+**第 3 段（可选）：参数取值**
+- 收集所选场景下的显式参数取值（`--scenes` 中已给出的先解析）；用户可跳过（保持
+  "按文档和已选场景自适应"）。多场景时同一参数取值应用到全部已选场景；用户明确
+  指定只作用于某场景时按场景分别落盘。
+- 解析细则：
   - 等值："等于2" / "=2" / "取2" → 单值 → `fix [2]`；
   - 枚举："取0和3" / "=0,3" / "0,1,2" → 多值 → `expand [0,3]`；
   - **闭区间大白话**："x的shape为2-6维" / "grouplist取值为4-6之间" / "2~6" /
@@ -132,26 +143,32 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
   - **开区间话术**（"以上"/"以内"/"不超过"/"大于"）：param_modes 仅支持有限取值
     集合，必须向用户说明并请其给出确定上下界（或列出具体候选），不得自行截断；
   - 参数名对不上文档参数表 → 回报用户修正。
-- **回显补充**：凡区间解析出的 expand 清单，必须在确认表中显示**完整展开结果**
-  （如 `x: [2,3,4,5,6]（维度数）`、`groupList: [4,5,6]`），用户确认后才写入
-  selection.json。
-- **回显确认（强制一次）**：把解析结果以表格（设备全称 / 量化场景 / 参数取值列表）展示，
-  无场景维度设备的量化场景列显示"（无场景维度）"；AskUserQuestion 让用户
-  【确认/修改】；确认后才允许落盘。
+
+**回显确认（强制一次）**：把三段结果以表格（设备全称 / 量化场景 / 参数取值列表）
+展示，无场景维度设备的量化场景列显示"（无场景维度）"；凡区间解析出的 expand 清单
+必须显示**完整展开结果**（如 `x: [2,3,4,5,6]（维度数）`、`groupList: [4,5,6]`）。
+AskUserQuestion 让用户【确认/修改】；确认后才允许落盘。**批处理已完成批次级确认、
+且透传文本唯一命中场景时，只回显结果、不再追问**（避免每个算子重复确认）。
+
+> **批处理场景来源**：`iterate-directory` 在批次级只确认**设备**，并把设备别名 +
+> 用户场景原文作为 `--scenes` 透传。本 run 第 1 段先对齐设备；若透传文本不含可匹配
+> 的量化场景，**继续执行第 2 段**读本文档识别该设备下量化场景并征询用户，批处理
+> 不得因此跳过场景步骤；若批次文本已含场景且唯一匹配，只回显确认、不重复询问。
 
 **设备必选硬门槛（强制）**：未选出至少一个可对齐文档"产品支持情况"的设备全称之前，
 禁止写 `selection.json`、禁止渲染 `scene_directive.md`、禁止推进 EXTRACT；用户明确
 拒绝提供设备时，向用户确认是否停止任务（不得静默跳过场景步骤继续提取）。
 `render_scene_directive.py` 以 `DEVICE_REQUIRED`（device_types 为空）/
 `EMPTY_SCENE`（selection 无任何有效设备条目——设备值 `null` 是合法条目，
-全"仅设备"选择不触发）exit 2 硬拦截——收到该返回时回到文字匹配重新征询，
+全"仅设备"选择不触发）exit 2 硬拦截——收到该返回时回到设备/场景征询重新选择，
 不得伪造 selection 绕过。
 
 **落盘**：确认后写 `<run-dir>/inputs/selection.json`（**值级形态**）：
 `{"device_types": [<设备全称>], "selection": {<设备全称>: null | {<量化场景>: null | {参数: [值...]}}}}`
-（设备值 `null` = 该设备**无场景维度**（文档无场景或量化关键词），仅按设备收窄；
-模板值 `null` = "保持自动"；显式参数 → `{param: [values]}`；文本模式**不支持**
-`fix_all_default`——无场景参数枚举，需要固定全部默认值时请显式列出各参数）。
+（设备值 `null` = 该设备**无场景维度**（该设备在文档中无任何量化场景），仅按设备
+收窄；模板值 `null` = "保持自动"；显式参数 → `{param: [values]}`；"全部"须展开为
+实际场景名，不得把"全部"写成模板键；文本模式**不支持** `fix_all_default`——无场景
+参数枚举，需要固定全部默认值时请显式列出各参数）。
 
 **渲染**：
 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
@@ -393,6 +410,13 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
        `execute_cases.py --mode real --strategy fusion --num <case_count>`
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
       `engine_error` 终止流程。
+     - **TTK 前置 plugin 提示**：`run_state.ttk_plugin` 非空时，
+       `execute_cases.py` 会自动读取并作为 ttk 的 `--plugin` 传入，不重复询问。
+       若为空且 `case-executor` 返回 `TTK_PLUGIN_REQUIRED` /
+       `requires_user_action=true`（检测到 `metadataOptional` 等前置算子产物），
+       主协调器用 question
+       工具向用户索取插件路径，并在重试真实执行时追加 `--plugin <路径>`；不得自行
+       猜测路径。未检测到前置参数时不要主动追加 `--plugin`。
    - 执行完成后运行 `python scripts/flow_control.py advance --run-dir <run-dir>`
      （裁决 EXECUTE → GATE），随后再委派 `quality-reviewer`；gate 产出后由第 7 步的
      `advance` 决定去向。

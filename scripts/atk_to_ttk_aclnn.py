@@ -103,6 +103,44 @@ def _split_c_parameters(raw: str) -> list[str]:
     return parts
 
 
+# Parameters computed by a prerequisite operator (e.g. a Metadata companion)
+# must be declared with the ``(-1,)`` sentinel in TTK ACLNN CSV so TTK reserves
+# a slot and lets the ``--plugin`` fill the real tensor.  Without the sentinel
+# TTK builds the documented fixed shape itself and the plugin result is
+# discarded.  Detection is deterministic: the input card description names the
+# prerequisite operator, or the parameter is a known Metadata output.
+_PREREQ_FILLED_DESC_RE = re.compile(
+    r"(前置算子|[A-Za-z0-9_]*[Mm]etadata[A-Za-z0-9_]*\s*算子(?:传入|计算|生成))"
+)
+_PREREQ_FILLED_NAMES = frozenset({"metadataoptional"})
+_TTK_PLUGIN_SENTINEL_SHAPE = "(-1,)"
+
+
+def _plugin_filled_tensor_names(constraints: dict[str, Any] | None) -> set[str]:
+    """Return tensor param names filled by a prerequisite operator + plugin."""
+    names = set(_PREREQ_FILLED_NAMES)
+    if not isinstance(constraints, dict):
+        return names
+    product_support = constraints.get("product_support") or []
+    inputs = constraints.get("inputs") or {}
+    if not isinstance(inputs, dict):
+        return names
+    for name, section in inputs.items():
+        description = ""
+        if isinstance(section, dict):
+            if "description" in section:
+                description = str(section.get("description") or "")
+            else:
+                for platform in product_support:
+                    card = section.get(platform)
+                    if isinstance(card, dict):
+                        description = str(card.get("description") or "")
+                        break
+        if description and _PREREQ_FILLED_DESC_RE.search(description):
+            names.add(str(name).casefold())
+    return names
+
+
 def _signature_from_constraints(
     constraints: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -594,6 +632,7 @@ def convert_case(
     case_index: int,
     signature: list[dict[str, Any]] | None = None,
     attr_specs: list[dict[str, str]] | None = None,
+    plugin_filled: set[str] | None = None,
 ) -> dict[str, str]:
     """Convert one ATK compact case to a TTK ACLNN CSV row dict."""
     api_name = case.get("name") or case.get(
@@ -618,6 +657,7 @@ def convert_case(
     storage_parts: list[str] = []
     data_ranges: list[tuple[Any, Any]] = []
     output_indexes: list[int] = []
+    plugin_filled = plugin_filled or set()
 
     signature = signature or _SIGNATURE
     # Convert attr_specs to the format expected by _format_attrs
@@ -679,6 +719,20 @@ def convert_case(
         dtype_ttk = _format_dtype(item.get("dtype"))
         format_ttk = _format_tensor_format(item.get("format"))
         storage_spec = _storage_shape_spec(item, shape)
+
+        if str(name).casefold() in plugin_filled and not is_tensor_list:
+            # Prerequisite-operator output (e.g. metadataOptional): declare the
+            # ``(-1,)`` sentinel so TTK reserves the slot for the --plugin to
+            # fill.  A concrete documented shape would make TTK build its own
+            # tensor and discard the plugin result.
+            shapes_parts.append(_TTK_PLUGIN_SENTINEL_SHAPE)
+            dtypes_parts.append(f"'{dtype_ttk}'")
+            formats_parts.append(f"'{format_ttk}'")
+            storage_parts.append("None")
+            data_ranges.append((None, None))
+            if is_output:
+                output_indexes.append(idx)
+            continue
 
         if is_tensor_list:
             count = _tensor_list_element_count(item)
@@ -888,10 +942,16 @@ def convert_file(
     if not isinstance(cases, list) or not cases:
         raise ValueError("TTK_ACLNN_CASES_REQUIRED: source must be a non-empty JSON array")
     signature, attr_specs = _signature_from_constraints(constraints)
+    plugin_filled = _plugin_filled_tensor_names(constraints)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     rows = [
-        convert_case(case, i, signature=signature, attr_specs=attr_specs)
+        convert_case(
+            case, i,
+            signature=signature,
+            attr_specs=attr_specs,
+            plugin_filled=plugin_filled,
+        )
         for i, case in enumerate(cases)
     ]
     with destination.open("w", encoding="utf-8", newline="") as handle:
