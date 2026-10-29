@@ -90,11 +90,130 @@ def _is_flat(base):
     return base.is_dir() and bool(list(base.glob('*.json')))
 
 
+def _latest_json(d):
+    """取目录下最新一份覆盖率 json。
+
+    优先取文件名含时间戳（_YYYYMMDD_HHMMSS）且最新的一份；
+    无时间戳时回退到按修改时间最新的任意 *.json。
+    """
+    import re as _re
+    ts_re = _re.compile(r'_(\d{8})_(\d{6})\.json$')
+    ts_files = []
+    for f in d.glob('*.json'):
+        m = ts_re.search(f.name)
+        if m:
+            ts_files.append((m.group(1) + m.group(2), f))
+    if ts_files:
+        ts_files.sort(key=lambda x: x[0])
+        return ts_files[-1][1]
+    files = list(d.glob('*.json'))
+    if not files:
+        return None
+    return max(files, key=lambda f: f.stat().st_mtime)
+
+
+def _node_summary(data):
+    """从任一 coverage json 归一化出摘要。
+
+    兼容三种形态：
+    - 汇总层（有 level 字段）：summary.<gran>.metrics[]
+    - 目录级合并 / 叶子（有 operator + granularities）：granularities.func.coverage.<gran>.metrics[]
+    统一取 op 粒度（叶子）或 host 粒度（汇总）的 函数/行/分支 covered/total/rate。
+    """
+    def from_metrics(metrics):
+        fc, ft = _cov_pair(metrics, '函数覆盖率')
+        lc, lt = _cov_pair(metrics, '行覆盖率', '语句覆盖率')
+        bc, bt = _cov_pair(metrics, '分支覆盖率')
+        return {
+            'func': _cov_rate(metrics, '函数覆盖率'), 'func_covered': fc, 'func_total': ft,
+            'line': _cov_rate(metrics, '行覆盖率', '语句覆盖率'), 'line_covered': lc, 'line_total': lt,
+            'branch': _cov_rate(metrics, '分支覆盖率'), 'branch_covered': bc, 'branch_total': bt,
+        }
+
+    s = data.get('summary')
+    if isinstance(s, dict) and s:
+        # 汇总层：优先 op 粒度，回退 host
+        gran = s.get('op') or s.get('host') or {}
+        return from_metrics(gran.get('metrics') or [])
+
+    g = data.get('granularities') or {}
+    gr = g.get('func') or g.get('file') or {}
+    cov = gr.get('coverage') or {}
+    op = cov.get('op') or {}
+    return from_metrics(op.get('metrics') or [])
+
+
+def _classify(data, node_dir):
+    """判定节点类型：'agg' | 'merged' | 'leaf'。
+
+    - 顶层有 level 字段 → agg（根/库/域 汇总文件）
+    - 顶层有 operator + mergedFrom → merged（目录级合并文件）
+    - 顶层有 operator + granularities → leaf（叶子或单算子目录的叶子拷贝）
+    """
+    if isinstance(data, dict):
+        if data.get('level'):
+            return 'agg'
+        if data.get('operator') and data.get('mergedFrom'):
+            return 'merged'
+        if data.get('operator') and data.get('granularities'):
+            return 'leaf'
+    return 'leaf'
+
+
+def _coverage_node(base, d):
+    """递归构造一个目录节点（统一形状）。
+
+    返回 { name, path, kind, summary, has_analysis, children } 或 None（无可用覆盖率数据）。
+    子节点一律来自文件系统子目录（汇总层 agg 文件无 sources，不能靠 sources 重建）。
+    """
+    jf = _latest_json(d)
+    if jf is None:
+        return None
+    try:
+        data = read(jf)
+    except (ValueError, OSError):
+        return None
+    kind = _classify(data, d)
+    try:
+        rel_dir = d.relative_to(base).as_posix()
+    except ValueError:
+        rel_dir = d.name
+    try:
+        has_analysis = bool(list(d.glob('*.md')))
+    except OSError:
+        has_analysis = False
+    node = {
+        'name': d.name,
+        'path': rel_dir,
+        'kind': kind,
+        'summary': _node_summary(data),
+        'has_analysis': has_analysis,
+    }
+    # merged/leaf 层补充 operator 名与 domain
+    oi = data.get('operatorInfo') or {} if isinstance(data, dict) else {}
+    if kind in ('merged', 'leaf'):
+        node['operator'] = data.get('operator') or d.name
+        node['domain'] = oi.get('domain', '')
+    # 递归子目录
+    children = []
+    try:
+        subs = sorted([p for p in d.iterdir() if p.is_dir() and not p.is_symlink()])
+    except OSError:
+        subs = []
+    for sub in subs:
+        child = _coverage_node(base, sub)
+        if child is not None:
+            children.append(child)
+    node['children'] = children
+    return node
+
+
 def _coverage_tree(base):
     """覆盖率树。两种结构：
 
-    - 平坦（任务内嵌 runs/<run>/ops_cov_report/）：json/md 直接在 base 下，包装成单算子四级树。
-    - 四级：base/<版本>/<算子库>/<算子目录>/<算子名称>/{*.json, *.md}。
+    - 平坦（任务内嵌 runs/<run>/ops_cov_report/）：json/md 直接在 base 下，包装成单算子树。
+    - 递归（全局 ops_final_cov_report/）：base/<版本>/<库>/<域>/<目录>/<算子>/…
+      按 JSON 形态（level/operator/mergedFrom）递归，每节点带预聚合 summary 与 children。
     """
     versions = []
     if not base.is_dir():
@@ -106,48 +225,37 @@ def _coverage_tree(base):
             data = read(files[0])
         except (ValueError, OSError):
             return {'versions': versions}
-        oi = data.get('operatorInfo') or {}
-        op_name = data.get('operator') or base.parent.name
-        lib_name = oi.get('dir') or '任务内嵌'
-        summary = _op_summary(base, data, name=op_name, dir_name=base.parent.name)
-        return {'versions': [{'version': '任务内嵌', 'libraries': [
-            {'name': lib_name, 'dirs': [{'name': op_name, 'ops': [summary]}]}]}]}
-    # 四级结构
+        summary = _op_summary(base, data, name=data.get('operator') or base.parent.name,
+                              dir_name=base.parent.name)
+        # 包装成与递归树同构的节点（versions[0] 即单算子节点）
+        node = {
+            'name': summary['dir_name'],
+            'path': summary['dir_name'],
+            'kind': 'leaf',
+            'summary': {
+                'func': summary['func'], 'func_covered': summary['func_covered'], 'func_total': summary['func_total'],
+                'line': summary['line'], 'line_covered': summary['line_covered'], 'line_total': summary['line_total'],
+                'branch': summary['branch'], 'branch_covered': summary['branch_covered'], 'branch_total': summary['branch_total'],
+            },
+            'has_analysis': summary['has_analysis'],
+            'operator': summary['operator'],
+            'domain': summary['domain'],
+            'children': [],
+        }
+        return {'versions': [node]}
+    # 递归结构：base 下每个子目录是一个版本节点
     for vdir in sorted(base.glob('*')):
         if not vdir.is_dir() or vdir.is_symlink():
             continue
-        libs = []
-        for ldir in sorted(vdir.glob('*')):
-            if not ldir.is_dir() or ldir.is_symlink():
-                continue
-            dirs = []
-            for ddir in sorted(ldir.glob('*')):
-                if not ddir.is_dir() or ddir.is_symlink():
-                    continue
-                ops = []
-                for odir in sorted(ddir.glob('*')):
-                    if not odir.is_dir() or odir.is_symlink():
-                        continue
-                    files = sorted(odir.glob('*.json'))
-                    if not files:
-                        continue
-                    try:
-                        rel = str(odir.relative_to(base)) + '/' + files[0].name
-                        data = read(paths.resolve_within(base, rel))
-                    except (ValueError, OSError):
-                        continue
-                    ops.append(_op_summary(odir, data))
-                if ops:
-                    dirs.append({'name': ddir.name, 'ops': ops})
-            if dirs:
-                libs.append({'name': ldir.name, 'dirs': dirs})
-        if libs:
-            versions.append({'version': vdir.name, 'libraries': libs})
+        node = _coverage_node(base, vdir)
+        if node is not None:
+            node['version'] = vdir.name
+            versions.append(node)
     return {'versions': versions}
 
 
 def _coverage_detail(base, rel_parts, kind):
-    """读取单算子报告。rel_parts=(版本, 算子库, 算子目录, 算子名称)；kind=coverage|analysis。
+    """读取任意深度节点的 coverage json 或 analysis md。rel_parts 为相对 base 的路径段；kind=coverage|analysis。
 
     平坦结构（任务内嵌）时忽略 rel_parts，直接读 base 下的 json/md。
     """
@@ -162,13 +270,13 @@ def _coverage_detail(base, rel_parts, kind):
             raise FileNotFoundError('没有分析文档')
         return {'filename': md_files[0].name, 'content': md_files[0].read_text(encoding='utf-8')}
     rel = '/'.join(rel_parts)
-    opdir = paths.resolve_within(base, rel)
+    node_dir = paths.resolve_within(base, rel)
     if kind == 'coverage':
-        files = sorted(opdir.glob('*.json'))
-        if not files:
+        jf = _latest_json(node_dir)
+        if jf is None:
             raise FileNotFoundError('没有覆盖报告')
-        return read(paths.resolve_within(base, rel + '/' + files[0].name))
-    md_files = sorted(opdir.glob('*.md'))
+        return read(paths.resolve_within(base, rel + '/' + jf.name))
+    md_files = sorted(node_dir.glob('*.md'))
     if not md_files:
         raise FileNotFoundError('没有分析文档')
     doc = paths.resolve_within(base, rel + '/' + md_files[0].name)
@@ -251,8 +359,9 @@ def get(root, parts, query, token):
                                'has_analysis': s['has_analysis'], 'count': s['count'],
                                'func': s['func'], 'line': s['line'], 'branch': s['branch']})
             return {'runs': result}
-        if len(parts) == 6 and parts[5] in ('coverage', 'analysis'):
-            return _coverage_detail(base, parts[1:5], parts[5])
+        # 变长路径详情：cover/<p1>/<p2>/…/<pn>/<kind>，kind ∈ {coverage, analysis}
+        if len(parts) >= 3 and parts[-1] in ('coverage', 'analysis'):
+            return _coverage_detail(base, parts[1:-1], parts[-1])
     raise FileNotFoundError('未知审核接口')
 
 def save(root, run_id, iteration, request):

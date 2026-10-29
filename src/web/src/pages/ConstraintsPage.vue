@@ -1299,6 +1299,7 @@ export default {
     min-height: 80px;
     flex-shrink: 0;
     flex-wrap: wrap;
+    margin: 16px;
 }
 
 .info-left {
@@ -1911,7 +1912,7 @@ html[data-theme='dark'] .doc-md :deep(.doc-md-hit) {
 /* el-tag 状态色 */
 .state-tag {
     font-weight: 600;
-    padding: 0 14px !important;
+    padding: 0 10px !important;
     height: 30px !important;
     line-height: 28px !important;
     border-radius: 7px !important;
@@ -2137,7 +2138,6 @@ html[data-theme='dark'] .doc-md :deep(.doc-md-hit) {
 .timeline-bar {
     margin: 0 16px;
     padding: 4px 0;
-    margin-top: 12px;
 }
 
 /* 时间线标题行 + 折叠开关 */
