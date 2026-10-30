@@ -47,7 +47,8 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    paged-attention 场景拆分和投影。该参数对 ACLNN/ATK 不生效。
    `--ttk-plugin <路径>` 可选，仅 TTK：建 run 时写入 `run_state.ttk_plugin`，
    EXECUTE 阶段由 `execute_cases.py` 自动读取并作为 ttk 的 `--plugin` 传入
-   （本地文件或 `/` 开头的远端绝对路径）。非 TTK 传入即报错，不要与 ATK 混用。
+   （本地文件、本地目录或 `/` 开头的远端绝对路径；本地目录会打包上传并在远端
+   执行目录解压后按目录传入）。非 TTK 传入即报错，不要与 ATK 混用。
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
@@ -414,9 +415,13 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
        `execute_cases.py` 会自动读取并作为 ttk 的 `--plugin` 传入，不重复询问。
        若为空且 `case-executor` 返回 `TTK_PLUGIN_REQUIRED` /
        `requires_user_action=true`（检测到 `metadataOptional` 等前置算子产物），
-       主协调器用 question
-       工具向用户索取插件路径，并在重试真实执行时追加 `--plugin <路径>`；不得自行
-       猜测路径。未检测到前置参数时不要主动追加 `--plugin`。
+       主协调器用 question 工具向用户索取插件路径；路径可为本地文件、本地目录
+       （TTK ACLNN 会打包上传并在远端解压）或 `/` 开头且本地不存在的远端绝对路径。
+       用户给出后先校验（本地相对路径必须存在且为文件/目录），再运行：
+       `python scripts/run_state.py set-fields --run-dir <run-dir> --set ttk_plugin=<路径>`
+       持久化到 `run_state.ttk_plugin`，然后重试真实执行（`execute_cases.py` 会自动
+       读取该字段；也可显式追加 `--plugin <路径>`）。不得自行猜测路径。
+       未检测到前置参数时不要主动追加 `--plugin`。
    - 执行完成后运行 `python scripts/flow_control.py advance --run-dir <run-dir>`
      （裁决 EXECUTE → GATE），随后再委派 `quality-reviewer`；gate 产出后由第 7 步的
      `advance` 决定去向。

@@ -233,9 +233,9 @@ def _plugin_required_params(iter_dir: Path) -> list[str]:
 def _resolve_manual_plugin(value: str | None) -> Path | None:
     """Resolve a user-supplied TTK ``--plugin`` path.
 
-    Relative/local paths are resolved against the project root and must exist;
-    absolute paths that do not exist locally are treated as remote absolute
-    paths, matching ``scripts/execute_ttk_aclnn.py``.
+    Relative/local paths are resolved against the project root and must exist
+    (file or directory); absolute paths that do not exist locally are treated
+    as remote absolute paths, matching ``scripts/execute_ttk_aclnn.py``.
     """
     if not value:
         return None
@@ -243,9 +243,9 @@ def _resolve_manual_plugin(value: str | None) -> Path | None:
     if path.is_absolute():
         return path
     resolved = resolve_input_path(value)
-    if not resolved.is_file():
+    if not resolved.is_file() and not resolved.is_dir():
         raise ValueError(
-            f"--plugin 本地文件不存在: {resolved}；"
+            f"--plugin 本地文件/目录不存在: {resolved}；"
             "远端绝对路径请以 / 开头传入"
         )
     return resolved
@@ -750,7 +750,8 @@ def main() -> int:
         default=None,
         help=(
             "TTK 专用：手动指定传给 ttk 的 --plugin 路径，覆盖自动解析。"
-            "本地文件会随用例上传到远端；以 / 开头的远端绝对路径直接引用、不上传。"
+            "本地文件或目录会随用例上传到远端（目录打包上传并解压）；"
+            "以 / 开头且本地不存在的远端绝对路径直接引用、不上传。"
         ),
     )
     parser.add_argument(

@@ -141,6 +141,43 @@ def _plugin_filled_tensor_names(constraints: dict[str, Any] | None) -> set[str]:
     return names
 
 
+def _plugin_filled_cards(
+    constraints: dict[str, Any] | None, names: set[str]
+) -> dict[str, tuple[str, str]]:
+    """Return ``{name_casefold: (ttk_dtype, ttk_format)}`` for plugin-filled params."""
+    defaults: dict[str, tuple[str, str]] = {}
+    if not isinstance(constraints, dict):
+        return defaults
+    product_support = constraints.get("product_support") or []
+    inputs = constraints.get("inputs") or {}
+    if not isinstance(inputs, dict):
+        return defaults
+    for name, section in inputs.items():
+        key = str(name).casefold()
+        if key not in names or not isinstance(section, dict):
+            continue
+        card = section
+        if "dtype" not in card:
+            for platform in product_support:
+                candidate = section.get(platform)
+                if isinstance(candidate, dict):
+                    card = candidate
+                    break
+        dtype = card.get("dtype")
+        fmt = card.get("format")
+        dtype_value = dtype.get("value") if isinstance(dtype, dict) else dtype
+        format_value = fmt.get("value") if isinstance(fmt, dict) else fmt
+        if isinstance(dtype_value, list):
+            dtype_value = dtype_value[0] if dtype_value else None
+        if isinstance(format_value, list):
+            format_value = format_value[0] if format_value else None
+        defaults[key] = (
+            _format_dtype(dtype_value or "int32"),
+            _format_tensor_format(format_value or "ND"),
+        )
+    return defaults
+
+
 def _signature_from_constraints(
     constraints: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -633,6 +670,7 @@ def convert_case(
     signature: list[dict[str, Any]] | None = None,
     attr_specs: list[dict[str, str]] | None = None,
     plugin_filled: set[str] | None = None,
+    plugin_defaults: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, str]:
     """Convert one ATK compact case to a TTK ACLNN CSV row dict."""
     api_name = case.get("name") or case.get(
@@ -707,6 +745,21 @@ def convert_case(
             continue
 
         if item is None or item.get("type") not in ("tensor", "tensors"):
+            # A prerequisite-operator output (e.g. metadataOptional) must keep
+            # its (-1,) slot even when the generated case omitted the tensor;
+            # otherwise TTK rejects the plugin result with "not declared as a
+            # supported -1 slot".  dtype/format come from the constraint card.
+            key = str(name).casefold()
+            if key in plugin_filled and plugin_defaults and key in plugin_defaults:
+                dtype_ttk, format_ttk = plugin_defaults[key]
+                shapes_parts.append(_TTK_PLUGIN_SENTINEL_SHAPE)
+                dtypes_parts.append(f"'{dtype_ttk}'")
+                formats_parts.append(f"'{format_ttk}'")
+                storage_parts.append("None")
+                data_ranges.append((None, None))
+                if is_output:
+                    output_indexes.append(idx)
+                continue
             # absent optional tensor
             shapes_parts.append("None")
             dtypes_parts.append("None")
@@ -943,6 +996,7 @@ def convert_file(
         raise ValueError("TTK_ACLNN_CASES_REQUIRED: source must be a non-empty JSON array")
     signature, attr_specs = _signature_from_constraints(constraints)
     plugin_filled = _plugin_filled_tensor_names(constraints)
+    plugin_defaults = _plugin_filled_cards(constraints, plugin_filled)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     rows = [
@@ -951,6 +1005,7 @@ def convert_file(
             signature=signature,
             attr_specs=attr_specs,
             plugin_filled=plugin_filled,
+            plugin_defaults=plugin_defaults,
         )
         for i, case in enumerate(cases)
     ]

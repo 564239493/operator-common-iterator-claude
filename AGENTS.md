@@ -79,6 +79,7 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 /iterate-operator operator_docs/aclnnFoo.md --human-constraints-upload --max-iterations 5  # 人工约束上传通道：检查点选人工修复后挂起等用户上传 constraints_copy.json，监听触发下一轮
 /iterate-operator operator_docs/aclnnFoo.md --web  # 默认不自动打开工作台页面；加 --web 才在首轮 CHECK 通过后自动拉起浏览器
 /iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/plugin.py  # TTK 前置算子插件，执行时自动作为 ttk --plugin 传入
+/iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/tests/assets  # 目录会打包上传到远端执行目录，解压后以目录传给 ttk --plugin
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子；未传 --scenes 时先列出设备并征询
 /iterate-directory operator_docs --scenes "A2非量化"  # 批次确认设备后逐文档透传；量化场景每个 run 内按文档再选
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
@@ -340,6 +341,9 @@ runs/<operator>-<timestamp>/
 
 ## 重要约定
 
+- TTK 检测到 `metadataOptional` 等前置参数但 `run_state.ttk_plugin` 为空时，
+  `execute_cases.py` 以 `TTK_PLUGIN_REQUIRED` 阻断；主协调器向用户索取路径后必须
+  用 `run_state.py set-fields --set ttk_plugin=<路径>` 持久化再重试，避免重复询问。
 - `constraints.json` 的 `allowed_range_value.type=range` 不允许 null 端点；开区间写 `constraints_in_parameters` 不等式
 - `constraints_in_parameters` 每条约束必须带 `src_txt_line`（1-based 升序行号数组，指向
   算子文档快照中 `src_text` 引用条款的具体行；补充来源对应补充文档）；extractor 落盘前
