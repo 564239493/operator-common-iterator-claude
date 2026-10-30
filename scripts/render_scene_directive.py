@@ -1,16 +1,18 @@
-"""Render ``inputs/scene_directive.md`` from the user's text-input scene
-selection (``inputs/selection.json``) and persist the scene payload to
+"""Render ``inputs/scene_directive.md`` from the user's scene selection
+(``inputs/selection.json``) and persist the scene payload to
 ``run_state.json``.
 
-文本直输模式（唯一场景路径）：用户以文本给出场景描述（``--scenes "<场景描述>"``
-或交互输入），主协调器做简单文字匹配（设备 / 量化场景 / 参数取值）对齐文档后写
+设备优先三段式（唯一场景路径）：先让用户从文档"产品支持情况"支持的设备中选择
+设备类型，设备确定后主协调器再读文档识别**该设备下**的量化场景并让用户选择，最后
+可选填写参数取值（``--scenes "<场景描述>"`` 仅作预填文本）。汇总后写
 ``selection.json``：
 
 ``{device_types:[...], selection:{device: None|{template: None|{param:[values]}}}}``
 
-设备值 ``None``（或空 dict）= **该设备无场景维度**（文档无场景或量化关键词，
-无可选场景模板）：仅按 ``device_types`` 收窄 ``product_support``，不做场景屏蔽；协调器禁止为无场景
-维度的算子虚构 "非量化" 等模板名——"文档没有该维度" 不是 "在该维度上选了非量化"。
+设备值 ``None``（或空 dict）= **该设备无场景维度**（该设备在文档中没有任何
+量化场景模板）：仅按 ``device_types`` 收窄 ``product_support``，不做场景屏蔽；
+协调器禁止为无场景维度的设备虚构 "非量化" 等模板名——"文档没有该维度" 不是
+"在该维度上选了非量化"。
 
 ``_param_modes_noscan`` resolves explicitly selected parameters into two states:
 ``{"expand": [values]}`` (candidate set = the user's selected value subset) |
@@ -82,7 +84,7 @@ def _resolve_selection_noscan(
 
     selection 结构：``{"device_types": [...], "selection": {device:
     None|{template: None|{param: [values]}}}}``；设备值 ``None``（或空 dict）表示
-    **该设备无场景维度**（文档无场景或量化关键词，无可选场景模板）——仅按设备收窄，不做场景屏蔽，
+    **该设备无场景维度**（该设备在文档中没有任何量化场景模板）——仅按设备收窄，不做场景屏蔽，
     渲染时列入 ``no_scene_devices``；tpl_value 仅支持 ``None``（保持自动）与
     ``{param: [values]}``（显式取值，值不与枚举比对——由 extractor 提取阶段
     对齐文档参数表）。``"fix_all_default"`` 无场景枚举支撑，文本模式不支持。

@@ -117,19 +117,31 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
 
 ## 4. 单轮执行协议
 
-### SCENE_SCAN（强制场景收集，文本直输模式，EXTRACT 前子步骤）
+### SCENE_SCAN（强制场景收集，设备优先三段式，EXTRACT 前子步骤）
 
 输入：`inputs/<doc>.md`（只读）、`servers.json`（只读平台并集）。
-执行者：主协调器（无独立 Agent）。场景信息二选一：`--scenes "<场景描述>"` 直输
-（原文存 `run_state.scenes`）；未传时组装【建议面板】（文档"产品支持情况"设备全称、
-`servers.json` 各服务器 `platforms` 并集、文中量化场景关键词）请用户**文本输入**。
-主协调器做简单文字匹配（解析细则见 `iterate-operator` Skill SCENE_SCAN 节）：设备
-关键字对齐文档设备全称（**硬性必要项**，对不上→追问重输）；量化场景关键词命中
-（**文档无场景或量化关键词（建议面板场景清单为空）→ 该设备无场景维度：不选场景、
-仅设备即可，无需用"非量化"等模板名代替**，selection 设备值写 `null`）；参数取值
-等值→fix、枚举→expand、大白话闭区间→展开整数序列
-（>32 值提示收窄，开区间话术必须请用户给确定上下界）。AskUserQuestion 回显确认
-一次（expand 清单显示完整展开结果）后写 `inputs/selection.json`
+执行者：主协调器（无独立 Agent）。场景信息来自 `--scenes "<场景描述>"` 预填文本
+（原文存 `run_state.scenes`）或交互输入。收集固定分三段，**必须先设备、后场景**：
+
+1. **设备类型（强制）**：读文档"产品支持情况"，列出支持（√）的设备全称；
+   `--scenes` 先**只做设备**关键字对齐，对不上/命中多个 → 候选重选；无文本 →
+   AskUserQuestion 让用户选择（可多选；文档仅 1 个支持设备时回显确认）。**设备未
+   选定前不得读取/展示量化场景、不得写 selection.json、不得渲染 directive、不得
+   推进 EXTRACT**。与 `servers.json` platforms 并集比对，无执行机仅警示不阻断。
+2. **量化场景（设备确定后）**：主协调器重新读文档，按历史三段式的量化模板规则
+   **只识别已选设备下**的场景：场景=具体量化模板（`非量化`/`伪量化`/
+   `全量化-A8W8`/`K-C量化（A4W4）`…，按文档原文用词）；"量化模式"等分类词不是
+   场景；无设备标注场景合并到该设备；只保留文档给出参数取值约束的场景；过滤
+   ACLNN_ERR_*/校验场景；不臆造，**其它设备专属场景不得进入候选**。用
+   AskUserQuestion 让用户选择（可多选，"全部"展开为实际场景名）；`--scenes` 文本
+   已带场景时先匹配，匹配不上仍让用户选，不得静默接受。该设备无任何量化场景 →
+   无场景维度：selection 设备值写 `null`，不得用"非量化"等模板名代替。
+3. **参数取值（可选）**：`--scenes` 已给出的先解析，用户可跳过。等值→fix、
+   枚举→expand、大白话闭区间→展开整数序列（>32 值提示收窄，开区间话术必须请
+   用户给确定上下界）；多场景时统一应用到全部已选场景，用户明确指定时按场景落盘。
+
+AskUserQuestion 回显确认一次（设备全称 / 量化场景 / 参数取值，expand 显示完整
+展开结果）后写 `inputs/selection.json`
 （`{"device_types":[...],"selection":{device: null|{template: null|{param:[values]}}}}`；
 设备值 `null` = 无场景维度，仅按设备收窄），
 再运行 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
@@ -144,13 +156,15 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
 selection 无任何有效设备条目返回 `EMPTY_SCENE` exit 2（设备值 `null` = 无场景维度，
 是合法条目，全"仅设备"选择不触发），此时回到文字匹配重新征询。
 `--scope off` 显式禁用场景（不产 directive，纯文档驱动）；批处理
-（`iterate-directory`）在认领首个算术前执行**批次级场景确认**（见 §8），确认后把
-场景文本透传给每个单算子 run，内层不再重复征询。
+（`iterate-directory`）在认领首个算术前执行**批次级设备确认**（见 §8），确认后把
+设备别名 + 场景原文透传给每个单算子 run；每个单算子 run 再按自己的文档识别该设备
+下的量化场景并征询用户（批次原文已含唯一匹配场景时只回显确认）。
 
-**legacy 已下线**：三级场景扫描流程（scene-scanner Agent 扫 `scene_scan.json` +
-Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判 + `--scan`/`--scope all`
-渲染路径）已整体删除，禁止调用；`scene-scan` Agent/Skill、`prompts/scan_scenes.md`、
-`scripts/check_scene_conflicts.py` 均已移除，原实现仅存 git 历史。
+**legacy 已下线**：基于 `scene_scan.json` 的**全量预扫**场景管线（scene-scanner
+Agent 一次性扫全部设备/模板 + Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突
+预判 + `--scan`/`--scope all` 渲染路径）已整体删除，禁止调用；`scene-scan` Agent/
+Skill、`prompts/scan_scenes.md`、`scripts/check_scene_conflicts.py` 均已移除，原实现
+仅存 git 历史。现行“设备优先三段式”只借用其量化模板提取规则，不再做全量预扫。
 
 完成条件：`run_state.scene` 落地 + `inputs/scene_directive.md` 存在（subset）。
 失败策略：设备/关键词匹配不上→追问重输；`render_scene_directive.py` exit 2 → 按
@@ -432,11 +446,11 @@ prompt/knowledge 改进，但不参与当前 run 的在线失败路由，也不�
 扫描 torch_npu 文档目录时，已知导航页 `torch_npu.md`、`torch_npu_list.md` 会被排除，
 不会为没有 callable 的索引创建 run。
 
-**批次场景确认（强制，认领前）**：批次不能纯文档驱动提取全部场景。`init_batch` 可带
-`--scenes`，但无论是否带，首次 `claim` 在场景未落地时返回 `action=needs_scene`，不会
+**批次设备确认（强制，认领前）**：批次不能纯文档驱动提取全部场景。`init_batch` 可带
+`--scenes`，但无论是否带，首次 `claim` 在设备未落地时返回 `action=needs_scene`，不会
 认领算子。主协调器读取 `inventory.devices` 向用户展示目录内**全部文档的设备并集**
-（含别名与逐文档支持情况），让用户选择设备或直接输入场景文本（与单算子 `--scenes`
-语义一致），再调用：
+（含别名与逐文档支持情况），让用户**先选择设备**（也可直接输入完整场景文本作为后续
+单算子 run 的预填；批次阶段不要求选场景），再调用：
 
 ```text
 python scripts/batch_scene.py --batch-dir <batch-dir> resolve --scenes "<场景原文>" [--device "<设备族>"] [--skip-unsupported]
@@ -446,10 +460,12 @@ python scripts/batch_scene.py --batch-dir <batch-dir> resolve --scenes "<场景�
 归并为设备族，输出 `supported` / `partial` / `unsupported` / `not_listed` / `unparsed`
 五类逐文档状态。存在不支持、未列出、仅部分支持或无法解析的文档时，必须把算子清单和
 原因提示给用户，由用户选择“跳过不支持的文档”（`--skip-unsupported`，标记
-`SKIPPED_UNSUPPORTED_DEVICE`）、“仍然全部执行”或“取消批次”。确认后的场景写入
+`SKIPPED_UNSUPPORTED_DEVICE`）、“仍然全部执行”或“取消批次”。确认后的**设备**写入
 `batch_state.scene`；claim 返回的 `scenes` 为“该文档设备别名 + 用户场景原文”，
-`iterate-directory` 必须透传 `--scenes`，使每个单算子 run 与单文档场景流程一致地
-收窄 `product_support`，内层不再重复 AskUserQuestion。
+`iterate-directory` 必须透传 `--scenes`。**量化场景在单算子 run 内按该文档识别**：
+同一设备下不同算子文档的量化场景不同，内层 run 读自己的文档识别已选设备下的场景并
+让用户选择（SCENE_SCAN 第 2 段）；批次原文已含唯一匹配场景时只回显确认、不重复询问。
+这样批次级只确认一次设备，场景选择始终发生在设备确定之后。
 
 默认 `continue-on-error`：`SUCCESS` 计为成功，`BLOCKED`、`MAX_ITERATIONS`、
 `STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计为失败，但不会阻止后续文档执行；

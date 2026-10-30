@@ -509,17 +509,18 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 三级场景扫描流程（scene-scanner Agent + Q1→Q2→Q3 征询 + `check_scene_conflicts.py`）
 **已整体下线删除**，新 run 不再产生本文件；保留说明仅为历史 run 兼容。
 `validate_artifacts.py scene_scan` 校验模式保留，仅用于校验历史 run 产物。
-当前唯一场景路径为**文本直输模式**（见 `selection.json` / `scene_directive.md`）。
+当前唯一场景路径为**设备优先三段式**（见 `selection.json` / `scene_directive.md`）。
 
 ## selection.json
 
-主协调器场景文本匹配结果落地到 `<run-dir>/inputs/selection.json`（文本直输模式，
-来源为 `--scenes "<场景描述>"` 或用户交互文本输入）。
+主协调器场景收集结果落地到 `<run-dir>/inputs/selection.json`（设备优先三段式：
+来源为 `--scenes "<场景描述>"` 预填文本或用户交互输入；先选设备，设备确定后再识别
+该设备下的量化场景并征询，最后可选参数取值）。
 形态 `{device_types, selection}`，
-`device_types` 为文档"产品支持情况"**设备全称非空清单（硬性必要项）**，
+`device_types` 为文档"产品支持情况"**支持（√）设备全称非空清单（硬性必要项）**，
 `selection` 为 `{device: null | {template: <tpl_value>}}`，
-设备值 `null`（或空 dict）= 该设备**无场景维度**（文档无场景或量化关键词、无可选
-场景模板——无场景即**不选场景**，无需也不虚构"非量化"等模板名；仅按设备收窄
+设备值 `null`（或空 dict）= 该设备**无场景维度**（该设备在文档中没有任何量化场景
+模板——无场景即**不选场景**，无需也不虚构"非量化"等模板名；仅按设备收窄
 `product_support`，不做场景屏蔽）；
 `<tpl_value>` ∈ `null`（保持自动）| `{param:[values]}`（文本匹配的显式取值；
 `"fix_all_default"` 文本模式不支持——无场景参数枚举）。
@@ -555,8 +556,9 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 `scope=subset` 时 `directive` 指向 `inputs/scene_directive.md`；
 `scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件（extractor 见无 directive 即按全场景提取，行为不变）。
 `source` ∈ `scenes_param`（`--scenes` 直输）/ `interactive_input`（交互文本输入）。
-批处理（`iterate-directory`）在认领首个算术前写批次级 `batch_state.scene`，并把
-“设备别名 + 场景原文”作为 `--scenes` 透传给每个单算子 run；单算子 `run_state.scene`
+批处理（`iterate-directory`）在认领首个算术前写批次级 `batch_state.scene`（批次级
+只确认**设备**），并把“设备别名 + 场景原文”作为 `--scenes` 透传给每个单算子 run；
+每个单算子 run 再按自己的文档识别该设备下的量化场景并征询用户，`run_state.scene`
 仍由 `render_scene_directive.py` 正常回写（`source` 由该次 run 的入口决定）。
 
 无独立结构校验命令——`render_scene_directive.py` 写入时校验合法性，`init_run` 读取时校验初始 `null`。由

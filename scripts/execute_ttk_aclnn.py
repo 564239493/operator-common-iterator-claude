@@ -17,6 +17,7 @@ import json
 import re
 import shlex
 import sys
+import tarfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -82,9 +83,35 @@ def _parse_results(path: Path) -> dict[str, Any]:
         """Whether the NPU produced a result, independent of precision."""
         precision_text = str(row.get("precision") or "").strip()
         upper = precision_text.upper()
-        # 负向排除：算子执行被拒 / 无输出 / 工具链崩溃（错误原文在 precision 列）
-        if upper.startswith(("ACLNN_EXECUTE_FAILED", "NO_OUTPUT")) or "TRACEBACK" in upper:
+        # 负向排除：算子执行被拒 / 无输出 / 输入生成失败 / NPU 预处理失败 /
+        # profiling 崩溃或超时 / 工具链 traceback。这些行即使另有
+        # precision_status=FAIL 也不代表 NPU 成功产出结果（PROFILE_CRASH
+        # 曾被误判为执行 PASS）。
+        if upper.startswith(
+            (
+                "ACLNN_EXECUTE_FAILED",
+                "NO_OUTPUT",
+                "INPUT_GEN_FAILURE",
+                "NPU_PREPROCESS_FAILURE",
+            )
+        ) or any(
+            tag in upper
+            for tag in (
+                "TRACEBACK",
+                "PROFILE_CRASH",
+                "PROCESS TIMEOUT",
+                "CRASHED AT PROFILING",
+            )
+        ):
             return False
+        for key in (
+            "precision_metrics",
+            "perf_status",
+            "batch_consistency_id",
+            "deterministic_status",
+        ):
+            if "PROFILE_CRASH" in str(row.get(key) or "").upper():
+                return False
         # 正向证据：计时字段是数字（崩溃行填字面量 'FAILURE'，不可作数）
         for key in ("api_perf_us", "op_perf_us"):
             try:
@@ -184,26 +211,39 @@ async def _run_aclnn(
     remote_dir = f"{remote_root}/{_safe_name(op_name)}_{stamp}"
     remote_csv = f"{remote_dir}/{csv_path.name}"
     remote_results = f"{remote_dir}/results.csv"
-    # 远端 plugin 直用：--plugin 传远端绝对路径（以 / 开头）时不上传，命令直接引用。
+
+    plugin_local = Path(plugin_path) if plugin_path is not None else None
+    plugin_is_local_dir = plugin_local is not None and plugin_local.is_dir()
+    # 远端 plugin 直用：--plugin 传远端绝对路径（以 / 开头且本地不存在）时不上传。
     plugin_is_remote = (
-        plugin_path is not None
-        and str(plugin_path).startswith("/")
-        and not Path(plugin_path).is_file()
+        plugin_local is not None
+        and str(plugin_local).startswith("/")
+        and not plugin_local.exists()
     )
-    remote_plugin = (
-        f"{remote_dir}/{Path(plugin_path).name}"
-        if plugin_path is not None and not plugin_is_remote
-        else None
-    )
+    plugin_archive: Path | None = None
+    remote_plugin_archive: str | None = None
+    remote_plugin: str | None = None
+    if plugin_local is not None:
+        if plugin_is_local_dir:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            plugin_archive = artifact_dir / f"{plugin_local.name}.tar.gz"
+            with tarfile.open(plugin_archive, "w:gz") as handle:
+                handle.add(str(plugin_local), arcname=plugin_local.name)
+            remote_plugin_archive = f"{remote_dir}/{plugin_archive.name}"
+        elif not plugin_is_remote:
+            remote_plugin = f"{remote_dir}/{plugin_local.name}"
 
     ttk_args = (
         f"-i {shlex.quote(csv_path.name)} "
         f"--plat={shlex.quote(plat)} "
     )
-    if plugin_path is not None:
-        plugin_arg = (
-            str(plugin_path) if plugin_is_remote else str(Path(plugin_path).name)
-        )
+    if plugin_local is not None:
+        if plugin_is_remote:
+            plugin_arg = str(plugin_local)
+        elif plugin_is_local_dir:
+            plugin_arg = f"{remote_dir}/{plugin_local.name}"
+        else:
+            plugin_arg = plugin_local.name
         ttk_args += f" --plugin {shlex.quote(plugin_arg)}"
     if mode == "validate":
         ttk_args += " --validate"
@@ -221,6 +261,11 @@ async def _run_aclnn(
     parts = []
     if env_init:
         parts.append(env_init)
+    if plugin_is_local_dir and remote_plugin_archive:
+        parts.append(
+            f"tar -xzf {shlex.quote(remote_plugin_archive)} "
+            f"-C {shlex.quote(remote_dir)}"
+        )
     parts.append(f"cd {shlex.quote(remote_dir)}")
     parts.append(
         f"PYTHONPATH={shlex.quote(repo_path)}:${{PYTHONPATH:-}} "
@@ -247,10 +292,19 @@ async def _run_aclnn(
         if mkdir.exit_code != 0:
             raise SSHEngineError(f"mkdir failed: {mkdir.stderr}")
         await upload_file(conn, csv_path, remote_csv)
-        if plugin_path is not None and not plugin_is_remote:
-            plugin_local = Path(plugin_path)
+        if plugin_is_local_dir:
+            if plugin_archive is None or remote_plugin_archive is None:
+                raise SSHEngineError(
+                    f"plugin directory archive was not prepared: {plugin_path}"
+                )
+            await upload_file(conn, plugin_archive, remote_plugin_archive)
+        elif plugin_local is not None and not plugin_is_remote:
             if not plugin_local.is_file():
                 raise SSHEngineError(f"golden plugin not found: {plugin_path}")
+            if remote_plugin is None:
+                raise SSHEngineError(
+                    f"remote plugin path was not resolved: {plugin_path}"
+                )
             await upload_file(conn, plugin_local, remote_plugin)
 
         execution_started = mode == "npu"
@@ -405,8 +459,9 @@ def main() -> None:
         type=str,
         default=None,
         help=(
-            "TTK golden/runtime 插件。本地文件路径（相对/绝对）会上传到远端执行目录；"
-            "以 / 开头的远端绝对路径直接用于远端 ttk 命令（不上传）。"
+            "TTK golden/runtime 插件。本地文件会直接上传到远端执行目录；本地目录会"
+            "打包上传并在远端执行目录解压后按目录传给 --plugin；以 / 开头且本地"
+            "不存在的远端绝对路径直接用于远端 ttk 命令（不上传）。"
         ),
     )
     parser.add_argument(
