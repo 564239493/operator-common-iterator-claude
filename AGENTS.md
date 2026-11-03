@@ -79,7 +79,7 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 /iterate-operator operator_docs/aclnnFoo.md --human-constraints-upload --max-iterations 5  # 人工约束上传通道：检查点选人工修复后挂起等用户上传 constraints_copy.json，监听触发下一轮
 /iterate-operator operator_docs/aclnnFoo.md --web  # 默认不自动打开工作台页面；加 --web 才在首轮 CHECK 通过后自动拉起浏览器
 /iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/plugin.py  # TTK 前置算子插件，执行时自动作为 ttk --plugin 传入
-/iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/tests/assets  # 目录会打包上传到远端执行目录，解压后以目录传给 ttk --plugin
+/iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/tests/assets  # 目录连同父目录/同级内容打包上传，解压后以目录传给 ttk --plugin
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子；未传 --scenes 时先列出设备并征询
 /iterate-directory operator_docs --scenes "A2非量化"  # 批次确认设备后逐文档透传；量化场景每个 run 内按文档再选
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次

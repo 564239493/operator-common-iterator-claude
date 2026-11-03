@@ -192,6 +192,7 @@ async def _run_aclnn(
     timeout: float = 600,
     proc_timeout: int = 180,
     plugin_path: Path | None = None,
+    plugin_root: Path | None = None,
     devices_arg: str | None = None,
     process_count: int | None = None,
 ) -> dict[str, Any]:
@@ -213,7 +214,6 @@ async def _run_aclnn(
     remote_results = f"{remote_dir}/results.csv"
 
     plugin_local = Path(plugin_path) if plugin_path is not None else None
-    plugin_is_local_dir = plugin_local is not None and plugin_local.is_dir()
     # 远端 plugin 直用：--plugin 传远端绝对路径（以 / 开头且本地不存在）时不上传。
     plugin_is_remote = (
         plugin_local is not None
@@ -223,15 +223,51 @@ async def _run_aclnn(
     plugin_archive: Path | None = None
     remote_plugin_archive: str | None = None
     remote_plugin: str | None = None
-    if plugin_local is not None:
-        if plugin_is_local_dir:
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            plugin_archive = artifact_dir / f"{plugin_local.name}.tar.gz"
-            with tarfile.open(plugin_archive, "w:gz") as handle:
-                handle.add(str(plugin_local), arcname=plugin_local.name)
-            remote_plugin_archive = f"{remote_dir}/{plugin_archive.name}"
-        elif not plugin_is_remote:
+    plugin_package_root: Path | None = None
+    plugin_relative: Path | None = None
+    if plugin_local is not None and not plugin_is_remote:
+        if plugin_root is not None:
+            plugin_package_root = Path(plugin_root)
+            if not plugin_package_root.is_dir():
+                raise SSHEngineError(
+                    f"plugin root is not a directory: {plugin_package_root}"
+                )
+            try:
+                plugin_relative = plugin_local.resolve().relative_to(
+                    plugin_package_root.resolve()
+                )
+            except ValueError as exc:
+                raise SSHEngineError(
+                    f"plugin path {plugin_local} is outside plugin root "
+                    f"{plugin_package_root}"
+                ) from exc
+        elif plugin_local.is_dir():
+            # Directory plugins keep their parent context so sibling
+            # directories (e.g. tests/<other>) are shipped together and
+            # relative imports still resolve after extraction.
+            plugin_package_root = plugin_local.parent
+            plugin_relative = Path(plugin_local.name)
+        else:
             remote_plugin = f"{remote_dir}/{plugin_local.name}"
+
+    if (
+        plugin_package_root is not None
+        and plugin_package_root.parent == plugin_package_root
+    ):
+        raise SSHEngineError(
+            "refusing to package filesystem root as plugin context; "
+            "pass --plugin-root with a narrower directory"
+        )
+
+    if plugin_package_root is not None and plugin_relative is not None:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        plugin_archive = artifact_dir / f"{plugin_package_root.name}.tar.gz"
+        with tarfile.open(plugin_archive, "w:gz") as handle:
+            handle.add(
+                str(plugin_package_root),
+                arcname=plugin_package_root.name,
+            )
+        remote_plugin_archive = f"{remote_dir}/{plugin_archive.name}"
 
     ttk_args = (
         f"-i {shlex.quote(csv_path.name)} "
@@ -240,8 +276,11 @@ async def _run_aclnn(
     if plugin_local is not None:
         if plugin_is_remote:
             plugin_arg = str(plugin_local)
-        elif plugin_is_local_dir:
-            plugin_arg = f"{remote_dir}/{plugin_local.name}"
+        elif plugin_package_root is not None and plugin_relative is not None:
+            plugin_arg = (
+                f"{remote_dir}/{plugin_package_root.name}/"
+                f"{plugin_relative.as_posix()}"
+            )
         else:
             plugin_arg = plugin_local.name
         ttk_args += f" --plugin {shlex.quote(plugin_arg)}"
@@ -261,7 +300,7 @@ async def _run_aclnn(
     parts = []
     if env_init:
         parts.append(env_init)
-    if plugin_is_local_dir and remote_plugin_archive:
+    if plugin_package_root is not None and remote_plugin_archive:
         parts.append(
             f"tar -xzf {shlex.quote(remote_plugin_archive)} "
             f"-C {shlex.quote(remote_dir)}"
@@ -292,10 +331,10 @@ async def _run_aclnn(
         if mkdir.exit_code != 0:
             raise SSHEngineError(f"mkdir failed: {mkdir.stderr}")
         await upload_file(conn, csv_path, remote_csv)
-        if plugin_is_local_dir:
+        if plugin_package_root is not None:
             if plugin_archive is None or remote_plugin_archive is None:
                 raise SSHEngineError(
-                    f"plugin directory archive was not prepared: {plugin_path}"
+                    f"plugin package archive was not prepared: {plugin_path}"
                 )
             await upload_file(conn, plugin_archive, remote_plugin_archive)
         elif plugin_local is not None and not plugin_is_remote:
@@ -460,8 +499,18 @@ def main() -> None:
         default=None,
         help=(
             "TTK golden/runtime 插件。本地文件会直接上传到远端执行目录；本地目录会"
-            "打包上传并在远端执行目录解压后按目录传给 --plugin；以 / 开头且本地"
-            "不存在的远端绝对路径直接用于远端 ttk 命令（不上传）。"
+            "连同其同级目录（父目录上下文）打包上传，解压后按目录传给 --plugin；"
+            "以 / 开头且本地不存在的远端绝对路径直接用于远端 ttk 命令（不上传）。"
+        ),
+    )
+    parser.add_argument(
+        "--plugin-root",
+        type=Path,
+        default=None,
+        help=(
+            "可选：本地 plugin 的打包根目录。默认本地目录取父目录（连同同级内容），"
+            "本地文件仅上传文件本身；指定后整个 root 打包，plugin 在包内的相对路径"
+            "保持不变。"
         ),
     )
     parser.add_argument(
@@ -502,6 +551,7 @@ def main() -> None:
         mode=mode, test_indexes=args.ti, timeout=args.timeout,
         proc_timeout=args.proc_timeout,
         plugin_path=args.plugin,
+        plugin_root=args.plugin_root,
         devices_arg=args.devices,
         process_count=args.pc,
     )
