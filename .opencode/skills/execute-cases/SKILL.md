@@ -124,8 +124,9 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
 **前置算子 plugin 检查（仅 TTK）**：`execute_cases.py` 会从 `constraints.json`
 识别 `metadataOptional` 等由前置算子填充的输入。若 `run_state.ttk_plugin` 非空
 （由 `/iterate-operator --ttk-plugin` 写入），会自动作为 ttk 的 `--plugin` 使用；
-命令行 `--plugin` 优先。路径可为本地文件、本地目录（TTK ACLNN 会打包上传并在
-远端执行目录解压后按目录传入）或 `/` 开头且本地不存在的远端绝对路径。
+命令行 `--plugin` 优先。路径可为本地文件、本地目录（TTK ACLNN 会连同其父目录
+上下文——即同级目录——一起打包上传，解压后按目录传入）或 `/` 开头且本地不存在的
+远端绝对路径。需要自定义打包根时加 `--plugin-root <目录>`。
 若两者都没有，真实执行会以 `TTK_PLUGIN_REQUIRED`
 （`requires_user_action=true`）exit 2，并在 `detected_params` 列出参数名。
 此时必须向用户索取插件路径后重试：

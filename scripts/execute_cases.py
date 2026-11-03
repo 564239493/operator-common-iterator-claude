@@ -750,8 +750,16 @@ def main() -> int:
         default=None,
         help=(
             "TTK 专用：手动指定传给 ttk 的 --plugin 路径，覆盖自动解析。"
-            "本地文件或目录会随用例上传到远端（目录打包上传并解压）；"
-            "以 / 开头且本地不存在的远端绝对路径直接引用、不上传。"
+            "本地文件或目录会随用例上传到远端（目录会连同父目录上下文一起打包，"
+            "含同级目录）；以 / 开头且本地不存在的远端绝对路径直接引用、不上传。"
+        ),
+    )
+    parser.add_argument(
+        "--plugin-root",
+        default=None,
+        help=(
+            "TTK 专用：本地 plugin 的打包根目录。默认本地目录取父目录（连同同级"
+            "内容）；指定后整个 root 打包，plugin 相对 root 的路径保持不变。"
         ),
     )
     parser.add_argument(
@@ -788,10 +796,22 @@ def main() -> int:
         parser.error("--proc-timeout 必须大于等于 0")
     if args.plugin and args.test_framework != "ttk":
         parser.error("--plugin 仅支持 --test-framework ttk")
+    if args.plugin_root and args.test_framework != "ttk":
+        parser.error("--plugin-root 仅支持 --test-framework ttk")
     try:
         manual_plugin = _resolve_manual_plugin(args.plugin)
     except ValueError as exc:
         _emit({"ok": False, "code": "TTK_PLUGIN_INVALID", "message": str(exc)})
+        return 2
+    manual_plugin_root = (
+        resolve_input_path(args.plugin_root) if args.plugin_root else None
+    )
+    if manual_plugin_root is not None and not manual_plugin_root.is_dir():
+        _emit({
+            "ok": False,
+            "code": "TTK_PLUGIN_INVALID",
+            "message": f"--plugin-root 不是本地目录: {manual_plugin_root}",
+        })
         return 2
 
     cases_path = resolve_input_path(args.cases)
@@ -1011,6 +1031,7 @@ def main() -> int:
                 timeout=args.run_timeout,
                 proc_timeout=args.proc_timeout,
                 plugin_path=golden_plugin,
+                plugin_root=manual_plugin_root,
             )
             result.update({
                 "test_framework": "ttk",
@@ -1045,6 +1066,13 @@ def main() -> int:
         # TTK E2E CSV is platform-specific. Select the server/platform from all
         # generated buckets first; if generation chose a different first bucket,
         # reuse the matching per-platform JSON and rebuild cases.json + CSV.
+        if manual_plugin_root is not None:
+            _emit({
+                "ok": False,
+                "code": "TTK_PLUGIN_ROOT_UNSUPPORTED",
+                "message": "TTK E2E 仅支持上传本地 plugin 文件，不支持 --plugin-root。",
+            })
+            return 2
         config_path, config_errors = validate_server_config(args.server_config)
         if config_errors:
             _emit(config_error_payload(config_path, config_errors))
