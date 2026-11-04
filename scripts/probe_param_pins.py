@@ -55,9 +55,9 @@ LIST_TYPES = {
     "aclScalarList",
     "aclTensorList",
 }
-# aclFloatArray 在 constants.py:184 被映射成 ":attrs"（生成侧按 tensor 处理），
-# 给它发长度约束不生效，只发 mapping_anomaly 警告。
-TYPE_MAPPING_ANOMALY = {"aclFloatArray"}
+# 类型映射异常：映射表取值与生成侧约定不一致、导致长度/值域约束不生效的类型，
+# 命中时只发 mapping_anomaly 警告并跳过。
+TYPE_MAPPING_ANOMALY: set = set()
 
 # 跨参数长度耦合判定（与生成器同款）。
 _LEN_REF_RE = re.compile(r"\blen\s*\(\s*([A-Za-z_]\w*)(?:\.range_value)?\s*\)")
@@ -617,8 +617,8 @@ def build_probe(constraints_path: Path) -> dict:
                         "code": "mapping_anomaly",
                         "param": param,
                         "platform": platform,
-                        "detail": f"{type_name} 映射异常（constants.py:184 → ':attrs'），"
-                        "长度约束不会生效",
+                        "detail": f"{type_name} 在 ACL_TYPE_TRANSFER_ATK_MAP 中的映射"
+                        "与生成侧约定不一致，长度约束不会生效",
                     }
                 )
                 skipped.append(

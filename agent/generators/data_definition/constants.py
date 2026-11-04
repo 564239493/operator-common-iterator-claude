@@ -185,7 +185,7 @@ class DataMatchMap:
 
     # 如果type字段在ACL_TYPE_TRANSFER_ATK_MAP中，则转换为MAP中的值，否则默认为attr
     ACL_TYPE_TRANSFER_ATK_MAP = {"aclTensor": "tensor", "aclScalar": "scalar", "aclIntArray": "attrs",
-                                 "aclFloatArray": ":attrs", "aclBoolArray": "attrs", "aclTensorList": "tensors",
+                                 "aclFloatArray": "attrs", "aclBoolArray": "attrs", "aclTensorList": "tensors",
                                  "aclScalarList": "scalars"}
 
     PLATFORM_MAP = {"Atlas A3 训练系列产品/Atlas A3 推理系列产品": "A3_train_series_or_A3_infer_series",
