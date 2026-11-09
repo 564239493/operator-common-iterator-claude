@@ -17,6 +17,7 @@ import json
 import re
 import shlex
 import sys
+import tarfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -82,9 +83,35 @@ def _parse_results(path: Path) -> dict[str, Any]:
         """Whether the NPU produced a result, independent of precision."""
         precision_text = str(row.get("precision") or "").strip()
         upper = precision_text.upper()
-        # 负向排除：算子执行被拒 / 无输出 / 工具链崩溃（错误原文在 precision 列）
-        if upper.startswith(("ACLNN_EXECUTE_FAILED", "NO_OUTPUT")) or "TRACEBACK" in upper:
+        # 负向排除：算子执行被拒 / 无输出 / 输入生成失败 / NPU 预处理失败 /
+        # profiling 崩溃或超时 / 工具链 traceback。这些行即使另有
+        # precision_status=FAIL 也不代表 NPU 成功产出结果（PROFILE_CRASH
+        # 曾被误判为执行 PASS）。
+        if upper.startswith(
+            (
+                "ACLNN_EXECUTE_FAILED",
+                "NO_OUTPUT",
+                "INPUT_GEN_FAILURE",
+                "NPU_PREPROCESS_FAILURE",
+            )
+        ) or any(
+            tag in upper
+            for tag in (
+                "TRACEBACK",
+                "PROFILE_CRASH",
+                "PROCESS TIMEOUT",
+                "CRASHED AT PROFILING",
+            )
+        ):
             return False
+        for key in (
+            "precision_metrics",
+            "perf_status",
+            "batch_consistency_id",
+            "deterministic_status",
+        ):
+            if "PROFILE_CRASH" in str(row.get(key) or "").upper():
+                return False
         # 正向证据：计时字段是数字（崩溃行填字面量 'FAILURE'，不可作数）
         for key in ("api_perf_us", "op_perf_us"):
             try:
@@ -165,6 +192,9 @@ async def _run_aclnn(
     timeout: float = 600,
     proc_timeout: int = 180,
     plugin_path: Path | None = None,
+    plugin_root: Path | None = None,
+    devices_arg: str | None = None,
+    process_count: int | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     ttk = server.get("ttk") or {}
@@ -182,16 +212,78 @@ async def _run_aclnn(
     remote_dir = f"{remote_root}/{_safe_name(op_name)}_{stamp}"
     remote_csv = f"{remote_dir}/{csv_path.name}"
     remote_results = f"{remote_dir}/results.csv"
-    remote_plugin = (
-        f"{remote_dir}/{plugin_path.name}" if plugin_path is not None else None
+
+    plugin_local = Path(plugin_path) if plugin_path is not None else None
+    # 远端 plugin 直用：--plugin 传远端绝对路径（以 / 开头且本地不存在）时不上传。
+    plugin_is_remote = (
+        plugin_local is not None
+        and str(plugin_local).startswith("/")
+        and not plugin_local.exists()
     )
+    plugin_archive: Path | None = None
+    remote_plugin_archive: str | None = None
+    remote_plugin: str | None = None
+    plugin_package_root: Path | None = None
+    plugin_relative: Path | None = None
+    if plugin_local is not None and not plugin_is_remote:
+        if plugin_root is not None:
+            plugin_package_root = Path(plugin_root)
+            if not plugin_package_root.is_dir():
+                raise SSHEngineError(
+                    f"plugin root is not a directory: {plugin_package_root}"
+                )
+            try:
+                plugin_relative = plugin_local.resolve().relative_to(
+                    plugin_package_root.resolve()
+                )
+            except ValueError as exc:
+                raise SSHEngineError(
+                    f"plugin path {plugin_local} is outside plugin root "
+                    f"{plugin_package_root}"
+                ) from exc
+        elif plugin_local.is_dir():
+            # Directory plugins keep their parent context so sibling
+            # directories (e.g. tests/<other>) are shipped together and
+            # relative imports still resolve after extraction.
+            plugin_package_root = plugin_local.parent
+            plugin_relative = Path(plugin_local.name)
+        else:
+            remote_plugin = f"{remote_dir}/{plugin_local.name}"
+
+    if (
+        plugin_package_root is not None
+        and plugin_package_root.parent == plugin_package_root
+    ):
+        raise SSHEngineError(
+            "refusing to package filesystem root as plugin context; "
+            "pass --plugin-root with a narrower directory"
+        )
+
+    if plugin_package_root is not None and plugin_relative is not None:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        plugin_archive = artifact_dir / f"{plugin_package_root.name}.tar.gz"
+        with tarfile.open(plugin_archive, "w:gz") as handle:
+            handle.add(
+                str(plugin_package_root),
+                arcname=plugin_package_root.name,
+            )
+        remote_plugin_archive = f"{remote_dir}/{plugin_archive.name}"
 
     ttk_args = (
         f"-i {shlex.quote(csv_path.name)} "
         f"--plat={shlex.quote(plat)} "
     )
-    if remote_plugin is not None:
-        ttk_args += f" --plugin {shlex.quote(plugin_path.name)}"
+    if plugin_local is not None:
+        if plugin_is_remote:
+            plugin_arg = str(plugin_local)
+        elif plugin_package_root is not None and plugin_relative is not None:
+            plugin_arg = (
+                f"{remote_dir}/{plugin_package_root.name}/"
+                f"{plugin_relative.as_posix()}"
+            )
+        else:
+            plugin_arg = plugin_local.name
+        ttk_args += f" --plugin {shlex.quote(plugin_arg)}"
     if mode == "validate":
         ttk_args += " --validate"
     if test_indexes:
@@ -200,10 +292,19 @@ async def _run_aclnn(
         ttk_args += f" --proc-timeout {proc_timeout}"
     if mode == "npu":
         ttk_args += " --warmup False"
+    if devices_arg:
+        ttk_args += f" --devices {shlex.quote(devices_arg)}"
+    if process_count:
+        ttk_args += f" --pc {process_count}"
 
     parts = []
     if env_init:
         parts.append(env_init)
+    if plugin_package_root is not None and remote_plugin_archive:
+        parts.append(
+            f"tar -xzf {shlex.quote(remote_plugin_archive)} "
+            f"-C {shlex.quote(remote_dir)}"
+        )
     parts.append(f"cd {shlex.quote(remote_dir)}")
     parts.append(
         f"PYTHONPATH={shlex.quote(repo_path)}:${{PYTHONPATH:-}} "
@@ -230,10 +331,20 @@ async def _run_aclnn(
         if mkdir.exit_code != 0:
             raise SSHEngineError(f"mkdir failed: {mkdir.stderr}")
         await upload_file(conn, csv_path, remote_csv)
-        if plugin_path is not None:
-            if not plugin_path.is_file():
+        if plugin_package_root is not None:
+            if plugin_archive is None or remote_plugin_archive is None:
+                raise SSHEngineError(
+                    f"plugin package archive was not prepared: {plugin_path}"
+                )
+            await upload_file(conn, plugin_archive, remote_plugin_archive)
+        elif plugin_local is not None and not plugin_is_remote:
+            if not plugin_local.is_file():
                 raise SSHEngineError(f"golden plugin not found: {plugin_path}")
-            await upload_file(conn, plugin_path, remote_plugin)
+            if remote_plugin is None:
+                raise SSHEngineError(
+                    f"remote plugin path was not resolved: {plugin_path}"
+                )
+            await upload_file(conn, plugin_local, remote_plugin)
 
         execution_started = mode == "npu"
         result = await run(conn, command, timeout=timeout)
@@ -382,7 +493,38 @@ def main() -> None:
         default=180,
         help="Single-case timeout in seconds; 0 disables it (default: 180)",
     )
-    parser.add_argument("--plugin", type=Path, default=None)
+    parser.add_argument(
+        "--plugin",
+        type=str,
+        default=None,
+        help=(
+            "TTK golden/runtime 插件。本地文件会直接上传到远端执行目录；本地目录会"
+            "连同其同级目录（父目录上下文）打包上传，解压后按目录传给 --plugin；"
+            "以 / 开头且本地不存在的远端绝对路径直接用于远端 ttk 命令（不上传）。"
+        ),
+    )
+    parser.add_argument(
+        "--plugin-root",
+        type=Path,
+        default=None,
+        help=(
+            "可选：本地 plugin 的打包根目录。默认本地目录取父目录（连同同级内容），"
+            "本地文件仅上传文件本身；指定后整个 root 打包，plugin 在包内的相对路径"
+            "保持不变。"
+        ),
+    )
+    parser.add_argument(
+        "--devices",
+        type=str,
+        default=None,
+        help="TTK 使用的设备（如 '0' 或 '0,1'）；限制设备数可规避多进程并发加载 C++ 扩展崩溃。",
+    )
+    parser.add_argument(
+        "--pc",
+        type=int,
+        default=None,
+        help="TTK 每设备进程数；--pc 1 配合单设备可避免 fork 后扩展加载竞争。",
+    )
     args = parser.parse_args()
     if args.proc_timeout < 0:
         parser.error("--proc-timeout must be >= 0")
@@ -409,6 +551,9 @@ def main() -> None:
         mode=mode, test_indexes=args.ti, timeout=args.timeout,
         proc_timeout=args.proc_timeout,
         plugin_path=args.plugin,
+        plugin_root=args.plugin_root,
+        devices_arg=args.devices,
+        process_count=args.pc,
     )
 
     print(f"Status:   {result['status']}")

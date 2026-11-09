@@ -41,6 +41,7 @@ Responsibility:
 """
 
 import ast
+import copy
 
 from agent.generators.operator_param_combine.combination_result_generator.constraint.dependency import \
     DependencyAnalyzer
@@ -51,6 +52,20 @@ def _params_of(node: ast.AST) -> set[str]:
     analyzer = DependencyAnalyzer()
     deps = analyzer.analyze(node)
     return {d.split(".")[0] for d in deps}
+
+
+class _PresenceMasker(ast.NodeTransformer):
+    """把 `p is None` / `p is not None` 整体换成 True，用于判断测试式里
+    是否还有“非存在性判断”的缺失参数引用（那些引用无法判定真假）。"""
+
+    def visit_Compare(self, node: ast.Compare):
+        if len(node.ops) == 1:
+            op = node.ops[0]
+            comp = node.comparators[0]
+            if isinstance(comp, ast.Constant) and comp.value is None \
+                    and isinstance(op, (ast.Is, ast.IsNot)):
+                return ast.copy_location(ast.Constant(value=True), node)
+        return node
 
 
 class _SubExprRemover(ast.NodeTransformer):
@@ -112,9 +127,23 @@ class _SubExprRemover(ast.NodeTransformer):
         return node
 
     def visit_IfExp(self, node: ast.IfExp):
-        if self._references_missing(node.test):
-            return self.visit(node.body)
-        self.generic_visit(node)
+        # 旧实现“测试式引用缺失参数就直接返回 body”会取错分支：
+        # `A if p is not None else B` 在 p 缺失时应取 B，旧代码取 A，
+        # 常把整条约束折成字面量 False（该组合行必然 unsat，整轮 0 用例）。
+        # 新规则：
+        # 1) 测试式除存在性判断（is None / is not None）外没有别的缺失参数引用
+        #    → 先按存在性化简，能定成常量就取对应分支；
+        # 2) 测试式还引用了缺失参数的取值（无法判定真假）
+        #    → 整条折成 True（空泛满足，同本模块既有约定）。
+        masked = _PresenceMasker().visit(copy.deepcopy(node.test))
+        if self._references_missing(masked):
+            return ast.copy_location(ast.Constant(value=True), node)
+        test = self.visit(node.test)
+        if isinstance(test, ast.Constant) and isinstance(test.value, bool):
+            return self.visit(node.body if test.value else node.orelse)
+        node.test = test
+        node.body = self.visit(node.body)
+        node.orelse = self.visit(node.orelse)
         return node
 
     def visit_Call(self, node: ast.Call):

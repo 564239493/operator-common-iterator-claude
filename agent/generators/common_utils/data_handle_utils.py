@@ -277,12 +277,17 @@ class DataHandleUtil:
 
         range_value_boundary = DataMatchMap.DTYPE_SPECS.get(dtype)
         if range_value_boundary is not None and range_value_boundary[0] is not None:
-            low_boundary = range_value_boundary[0] + 1
-            high_boundary = range_value_boundary[1] - 1
+            low_boundary = range_value_boundary[0]
+            high_boundary = range_value_boundary[1]
             if isinstance(range_value, list):
-                range_value = [max(low_boundary, min(high_boundary, v)) for v in range_value]
+                clamped = [max(low_boundary, min(high_boundary, v)) for v in range_value]
             else:
-                range_value = max(low_boundary, min(high_boundary, range_value))
+                clamped = max(low_boundary, min(high_boundary, range_value))
+            if clamped != range_value:
+                logger.warning(
+                    f"[clampfix-20261021] range_value {range_value} out of dtype '{dtype}' "
+                    f"representable range [{low_boundary}, {high_boundary}], clamped to {clamped}")
+                range_value = clamped
         return range_value
 
     @staticmethod

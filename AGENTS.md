@@ -34,23 +34,32 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 
 每轮产物只通过 `runs/<run-id>/` 下的文件交接，禁止跨 Agent 的隐式上下文污染。
 
-> EXTRACT 前强制场景收集（**文本直输模式，唯一路径**）：场景信息来自
-> `--scenes "<场景描述>"` 直输，或建议面板（文档设备全称 / `servers.json` 执行机平台 /
-> 文中量化场景关键词）后的用户文本输入；主协调器做简单文字匹配（设备全称对齐 /
-> 量化关键词命中 / 参数取值解析，等值→fix、枚举→expand、大白话闭区间→展开整数
-> 序列），AskUserQuestion 回显确认一次后写 `inputs/selection.json`
-> （`{device_types, selection:{设备:{场景: null|{参数:[值...]}}}}`），再由
-> `scripts/render_scene_directive.py --scope subset` 做结构校验并渲染
+> EXTRACT 前强制场景收集（**设备优先三段式，唯一路径**）：场景信息来自
+> `--scenes "<场景描述>"` 预填文本或交互输入。固定顺序：① 先从文档"产品支持情况"
+> **支持（√）的设备中让用户选择设备类型**（硬性必要项；`--scenes` 也只先做设备
+> 对齐）；② 设备确定后再读文档识别**该设备下**的量化场景并让用户选择——场景=具体
+> 量化模板（非量化/伪量化/全量化-A8W8/K-C量化（A4W4）…，分类词不算场景；其它设备
+> 专属场景不得出现；该设备无任何量化场景→无场景维度，落盘 `null`，不得用"非量化"
+> 代替）；③ 可选参数取值（等值→fix、枚举→expand、大白话闭区间→展开整数序列）。
+> AskUserQuestion 回显确认一次后写 `inputs/selection.json`
+> （`{device_types, selection:{设备: null|{场景: null|{参数:[值...]}}}}`），
+> 再由 `scripts/render_scene_directive.py --scope subset` 做结构校验并渲染
 > `inputs/scene_directive.md`（机读块 `device_types`/`selection`/`param_modes`/
+> `no_scene_devices`/
 > `selection_policy`）回写 `run_state.scene`。**设备类型是硬性必要项**：未选出至少
-> 一个文档"产品支持情况"设备全称，禁止落盘/渲染/进 EXTRACT
-> （`DEVICE_REQUIRED`/`EMPTY_SCENE` exit 2 硬拦截）；批处理（`iterate-directory`）
-> 无头不收集场景，纯文档驱动提取。legacy 三级场景扫描（scene-scanner Agent +
-> `scan-scenes` Skill + Q1→Q2→Q3 征询 + `check_scene_conflicts.py`）**已下线删除，
-> 禁止调用**（原实现仅存 git 历史）。
+> 一个文档"产品支持情况"设备全称，禁止读取/展示场景、禁止落盘/渲染/进 EXTRACT
+> （`DEVICE_REQUIRED`/`EMPTY_SCENE` exit 2 硬拦截）。批处理（`iterate-directory`）
+> 同样强制：认领前先在批次级确认**设备**（`servers.json` 与批次文档设备并集 + 逐文档
+> 支持矩阵），再由 `scripts/batch_scene.py resolve` 校验并提示不支持/未列出的文档；
+> 明确不支持/未列出的文档提示用户后跳过或继续。确认后的设备随 claim 以 `--scenes`
+> 传入每个单算子 run，**每个 run 再按自己的文档识别该设备下的量化场景并征询用户**
+> （批次原文已含唯一匹配场景时只回显确认）。legacy 全量场景扫描管线（scene-scanner
+> Agent + `scan-scenes` Skill + `check_scene_conflicts.py`）**已下线删除，禁止调用**
+> （原实现仅存 git 历史）。
 > constraint-extractor 读 directive 按 `param_modes` 收窄（`{"fix": X}` 单值、
 > `{"expand": [取值清单]}` 按清单收窄、缺键参数按文档和已选场景适配，已选场景
-> 明确禁止的 Optional 参数显式生成 `param is None`）、按 `device_types` 收窄
+> 明确禁止的 Optional 参数显式生成 `param is None`；`no_scene_devices` 设备无
+> 场景维度，不做场景屏蔽、不虚构量化/非量化区分）、按 `device_types` 收窄
 > `product_support`——设备类型为"产品支持情况"具体设备名，直接与 √ 行取交集
 > （无"通用"展开）；`product_support` 随后驱动用例生成（`generate_cases.py` 按
 > `product_support` 逐平台生成，不读场景；唯一例外是收尾的执行平台选择——
@@ -66,9 +75,13 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 /iterate-operator operator_docs/aclnnFoo.md --constraint-check-rounds 3  # 每个新约束版本最多 3 次语义 check
 /iterate-operator operator_docs/aclnnFoo.md --max-iterations 5 --human-checkpoint-round 3  # 第3轮仍失败弹人工补充检查点（0=禁用）
 /iterate-operator D:\operator_docs\aclnnFoo.md  # 支持项目外路径
-/iterate-operator operator_docs/aclnnFoo.md --scenes "A2非量化groupListType等于2"  # 场景文本直输（设备类型必选）；未传则交互征询
+/iterate-operator operator_docs/aclnnFoo.md --scenes "A2非量化groupListType等于2"  # 场景预填文本（仍先确认设备，再按设备识别场景）；未传则交互征询
 /iterate-operator operator_docs/aclnnFoo.md --human-constraints-upload --max-iterations 5  # 人工约束上传通道：检查点选人工修复后挂起等用户上传 constraints_copy.json，监听触发下一轮
-/iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子
+/iterate-operator operator_docs/aclnnFoo.md --web  # 默认不自动打开工作台页面；加 --web 才在首轮 CHECK 通过后自动拉起浏览器
+/iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/plugin.py  # TTK 前置算子插件，执行时自动作为 ttk --plugin 传入
+/iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/tests/assets  # 目录连同父目录/同级内容打包上传，解压后以目录传给 ttk --plugin
+/iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子；未传 --scenes 时先列出设备并征询
+/iterate-directory operator_docs --scenes "A2非量化"  # 批次确认设备后逐文档透传；量化场景每个 run 内按文档再选
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
 /show-workforce  # 查看可用技能、子智能体和调度拓扑
 ```
@@ -182,6 +195,11 @@ opencode  # 启动 opencode
 - `common_model_definition.py` → `OperatorRule` Pydantic 模型，constraints.json 必须满足此校验
 - `operator_handle_main.py` → `single_operator_handle` 正式生成逻辑
 - `param_constraint_solve/z3_expression_solver_utils.py` → Z3 solver
+- `param_constraint_solve/` 的量词展开：长度可静态确定且 ≤128 时，
+  `all()/any()` 展开为逐元素 `And`/`Or`；
+  `range()` 的上界能由 `len(p.shape) in dimensions`这类维度个数断言与常数推出时，改写成带 guard 的 `Implies` 合取。
+  推不出或超限则回退 `ForAll`/`Exists`，求解失败仍 fail-closed；
+  日志 `[Unroll]` / `[Unroll-Range]` 只表示发生展开，不是报错。
 
 **executer/** — 执行适配层（SSH + ATK 上传运行）：
 
@@ -196,12 +214,27 @@ opencode  # 启动 opencode
 - `init_run.py` — 创建 run 目录 + `run_state.json`；校验文档和 servers.json
 - `run_state.py` — `run_state.json` 唯一写入器：主协调器 CLI 子命令（set-state / set-fields / set-constraint-check）+ 供脚本 import 的落盘库函数；其中 set-state 仅限人工调试——流程内的阶段迁移一律走 `flow_control.py advance`
 - `init_batch.py` — 初始化批次目录
-- `batch_state.py` — 批次状态迁移
+- `batch_state.py` — 批次状态迁移；场景未确认时 claim 返回 `needs_scene`
+- `batch_scene.py` — 批次设备清单（并集 + 逐文档支持矩阵）与场景确认；`resolve` 写入 `batch_state.scene`，可 `--skip-unsupported` 跳过不支持该设备的文档
 - `flow_control.py` — **阶段迁移唯一通道**：迭代流程的阶段推进（EXTRACT→GENERATE→EXECUTE→GATE→…）必须用 `python scripts/flow_control.py advance`，由其按状态机条件表裁决去向与迭代轮次递增；`run_state.py set-state` 仅限人工调试场景，流程中禁止用它做阶段迁移（iterate-operator 技能同款硬守卫）
-- `generate_cases.py` — 调 facade 生成用例
-- `execute_cases.py` — 调 executer 执行用例
+- `generate_cases.py` — 调 facade 生成用例；TTK 时自动扫描算子知识目录的 `aux_params.json`，向 cases.json 注入辅助参数（如 `groupListData`），并在 CSV 转换后调用 `materialize_group_list_data.py`
+- `execute_cases.py` — 调 executer 执行用例；TTK ACLNN 检测到 `group_list_data_report.json` 时自动加载算子 `__input__` 插件（`golden_resolution=input_plugin`）
+- `operator_aux_params.py` — 从算子文档/知识目录识别值语义辅助参数，写 **run-local** `<run>/inputs/aux_params.json`（不写项目知识目录），供 generate_cases 注入 cases.json；`detect` 子命令可单独重跑识别
+- `materialize_group_list_data.py` — 从 CSV 指定辅助属性（`--attr-name`，默认 groupListData）取显式序列（支持 JSON 字符串），按 `--validator`（group_list_data / non_negative_monotonic）校验并写回 list，可选清空目标 tensor 的 `input_data_ranges`；供 generation 自动调用
+- `aux_input_plugin_template.py` — 通用 TTK `__input__` 插件模板；`generate_cases.py` 用 run-local spec 填入 `算子名 -> apply_aux_params` 和 `辅助参数 -> signature 位置` 映射，写到 `<iter>/golden.py`（不再绑定具体算子/参数名）
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）
 - `verify_relation_exprs.py` — Z3 正反例验证：`constraints_in_parameters` 逐条采 satisfy/violate 实例 + 整桶矛盾检测，产 `relation_examples.json`（CHECK 阶段 checker 步骤 0 自跑，仅 aclnn；语法错误 exit 2，其余 advisory）
+- `probe_param_pins.py` — 列表参数长度探测（CHECK 前 advisory，纯标准库）：
+  `probe` 找出「`array_length` 未固定 + 被跨参数 `len(p)` 引用 + 无传递上界」的列表参数，产出 `param_probe.json`；
+  `patch` 把 `inputs/param_pins.json` 的决策渲染成标准 `constraints_patch`，
+  形如 `len(x) == N`、`len(x) in [2, 3]`、`2 <= len(x) <= 4`，
+  交 `apply_supplement_constraints.py --origin param_pin` 合并；
+  `parse` 把用户在问询中自由输入的文本按闭集语法解析成 `decisions`，
+  语法为 `a=2`、`a=[2,3]`、`a=2~4`、`a,b=2`（同 `a=b=2`）、`全部=2`（同 `统一=2`），
+  全角符号与中文标点先归一；
+  全有或全无：任一片段失败即整句拒绝并回显格式清单；
+  `--decisions-output` 在解析成功时合并落盘，决策与已有 `inputs/param_pins.json` 按组对齐，
+  同 `group_id`/`leader` 原位替换、其余组保留，协调器无需抄写 JSON。
 - `validate_artifacts.py` — 全阶段产物结构校验 + constraints 语义校验（含 `scene_scan` 校验）
 - `validate_project.py` — 项目级校验
 - `runtime_config.py` — 路径解析、prompt 版本发现、servers.json 校验
@@ -308,6 +341,9 @@ runs/<operator>-<timestamp>/
 
 ## 重要约定
 
+- TTK 检测到 `metadataOptional` 等前置参数但 `run_state.ttk_plugin` 为空时，
+  `execute_cases.py` 以 `TTK_PLUGIN_REQUIRED` 阻断；主协调器向用户索取路径后必须
+  用 `run_state.py set-fields --set ttk_plugin=<路径>` 持久化再重试，避免重复询问。
 - `constraints.json` 的 `allowed_range_value.type=range` 不允许 null 端点；开区间写 `constraints_in_parameters` 不等式
 - `constraints_in_parameters` 每条约束必须带 `src_txt_line`（1-based 升序行号数组，指向
   算子文档快照中 `src_text` 引用条款的具体行；补充来源对应补充文档）；extractor 落盘前

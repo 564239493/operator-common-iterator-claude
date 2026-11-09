@@ -20,7 +20,7 @@ from agent.generators.data_definition.param_models_def import OperatorParameterC
 from agent.generators.operator_param_combine.combination_generator_main import PairwiseParamCombinationGenerator
 # [PAIRWISE] 替换旧随机生成器为 Pairwise 策略生成器
 # from operator_param_combine.param_combination_generate import ParamCombinationGenerator
-from agent.generators.operator_param_models.case_generate import CaseGenerate
+from agent.generators.operator_param_models.case_generate import CaseGenerate, eval_storage_layout
 from agent.generators.param_constraint_solve.param_constraint_utils import ParamConstraintUtils
 from agent.generators.common_model_definition import OperatorRule, InterParamConstraint
 
@@ -184,6 +184,59 @@ class OperatorCaseGenerator:
             else:
                 self._restore_item_transpose(item, case, operator_rule_instance)
 
+    def _resolve_storage_transposed(self, case: CaseConfig, operator_rule_instance: OperatorRule,
+                                    tensor_name: str) -> bool | None:
+        """storage_layout 分支选择用的转置态：仅当存在 <name>_transposed 机制时解析。
+
+        无该机制（如转置由算子显式 bool 参数表达、场景已收窄到单分支）时返回
+        None：平面轴表达式不求值 t，分支 dict 形态将显式失败并保持 storage==view。
+        """
+        has_flag = (case.get_input_data_config(name=f"{tensor_name}_transposed") is not None
+                    or f"{tensor_name}_transposed" in operator_rule_instance.inputs)
+        if not has_flag:
+            return None
+        return self._resolve_transposed_flag(case, operator_rule_instance, tensor_name)
+
+    def _apply_item_storage_shape(self, item, case: CaseConfig,
+                                  operator_rule_instance: OperatorRule) -> None:
+        """对单个 input 条目按参数卡 storage_layout 求值并写入 storage_shape（幂等）。"""
+        if item is None or getattr(item, "name", None) is None:
+            return
+        if getattr(item, "storage_shape", None):
+            return
+        if item.type not in ParamModelConfig.TENSOR_ATK_TYPE or not item.shape:
+            return
+        attr = operator_rule_instance.inputs.get(item.name)
+        if attr is None:
+            return
+        layout, _ = DataHandleUtil.get_relevant_attribute_value(
+            item.name, attr.storage_layout, "storage_layout")
+        if not layout or not isinstance(layout, list):
+            return
+        transposed = self._resolve_storage_transposed(case, operator_rule_instance, item.name)
+        storage = eval_storage_layout(layout, item.shape, item.name, transposed=transposed)
+        if storage is None:
+            logger.error(
+                f"Tensor '{item.name}': storage_layout {layout} eval failed on logical "
+                f"shape {item.shape} (transposed={transposed}), keep storage==view")
+            return
+        item.storage_shape = storage
+
+    def apply_storage_shapes(self, case: CaseConfig,
+                             operator_rule_instance: OperatorRule) -> None:
+        """Z3 解出最终逻辑 shape 后，按参数卡 storage_layout 求值物理 storageShape。
+
+        必须在 restore_transpose_physical_shape 之前调用：轴表达式 s0..sN 引用
+        逻辑视图 L 的轴。求值失败不写字段，storage==view 旧行为不变；无
+        storage_layout 声明的张量零影响。
+        """
+        for item in case.inputs:
+            if isinstance(item, (list, tuple)):
+                for sub_item in item:
+                    self._apply_item_storage_shape(sub_item, case, operator_rule_instance)
+            else:
+                self._apply_item_storage_shape(item, case, operator_rule_instance)
+
     def handle_single_operator(self, operator_constraint_data: OperatorRule,
                                param_combination_list: List[OperatorParameterCombination],
                                param_domain_data: Dict[str, Any],
@@ -242,7 +295,9 @@ class OperatorCaseGenerator:
             logger.debug(
                 f"Operator solve constraint running, solve time : {solve_time}, solve status : {correct_status}")
             if correct_status:
-                # Z3 全程按逻辑视图 L 求解；写盘前一次性还原物理 shape 并填转置字段
+                # Z3 全程按逻辑视图 L 求解；storage_layout 先按 L 求值 storage_shape，
+                # 再一次性还原物理 shape 并填转置字段
+                self.apply_storage_shapes(correct_case, operator_constraint_data)
                 self.restore_transpose_physical_shape(correct_case, operator_constraint_data)
                 correct_case.outputs = OperatorCaseGenerator.get_output_param(operator_constraint_data)
                 correct_case.id = case_index

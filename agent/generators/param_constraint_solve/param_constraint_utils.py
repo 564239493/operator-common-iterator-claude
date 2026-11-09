@@ -29,7 +29,11 @@ from agent.generators.operator_param_combine.generate_combination_input.combinat
 from agent.generators.operator_param_models.case_generate import CaseGenerate
 from agent.generators.param_constraint_solve.customize_expression_solver_utils import CustomizeConstraintPatch
 from agent.generators.param_constraint_solve.case_expr_evaluator import build_namespace, eval_constraint
-from agent.generators.param_constraint_solve.z3_expression_solver_utils import Z3ConstraintBuilder, ASTtoZ3Converter
+from agent.generators.param_constraint_solve.z3_expression_solver_utils import (
+    Z3ConstraintBuilder,
+    ASTtoZ3Converter,
+    MAX_STATIC_UNROLL,
+)
 
 logger = LazyLogger()
 
@@ -40,6 +44,138 @@ class ParamSetValueFlag(BaseModel):
     range_values: bool = False
     format: bool = False
     length: bool = False
+
+
+# ---------------------------------------------------------------------------
+# all()/any() 定长展开：静态长度解析
+# ---------------------------------------------------------------------------
+# 背景：`array_length` 固定（或约束写了 `len(p) == N`）之后，`all(<pred> for v in p.range_value)`
+# 仍被编码成 `ForAll(k, 0<=k<Length(p) => ...)`，Z3 不会因为长度有常数上界就退化成点对点
+# 子句，长数组求解明显变慢。这里用纯 AST 解析出「唯一确定的长度」，交给 builder 在转换期
+# 展开成 And/Or，约束文件保持紧凑写法。
+# 只认**合取式**里的事实：带 `or`/`not`/`if-else` 的约束可能只是某个分支成立，不能据此断言长度。
+
+
+def _is_static_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _len_target_name(node):
+    """把 `len(p)` / `p.length` 归一成参数名，其余形态返回 None。"""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "len"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+    ):
+        return node.args[0].id
+    if isinstance(node, ast.Attribute) and node.attr == "length" and isinstance(node.value, ast.Name):
+        return node.value.id
+    return None
+
+
+def _is_conjunctive(tree) -> bool:
+    """表达式是否只由 and/比较组成（无 or、not、条件表达式）。"""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BoolOp) and not isinstance(node.op, ast.And):
+            return False
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return False
+        if isinstance(node, ast.IfExp):
+            return False
+    return True
+
+
+def _exact_len_facts(tree) -> tuple[dict, list]:
+    """抽取 `len(p) == N` 常量事实与 `len(p) == len(q)` 等长边（支持链式比较）。"""
+    constants: dict[str, set] = {}
+    edges: list[tuple[str, str]] = []
+
+    def add_constant(name, value):
+        constants.setdefault(name, set()).add(value)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        left_node = node.left
+        for op, right_node in zip(node.ops, node.comparators):
+            if isinstance(op, ast.Eq):
+                left_name = _len_target_name(left_node)
+                right_name = _len_target_name(right_node)
+                if left_name and isinstance(right_node, ast.Constant) and _is_static_int(right_node.value):
+                    add_constant(left_name, right_node.value)
+                elif right_name and isinstance(left_node, ast.Constant) and _is_static_int(left_node.value):
+                    add_constant(right_name, left_node.value)
+                elif left_name and right_name:
+                    edges.append((left_name, right_name))
+            left_node = right_node
+    return constants, edges
+
+
+def resolve_static_lengths(exprs, hard_lengths=None) -> dict:
+    """从约束表达式与组合期硬钉长度解析出「唯一确定的长度」。
+
+    :param exprs: 约束表达式文本列表
+    :param hard_lengths: 已在变量声明期硬钉的长度（非 free-length 参数的组合长度）
+    :return: param -> length；只返回能唯一确定且 1..MAX_STATIC_UNROLL 的参数
+    """
+    hard = {
+        str(name): value
+        for name, value in (hard_lengths or {}).items()
+        if _is_static_int(value) and value >= 1
+    }
+    parent: dict[str, str] = {}
+
+    def find(name):
+        parent.setdefault(name, name)
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    def union(left, right):
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    constants: dict[str, set] = {}
+    for expr in exprs or []:
+        if not isinstance(expr, str) or not expr.strip():
+            continue
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            continue
+        if not _is_conjunctive(tree):
+            continue
+        expr_constants, edges = _exact_len_facts(tree)
+        for name, values in expr_constants.items():
+            constants.setdefault(name, set()).update(values)
+        for left, right in edges:
+            union(left, right)
+
+    members = set(parent) | set(hard) | set(constants)
+    by_root: dict[str, list[str]] = {}
+    for name in members:
+        by_root.setdefault(find(name), []).append(name)
+
+    resolved: dict[str, int] = {}
+    for names in by_root.values():
+        values = set()
+        for name in names:
+            if name in hard:
+                values.add(hard[name])
+            values.update(constants.get(name, set()))
+        if len(values) != 1:
+            continue
+        value = values.pop()
+        if 1 <= value <= MAX_STATIC_UNROLL:
+            for name in names:
+                resolved[name] = value
+        else:
+            logger.debug(f"Static length {value} exceeds unroll limit {MAX_STATIC_UNROLL}, keep quantifier")
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +401,8 @@ class ParamConstraintUtils(CommonDispatcher):
                                                                    is_generate_real_data=is_generate_real_data)
         self.dtype_domain_data, self.format_domain_data = self.get_param_domain_value()
         self._LEN_REF_RE = re.compile(r"\blen\(\s*([A-Za-z_]\w*)\s*\)")
+        # H-5：识别「秩被跨参数关系式约束」的参数（len(P.shape) 形态引用）
+        self._RANK_COUPLED_RE = re.compile(r"len\(\s*(\w+)\.shape\s*\)")
 
     def get_param_domain_value(self) -> tuple[Dict[str, List], Dict[str, List]]:
         """
@@ -584,11 +722,29 @@ class ParamConstraintUtils(CommonDispatcher):
             # 三级丢弃优先级：输出 > 派生 > 原版顺序；但（`len(X.shape) in/== N`）从输出优先豁免、降为保底。
             def _is_rank_pin(expr_str):
                 return bool(re.match(r'^len\(\w+(\.shape)?\)\s*(in\b|==)', expr_str or ''))
-            output_candidates = [t for t in candidates
+
+            def _expr_of(tag):
+                return next((e for e, tg in tag_of.items() if tg is tag), '')
+
+            # 冲突候选同时含 scalar seed（组合层
+            # 多样性意图载体）与非 seed 物化候选时，优先弃非 seed——seed 注册
+            # 晚于 shape 静态式，注册顺序兜底会反向弃 seed
+            def _is_scalar_seed(expr_str):
+                return bool(re.match(r'^(\w+)\.range_value == ', expr_str or ''))
+
+            # 种子最后扔。先把本轮冲突候选分成种子与非种子，
+            # 只要还有非种子候选，三级规则就只在非种子里选，种子不进入候选池。
+            # 旧 I-2 的触发条件是「本轮冲突候选里同时有种子和非种子」，而矛盾核
+            # 构成不稳定, 扔种子那轮核里只剩种子，旧条件不触发），
+            # 故改为无条件优先非种子。仅当本轮冲突候选全是种子（说明种子与硬约束
+            # 本身矛盾）时，候选池回落到全部候选。
+            seed_candidates = [t for t in candidates if _is_scalar_seed(_expr_of(t))]
+            pool = [t for t in candidates if t not in set(seed_candidates)] or candidates
+
+            output_candidates = [t for t in pool
                                  if param_of_tag.get(t) in output_param_names
-                                 and not _is_rank_pin(
-                                     next((e for e, tg in tag_of.items() if tg is t), ''))]
-            derived_candidates = [t for t in candidates
+                                 and not _is_rank_pin(_expr_of(t))]
+            derived_candidates = [t for t in pool
                                   if param_of_tag.get(t) in derived_param_names]
             if output_candidates:
                 to_remove = output_candidates[0]
@@ -601,10 +757,23 @@ class ParamConstraintUtils(CommonDispatcher):
                     f"[choice_core] drop-priority: derived-side static preferred, "
                     f"param : '{param_of_tag.get(to_remove)}'")
             else:
-                to_remove = candidates[0]
-            assume.remove(to_remove)
+                to_remove = pool[0]
             dropped_expr = next(
                 (expr for expr, tag in tag_of.items() if tag is to_remove), None)
+            # full_core 全量转 debug；真正需要人看的是"被丢静态撞上了不在 assume
+            # 中的硬约束"（json: / perm_domain: 标签）——candidates 只是 core ∩ assume，
+            # 这些硬约束标签会被过滤掉，造成"单条 static 独自冲突"的假象，
+            # 故对此情形打精准告警。
+            hard_tags = [t for t in core_list if t not in set(assume)]
+            if hard_tags:
+                logger.warning(
+                    f"[choice_core] static '{dropped_expr}' conflicts with hard constraint(s) "
+                    f"{[str(t) for t in hard_tags]} — dropping static, hard constraints kept")
+            logger.debug(
+                f"[choice_core] unsat_core iters={iters} ({len(candidates)} static): "
+                f"{[_expr_of(t) for t in candidates]} | full_core({len(core_list)}): "
+                f"{[str(t) for t in core_list]}")
+            assume.remove(to_remove)
             logger.warning(
                 f"[choice_core] drop conflicting static : '{dropped_expr}'")
 
@@ -714,6 +883,10 @@ class ParamConstraintUtils(CommonDispatcher):
         static_value_exprs = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
+            if param not in builder.var_map:
+                logger.debug(
+                    f"Skip dtype constraint of undeclared param : '{param}'")
+                continue
             param_dtype = self.case_input_map.get(param).dtype
             # 仅对可识别的张量 dtype 生成静态约束。None/NoneType 等占位(例如仅支持 None
             # 的预留 tensor 参数)不是可求解 dtype，若原样注入 `param.dtype == 'NoneType'`
@@ -747,6 +920,10 @@ class ParamConstraintUtils(CommonDispatcher):
         list_tensor_range_value_attr_name = "range_value[0]"
         relation_params = list(self.case_input_map.keys())
         for param_name in relation_params:
+            if param_name not in builder.var_map:
+                logger.debug(
+                    f"Skip range value constraint of undeclared param : '{param_name}'")
+                continue
             param_attr = self.operator_rule_data.inputs.get(param_name)
             if param_attr is None:
                 param_attr = self.operator_rule_data.outputs.get(param_name)
@@ -781,7 +958,7 @@ class ParamConstraintUtils(CommonDispatcher):
                 else:
                     if isinstance(value_rule, (list, tuple)) and len(value_rule) >= 2:
                         param_range_value_expr_list.append(
-                            f"({param_name}.{range_value_attr_name} > {value_rule[0]} and {param_name}.{range_value_attr_name} < {value_rule[1]})")
+                            f"({param_name}.{range_value_attr_name} >= {value_rule[0]} and {param_name}.{range_value_attr_name} <= {value_rule[1]})")
                     elif isinstance(value_rule, (int, float, bool)):
                         # Some extracted torch_npu defaults are represented as
                         # an exact scalar even when the outer rule is tagged
@@ -818,11 +995,12 @@ class ParamConstraintUtils(CommonDispatcher):
         per-row 多样性全链路丢失。dtype/format/shape/length 四个静态通道都读
         per-row 值，唯独 range_value 缺失 —— 本方法补上这条通道。
 
-        种子表达式形态（per-row 值的两种形态）：
-        - list（如 [-2,-1]）  -> "{param}.range_value == [-2, -1]"
-          整数组取值钉住（Seq==List 比较，转换器 334-344 行支持）
-        - 标量（如 128）      -> "{param}.range_value[0] == 128"
-          维度代表值钉住首元素，其余元素仍由 JSON 约束（如 0<x<=100000）限定
+        # 按 Z3 变量类型分流：
+            # - tensor / tensor_list：range_value 是数据内容区间，不走等值钉值（维持现状跳过）
+            # - list（attrs/scalars 数组型）：走已有的「整数组等值」钉值（L850-861 现状保留）
+            # - scalar（枚举型标量，如 groupListType/actType）：新增——组合层选定的枚举值
+            #   必须以软静态种子钉入 Z3，否则在语义等价类（如 C-019 中 glt∈{0,1} 同分支）
+            #   内被 Z3 模型偏好覆盖，组合多样性在物化层丢失（2026-10-17 glt 全灭为 1 实证）。
 
         安全性：走偏好静态通道（choice_core 冲突消解），种子与 JSON 约束冲突时
         丢弃种子保 JSON 约束，不会整 case UNSAT —— 与 dtype/length 通道同模式。
@@ -830,8 +1008,35 @@ class ParamConstraintUtils(CommonDispatcher):
         seed_static_value_expr_list = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
+            if param not in builder.var_map:
+                logger.debug(
+                    f"Skip range value seed of undeclared param : '{param}'")
+                continue
             case_input = self.case_input_map.get(param)
-            # 仅处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
+            # 这里处理标量参数
+            z3_var_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(case_input.type)
+            if z3_var_type in ("tensor", "tensor_list"):
+                logger.debug(
+                    f"Range value seed skipped, tensor-type param uses content-range "
+                    f"semantics, param name : '{param}', seed : '{case_input.range_values}'")
+                continue
+            if z3_var_type in ParamModelConfig.SCALAR_ATK_TYPE:
+                scalar_seed = case_input.range_values
+                # 仅构建「数值/布尔字面量」形态（组合层物化的枚举值）；profile 名
+                # （'Pos' 等）与 None 不钉——它们本就不是具体取值
+                if isinstance(scalar_seed, (int, float, bool)):
+                    seed_expr = "{param_name}.range_value == {seed_value}".format(
+                        param_name=param, seed_value=scalar_seed)
+                    logger.debug(
+                        f"Range value seed constraint (scalar), param name : '{param}', "
+                        f"seed expr : '{seed_expr}'")
+                    seed_static_value_expr_list.append(seed_expr)
+                else:
+                    logger.debug(
+                        f"Range value seed skipped, non-literal scalar seed (profile name?), "
+                        f"param name : '{param}', seed : '{scalar_seed}'")
+                continue
+            # 这里处理 list 型参数（attrs/scalars/tensors）；tensor/scalar 各有
             # 自己的取值通道（tensor 的 range_value 是数据内容区间，scalar 的
             # build_param_range_value_constraint 已按源 JSON 域处理）
             if case_input.type not in ParamModelConfig.LIST_ATK_TYPE:
@@ -896,6 +1101,12 @@ class ParamConstraintUtils(CommonDispatcher):
         shape_len_static_value_expr_list = []
         relation_params = list(self.case_input_map.keys())
         for param_name in relation_params:
+            # is_present=False 的参数不会在 Z3 声明（declare_param_in_z3 跳过），
+            # 引用其 .shape 的静态式在 AST→Z3 转换期必抛异常，直接不生成。
+            if param_name not in builder.var_map:
+                logger.debug(
+                    f"Skip shape len constraint of undeclared param : '{param_name}'")
+                continue
             param_ori_data = self.operator_rule_data.inputs.get(
                 param_name) if param_name in self.operator_rule_data.inputs else self.operator_rule_data.outputs.get(
                 param_name)
@@ -915,6 +1126,25 @@ class ParamConstraintUtils(CommonDispatcher):
             else:
                 logger.warning(f"Can't get valid tensor dimension data, param name : {param_name}")
                 continue
+            # 文档tensor的秩数值域（len(shape) in/== N）是结构硬约束，走 hard_static_expr_list
+            # 由 solve_z3_constraints 以 perm_domain 永久断言（防静默降秩，见 docstring）。
+            # 组合行的 dim_count 是 PICT 看不到跨参数关系式下的盲采先验，与 JSON 关系式
+            # （如 len(biasOptional.shape) == 2 and ...）可能矛盾（实测 biasOptional 1 vs 2），
+            # 故钉值走软静态通道：与硬约束冲突时由 choice_no_conflicts_expr_core 摘除
+            # （_is_rank_pin 使其在丢弃序中垫底），秩由硬约束接管；硬约束集合自身矛盾
+            # （文档秩域 × JSON 关系式互斥）则 whole solve UNSAT fail-fast，由用户修数据。
+            intent_dim = None
+            if self.param_combinations is not None:
+                property_data = self.param_combinations.get(param_name)
+                shape_property = getattr(property_data, "shape_property", None)
+                intent_dim = getattr(shape_property, "dim_count", None)
+            if (isinstance(param_shape_dimension, list)
+                    and isinstance(intent_dim, int)
+                    and intent_dim in param_shape_dimension):
+                intent_expr = f"len({param_name}.shape) == {intent_dim}"
+                shape_len_static_value_expr_list.append(intent_expr)
+                logger.debug(
+                    f"Rank intent pinned (soft), param name : '{param_name}', expr : '{intent_expr}'")
             if hard_static_expr_list is not None:
                 hard_static_expr_list.append(shape_len_expr)
             else:
@@ -938,6 +1168,10 @@ class ParamConstraintUtils(CommonDispatcher):
         shape_static_value_expr_list = []
         relation_params = list(self.case_input_map.keys())
         for param_name in relation_params:
+            if param_name not in builder.var_map:
+                logger.debug(
+                    f"Skip shape constraint of undeclared param : '{param_name}'")
+                continue
             if param_name not in self.case_input_map:
                 continue
             case_param_shape = self.case_input_map.get(param_name).shape
@@ -963,6 +1197,10 @@ class ParamConstraintUtils(CommonDispatcher):
         format_static_value_expr_list = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
+            if param not in builder.var_map:
+                logger.debug(
+                    f"Skip format constraint of undeclared param : '{param}'")
+                continue
             if self.case_input_map.get(param).format is not None:
                 format_static_value_expr_list.append(f"{param}.format == '{self.case_input_map.get(param).format}'")
         if check:
@@ -976,6 +1214,10 @@ class ParamConstraintUtils(CommonDispatcher):
         length_static_value_expr_list = []
         relation_param = list(self.case_input_map.keys())
         for param in relation_param:
+            if param not in builder.var_map:
+                logger.debug(
+                    f"Skip length constraint of undeclared param : '{param}'")
+                continue
             if self.case_input_map.get(param).type in ParamModelConfig.LIST_ATK_TYPE and self.case_input_map.get(
                     param).length is not None:
                 logger.debug(
@@ -1065,6 +1307,170 @@ class ParamConstraintUtils(CommonDispatcher):
                 if param_name in operator_params and (params_in_expr - {param_name}):
                     coupled.add(param_name)
         return coupled
+
+    def _static_lengths_for_unroll(self, constraints, free_len) -> dict:
+        """收集可静态确定长度的 list 参数，供 all()/any() 定长展开。
+
+        两类来源（都要求参数在本组合中 present 且 Z3 类型为 list/Seq）：
+        - 变量声明期已硬钉的组合长度（非 free-length 参数的 `length`）；
+        - 合取约束里唯一可推的 `len(p) == N` / `len(p) == len(q)` 常量。
+        free-length 参数的组合长度是 PICT 软偏好，不能当作硬事实。
+        """
+        hard_lengths = {}
+        for param_name, param_info in self.case_input_map.items():
+            if param_name in free_len:
+                continue
+            if DataMatchMap.Z3_VAR_TYPE_MAP.get(param_info.type) != "list":
+                continue
+            combination = self.param_combinations.get(param_name) if self.param_combinations else None
+            if combination is not None and not combination.is_present:
+                continue
+            length = getattr(param_info, "length", None)
+            if _is_static_int(length) and length >= 1:
+                hard_lengths[param_name] = length
+        return resolve_static_lengths(
+            [getattr(constraint, "expr", "") or "" for constraint in constraints or []],
+            hard_lengths,
+        )
+
+    def _static_rank_max_for_unroll(self) -> dict:
+        """收集文档声明的张量维度个数上限，供 range() 量词守护式展开。
+
+        来源是文档 `dimensions` 列（如 2-8，指 len(p.shape) 的上界，不是某个轴的长度）。
+        这个值已被 ``build_param_shape_len_constraint`` 写成 `len(p.shape) in [...]` 永久
+        断言，属确定性事实，不会被冲突消解丢弃。
+
+        :return: shape seq 常量名（``"<param>.shape"``，命名同 param_var_definition）-> 上界
+        """
+        rank_max = {}
+        for param_name in self.case_input_map.keys():
+            param_ori_data = (self.operator_rule_data.inputs.get(param_name)
+                              if param_name in self.operator_rule_data.inputs
+                              else self.operator_rule_data.outputs.get(param_name))
+            if param_ori_data is None:
+                continue
+            dims, _ = DataHandleUtil.get_relevant_attribute_value(
+                param_name, param_ori_data.dimensions, "dimensions")
+            if isinstance(dims, int) and not isinstance(dims, bool):
+                values = [dims]
+            elif isinstance(dims, list):
+                values = [v for v in dims if isinstance(v, int) and not isinstance(v, bool)]
+            else:
+                # None / 非法形态：推不出维度个数上限，对应量词保持原样。
+                continue
+            if values:
+                # tensor_list 的 ``p.shape`` 落到单个元素的 shape seq 常量
+                # ``<name>.elem.shape``（TensorListVar.elem_shape），普通 tensor 才是
+                # ``<name>.shape``。键必须与 param_var_definition 一致，否则转换器
+                # 查表落空、range() 量词不会展开（ScatterList C-002 实测）。
+                case_input = self.case_input_map.get(param_name)
+                z3_type = DataMatchMap.Z3_VAR_TYPE_MAP.get(
+                    getattr(case_input, "type", None)) if case_input is not None else None
+                suffix = "elem.shape" if z3_type == "tensor_list" else "shape"
+                rank_max[f"{param_name}.{suffix}"] = max(values)
+        return rank_max
+
+    def _static_scalar_ranges_for_unroll(self, constraints, builder) -> dict:
+        """从硬约束解析标量参数的取值区间，供 range() 量词的符号界展开。
+
+        只认合取上下文里的四种形态（``p`` 指 ``p.range_value`` 或裸参数名）：
+        ``lo <= p <= hi``（含链式）、``p <= hi``、``lo <= p``、``p in [v1, ...]``。
+        边界表达式必须能用 ``_int_bounds`` 推出静态区间（如 ``len(x.shape) - 1``，
+        依赖已登记的维度个数上限）；推不出就整条丢弃，宁可不展开。
+
+        这些区间展开时会一并断言进求解器，所以本方法只决定「能否展开」，
+        不改变约束本身的强弱。
+
+        :return: param -> (lo, hi)
+        """
+        converter = ASTtoZ3Converter(builder)
+        lower_bounds, upper_bounds = {}, {}
+
+        def note_lower(name, value):
+            lower_bounds[name] = max(lower_bounds.get(name, value), value)
+
+        def note_upper(name, value):
+            upper_bounds[name] = min(upper_bounds.get(name, value), value)
+
+        def expr_bounds(node):
+            try:
+                converted = converter.visit(node)
+            except Exception:  # noqa: BLE001 推导期失败只是放弃展开
+                return None
+            if converted is None:
+                return None
+            return converter._int_bounds(converted)
+
+        def param_name(node):
+            """比较项是标量参数取值时返回参数名。"""
+            if isinstance(node, ast.Attribute) and node.attr == "range_value" \
+                    and isinstance(node.value, ast.Name):
+                return node.value.id
+            if isinstance(node, ast.Name):
+                return node.id
+            return None
+
+        def is_scalar(name):
+            case_input = self.case_input_map.get(name)
+            if case_input is None:
+                return False
+            return DataMatchMap.Z3_VAR_TYPE_MAP.get(getattr(case_input, "type", None)) == "scalar"
+
+        for constraint_expr in constraints or []:
+            text = getattr(constraint_expr, "expr", None)
+            if not isinstance(text, str) or not text.strip():
+                continue
+            try:
+                tree = ast.parse(text, mode="eval")
+            except SyntaxError:
+                continue
+            if not _is_conjunctive(tree):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Compare):
+                    continue
+                left, ops = node.left, node.ops
+                for op, right in zip(ops, node.comparators):
+                    if isinstance(op, ast.In) and isinstance(right, (ast.List, ast.Tuple)):
+                        name = param_name(left)
+                        values = [item.value for item in right.elts
+                                  if isinstance(item, ast.Constant)
+                                  and isinstance(item.value, int)
+                                  and not isinstance(item.value, bool)]
+                        if name and is_scalar(name) and len(values) == len(right.elts) and values:
+                            note_lower(name, min(values))
+                            note_upper(name, max(values))
+                        left = right
+                        continue
+                    if not isinstance(op, (ast.LtE, ast.Lt, ast.GtE, ast.Gt)):
+                        left = right
+                        continue
+                    # `left <op> p` → 由 left 定界；`p <op> right` → 由 right 定界。
+                    # 取边界的保守端当超集：下界用 min(left)，上界用 max(right)，
+                    # 严格不等式因此天然成立（只是区间略宽，不改变约束力）。
+                    left_name, right_name = param_name(left), param_name(right)
+                    if right_name and is_scalar(right_name):
+                        bounds = expr_bounds(left)
+                        if bounds is not None:
+                            if isinstance(op, (ast.LtE, ast.Lt)):
+                                note_lower(right_name, bounds[0])
+                            else:
+                                note_upper(right_name, bounds[1])
+                    elif left_name and is_scalar(left_name):
+                        bounds = expr_bounds(right)
+                        if bounds is not None:
+                            if isinstance(op, (ast.LtE, ast.Lt)):
+                                note_upper(left_name, bounds[1])
+                            else:
+                                note_lower(left_name, bounds[0])
+                    left = right
+
+        ranges = {}
+        for name in set(lower_bounds) & set(upper_bounds):
+            lo, hi = lower_bounds[name], upper_bounds[name]
+            if lo <= hi:
+                ranges[name] = (lo, hi)
+        return ranges
 
     def declare_param_in_z3(self, builder: Z3ConstraintBuilder, is_print_log=False, free_length_params=None):
         """
@@ -1187,6 +1593,23 @@ class ParamConstraintUtils(CommonDispatcher):
             logger.info(f"Free (Z3-solved) lengths for cross-parameter coupled params : '{sorted(free_len)}'")
         self.declare_param_in_z3(builder=builder, is_print_log=True, free_length_params=free_len)
         constraint_after_solve_no = self.solve_no_present_param_in_constraint(z3_constraints)
+        # all()/any() 定长展开：长度已确定的参数，量词在转换期展开成逐元素 And/Or
+        # （约束文本不变，逻辑见 resolve_static_lengths）。
+        static_lengths = self._static_lengths_for_unroll(constraint_after_solve_no, free_len)
+        if static_lengths:
+            builder.set_static_lengths(
+                {name: value for name, value in static_lengths.items() if name in builder.var_map}
+            )
+        # range() 展开的循环上界：文档 dimensions 已作为硬约束断言，可据此推出取值范围。
+        rank_max = self._static_rank_max_for_unroll()
+        if rank_max:
+            builder.set_static_rank_max(rank_max)
+        # range() 量词的符号界（如 range(0, axis.range_value)）：标量参数没有文档声明的
+        # 取值范围，只能从硬约束 `lo <= p.range_value <= hi` 推；必须在 rank_max 之后，
+        # 因为界本身常用 len(p.shape) 表达。
+        param_ranges = self._static_scalar_ranges_for_unroll(constraint_after_solve_no, builder)
+        if param_ranges:
+            builder.set_static_param_ranges(param_ranges)
         expr_list = []
         for constraint_expr in constraint_after_solve_no:
             expr = constraint_expr.expr
@@ -1272,6 +1695,10 @@ class ParamConstraintUtils(CommonDispatcher):
         if not solver_result:
             logger.error(
                 f"Z3 solver error, no solution can satisfy constraints, operator name : {self.operator_name}")
+            logger.error(
+                "Hard constraint set itself is conflicting (see 'Causes of Constraint Conflicts' "
+                "unsat_core entries above, json:/perm_domain:) — please check the constraint set "
+                "in the input data")
             return False
         logger.info(f"End solving solution of constraints by Z3, operator name : {self.operator_name}")
 

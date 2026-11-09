@@ -58,13 +58,15 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
 
 **场景屏蔽规则**（仅当 `inputs/scene_directive.md` 存在时执行；不存在则按全场景
 提取，行为不变）：优先读取 directive 末尾机读块作为权威锚点（prose 段仅供人读）。
-机读块为 `<!-- scene: {device_types, selection, param_modes, selection_policy} -->`。
+机读块为 `<!-- scene: {device_types, selection, param_modes, no_scene_devices, selection_policy} -->`。
 其中 `selection` 是逐设备选中的模板及显式值配置；即使 `param_modes` 为空，也必须先按
-`selection` 限定模板范围，不得回退到未选模板的参数域。
+`selection` 限定模板范围，不得回退到未选模板的参数域。**设备值为 `null`（或列入
+`no_scene_devices`）的设备无场景维度**：不应用场景屏蔽与模板范围限定，仅按
+`device_types` 收窄 `product_support`，按文档全量提取该设备可达约束；**不得虚构
+量化/非量化区分**，也不得据此产出 `param is None`（无场景维度 ≠ 选择了非量化，不存在"未选场景专属参数"）。
 
 **独占提取**（directive 存在时）：仅提取所选设备与所选场景可达的约束——未选设备、
-未选量化场景专属的条目不产出；与所选场景共用的基础约束（dtype 合法域、通用 shape
-关系等）照常保留。
+未选量化场景专属的条目不产出（`no_scene_devices` 设备无"未选场景"概念，不做此过滤）；与所选场景共用的基础约束（dtype 合法域、通用 shape 关系等）照常保留。
 
 **设备→`product_support` 规则**（同一 directive 存在条件下，覆盖提示词 §4.3 的
 "仅取 √ 行"为"按选定设备收窄"）：先读文档"产品支持情况"表得到 √ 行全集 `D`；再按
@@ -100,7 +102,7 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
      `GetWorkspaceSize`，不得伪造 ACLNN 名称；`*` 和默认值决定 optional。
    - `aclnn`：看"函数原型"章节是否含 `aclnnXxxGetWorkspaceSize`。
    - 含 → 两段式（默认）。
-   - 不含、只有 `aclnnXxx(...)` 单函数 → 一段式：按当前提示词 §4.4 一段式分支取 `function_signature`（唯一函数声明，不含 `workspaceSize`/`executor`）；标量指针输出（如 `uint64_t*`）进 `outputs`，不当流程参数排除（见提示词 §4.6.1 一段式例外、§4.6.3 aclIntArray 固定 dtype 规则）。**不得**在 JSON 中写入 `is_single_function_mode` 字段。
+   - 不含、只有 `aclnnXxx(...)` 单函数 → 一段式：按当前提示词 §4.4 一段式分支取 `function_signature`（唯一函数声明，不含 `workspaceSize`/`executor`）；标量指针输出（如 `uint64_t*`）进 `outputs`，不当流程参数排除（见提示词 §4.6.1 一段式例外、§4.6.3 非 Tensor 数组参数 dtype 规则）。**不得**在 JSON 中写入 `is_single_function_mode` 字段。
 
 2.5 维度委派判定（强制）：按三个维度派发独立子 Agent：
    AttrsAgent=inputs&outputs 参数属性 / ExprAgent=constraints_in_parameters 关系式 / OtherAgent=其余参数；
@@ -159,7 +161,7 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
     确认 `product_support` 已按机读块 `device_types` 收窄并与文档 √ 行取交集
     （直接交集，无"通用"展开），`inputs`/
     `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。确认**独占提取**已执行：
-    未选设备、未选量化场景专属的约束条目未产出。自检不通过则回到步骤 1
+    未选设备、未选量化场景专属的约束条目未产出（`no_scene_devices` 设备不做场景屏蔽过滤，也不虚构量化/非量化区分）。自检不通过则回到步骤 1
     重提，不放过半屏蔽的 constraints.json。
 
 ## 维度委派提取

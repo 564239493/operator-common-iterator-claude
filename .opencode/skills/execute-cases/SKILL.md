@@ -121,6 +121,31 @@ python scripts/execute_cases.py --test-framework ttk --mode real \
   --hs-scenario-mode <run_state.hs_scenario_mode>
 ```
 
+**前置算子 plugin 检查（仅 TTK）**：`execute_cases.py` 会从 `constraints.json`
+识别 `metadataOptional` 等由前置算子填充的输入。若 `run_state.ttk_plugin` 非空
+（由 `/iterate-operator --ttk-plugin` 写入），会自动作为 ttk 的 `--plugin` 使用；
+命令行 `--plugin` 优先。路径可为本地文件、本地目录（TTK ACLNN 会连同其父目录
+上下文——即同级目录——一起打包上传，解压后按目录传入）或 `/` 开头且本地不存在的
+远端绝对路径。需要自定义打包根时加 `--plugin-root <目录>`。
+若两者都没有，真实执行会以 `TTK_PLUGIN_REQUIRED`
+（`requires_user_action=true`）exit 2，并在 `detected_params` 列出参数名。
+此时必须向用户索取插件路径后重试：
+
+```text
+python scripts/execute_cases.py --test-framework ttk --mode real \
+  --cases <iter>/cases_ttk.csv --output <iter>/execution_result.json \
+  --plugin <用户给定路径> --server-config servers.json ...
+```
+
+用户给出路径后先持久化，避免恢复/重试重复询问：
+
+```text
+python scripts/run_state.py set-fields --run-dir <run-dir> --set ttk_plugin=<用户给定路径>
+```
+
+随后重试执行时 `execute_cases.py` 会自动读取 `run_state.ttk_plugin`，无需再次询问。
+不得自行猜测 plugin 路径。未检测到前置算子参数时不要主动追加 `--plugin`。
+
 默认不加载算子 Golden（与 case-executor 契约一致：仅用户明确要求精度对比时
 才用）。用户明确要求时在命令中追加 `--with-golden`；精度失败只记录、不阻塞
 功能执行。`--no-golden` 为默认行为，两者都不得关闭 TTK worker 的内部格式

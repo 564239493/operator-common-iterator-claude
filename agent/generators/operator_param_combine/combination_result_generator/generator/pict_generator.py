@@ -38,6 +38,8 @@ from dataclasses import asdict, dataclass, field
 from itertools import product as _product
 from typing import Any, Dict, List, Optional, Tuple, Union, Set
 
+from agent.generators.operator_param_combine.combination_result_generator.constraint.exceptions import \
+    CAUSE_LABELS
 from agent.generators.operator_param_combine.combination_result_generator.constraint.interfaces import \
     ConstraintProtocol
 from agent.generators.operator_param_combine.combination_result_generator.coverage import PairUniverse, CoverageTracker
@@ -339,8 +341,13 @@ class PICTGenerator(BaseGenerator):
         规则：参数“取值为 None（传入空）”或“is_present=False（缺席）”时，
         在求值上下文中映射为 None：
           - x is None → True（正确短路）
-          - 引用 x.<属性> 的子表达式 → 异常 → 按过滤器宽松设计视为通过
-            （与 Z3 侧 remove_missing_param_exprs 的 True 替换语义一致）
+          - 引用 x.<属性> 的子表达式 → 抛 VariableBindingError → 该条约束
+            整体放弃（见 engine.CombinedConstraint.skipped_exprs）
+
+        已知偏差（别按“已对齐 Z3”理解）：Z3 侧 remove_missing_param_exprs 是在
+        子表达式级替换为 True 并做 And/Or 化简，粒度是“子式”；这里异常分支的
+        粒度是“整条约束”——引用缺席参数的那条约束在本行完全不生效，包括同一
+        表达式里本可正常判定的其他子条件。差距体现在 skipped_exprs 的计数上。
         其余参数保持属性字典原样。字符串 "None"（DataProfile 名）不是
         None，走原样分支。
         """
@@ -387,7 +394,9 @@ class PICTGenerator(BaseGenerator):
                     constraint_eval_context = self.build_constraint_eval_context(test_case.values)
                     ok = self._constraint.evaluate(constraint_eval_context)
                 except Exception as exc:
-                    logger.warning("constraint evaluate failed on row: %s", exc)
+                    # 与 engine 内部的“单条约束求值异常→放行”不同：这里是构造上下文
+                    # 整体失败，无从判断该行是否合法，因此按拒绝处理，措辞需点明差别
+                    logger.warning(f"Row REJECTED because the evaluation context could not be built: {exc}")
                     ok = False
                 if not ok:
                     dropped += 1
@@ -396,11 +405,111 @@ class PICTGenerator(BaseGenerator):
             pairs = self._pair_builder.build(factor_values)
             self._coverage_tracker.update(pairs)
         if dropped:
-            logger.info("PICT rows filtered by constraint: kept=%d dropped=%d", suite.size(), dropped)
+            logger.info(f"PICT rows filtered by constraint: kept={suite.size()} dropped={dropped}")
             failed = getattr(self._constraint, "failed_exprs", None)
             if failed:
-                logger.debug(f"Pict row filtered by constraint, violated expression : {failed}")
+                # 只有“约束不满足”才叫 violated；求值异常导致的放弃不计入此处
+                logger.debug(f"PICT post-filter rejected rows; violated expression(s): {sorted(failed)}")
+        self._log_skipped_constraints(suite.size(), dropped)
         return suite
+
+    def _log_skipped_constraints(self, suite_size: int, dropped: int) -> None:
+        """汇总本批次因求值异常而“未生效”的约束。
+
+        dropped 为 0 并不代表所有约束都通过：被跳过的约束根本没参与筛选，
+        必须显式报出来，否则会被误读成“约束全部满足、二次过滤正常工作”。
+
+        :param suite_size: 过滤后保留的行数
+        :param dropped: 因约束不满足而被拒绝的行数
+        """
+        skipped = getattr(self._constraint, "skipped_exprs", None) or {}
+        if not skipped:
+            return
+        logger.warning(self._format_skipped_block(skipped, suite_size, dropped))
+
+    def _format_skipped_block(self, skipped: Dict[str, Dict[str, Any]], suite_size: int, dropped: int) -> str:
+        """把 skipped_exprs 渲染成带缩进的多行文本块。
+
+        单行拼接十几组原因会产生数千字符的长行，终端与 grep 都无法阅读；
+        这里按“根因 → 参数属性 → 表达式”三层展开：同一根因只在组头说明一次，
+        其下每个 (参数, 属性) 一行，再逐行列出命中次数与表达式原文。
+
+        :param skipped: CombinedConstraint.skipped_exprs
+        :param suite_size: 过滤后保留的行数
+        :param dropped: 因约束不满足而被拒绝的行数
+        :return: 可直接交给 logger 的多行文本
+        """
+        # 本批候选行总数：每条约束理论上要评估 candidates 次，据此判断失效范围
+        candidates = suite_size + dropped
+        groups = self._group_skipped(skipped)
+
+        lines = [
+            f"PICT post-filter: kept={suite_size} dropped={dropped} | "
+            f"{len(skipped)} constraint(s) NEVER took effect",
+            "  effect: evaluation raised -> constraint abandoned -> rows were NOT filtered by it",
+        ]
+        for (code, cause), subjects in sorted(groups.items()):
+            lines.append("")
+            lines.append(f"  [{code}] {CAUSE_LABELS.get(cause, cause or 'unresolved')}")
+            for subject in sorted(subjects):
+                group = subjects[subject]
+                items = group["items"]
+                # 单表达式时下行已带计数，组头不再重复，避免整块堆满同一个数字
+                header = f"{len(items)} expr"
+                if len(items) > 1:
+                    header += f", skipped {group['hits']}x"
+                lines.append(f"    {subject} -> {header}")
+                for expr, count in sorted(items, key=lambda item: -item[1]):
+                    lines.append(f"        {self._skip_row_label(count, candidates)}  {expr}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _group_skipped(
+        skipped: Dict[str, Dict[str, Any]],
+    ) -> Dict[Tuple[str, str], Dict[str, Dict[str, Any]]]:
+        """把 skipped_exprs 按 (错误码, 根因) → 主体 归并。
+
+        同一表达式在每行都会命中一次，直接逐条打印会产生数百行重复；
+        归并后同根因只保留一个标题、同 (参数, 属性) 只保留一行。
+
+        :param skipped: CombinedConstraint.skipped_exprs
+        :return: {(code, cause): {subject: {"hits": int, "items": [(expr, count)]}}}
+        """
+        groups: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
+        for expr, info in skipped.items():
+            param, attr = info.get("param"), info.get("attr")
+            if param or attr:
+                subject = f"param '{param}'" if param else "unbound name"
+                if attr:
+                    subject += f" attr '{attr}'"
+            else:
+                # 非绑定类异常没有结构化字段，退回原始消息当分组标题
+                subject = info.get("reason") or "unknown error"
+            key = (info.get("code") or "unknown", info.get("cause") or "")
+            group = groups.setdefault(key, {}).setdefault(subject, {"hits": 0, "items": []})
+            group["hits"] += info.get("count", 1)
+            group["items"].append((expr, info.get("count", 1)))
+        return groups
+
+    @staticmethod
+    def _skip_row_label(count: int, candidates: int) -> str:
+        """渲染单条表达式的跳过次数及其占候选行的比例。
+
+        只写 `x313` 会被误读成“第 313 条”或“条件成立 313 次”；
+        写成 `skipped 313x of 313 rows (100%)` 才能直接看出该约束在这批
+        候选行上完全失效，无需再回查日志实现。
+
+        :param count: 该表达式因求值异常被跳过的次数
+        :param candidates: 本批候选行总数（kept + dropped）
+        :return: 形如 `skipped 313x of 313 rows (100%)` 的标签
+        """
+        if candidates <= 0:
+            return f"skipped {count}x"
+        pct = min(100, int(round(100.0 * count / candidates)))
+        # 跳过 1 次却显示 0% 会让人以为从未发生，非零占比一律保底为 <1%
+        share = "<1%" if count > 0 and pct == 0 else f"{pct}%"
+        overflow = ">=" if count > candidates else ""
+        return f"skipped {count}x of {candidates} rows ({overflow}{share})"
 
     @property
     def algorithm_name(self) -> str:
@@ -966,6 +1075,8 @@ def _translate_operand(node: ast.AST, columns: set, warnings: List[str]) -> Opti
 
     裸标识符（如 `x.dtype == FLOAT32` 中的 FLOAT32）在约束 evaluate 语义里是
     未定义变量（EvalState.UNKNOWN），因此不参与 PICT 翻译，返回 None。
+    len(<param>.shape) 秩操作数映射为 [{param}_dimension] 列引用。
+
     """
     if isinstance(node, ast.Constant):
         v = node.value
@@ -987,6 +1098,20 @@ def _translate_operand(node: ast.AST, columns: set, warnings: List[str]) -> Opti
             return '"true"'
         if node.id == "False":
             return '"false"'
+        return None
+    if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "len" and len(node.args) == 1:
+        # len(param.shape) == k 的操作数映射：len 是秩（维度数）语义，
+        # 对应 PICT 列 {param}_dimension。打通 C-019 类「枚举参数 ↔ tensor 秩」
+        # 联动进组合层（glt∈{0,1} ⇒ gl 1 维；glt=2 ⇒ gl 2 维）——此前该形态
+        # 落到末行 return None，IfExp 叶子全部不可译、联动约束整条被 drop
+        # （2026-10-17 实证：组合层 (glt,dim) 矛盾态 138/314）。
+        arg = node.args[0]
+        if isinstance(arg, ast.Attribute) and arg.attr == "shape" and isinstance(arg.value, ast.Name):
+            dim_col = "{}_dimension".format(arg.value.id)
+            if dim_col in columns:
+                return "[{}]".format(dim_col)
+            warnings.append("constraint references unknown column '{}'".format(dim_col))
+            return None
         return None
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
         return repr(-node.operand.value)

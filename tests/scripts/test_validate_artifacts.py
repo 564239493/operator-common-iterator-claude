@@ -1038,3 +1038,77 @@ def test_scene_scan_false_with_modes_warns():
         {"has_quant_scenarios": False, "quant_modes": ["per_tensor"]}
     )
     assert any("non-empty" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# TTK adapter: tensor_storage_shapes column (view/storage 分离透传)
+# ---------------------------------------------------------------------------
+
+def _nz_signature():
+    return [
+        {"name": "x1", "tensor_list": False, "output": False, "optional": False},
+        {"name": "x2", "tensor_list": False, "output": False, "optional": False},
+        {"name": "scale", "tensor_list": False, "output": False, "optional": False},
+        {"name": "out", "tensor_list": False, "output": True, "optional": False},
+    ]
+
+
+def _nz_case(x2_extra):
+    x2 = {
+        "name": "x2", "type": "tensor", "shape": [3, 2],
+        "dtype": "int8", "format": "NZ",
+    }
+    x2.update(x2_extra)
+    return {
+        "id": 0,
+        "name": "aclnnQuantMatmulV3",
+        "outputs": "out",
+        "inputs": [
+            {"name": "x1", "type": "tensor", "shape": [4, 2],
+             "dtype": "int8", "format": "ND"},
+            x2,
+            {"name": "scale", "type": "tensor", "shape": [1],
+             "dtype": "uint64", "format": "ND"},
+            {"name": "out", "type": "tensor", "shape": [4, 3],
+             "dtype": "fp16", "format": "ND"},
+        ],
+    }
+
+
+def test_ttk_storage_shapes_separated_only_for_split_tensor():
+    case = _nz_case({"storage_shape": [1, 1, 1, 16, 32]})
+    row = convert_case(case, 0, signature=_nz_signature(), attr_specs=[])
+    assert ast.literal_eval(row["tensor_storage_shapes"]) == (
+        None, (1, 1, 1, 16, 32), None, None,
+    )
+    assert audit_case(case, _nz_signature(), row, []) == []
+
+
+def test_ttk_storage_shapes_absent_field_all_none():
+    case = _nz_case({})
+    row = convert_case(case, 0, signature=_nz_signature(), attr_specs=[])
+    assert ast.literal_eval(row["tensor_storage_shapes"]) == (None, None, None, None)
+
+
+def test_ttk_storage_shapes_equal_to_view_omitted():
+    case = _nz_case({"storage_shape": [3, 2]})
+    row = convert_case(case, 0, signature=_nz_signature(), attr_specs=[])
+    assert ast.literal_eval(row["tensor_storage_shapes"]) == (None, None, None, None)
+
+
+def test_ttk_storage_shapes_tensor_list_replicated_to_length():
+    signature = [
+        {"name": "x", "tensor_list": True, "output": False, "optional": False},
+    ]
+    case = {
+        "id": 0,
+        "name": "aclnnExample",
+        "inputs": [
+            {"name": "x", "type": "tensors", "shape": [3, 2], "length": 2,
+             "dtype": "int8", "format": "NZ", "storage_shape": [1, 1, 1, 16, 32]},
+        ],
+    }
+    row = convert_case(case, 0, signature=signature, attr_specs=[])
+    assert ast.literal_eval(row["tensor_storage_shapes"]) == (
+        ((1, 1, 1, 16, 32), (1, 1, 1, 16, 32)),
+    )

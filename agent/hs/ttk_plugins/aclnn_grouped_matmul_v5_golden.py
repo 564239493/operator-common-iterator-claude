@@ -17,6 +17,8 @@ shape-compatible zero mock; numerical accuracy is intentionally not checked.
 from __future__ import annotations
 
 import ast
+import json
+import logging
 from typing import Any
 
 import numpy as np
@@ -306,6 +308,77 @@ def _expand_per_group(scale, group_size, ref):
     return out
 
 
+def _provided_group_values(
+    group_tensor: torch.Tensor | np.ndarray,
+    value: Any,
+    group_list_type: int,
+) -> torch.Tensor | np.ndarray:
+    data = value
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            try:
+                data = ast.literal_eval(data)
+            except (SyntaxError, ValueError) as exc:
+                raise ValueError(
+                    f"groupListData string is not valid JSON/Python literal: {exc}"
+                ) from exc
+    experts = int(group_tensor.shape[0])
+    if group_list_type == 2:
+        if not isinstance(data, (list, tuple)) or len(data) != experts:
+            raise ValueError(
+                f"groupListData for groupListType=2 must contain {experts} pairs"
+            )
+        for pair in data:
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                raise ValueError(
+                    f"groupListData expects [groupIdx, groupSize] pairs, got {pair!r}"
+                )
+            index, size = pair
+            if (
+                isinstance(index, bool) or not isinstance(index, int)
+                or isinstance(size, bool) or not isinstance(size, int)
+            ):
+                raise ValueError(f"groupListData pair must contain integers: {pair!r}")
+            if index < 0 or index >= experts or size < 0:
+                raise ValueError(f"groupListData pair out of range: {pair!r}")
+        if isinstance(group_tensor, torch.Tensor):
+            return torch.as_tensor(
+                data, dtype=group_tensor.dtype, device=group_tensor.device,
+            )
+        return np.asarray(data, dtype=group_tensor.dtype)
+
+    if not isinstance(data, (list, tuple)) or len(data) != experts:
+        raise ValueError(
+            f"groupListData for groupListType={group_list_type} must contain "
+            f"{experts} integers"
+        )
+    for value_item in data:
+        if isinstance(value_item, bool) or not isinstance(value_item, int):
+            raise ValueError(f"groupListData non-integer value {value_item!r}")
+        if value_item < 0:
+            raise ValueError("groupListData must be non-negative")
+    if group_list_type == 0:
+        if any(data[index] > data[index + 1] for index in range(len(data) - 1)):
+            raise ValueError(
+                "groupListType=0 requires a non-decreasing groupListData sequence"
+            )
+    if isinstance(group_tensor, torch.Tensor):
+        return torch.as_tensor(
+            data, dtype=group_tensor.dtype, device=group_tensor.device,
+        )
+    return np.asarray(data, dtype=group_tensor.dtype)
+
+
+def _copy_group_values(group_tensor, values) -> None:
+    if isinstance(group_tensor, torch.Tensor):
+        with torch.no_grad():
+            group_tensor.copy_(values)
+    else:
+        group_tensor[...] = values
+
+
 def grouped_matmul_v5_execution_input(
     x: Any,
     weight: Any,
@@ -367,23 +440,30 @@ def grouped_matmul_v5_execution_input(
             f"groupListOptional, got {tuple(map(int, group_tensor.shape))}"
         )
 
-    experts = int(group_tensor.shape[0])
-    counts = _counts_from_x(
-        x,
-        group_type=group_type,
-        experts=experts,
-        reference=group_tensor,
-    )
-    values = _materialized_group_list(
-        counts,
-        group_list_type=group_list_type,
-        reference=group_tensor,
-    )
-    if isinstance(group_tensor, torch.Tensor):
-        with torch.no_grad():
-            group_tensor.copy_(values)
+    provided = metadata.get("groupListData")
+    if provided is None:
+        provided = metadata.get("group_list_data")
+    if provided is not None:
+        logging.info(
+            "aclnnGroupedMatmulV5: applying attributes.groupListData from CSV"
+        )
+        values = _provided_group_values(
+            group_tensor, provided, group_list_type,
+        )
     else:
-        group_tensor[...] = values
+        experts = int(group_tensor.shape[0])
+        counts = _counts_from_x(
+            x,
+            group_type=group_type,
+            experts=experts,
+            reference=group_tensor,
+        )
+        values = _materialized_group_list(
+            counts,
+            group_list_type=group_list_type,
+            reference=group_tensor,
+        )
+    _copy_group_values(group_tensor, values)
 
     # A8W4 biasOptional is a derived quantity (doc line 553 / source-analysis 3.8):
     # bias[E,N] = sum_k(8 * weight[E,k,N] * scale[E,?,N]).

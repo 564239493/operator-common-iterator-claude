@@ -1,7 +1,7 @@
 ---
 name: iterate-operator
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--hs-scenario-mode original|planned] [--batch-dir path]
+argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--ttk-plugin path] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
 ---
 
 # 算子闭环迭代
@@ -36,22 +36,31 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    前 `human_checkpoint_round` 轮仍纯自动迭代，检查点之后每个失败轮都重新弹该四选一 （可逐轮切换）。 
    未开启`human-constraints-upload`时检查点退化为三选一（人工修复不可选）。详见下方「挂起、监听与唤醒」节。
 
-   `--scenes "<场景描述>"` 可选；提供时直接以该文本为场景描述（原文存
-   `run_state.scenes`），由主协调器做简单文字匹配（设备/量化场景/参数取值）对齐文档后
-   写 selection.json。未提供时进入手动输入模式（先展示文档设备/量化场景/执行机建议
-   面板，再让用户文本输入场景描述）。场景收集是强制步骤：**至少选择出设备类型**才
-   允许进入 EXTRACT。详见 SCENE_SCAN 子步骤。
+   `--scenes "<场景描述>"` 可选；提供时原文存 `run_state.scenes`，作为场景预填文本。
+   场景收集强制分三段且**设备优先**：先让用户从文档"产品支持情况"支持的设备中选择
+   设备类型（硬性必要项），设备确定后主协调器再读文档识别**该设备下**的量化场景并
+   让用户选择，最后可选填写参数取值。未提供 `--scenes` 时同样先选设备。场景收集是
+   强制步骤，至少选择出设备类型才允许进入 EXTRACT。详见 SCENE_SCAN 子步骤。
 
    `hs-scenario-mode=original`；只有用户显式传入
    `--hs-scenario-mode planned` 时，torch_npu + TTK 才启用 TND/BSND/
    paged-attention 场景拆分和投影。该参数对 ACLNN/ATK 不生效。
+   `--ttk-plugin <路径>` 可选，仅 TTK：建 run 时写入 `run_state.ttk_plugin`，
+   EXECUTE 阶段由 `execute_cases.py` 自动读取并作为 ttk 的 `--plugin` 传入
+   （本地文件、本地目录或 `/` 开头的远端绝对路径；本地目录会连同父目录上下文
+   ——同级目录——一起打包上传，远端解压后按目录传入）。非 TTK 传入即报错，
+   不要与 ATK 混用。
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
    `--source-analysis-knowledge` 默认关闭；显式传入时，仅对 ACLNN 自动提示词装配
    启用 `source_analysis` 类知识，并继续要求 `operator_name_eq` 精准命中。不得与
    `--prompt` 同用，也不得用于 torch_npu。
-2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、
+
+    `--web` 默认关闭；开启时在「首轮 CHECK 通过后 DASHBOARD 拉起」步骤把 `--web`
+    透传给 `raise_dashboard.py` 打开浏览器；不传则仅确保 server 就绪并返回 URL、
+    **不自动打开浏览器**。该旗标只影响是否自动开浏览器，不影响 server 与工作台可用性。
+2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、`--ttk-plugin`、
    `--supplement-constraints`、`--source-analysis-knowledge`、`--operator-family`、`--test-framework`、
    `--hs-scenario-mode`、`--constraint-check-rounds`、`--scenes "<场景描述>"` 等参数，
    `--scenes` 原文存 `run_state.scenes`（场景直输模式标记），
@@ -83,32 +92,49 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    空跑一轮。该完整提取只发生在初始化首轮；执行反馈轮推进为 `UPDATE_CONSTRAINTS`，复用并
    最小修改上一轮约束，不再委派 constraint-extractor。
 
-**SCENE_SCAN 子步骤（文本直输模式，唯一路径）**：场景信息只走**用户文本输入 +
-简单文字匹配**。legacy 三级场景扫描流程（scene-scanner Agent 扫 `scene_scan.json`
-+ Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突预判）**已整体下线并删除，
-禁止再调用**——`scene-scanner` Agent 与 `scan-scenes` skill 已从注册表移除、
-`prompts/scan_scenes.md` 与 `scripts/check_scene_conflicts.py` 已删除、
-`render_scene_directive.py` 已移除 `--scan` 参数与 `--scope all`（原实现仅存 git
-历史）。场景信息二选一：
+**SCENE_SCAN 子步骤（设备优先的三段场景收集，唯一路径）**：场景信息来自
+`--scenes "<场景描述>"` 预填文本或交互输入。legacy 全量场景扫描管线（scene-scanner
+Agent 扫 `scene_scan.json` + `check_scene_conflicts.py` 冲突预判 + `--scan`/
+`--scope all`）已下线删除，禁止调用（原实现仅存 git 历史）。现行流程固定按
+**设备类型 → 量化场景 → 参数取值** 三段收集，且**后两段只能在设备确定之后进行**。
 
-- `--scenes "<场景描述>"` 已传入：直接以该文本为场景描述（原文已存 `run_state.scenes`）；
-- 未传：主协调器先组装【建议面板】展示给用户（全部来自落盘文件/配置，非模型记忆），
-  然后请用户**文本输入**场景描述。建议面板内容：
-  1. 文档支持的设备：读 `<run-dir>/inputs/<doc>.md` "产品支持情况"章节，列出设备全称；
-  2. 执行机支持的平台：读 `servers.json` 各服务器 `platforms` 并集，标注哪些文档设备有执行机；
-  3. 文中出现的量化场景关键词（非量化/全量化-xx/伪量化…，按文档实际内容列举）。
-  用户输入格式建议：**设备类型（必要）+ 量化场景 + 参数取值**，如
-  `A2非量化groupListType等于2`。
+**第 1 段（强制）：选择设备类型**
+- 读 `<run-dir>/inputs/<doc>.md` 的"产品支持情况"章节，列出该算子**支持（√）**的
+  设备全称；文档未列出或明确不支持的设备不得作为候选。
+- `--scenes` 非空时先**只做设备对齐**：文本含设备关键字（"A2"/"A3"/"910B" 或设备名
+  子串）→ 对齐到支持设备全称；对不上或命中多个 → 列出候选让用户重选，不得放行。
+- 未传 `--scenes`、或文本中没有可用设备 → 用 AskUserQuestion 让用户从支持设备中
+  选择（可多选；文档仅 1 个支持设备时回显该设备并确认一次）。**设备未选定前，禁止
+  读取/展示量化场景清单、禁止写 selection.json、禁止渲染 directive、禁止推进
+  EXTRACT。**
+- 对齐后与 `servers.json` 各服务器 `platforms` 并集比对：无执行机 → 警示"该设备无
+  执行机，real 执行无法进行"（**不阻断**，约束提取仍可进行）。
+- 用户拒绝提供设备时，向用户确认是否停止任务（不得静默跳过场景步骤继续提取）。
 
-**文字匹配与回显确认**（两种入口合流，逐项执行）：
-- **设备（硬性必要项）**：用户文本包含设备关键字（"A2"/"A3"/"910B" 或设备名子串）→
-  对齐到文档"产品支持情况"的**设备全称**；**对不上任何设备 → 追问重输**，并列出文档
-  支持的设备全称清单作为提示（不得自行猜测或放行）。对齐后与 servers.json
-  `platforms` 并集比对：无执行机 → 警示"该设备无执行机，real 执行无法进行"
-  （**不阻断**，约束提取仍可进行）。
-- **量化场景**：文本命中文档中出现的量化关键词（非量化/全量化-xx/伪量化…）；匹配不上 →
-  展示关键词清单让用户挑选；非量化算子允许不填。
-- **参数取值（含大白话区间，解析细则）**：
+**第 2 段（设备确定后）：识别并选择该设备下的量化场景**
+- 主协调器重新读文档快照（产品支持情况、参数说明、约束说明、量化相关小节），
+  **只针对已选设备**识别量化场景。提取规则（沿用历史三段式的量化模板规则）：
+  - 场景 = 具体量化模板，名称直接编码量化方式/位宽（如 `非量化`/`伪量化`/
+    `全量化-A8W8`/`全量化-A4W4`/`K-C量化（A4W4）`/`全量化-GQA`），按文档实际用词；
+    "量化模式"等上级分类词不是场景，其下说明/约束拆入各真实模板；
+  - 无设备标注的通用场景合并到已选设备；文档标注"与 X 相同"时按 X 的场景集；
+  - 只保留**文档不仅提到、而且给出了该场景下参数取值约束**的场景；
+    ACLNN_ERR_*/参数校验失败场景一律跳过；
+  - 不得凭算子名/参数名臆造；**其它设备专属场景不得出现在本设备候选里**。
+- 若 `--scenes` 文本已包含场景关键词 → 先与上述该设备场景清单匹配：唯一命中则
+  预填；匹配不上或命中多个 → 列出候选让用户选择，不得静默接受。
+- 用 AskUserQuestion 让用户选择该设备下的量化场景（可多选；可提供"全部"并展开为
+  实际场景名）。多设备时逐设备识别、逐设备征询。
+- 若该设备在文档中**没有任何量化场景** → 该设备无场景维度：不选场景，selection
+  该设备值写 `null`，明确告知"仅按设备收窄"；不得用"非量化"等模板名代替
+  （"文档没有该维度"不等于"在该维度上选了非量化"）。文档含量化参数信号但识别不到
+  具体场景 → 只作 advisory 提示（可能遗漏剪枝），仍按无场景维度处理，不补造场景。
+
+**第 3 段（可选）：参数取值**
+- 收集所选场景下的显式参数取值（`--scenes` 中已给出的先解析）；用户可跳过（保持
+  "按文档和已选场景自适应"）。多场景时同一参数取值应用到全部已选场景；用户明确
+  指定只作用于某场景时按场景分别落盘。
+- 解析细则：
   - 等值："等于2" / "=2" / "取2" → 单值 → `fix [2]`；
   - 枚举："取0和3" / "=0,3" / "0,1,2" → 多值 → `expand [0,3]`；
   - **闭区间大白话**："x的shape为2-6维" / "grouplist取值为4-6之间" / "2~6" /
@@ -119,23 +145,32 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
   - **开区间话术**（"以上"/"以内"/"不超过"/"大于"）：param_modes 仅支持有限取值
     集合，必须向用户说明并请其给出确定上下界（或列出具体候选），不得自行截断；
   - 参数名对不上文档参数表 → 回报用户修正。
-- **回显补充**：凡区间解析出的 expand 清单，必须在确认表中显示**完整展开结果**
-  （如 `x: [2,3,4,5,6]（维度数）`、`groupList: [4,5,6]`），用户确认后才写入
-  selection.json。
-- **回显确认（强制一次）**：把解析结果以表格（设备全称 / 量化场景 / 参数取值列表）展示，
-  AskUserQuestion 让用户【确认/修改】；确认后才允许落盘。
+
+**回显确认（强制一次）**：把三段结果以表格（设备全称 / 量化场景 / 参数取值列表）
+展示，无场景维度设备的量化场景列显示"（无场景维度）"；凡区间解析出的 expand 清单
+必须显示**完整展开结果**（如 `x: [2,3,4,5,6]（维度数）`、`groupList: [4,5,6]`）。
+AskUserQuestion 让用户【确认/修改】；确认后才允许落盘。**批处理已完成批次级确认、
+且透传文本唯一命中场景时，只回显结果、不再追问**（避免每个算子重复确认）。
+
+> **批处理场景来源**：`iterate-directory` 在批次级只确认**设备**，并把设备别名 +
+> 用户场景原文作为 `--scenes` 透传。本 run 第 1 段先对齐设备；若透传文本不含可匹配
+> 的量化场景，**继续执行第 2 段**读本文档识别该设备下量化场景并征询用户，批处理
+> 不得因此跳过场景步骤；若批次文本已含场景且唯一匹配，只回显确认、不重复询问。
 
 **设备必选硬门槛（强制）**：未选出至少一个可对齐文档"产品支持情况"的设备全称之前，
 禁止写 `selection.json`、禁止渲染 `scene_directive.md`、禁止推进 EXTRACT；用户明确
 拒绝提供设备时，向用户确认是否停止任务（不得静默跳过场景步骤继续提取）。
 `render_scene_directive.py` 以 `DEVICE_REQUIRED`（device_types 为空）/
-`EMPTY_SCENE`（无选中场景）exit 2 硬拦截——收到该返回时回到文字匹配重新征询，
+`EMPTY_SCENE`（selection 无任何有效设备条目——设备值 `null` 是合法条目，
+全"仅设备"选择不触发）exit 2 硬拦截——收到该返回时回到设备/场景征询重新选择，
 不得伪造 selection 绕过。
 
 **落盘**：确认后写 `<run-dir>/inputs/selection.json`（**值级形态**）：
-`{"device_types": [<设备全称>], "selection": {<设备全称>: {<量化场景>: null | {参数: [值...]}}}}`
-（"保持自动" → `null`；显式参数 → `{param: [values]}`；文本模式**不支持** `fix_all_default`
-——无场景参数枚举，需要固定全部默认值时请显式列出各参数）。
+`{"device_types": [<设备全称>], "selection": {<设备全称>: null | {<量化场景>: null | {参数: [值...]}}}}`
+（设备值 `null` = 该设备**无场景维度**（该设备在文档中无任何量化场景），仅按设备
+收窄；模板值 `null` = "保持自动"；显式参数 → `{param: [values]}`；"全部"须展开为
+实际场景名，不得把"全部"写成模板键；文本模式**不支持** `fix_all_default`——无场景
+参数枚举，需要固定全部默认值时请显式列出各参数）。
 
 **渲染**：
 `python scripts/render_scene_directive.py --selection <run-dir>/inputs/selection.json --run-dir <run-dir> --scope subset`
@@ -143,7 +178,8 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
 legacy 参数；仅做结构校验、无枚举交叉校验；exit 2 阻断并按 `code`/`errors` 提示修正。
 设备支撑：无执行机的设备仅警示不阻断——约束仍可提取，real 执行阶段自然失败。）
 渲染产出 `inputs/scene_directive.md`（机读块
-`<!-- scene: {device_types, selection, param_modes, selection_policy} -->`）并回写
+`<!-- scene: {device_types, selection, param_modes, no_scene_devices, selection_policy} -->`，
+`no_scene_devices` 为无场景维度设备清单）并回写
 `run_state.scene`（`scene.source` = scenes_param / interactive_input）。
 
 **EXTRACT 消费**：EXTRACT 调度消息须把 `inputs/scene_directive.md` 路径一并传入
@@ -151,7 +187,9 @@ constraint-extractor；extractor 读 directive 的 `device_types` 收窄 `produc
 （与文档 √ 行取交集，无"通用"展开）；按 `param_modes` 产 `allowed_range_value`
 （`expand` 用取值清单、`fix` 单值、缺键按文档和已选场景适配）；已选场景禁止的
 Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场景的约束**——未选
-设备、未选场景专属条目不产出（与所选场景共用的基础约束保留）。该 `product_support`
+设备、未选场景专属条目不产出（与所选场景共用的基础约束保留）；`no_scene_devices`
+设备（无场景维度）不做场景屏蔽，仅按设备收窄，不得虚构量化/非量化区分。该
+`product_support`
 随后驱动 `generate_cases.py` 逐平台生成——**设备选择经约束提取驱动生成，不直接改
 生成逻辑**。执行反馈轮不重写 prompt 或 directive，constraint-updater 继续读取同一
 场景指令，保持跨轮稳定。
@@ -198,6 +236,61 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      下一次约束更新前运行
      `python scripts/apply_conflict_resolution.py <iter>/constraints.json --candidates <inputs>/conflict_candidates.json --resolution <inputs>/conflict_resolution.json`
      把 source-wins 并入（replace patch + revalidate）。
+   - **PARAM PIN PROBE（CHECK 前，非阻塞，交互模式只问一次）**：运行
+     `python scripts/probe_param_pins.py probe <iter>/constraints.json --decisions <inputs>/param_pins.json --output <iter>/param_probe.json`
+     （`param_pins.json` 不存在时脚本按空决策处理，路径可直接传），
+     检测「`array_length` 未固定 + 被跨参数 `len(p)` 引用 + 无传递上界」的列表参数。
+     这类长度在生成侧只剩 `z3.Length >= 1`，是已知的求解变慢来源。
+     本步 exit 2 只表示 constraints 缺失或非法，属上游产物问题：报告 stdout 的 `code` 并阻断，
+     不得继续 CHECK。读 `param_probe.json`：
+     - `warnings` 非空时逐条转述（如 `zero_length_conflict`：`len(p)==0` 与生成侧的
+       `Length>=1` 冲突；`mapping_anomaly`：该类型的长度约束不生效），只提示、不改约束；
+     - `candidates` 为空或没有 `askable=true` 的组 → 直接进 CHECK；
+     - 有 askable 组 → **只发起一次 AskUserQuestion**（不论几组、几参数，绝不逐参数轮询）；
+       仅当 Other 输入整句解析失败时，允许带格式清单重问一次（全程最多两次，仍不逐参数轮询）。
+       题面列出每组参数、耦合证据（`evidence`），并说明“当前无上界、Z3 只取 len>=1；可跳过，不影响继续”。
+       选项给常规预设 `全部固定为 len == {v0}（推荐）` / `全部固定为 len == {v1}` / `全部保持自动（跳过）`。
+       `{v0}`/`{v1}` 取该组 `param_probe.json` 的 `suggested_values`（脚本按约束下界 + 文档原文里的 batch 数确定性推导，
+       见 `suggestion_basis`，不需要额外问询或模型判断）；
+       多组建议不一致时题面逐组列出建议值，预设用第一组的值。
+       用户可用 Other 自由输入，受支持格式是闭集，题面同时列出（不只出现在拒绝消息里）：
+       `a=2`；`a=[2,3]` 或 `a=2,3`；`a=2~4` 或 `a=2-4`（闭区间展开为 2、3、4 三个候选）；
+       `a,b=2` 或 `a=b=2`（多参数同值）；`全部=2` 或 `统一=2`（所有 askable 组）。
+       逗号规则：`a=2,3` 的逗号属于取值列表，`a=2, b=3` 的逗号分隔两个赋值，
+       区别是逗号后的片段是否带 `<参数名>=`；全角符号、中文逗号/顿号由脚本归一。
+       解析一律交给脚本，模型不判断“大概是什么意思”：
+       `python scripts/probe_param_pins.py parse --text "<用户原文>" --probe <iter>/param_probe.json --output <iter>/param_pins_parse.json --decisions <inputs>/param_pins.json --decisions-output <inputs>/param_pins.json`
+       exit 0 且 `ok=true` 时，脚本已把本轮决策并入 `inputs/param_pins.json`，
+       同 `group_id`/`leader` 原位替换、其它组保留，模型不得手工抄写或改写该文件；
+       exit 2 表示**整句未被完整解析**（全有或全无），此时脚本不写 `param_pins.json`、不产 patch，
+       下一轮仍会问；同一条消息回显 `errors[].message` 与 `suggestions`（格式清单），请用户按格式重填一次；
+       第二次仍失败则本轮保持自动、直接进 CHECK，不阻断、不继续追问。
+       只有用户显式选择「全部保持自动（跳过）」才记 `mode=auto` 抑制后续提问；
+       用户未作答或关闭问询则本轮照常保持自动、不记 `auto`（下一轮仍会问）。
+       同一参数出现两个不同值、等长组内取值不一致时整句拒绝，不再“取第一个”。
+       组内 `quantifier_constraints` 非空时题面注明：所选长度 ≤ 128 时，生成期会把 `all()/any()` 定长展开成逐元素 And/Or（求解快）；
+       > 128 仍走量词、明显变慢，因此默认推荐 2/3。
+     - 答案统一落 `<run>/inputs/param_pins.json`。预设「全部固定为 len == {v}」等价于文本
+       `全部={v}`，同样交给上面的 `parse` 命令合并落盘，模型不手写该文件；
+       只有「全部保持自动（跳过）」需要协调器直接写条目（每个 askable 组一条
+       `{group_id, params, leader, mode:"auto", platform:"all", decided_by:"user"}`）。
+       字段约定：`fix` 用 `length`、`set` 用 `lengths`、`range` 用 `min_length`/`max_length`，
+       `source` 记用户原始片段便于审计；`auto` 只留档抑制重复提问、不产 patch。
+       该文件是 run 内审计与跨迭代抑制重复提问的唯一依据。
+     - 存在非 `auto` 决策时依次运行
+       `python scripts/probe_param_pins.py patch <iter>/constraints.json --decisions <inputs>/param_pins.json --output <iter>/param_pins_patch.json`、
+       `python scripts/validate_artifacts.py constraints_patch <iter>/param_pins_patch.json`、
+       `python scripts/apply_supplement_constraints.py <iter>/constraints.json <iter>/param_pins_patch.json --origin param_pin`，
+       再重跑 `probe` 后进 CHECK：期望不再有 `askable=true` 的组——已固定的组变为
+       `has_upper_bound`，选了「保持自动」的组显示为 `reason=already_decided`。
+       合并出的条目带 `origin=param_pin`、`src_text` 取 patch 的 `basis`、不带 `src_txt_line`
+       （用户裁决没有文档条款），这是预期的，不要手工补行号。
+       patch 为空（`n_patch=0`）或校验不通过时跳过并如实记录，不阻断流程。
+     - 批处理（`iterate-directory`）或无头场景：只写 `param_probe.json` 作 advisory，不问询、不产 patch。
+     - 本步在 CHECK 前落盘，不触发 `set-constraint-check` 重置规则；
+       若 pin 是 CHECK `passed` 之后才补的，按 CONSTRAINT CHECK/REPAIR 第 5 条的重置规则重检。
+     - 只固定长度，不得写 `x[0] < x[1]` 这类逐元素展开式；
+       量词展开由生成器在长度静态确定（≤128）时自动完成，约束文本保持文档原样。
    - **CONSTRAINT CHECK/REPAIR（每个新约束版本的内部子循环，强制）**：初始化首轮在
      SUPPLEMENT 和已有 conflict resolution 合并完成、最终 `constraints.json` 已通过
      normalize/validate 后执行；执行反馈轮在 constraint-updater 完成版本化最小更新后执行。
@@ -244,11 +337,13 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
         并针对新版本重新执行完整 check 预算。
    - **DASHBOARD 拉起（首轮 CHECK 通过后、进 GENERATE/终止前）**：首轮 CONSTRAINT
       CHECK/REPAIR `passed` 后，运行
-      `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_001`（探测 8899 未监听则
-      后台拉起 `dashboard_server.py`；`run_state.dashboard_raised=false` 时打开浏览器一次并置 true，
-      已拉起则仅返回 URL）。把返回的 URL 提示给用户「可在该网页监控本轮约束/执行/诊断；人工修复时
-      亦在此编辑提交」。页面 5 秒轮询会自动跟随 EXECUTE/DIAGNOSE 到终态，无需手动刷新。仅首轮拉起一次；
-      后续轮次 `dashboard_raised=true`，人工修复检查点再调该脚本时仅返回 URL。
+      `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_001`（默认 `--page run`；
+      探测 8420 未监听则后台拉起 `src/serve.py` 托管的工作台 `src/web/dist`；
+      仅当用户命令含 `--web` 时追加 `--web` 参数，`run_state.dashboard_raised=false` 时打开浏览器一次并置 true；
+      未传 `--web` 时不自动打开浏览器、仅确保 server 就绪并返回 URL；已拉起则仅返回 URL）。把返回的 URL 提示给用户「可在工作台 `#/run` 监控本轮约束/执行/诊断；人工修复时
+      到 `#/constraints` 编辑提交」（未传 `--web` 时用户可自行打开该 URL）。页面轮询会自动跟随 EXECUTE/DIAGNOSE 到终态，无需手动刷新。仅首轮拉起一次；
+      后续轮次 `dashboard_raised=true`，人工修复检查点再调该脚本（`--page constraints --web`）时仅返回 URL。
+      工作台需 `src/web/dist` 已构建（新机器首次 `cd src/web && npm install && npm run build`）。
    - **constraints-only 终止**：若 `run_state.test_framework="constraints"`，在 EXTRACT
      和可能的 SUPPLEMENT、CONSTRAINT CHECK/REPAIR 完成后运行 constraints
      normalize/validate；只有当前 iteration 的 `constraint_check.json.status=passed` 才运行
@@ -287,12 +382,14 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
           （某平台一完成其 JSONL 即被 convert 删掉转成 `cases_<plat>.json`、从进度里"消失"），
           **绝不**据此停掉生成进程。**`per_platform` 语义（关键，防误判调查）**：running 期间 `per_platform`
           列出的是**当前正在被生成的目标平台**（`generate_platform_outputs` 按 `product_support` 顺序逐平台
-          生成全部平台，每个产 `cases_<plat>.json`），**不是执行/canonical 平台**；canonical/CSV 平台是在
-          生成**全部完成后**由 `_select_ttk_platform` 按 `servers.json` 服务器顺序及各 `platforms` 顺序选定的，
-          与 running 期间 `per_platform` 出现哪个平台无关。故 `per_platform` 里出现 `servers.json` 未覆盖的
-          平台（如 A3 训练/推理）属**正常**、不是选错平台，**禁止**据此调查 `generate_cases.py` 平台选择逻辑
+          生成全部平台，每个产 `cases_<plat>.json`），**不是执行平台**；执行平台（`cases.json`/CSV
+          指向的那个）是在生成**全部完成后**由 `_select_execution_platform` 选定的（`--platform` →
+          场景阶段单选设备 → `servers.json` 服务器顺序及各 `platforms` 顺序；无服务器配置时才退回
+          首个生成平台），与 running 期间 `per_platform` 出现哪个平台无关。
+          故 `per_platform` 里出现 `servers.json` 未覆盖的平台（如 A3 训练/推理）属**正常**、
+          不是选错平台，**禁止**据此调查 `generate_cases.py` 平台选择逻辑
           或 kill 重启——平台是否选对只在 `state=complete` 后、`generation_summary.json.selected_platform`
-          不符 `servers.json` 时才处理（EXECUTE 前的事）。
+          与预期执行平台（场景单选设备，或 `servers.json` 首个可执行平台）不符时才处理（EXECUTE 前的事）。
        4. `state=complete`（`generation_summary.json` 已产出）后跑
           `python scripts/validate_artifacts.py cases <cases 路径>`，通过后运行
           `python scripts/flow_control.py advance --run-dir <run-dir>` 进入 EXECUTE；
@@ -315,6 +412,18 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
        `execute_cases.py --mode real --strategy fusion --num <case_count>`
        透传策略与用例数。精度对比结果记录性、不入成败；路径门禁失败写
       `engine_error` 终止流程。
+     - **TTK 前置 plugin 提示**：`run_state.ttk_plugin` 非空时，
+       `execute_cases.py` 会自动读取并作为 ttk 的 `--plugin` 传入，不重复询问。
+       若为空且 `case-executor` 返回 `TTK_PLUGIN_REQUIRED` /
+       `requires_user_action=true`（检测到 `metadataOptional` 等前置算子产物），
+       主协调器用 question 工具向用户索取插件路径；路径可为本地文件、本地目录
+       （TTK ACLNN 会连同父目录上下文/同级目录一起打包上传，远端解压）或 `/` 开头
+       且本地不存在的远端绝对路径。
+       用户给出后先校验（本地相对路径必须存在且为文件/目录），再运行：
+       `python scripts/run_state.py set-fields --run-dir <run-dir> --set ttk_plugin=<路径>`
+       持久化到 `run_state.ttk_plugin`，然后重试真实执行（`execute_cases.py` 会自动
+       读取该字段；也可显式追加 `--plugin <路径>`）。不得自行猜测路径。
+       未检测到前置参数时不要主动追加 `--plugin`。
    - 执行完成后运行 `python scripts/flow_control.py advance --run-dir <run-dir>`
      （裁决 EXECUTE → GATE），随后再委派 `quality-reviewer`；gate 产出后由第 7 步的
      `advance` 决定去向。
@@ -346,8 +455,8 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      并把`human_checkpoint_resolved_iteration` 置为 `current_iteration`（防上下文压缩后对同一轮 重复询问）：
      1. **人工修复**（仅 `human_constraints_upload == true` 时可选；false 时该选项标注"需带
         `--human-constraints-upload` 启用"）：先运行
-        `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N>`（页面已拉起则仅返回 URL、
-        未拉起则拉起浏览器一次），把返回的 URL 提示给用户「请到该网页编辑约束并提交，网页提交会自动生成
+        `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N> --page constraints --web`（页面已拉起则仅返回 URL、
+        未拉起则拉起浏览器一次），把返回的 URL 提示给用户「请到工作台 `#/constraints` 编辑约束并提交，网页提交会自动生成
         `<run>/iter_<N>/constraints_copy.json`」；随后挂起 `AWAITING_HUMAN_CONSTRAINTS` + 挂监听器，
         监听器仍检测 `iter_<N>/constraints_copy.json` 出现+稳定后唤醒（文件来源由手动上传改为网页提交，
         监听机制不变），走「挂起、监听与唤醒」节。
@@ -385,6 +494,7 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
            - **选项 3**：用户手动修改约束后继续（主协调器等待用户提供修改后的 constraints.json，
              收到后重新运行 `validate_constraint_regression.py --attempt 1`，通过后运行 finalize，再进入 CHECK/REPAIR）
          - 若 `limit_reached=false` 且 `ok=true`：无回归，继续。
+     4b. 对新版本重跑一次 **PARAM PIN PROBE**（同上文规则：最多一次问询、`inputs/param_pins.json` 已裁决的组不再问、`--origin param_pin` 合并），再重置 CHECK。
      5. 运行 `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --reset`
         重置 `run_state.constraint_check` 到新 iteration，复用上文 CHECK/REPAIR 子循环；
         checker 必须验证所有 finding 的 expected_effect。passed 后直接 GENERATE → EXECUTE，
@@ -421,8 +531,8 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
    `recommended_action`、`overall_action`、`constraint_findings`、`root_cause_summary`），
    明确告诉用户「这些是发现的问题，请在约束文件里据此修改」。
 3. **提示用户到网页修改（agent 不创建文件）**：**不复制**任何文件。运行
-   `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N>`（页面已拉起则仅返回 URL、
-   未拉起则拉起浏览器一次），把返回的 URL 提示给用户：「请到该网页编辑约束并提交，网页提交会自动生成
+   `python scripts/raise_dashboard.py --run-dir <run-dir> --iter iter_<N> --page constraints --web`（页面已拉起则仅返回 URL、
+   未拉起则拉起浏览器一次），把返回的 URL 提示给用户：「请到工作台 `#/constraints` 编辑约束并提交，网页提交会自动生成
    `<run>/iter_<N>/constraints_copy.json`」；当前轮约束只读基线是 `<run>/iter_<N>/constraints.json`。
    文件出现即代表用户已在网页提交、准备开启下一轮；文件尚未出现即代表用户仍在修改，继续等待。
 4. **挂监听器**：用 `Monitor` 工具（`persistent: true`，命令为单条绝对路径、无变量/管道/
@@ -453,7 +563,9 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      向用户转述错误，用户改完 `iter_<N>/constraints_copy.json` 重新上传/保存即可再次触发（监听器
      下一轮重新挂起后会再检测）。`MAX_ITERATIONS_REACHED` 时可用 `--max-iterations N` 提升上限
      后重跑该脚本（或让用户重新发起）。
-8. **CHECK/REPAIR 子循环**：人工来源无 findings 清单，checker 做**首轮式完整语义检查**
+8. **CHECK/REPAIR 子循环**：人工提交的是新约束版本，进 CHECK 前先按第 6 步规则跑一次
+   PARAM PIN PROBE（`inputs/param_pins.json` 已裁决的组不再问，`--origin param_pin` 合并）。
+   人工来源无 findings 清单，checker 做**首轮式完整语义检查**
    （文档快照 + prompt + 场景指令 + 补充证据）；`failed` → `BLOCKED` 照旧。
    `passed` → GENERATE → EXECUTE → GATE → DIAGNOSE。若再次以 constraint_extraction 失败且
    `current_iteration >= human_checkpoint_round` → **回到 human-checkpoint 检查点重新弹四选一**
@@ -486,7 +598,7 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
    - 应用后重跑 `validate_aclnn_knowledge`、路由测试（`init_run`）和
      `validate_prompt_assembly.py --record`（`build_*_prompt_base.py` 已退场归档于
      `archive/builders/`，base 直接编辑后不再 `--check`），并把决定与验证结果落入当前 run。
-11. 每次委派前后都按 `CLAUDE.md` 的格式在主会话报告。所有交接必须落盘，
+11. 每次委派前后都按 `AGENTS.md`「调度可见性」的格式在主会话报告。所有交接必须落盘，
    不把一个 Agent 的未验证推理作为另一个 Agent 的事实。
 12. 如果提供了 `--batch-dir`，本算子进入 `SUCCESS`、`BLOCKED`、`MAX_ITERATIONS`、
     `STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 或 `STOPPED_BY_USER` 后，调用

@@ -53,7 +53,7 @@
 模型相反——守卫失效时最坏情况是多问用户，而不是漏拦。
 
 `runs/batches/<batch-id>/` 是目录批次的调度状态，不视为某个算子的业务任务目录；
-只有 `init_batch.py` / `batch_state.py` 可按工作流更新它。
+只有 `init_batch.py` / `batch_state.py` / `batch_scene.py` 可按工作流更新它。
 
 这里的隔离是「同一工作树内按当前 run 路径隔离」，不是 Git worktree 隔离。流水线
 子智能体共享当前工作树交接 `runs/` 产物。

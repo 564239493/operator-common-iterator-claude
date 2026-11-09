@@ -8,6 +8,7 @@ Z3 `solver.check()` 复检——后者对 `Length(SeqSort)`+`ProdShape` 递归�
 且 `_pin_case_value` 的 shape pin per-项异常仅 debug 静默跳过，抓不到 shape-rank 违例。
 """
 import ast
+import math
 from typing import Dict, Optional, Tuple
 
 from agent.generators.atk_common_utils.case_config import InputCaseConfig
@@ -35,9 +36,62 @@ DTYPE_SHORT_TO_CANON = {
     "complex64": "complex64", "complex128": "complex128",
 }
 
+def _ceil_div(a, b):
+    """向上取整除法（整数运算，不经过浮点）。"""
+    return -((-a) // b)
+
+
+def _ceil_align(a, b):
+    """向上对齐到 b 的倍数。"""
+    return -((-a) // b) * b
+
+
+def _ceil_div_any(a, b):
+    """`ceil(a / b)` 的求值实现：整数操作数走精确整数运算，其余退回真除法。
+
+    `ceil(A / B)` 里的 `/` 在 Python 是浮点真除法，操作数超过 2^53 时相邻整数
+    无法区分（`(2**53 + 1) / 1` 会变回 `2**53`），`math.ceil` 之后结果就错了。
+    求值前把这种写法整体改写成本函数，与求解期用不等式组确定商的编码保持同一整数语义。
+    """
+    if (isinstance(a, int) and isinstance(b, int)
+            and not isinstance(a, bool) and not isinstance(b, bool)):
+        return -((-a) // b)
+    return math.ceil(a / b)
+
+
+class _CeilDivRewriter(ast.NodeTransformer):
+    """把 `ceil(A / B)` / `Ceil(A / B)` 改写成 `_ceil_div_any(A, B)`。
+
+    只改单参数且参数是 `/` 的形式；`ceil(A // B)` 的 `//` 本身是整数运算，
+    不会丢精度，保持原样。嵌套调用先由 `generic_visit` 自底向上处理。
+    """
+
+    _NAMES = ("ceil", "Ceil")
+
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        inner = node.args[0] if len(node.args) == 1 and not node.keywords else None
+        if (isinstance(node.func, ast.Name) and node.func.id in self._NAMES
+                and isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Div)):
+            new = ast.Call(
+                func=ast.Name(id="_ceil_div_any", ctx=ast.Load()),
+                args=[inner.left, inner.right],
+                keywords=[],
+            )
+            return ast.copy_location(new, node)
+        return node
+
+
 SAFE_BUILTINS = {
     "len": len, "min": min, "max": max, "abs": abs, "sum": sum,
     "any": any, "all": all, "True": True, "False": False, "None": None,
+    "ceil": math.ceil, "Ceil": math.ceil,
+    "ceil_div": _ceil_div, "ceildiv": _ceil_div, "ceilDiv": _ceil_div,
+    "CeilDiv": _ceil_div,
+    "ceil_align": _ceil_align, "CeilAlign": _ceil_align, "AlignUp": _ceil_align,
+    "RoundUp": _ceil_align,
+    # `_CeilDivRewriter` 的改写目标（ceil(A / B) 精确求值）
+    "_ceil_div_any": _ceil_div_any,
 }
 
 
@@ -101,8 +155,9 @@ def eval_constraint(expr: str, namespace: Dict[str, Param]) -> Tuple[Optional[bo
 
     返回 (ok, err)。ok=False=expr 显式求值假（违例）；ok=True=求值真；
     ok=None 且 err 非 None=eval 本身失败（调用方应 fail-open，不阻断）。
-    先 `normalize_json_null`（裸 `null`→`None`，tokenizer 安全，不动引号内串），再静默
-    `ast.parse(mode='eval')` 校验，通过才 `eval`（沙箱 builtins 仅 len/min/max/abs/sum/any/all）。
+    先 `normalize_json_null`（裸 `null`→`None`，tokenizer 安全，不动引号内串），再
+    `ast.parse(mode='eval')` 校验并把 `ceil(A / B)` 改写成精确整数求值，最后编译执行
+    （沙箱 builtins 仅 len/min/max/abs/sum/any/all 与约束函数）。
     """
     if not expr:
         return True, None
@@ -111,11 +166,15 @@ def eval_constraint(expr: str, namespace: Dict[str, Param]) -> Tuple[Optional[bo
     except Exception as e:  # 病态 expr tokenize 失败
         return None, f"normalize: {type(e).__name__}: {e}"
     try:
-        ast.parse(normed, mode='eval')
+        tree = _CeilDivRewriter().visit(ast.parse(normed, mode='eval'))
+        ast.fix_missing_locations(tree)
+        code = compile(tree, "<constraint>", "eval")
     except SyntaxError as e:
         return None, f"ast.parse(SyntaxError): {e}"
+    except Exception as e:
+        return None, f"rewrite({type(e).__name__}): {e}"
     try:
-        result = eval(normed, {"__builtins__": SAFE_BUILTINS}, namespace)  # noqa: S307/B307 沙箱 builtins
+        result = eval(code, {"__builtins__": SAFE_BUILTINS}, namespace)  # noqa: S307/B307 沙箱 builtins
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
     if isinstance(result, bool):

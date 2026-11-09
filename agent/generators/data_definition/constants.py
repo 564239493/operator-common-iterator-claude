@@ -74,6 +74,8 @@ class ParamModelConfig:
     DEFAULT_TENSOR_SHAPE_DIM_MAX = 8
     # 默认数组类参数的长度
     DEFAULT_LIST_LENGTH = 1
+    # 整型小区间枚举化阈值：跨度 ≤8 时物化为枚举值（0-2/0-5 等取值范围语义）
+    _SMALL_RANGE_ENUM_MAX_SPAN = 8
     # tensor shape每一维取值模型全集
     DIM_VALUE_PROFILE_LIST = ["Has_Large_Size", "Has_Size_1", "Has_Odd_Size", "Typical"]
     # 定义属于float, int, bool等可枚举的数据类型
@@ -97,6 +99,8 @@ class ParamModelConfig:
     TENSOR_ATK_TYPE = ["tensor", "tensors"]
     # 数组类参数的数据类型
     LIST_ATK_TYPE = ["tensors", "scalars", "attrs"]
+    # 标量参数的数据类型
+    SCALAR_ATK_TYPE = ["scalar", "attr"]
     # 严格应用人工规则修正的参数间约束类型
     COMBINATION_USE_CONSTRAINT_TYPE = ["shape_equality", "type_equality", "format_equality"]
     # STRICT_CONSTRAINT_TYPE = ["shape_equality", "type_equality"]
@@ -155,7 +159,7 @@ class DataMatchMap:
     # 在case_config中只生成数据生成方法字段，不生成实际数据时使用，用于适配ATK框架
     ACL_DTYPE_TRANSFER_SCALAR_MAP = {"INT4": "int4", "int4": "int4", "INT8": "int8", "int8": "int8", "int8_t": "int8",
                                      "INT16": "int16", "INT32": "int32", "int32": "int32",
-                                     "UINT8": "uint8", "uint8": "uint8", "INT": "int64", "uint64": "uint64",
+                                     "UINT8": "uint8", "uint8": "uint8", "INT": "int32", "uint64": "uint64",
                                      "uint64_t": "uint64",
                                      "UINT16": "uint16", "UINT32": "uint32", "UINT64": "uint64", "INT64": "int64",
                                      "BFLOAT16": "bf16", "bfloat16": "bf16", "BF16": "bf16", "bf16": "bf16",
@@ -167,7 +171,7 @@ class DataMatchMap:
                                      "ACL_BF16": "bf16", "BOOL": "bool", "STRING": "string", "CHAR": "string",
                                      "str": "string",
                                      "string": "string", "bool": "bool", "double": "double", "int64_t": "int64",
-                                     "int64": "int64", "int": "int64", "HIFLOAT8": "hifloat8", "HFLOAT8": 'hifloat8',
+                                     "int64": "int64", "int": "int32", "HIFLOAT8": "hifloat8", "HFLOAT8": 'hifloat8',
                                      "ACL_HIFLOAT8": "hifloat8", "FLOAT8_E5M2": "float8_e5m2",
                                      "ACL_FLOAT8_E5M2": "float8_e5m2", "FLOAT8_E4M3FN": "float8_e4m3fn",
                                      "ACL_FLOAT8_E4M3FN": "float8_e4m3fn", "FLOAT8_E8M0": "float8_e8m0",
@@ -181,7 +185,7 @@ class DataMatchMap:
 
     # 如果type字段在ACL_TYPE_TRANSFER_ATK_MAP中，则转换为MAP中的值，否则默认为attr
     ACL_TYPE_TRANSFER_ATK_MAP = {"aclTensor": "tensor", "aclScalar": "scalar", "aclIntArray": "attrs",
-                                 "aclFloatArray": ":attrs", "aclBoolArray": "attrs", "aclTensorList": "tensors",
+                                 "aclFloatArray": "attrs", "aclBoolArray": "attrs", "aclTensorList": "tensors",
                                  "aclScalarList": "scalars"}
 
     PLATFORM_MAP = {"Atlas A3 训练系列产品/Atlas A3 推理系列产品": "A3_train_series_or_A3_infer_series",

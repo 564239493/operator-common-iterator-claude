@@ -52,6 +52,16 @@ class ParamAttributes(BaseModel):
             "逻辑视图 L（非转置规范布局）；约束表达式统一按 L 书写；[]或\"N/A\"=无转置语义"
         ),
     )
+    storage_layout: ValueWithSrcText | str = Field(
+        default_factory=lambda: ValueWithSrcText(value=[], src_text=""),
+        description=(
+            "分块存储（NZ 等）物理布局轴表达式清单（List[str] 或按转置态选择的分支 "
+            "List[{transposed: bool, axes: List[str]}]，按物理轴顺序）；s0..sN 引用该"
+            "张量逻辑视图 shape 轴，t 引用转置态（1/0）；生成阶段求值为用例 "
+            "storage_shape（shape 字段承载逻辑 viewShape）；[]或N/A=无分块存储语义"
+            "（storage==view，旧产物行为不变）"
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 

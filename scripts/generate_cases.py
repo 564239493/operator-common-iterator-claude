@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import json
 import logging
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -834,6 +835,80 @@ def _main() -> int:
             or per_platform_execution_paths[selected_platform]
         )
 
+    aux_report: dict[str, Any] = {
+        "operator_name": operator_name,
+        "specs": [],
+        "updated_cases": 0,
+        "updated_params": 0,
+    }
+    if args.test_framework == "ttk":
+        from scripts.operator_aux_params import (
+            ensure_run_aux_specs,
+            inject_aux_params_into_file,
+        )
+
+        spec_payload = ensure_run_aux_specs(
+            output_dir.parent, operator_name, constraints,
+        )
+        specs = spec_payload.get("aux_params", []) or []
+        aux_report = inject_aux_params_into_file(
+            selected_source, operator_name, specs=specs,
+        )
+        plugin = next(
+            (spec.get("plugin") for spec in specs if spec.get("plugin")),
+            None,
+        )
+        if plugin:
+            plugin_path = ROOT / plugin
+            if plugin_path.is_file():
+                shutil.copy2(plugin_path, output_dir / "golden.py")
+            else:
+                logger.warning("aux plugin not found: %s", plugin_path)
+        elif specs:
+            aux_targets = {
+                spec["name"]: spec.get("signature_index")
+                for spec in specs
+                if spec.get("signature_index") is not None
+            }
+            if aux_targets:
+                template = (
+                    ROOT / "scripts" / "aux_input_plugin_template.py"
+                ).read_text(encoding="utf-8")
+                template = template.replace(
+                    "AUX_TARGETS = {}",
+                    f"AUX_TARGETS = {aux_targets!r}",
+                    1,
+                )
+                template = template.replace(
+                    '__input__ = {"aclnn": {}}',
+                    "__input__ = {\"aclnn\": {"
+                    + json.dumps(operator_name)
+                    + ': "apply_aux_params"}}',
+                    1,
+                )
+                (output_dir / "golden.py").write_text(
+                    template, encoding="utf-8",
+                )
+            else:
+                logger.warning(
+                    "aux params have no signature_index; generic input plugin "
+                    "not generated"
+                )
+        if aux_report.get("updated_params"):
+            logger.info(
+                "injected auxiliary params: %s",
+                json.dumps(
+                    {
+                        "specs": [
+                            spec.get("name") for spec in aux_report.get("specs", [])
+                        ],
+                        "updated_cases": aux_report.get("updated_cases"),
+                        "updated_params": aux_report.get("updated_params"),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
     # Framework-neutral cases.json: written for atk and ttk alike,
     # and before generation_summary.json, so completion detection (which
     # watches the summary) never reports a finished generation without
@@ -852,6 +927,57 @@ def _main() -> int:
             conversion = convert_file(
                 cases_json_path, ttk_temporary, constraints=constraints
             )
+            aux_materializations: list[dict[str, Any]] = []
+            group_list_report = None
+            if aux_report.get("updated_params"):
+                from scripts.materialize_group_list_data import materialize_csv
+
+                for spec in specs:
+                    attr_name = spec.get("name")
+                    if not attr_name:
+                        continue
+                    report_path = output_dir / (
+                        "group_list_data_report.json"
+                        if attr_name == "groupListData"
+                        else f"{attr_name}_materialize_report.json"
+                    )
+                    report = materialize_csv(
+                        ttk_temporary,
+                        ttk_temporary,
+                        target="aclnn",
+                        clear_range=True,
+                        api_name=operator_name,
+                        attr_name=attr_name,
+                        validator=spec.get("validator", "group_list_data"),
+                        target_param=spec.get("target_param", ""),
+                        group_list_index=spec.get("tensor_index", 8),
+                        report_json=report_path,
+                    )
+                    if not report.get("ok"):
+                        raise SystemExit(
+                            f"{attr_name} materialization failed: "
+                            + json.dumps(
+                                report.get("errors", []),
+                                ensure_ascii=False,
+                            )
+                        )
+                    aux_materializations.append({
+                        "attr_name": attr_name,
+                        "spec": spec,
+                        "report": report,
+                        "report_path": str(report_path),
+                    })
+                    if attr_name == "groupListData":
+                        group_list_report = report
+                _atomic_write_json(
+                    output_dir / "aux_params_report.json",
+                    {
+                        "ok": True,
+                        "operator_name": operator_name,
+                        "specs": specs,
+                        "materializations": aux_materializations,
+                    },
+                )
             csv_validation = validate_csv(ttk_temporary)
             conversion_failures = [
                 entry for entry in conversion["audit"] if entry["issues"]
@@ -870,6 +996,21 @@ def _main() -> int:
             conversion = {**conversion, "csv_validation": csv_validation}
             ttk_temporary.replace(ttk_output)
             conversion["destination"] = str(ttk_output)
+            for item in aux_materializations:
+                report = item["report"]
+                report["input_csv"] = str(ttk_output)
+                report["output_csv"] = str(ttk_output)
+                _atomic_write_json(Path(item["report_path"]), report)
+            if aux_materializations:
+                _atomic_write_json(
+                    output_dir / "aux_params_report.json",
+                    {
+                        "ok": True,
+                        "operator_name": operator_name,
+                        "specs": specs,
+                        "materializations": aux_materializations,
+                    },
+                )
             summary = {
                 "operator_name": operator_name,
                 "test_framework": "ttk",
@@ -891,6 +1032,22 @@ def _main() -> int:
                 "semantically_clean_count": conversion["semantically_clean_count"],
                 "output": str(ttk_output),
                 "adapter": "scripts.atk_to_ttk_aclnn.convert_file",
+                "aux_params": aux_report,
+                "aux_params_report": (
+                    str(output_dir / "aux_params_report.json")
+                    if aux_materializations else None
+                ),
+                "aux_materializations": [
+                    {
+                        "attr_name": item["attr_name"],
+                        "report": item["report_path"],
+                    }
+                    for item in aux_materializations
+                ],
+                "group_list_data_report": (
+                    str(output_dir / "group_list_data_report.json")
+                    if group_list_report is not None else None
+                ),
                 "ttk_materialization": (
                     str(output_dir / "ttk_materialization_report.json")
                     if materialization_report is not None else None

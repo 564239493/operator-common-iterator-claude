@@ -35,6 +35,7 @@ import ast
 import csv
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -166,6 +167,88 @@ def _resolve_aclnn_golden_plugin(
         if registered.is_file():
             return registered
     return None
+
+
+def _run_state_ttk_plugin(iter_dir: Path) -> str:
+    """Return ``run_state.ttk_plugin`` for the owning TTK run, if present."""
+    current = iter_dir.resolve()
+    for _ in range(5):
+        candidate = current / "run_state.json"
+        if candidate.is_file():
+            try:
+                state = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return ""
+            if not isinstance(state, dict) or state.get("test_framework") != "ttk":
+                return ""
+            return str(state.get("ttk_plugin") or "").strip()
+        if current.parent == current:
+            break
+        current = current.parent
+    return ""
+
+
+def _plugin_required_params(iter_dir: Path) -> list[str]:
+    """Return input names that must be filled by a prerequisite-operator plugin.
+
+    Uses the same deterministic signal as the TTK ACLNN converter: the input
+    card is named ``metadataOptional`` or its description names a Metadata
+    prerequisite operator.  The converter's name set is pre-seeded, so we
+    intersect it with the inputs actually present in this operator.
+    """
+    names: set[str] = set()
+    constraints_path = iter_dir / "constraints.json"
+    if constraints_path.is_file():
+        try:
+            constraints = json.loads(constraints_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            constraints = {}
+        if isinstance(constraints, dict):
+            try:
+                from scripts.atk_to_ttk_aclnn import _plugin_filled_tensor_names
+            except ModuleNotFoundError:
+                from atk_to_ttk_aclnn import _plugin_filled_tensor_names
+            names = _plugin_filled_tensor_names(constraints)
+            inputs = constraints.get("inputs")
+            if isinstance(inputs, dict):
+                present = {str(name).casefold(): str(name) for name in inputs}
+                return sorted(present[name] for name in names if name in present)
+
+    # Fallback: inspect the generated compact cases for a Metadata input.
+    cases_path = iter_dir / "cases.json"
+    if cases_path.is_file():
+        try:
+            cases = json.loads(cases_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cases = []
+        for case in cases if isinstance(cases, list) else []:
+            for item in case.get("inputs") or []:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "")
+                    if name.casefold() in names or name.casefold() == "metadataoptional":
+                        return [name]
+    return sorted(names)
+
+
+def _resolve_manual_plugin(value: str | None) -> Path | None:
+    """Resolve a user-supplied TTK ``--plugin`` path.
+
+    Relative/local paths are resolved against the project root and must exist
+    (file or directory); absolute paths that do not exist locally are treated
+    as remote absolute paths, matching ``scripts/execute_ttk_aclnn.py``.
+    """
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    resolved = resolve_input_path(value)
+    if not resolved.is_file() and not resolved.is_dir():
+        raise ValueError(
+            f"--plugin 本地文件/目录不存在: {resolved}；"
+            "远端绝对路径请以 / 开头传入"
+        )
+    return resolved
 
 
 def _platform_from_cases_name(path: Path) -> str | None:
@@ -457,6 +540,24 @@ def _retarget_ttk_e2e_csv(
     }
 
 
+_DEVICE_FAMILY_RE = re.compile(r"(atlas|ascend)\s+([a-z0-9]+)", re.IGNORECASE)
+
+
+def _device_family(platform: str) -> str | None:
+    """Return the hardware family token of a platform name.
+
+    Operator docs use product-table names (``Atlas A2系列产品``) while
+    ``servers.json`` often uses the execution-host naming
+    (``Atlas A2 训练系列产品/Atlas A2 推理系列产品``).  Both describe the
+    same A2 hardware; compare their family token (``atlas a2``) when the
+    exact strings do not match.
+    """
+    match = _DEVICE_FAMILY_RE.search(str(platform or ""))
+    if not match:
+        return None
+    return f"{match.group(1).lower()} {match.group(2).lower()}"
+
+
 def _select_server_for_execution(
     servers: list[dict[str, Any]],
     requested_platform: str | None,
@@ -467,11 +568,19 @@ def _select_server_for_execution(
     Without ``--platform``, selection follows ``servers.json`` order:
     iterate servers in file order, then each server's ``platforms`` array in
     priority order, and pick the first product supported by the operator.
+    Exact string matches win; otherwise platform names are matched by device
+    family token (doc table name vs execution-host name for the same SoC).
     """
     if requested_platform:
         for server in servers:
             if requested_platform in (server.get("platforms") or []):
                 return server, requested_platform, None
+        requested_family = _device_family(requested_platform)
+        if requested_family:
+            for server in servers:
+                for platform in server.get("platforms") or []:
+                    if _device_family(platform) == requested_family:
+                        return server, platform, None
         return (
             None,
             None,
@@ -492,6 +601,16 @@ def _select_server_for_execution(
         for platform in server_platforms:
             if platform in supported:
                 return server, platform, None
+
+    supported_families = {
+        family for family in (_device_family(p) for p in operator_platforms)
+        if family
+    }
+    if supported_families:
+        for server in servers:
+            for platform in server.get("platforms") or []:
+                if _device_family(platform) in supported_families:
+                    return server, platform, None
 
     return (
         None,
@@ -618,6 +737,32 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--run-timeout",
+        type=float,
+        default=1800.0,
+        help=(
+            "TTK/ATK 远端整批执行的客户端等待超时（秒），默认 1800。"
+            "大批量或单用例超时较长时应调大，避免作业已完成但客户端先断开。"
+        ),
+    )
+    parser.add_argument(
+        "--plugin",
+        default=None,
+        help=(
+            "TTK 专用：手动指定传给 ttk 的 --plugin 路径，覆盖自动解析。"
+            "本地文件或目录会随用例上传到远端（目录会连同父目录上下文一起打包，"
+            "含同级目录）；以 / 开头且本地不存在的远端绝对路径直接引用、不上传。"
+        ),
+    )
+    parser.add_argument(
+        "--plugin-root",
+        default=None,
+        help=(
+            "TTK 专用：本地 plugin 的打包根目录。默认本地目录取父目录（连同同级"
+            "内容）；指定后整个 root 打包，plugin 相对 root 的路径保持不变。"
+        ),
+    )
+    parser.add_argument(
         "--strategy",
         choices=("default", "fusion"),
         default="default",
@@ -649,9 +794,62 @@ def main() -> int:
     args = parser.parse_args()
     if args.proc_timeout < 0:
         parser.error("--proc-timeout 必须大于等于 0")
+    if args.plugin and args.test_framework != "ttk":
+        parser.error("--plugin 仅支持 --test-framework ttk")
+    if args.plugin_root and args.test_framework != "ttk":
+        parser.error("--plugin-root 仅支持 --test-framework ttk")
+    try:
+        manual_plugin = _resolve_manual_plugin(args.plugin)
+    except ValueError as exc:
+        _emit({"ok": False, "code": "TTK_PLUGIN_INVALID", "message": str(exc)})
+        return 2
+    manual_plugin_root = (
+        resolve_input_path(args.plugin_root) if args.plugin_root else None
+    )
+    if manual_plugin_root is not None and not manual_plugin_root.is_dir():
+        _emit({
+            "ok": False,
+            "code": "TTK_PLUGIN_INVALID",
+            "message": f"--plugin-root 不是本地目录: {manual_plugin_root}",
+        })
+        return 2
 
     cases_path = resolve_input_path(args.cases)
     output_path = resolve_input_path(args.output)
+    plugin_required_params: list[str] = []
+    if args.test_framework == "ttk":
+        if manual_plugin is None:
+            stored_plugin = _run_state_ttk_plugin(cases_path.parent)
+            if stored_plugin:
+                try:
+                    manual_plugin = _resolve_manual_plugin(stored_plugin)
+                except ValueError as exc:
+                    _emit({
+                        "ok": False,
+                        "code": "TTK_PLUGIN_INVALID",
+                        "message": f"run_state.ttk_plugin 无效: {exc}",
+                    })
+                    return 2
+        plugin_required_params = _plugin_required_params(cases_path.parent)
+        if (
+            plugin_required_params
+            and manual_plugin is None
+            and args.mode == "real"
+            and not args.generate
+        ):
+            _emit({
+                "ok": False,
+                "requires_user_action": True,
+                "code": "TTK_PLUGIN_REQUIRED",
+                "message": (
+                    "检测到前置算子产物参数 "
+                    + ", ".join(plugin_required_params)
+                    + "；请添加 --plugin <插件脚本路径> 后重新执行 "
+                    "TTK。注意：脚本不会自动猜测 plugin 路径。"
+                ),
+                "detected_params": plugin_required_params,
+            })
+            return 2
     if args.test_framework == "ttk":
         if cases_path.suffix.lower() != ".csv":
             _emit({"ok": False, "code": "TTK_CSV_REQUIRED", "message": "TTK 输入必须是 CSV。"})
@@ -666,11 +864,30 @@ def main() -> int:
             from scripts.validate_ttk_aclnn_csv import validate_csv
 
             iter_dir = cases_path.parent
-            golden_plugin = _resolve_aclnn_golden_plugin(
-                iter_dir, csv_api_name, disabled=args.no_golden,
+            # Auxiliary-parameter runs (groupListData) need the operator's
+            # __input__ hook even when precision golden is disabled.
+            aux_input_flow = any(
+                (iter_dir / name).is_file()
+                for name in (
+                    "group_list_data_report.json",
+                    "aux_params_report.json",
+                )
             )
-            if args.no_golden:
+            golden_plugin = _resolve_aclnn_golden_plugin(
+                iter_dir,
+                csv_api_name,
+                disabled=(
+                    args.no_golden and not aux_input_flow
+                    and manual_plugin is None
+                ),
+            )
+            if manual_plugin is not None:
+                golden_plugin = manual_plugin
+                golden_resolution = "manual"
+            elif args.no_golden and not aux_input_flow:
                 golden_resolution = "disabled"
+            elif aux_input_flow and args.no_golden:
+                golden_resolution = "input_plugin"
             elif golden_plugin == iter_dir / "golden.py":
                 golden_resolution = "iteration"
             elif golden_plugin is not None:
@@ -693,7 +910,14 @@ def main() -> int:
                 "--plat=<servers.json.ttk.plat> --warmup False"
             )
             if golden_plugin is not None:
-                command += f" --plugin {golden_plugin.name}"
+                plugin_arg = golden_plugin.name
+                if (
+                    manual_plugin is not None
+                    and str(golden_plugin).startswith("/")
+                    and not golden_plugin.is_file()
+                ):
+                    plugin_arg = str(golden_plugin)
+                command += f" --plugin {plugin_arg}"
             if args.proc_timeout > 0:
                 command += f" --proc-timeout {args.proc_timeout}"
             if args.generate:
@@ -713,6 +937,8 @@ def main() -> int:
                         str(golden_plugin) if golden_plugin is not None else None
                     ),
                     "golden_resolution": golden_resolution,
+                    "plugin_required": bool(plugin_required_params),
+                    "plugin_required_params": plugin_required_params,
                     "proc_timeout": args.proc_timeout,
                     "precision_blocking": False,
                     "validation": validation,
@@ -802,9 +1028,10 @@ def main() -> int:
                 server=server,
                 artifact_dir=artifact_dir,
                 mode="npu",
-                timeout=1800.0,
+                timeout=args.run_timeout,
                 proc_timeout=args.proc_timeout,
                 plugin_path=golden_plugin,
+                plugin_root=manual_plugin_root,
             )
             result.update({
                 "test_framework": "ttk",
@@ -812,6 +1039,8 @@ def main() -> int:
                 "operator_name": args.operator or csv_api_name,
                 "selected_platform": selected_platform,
                 "golden_resolution": golden_resolution,
+                "plugin_required": bool(plugin_required_params),
+                "plugin_required_params": plugin_required_params,
                 "passed": int(result.get("npu_passed", 0)),
                 "failed": int(result.get("npu_failed", 0)),
                 "total": int(result.get("npu_total", 0)),
@@ -837,6 +1066,13 @@ def main() -> int:
         # TTK E2E CSV is platform-specific. Select the server/platform from all
         # generated buckets first; if generation chose a different first bucket,
         # reuse the matching per-platform JSON and rebuild cases.json + CSV.
+        if manual_plugin_root is not None:
+            _emit({
+                "ok": False,
+                "code": "TTK_PLUGIN_ROOT_UNSUPPORTED",
+                "message": "TTK E2E 仅支持上传本地 plugin 文件，不支持 --plugin-root。",
+            })
+            return 2
         config_path, config_errors = validate_server_config(args.server_config)
         if config_errors:
             _emit(config_error_payload(config_path, config_errors))
@@ -916,6 +1152,18 @@ def main() -> int:
         no_golden = bool(getattr(args, "no_golden", False))
         if no_golden:
             plugin_path = None
+        if manual_plugin is not None:
+            if not manual_plugin.is_file():
+                _emit({
+                    "ok": False,
+                    "code": "TTK_PLUGIN_NOT_LOCAL",
+                    "message": (
+                        f"TTK E2E 仅支持上传本地 plugin 文件: {manual_plugin}；"
+                        "请传入存在的本地路径"
+                    ),
+                })
+                return 2
+            plugin_path = manual_plugin
         from agent.hs import resolve_ttk_plugin
         runtime_plugin_path = resolve_ttk_plugin(csv_api_name, golden=False)
         plugin_arg = f" --plugin {plugin_path.name}" if (plugin_path and plugin_path.is_file()) else ""
@@ -928,6 +1176,8 @@ def main() -> int:
             "cases": str(cases_path),
             "ttk_command": command,
             "plugin": str(plugin_path) if (plugin_path and plugin_path.is_file()) else None,
+            "plugin_required": bool(plugin_required_params),
+            "plugin_required_params": plugin_required_params,
             "runtime_plugin": str(runtime_plugin_path),
             "precision_blocking": False,
             "validation_command": f"python3 -m ttk e2e -i {cases_path.name} --validate",
@@ -964,12 +1214,14 @@ def main() -> int:
             operator_name=operator_name,
             server=server,
             artifact_dir=artifact_dir,
-            timeout=1800.0,
+            timeout=args.run_timeout,
             expected_tensor_order=expected_tensor_order,
         )
         result.update({
             "selected_platform": selected_platform,
             "hs_scenario_mode": args.hs_scenario_mode,
+            "plugin_required": bool(plugin_required_params),
+            "plugin_required_params": plugin_required_params,
             "platform_retarget": retarget_info,
             "input_artifacts": _artifact_fingerprints(
                 iter_dir, cases_path

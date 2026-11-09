@@ -20,6 +20,8 @@ FAILURE_STATES = {
 }
 # 用户手动停止：可完结上报并单独统计，但不算失败、不触发 fail-fast 停批。
 STOPPED_STATES = {"STOPPED_BY_USER"}
+SKIPPED_STATE = "SKIPPED"
+SKIPPED_TERMINAL_STATE = "SKIPPED_UNSUPPORTED_DEVICE"
 TERMINAL_STATES = SUCCESS_STATES | FAILURE_STATES | STOPPED_STATES
 
 
@@ -56,11 +58,13 @@ def load_batch(batch_dir: Path) -> dict[str, Any]:
 def counts_for(batch: dict[str, Any]) -> dict[str, int]:
     operators = batch["operators"]
     completed = [item for item in operators if item["status"] == "COMPLETED"]
+    skipped = [item for item in operators if item["status"] == SKIPPED_STATE]
     return {
         "total": len(operators),
         "pending": sum(item["status"] == "PENDING" for item in operators),
         "running": sum(item["status"] == "RUNNING" for item in operators),
         "completed": len(completed),
+        "skipped": len(skipped),
         "success": sum(item.get("terminal_state") in SUCCESS_STATES for item in completed),
         "failed": sum(item.get("terminal_state") in FAILURE_STATES for item in completed),
         "stopped_by_user": sum(
@@ -80,7 +84,7 @@ def refresh_batch(batch: dict[str, Any]) -> None:
         ),
         None,
     )
-    if counts["completed"] == counts["total"]:
+    if counts["completed"] + counts["skipped"] == counts["total"]:
         batch["state"] = "COMPLETED"
         batch["completed_at"] = batch.get("completed_at") or utc_now()
     elif batch.get("state") != "STOPPED":
@@ -137,12 +141,23 @@ def summary_for(batch: dict[str, Any]) -> dict[str, Any]:
             "run_id": item.get("run_id"),
             "run_dir": item.get("run_dir"),
             "message": item.get("message", ""),
+            "scene_status": item.get("scene_status"),
             "prompt_update_proposals": proposals,
         })
     return {
         "batch_id": batch["batch_id"],
         "state": batch["state"],
         "source_directory": batch["source_directory"],
+        "scenes": batch.get("scenes", ""),
+        "scene": (
+            {
+                key: value
+                for key, value in batch["scene"].items()
+                if key != "inventory"
+            }
+            if isinstance(batch.get("scene"), dict)
+            else None
+        ),
         "counts": batch["counts"],
         "created_at": batch["created_at"],
         "updated_at": batch["updated_at"],
@@ -183,6 +198,32 @@ def run_options_for(batch: dict[str, Any]) -> dict[str, Any]:
         "server_config": batch.get("server_config", ""),
         "supplement_constraints": batch.get("supplement_constraints", ""),
         "constraint_check_rounds": batch.get("constraint_check_rounds", 3),
+        "scenes": batch.get("scenes", "") if batch.get("scene") else "",
+    }
+
+
+def operator_scenes(batch: dict[str, Any], operator: dict[str, Any]) -> str:
+    if not batch.get("scene"):
+        return ""
+    return operator.get("scene_text") or batch.get("scenes", "")
+
+
+def _needs_scene_payload(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
+    from batch_scene import build_inventory
+
+    return {
+        "ok": True,
+        "action": "needs_scene",
+        "batch_dir": str(batch_dir),
+        "message": (
+            "批处理尚未指定测试场景/设备。请先向用户列出 devices 中的全部设备"
+            "（或让用户直接输入场景文本），确认设备后运行 "
+            "batch_scene.py resolve；未确认设备前不会认领任何算子。"
+        ),
+        "inventory": build_inventory(batch),
+        **run_options_for(batch),
+        "scenes": batch.get("scenes", ""),
+        "scenes_from_cli": bool(batch.get("scenes_from_cli")),
     }
 
 
@@ -195,6 +236,7 @@ def command_claim(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
             "batch_dir": str(batch_dir),
             "operator": current,
             **run_options_for(batch),
+            "scenes": operator_scenes(batch, current),
         }
     if batch["state"] == "STOPPED":
         return {
@@ -216,6 +258,8 @@ def command_claim(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
             "summary": str(batch_dir / "batch_summary.json"),
             "counts": batch["counts"],
         }
+    if not batch.get("scene") or not str(batch.get("scenes") or "").strip():
+        return _needs_scene_payload(batch_dir, batch)
     now = utc_now()
     pending["status"] = "RUNNING"
     pending["started_at"] = now
@@ -229,6 +273,7 @@ def command_claim(batch_dir: Path, batch: dict[str, Any]) -> dict[str, Any]:
         "batch_dir": str(batch_dir),
         "operator": pending,
         **run_options_for(batch),
+        "scenes": operator_scenes(batch, pending),
     }
 
 

@@ -185,6 +185,8 @@ function statusText(eng: any): string {
 .band .round-control select{width:110px}.band .round-control small{font-size:9px}
 .band .engineer{flex:0 0 154px;width:154px;min-width:154px;box-sizing:border-box;border-radius:0;padding:12px 4px 8px;border-left:1px solid var(--wb-line-soft)}
 .band-frame{position:relative;width:100%;min-width:0}
-.band-scroll{position:absolute;top:55%;transform:translateY(-50%);z-index:5;width:24px;height:40px;border:1px solid var(--wb-blue-line);border-radius:6px;background:var(--wb-card);color:var(--wb-blue);font-size:26px;box-shadow:var(--wb-shadow)}.band-scroll.previous{left:2px}.band-scroll.next{right:2px}
+.band-scroll{position:absolute;top:50%;transform:translateY(-50%);z-index:5;width:24px;height:40px;line-height: 10px;border:1px solid var(--wb-blue-line);border-radius:6px;background:var(--wb-card);color:var(--wb-blue);font-size:26px;box-shadow:var(--wb-shadow)}
+.band-scroll.previous{left:-15px}
+.band-scroll.next{right:-15px}
 .band .round-control{border-right:0}.band .engineer{border-right:0;border-top:0;border-bottom:0;border-left:1px solid var(--wb-line);}
 </style>

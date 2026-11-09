@@ -5,6 +5,7 @@
 修改记录：2025/12/25 15:19
 功能：根据pict组合数据，生成用例数据，输入为pict结果，即operator_name_combinations.tsv文件
 """
+import ast
 import json
 import os
 import random
@@ -296,3 +297,118 @@ class CaseGenerate:
             "End generate param range, operator name: %s, param name: %s, is generate real data: %s, param dtype : %s"
             "param range data: %s", self.operator_name, param_name, is_generate_real_data, data_dtype, param_range_data)
         return param_range_data
+
+
+# ==================== storage_layout 安全求值（分块存储通用通道） ====================
+
+_STORAGE_EVAL_BINOPS = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Mod: lambda a, b: a % b,
+}
+
+
+def _eval_storage_node(node, env, param_name):
+    """storage_layout 轴表达式白名单求值：仅整数常量/轴变量/算术/IfExp。
+
+    非白名单节点（函数调用、属性访问、比较等）抛 ValueError，由上层捕获
+    后整体放弃（返回 None），绝不执行任意代码。
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, int):
+            raise ValueError(f"constant {node.value!r} is not int")
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id not in env:
+            raise ValueError(f"unknown variable '{node.id}'")
+        return env[node.id]
+    if isinstance(node, ast.BinOp) and type(node.op) in _STORAGE_EVAL_BINOPS:
+        left = _eval_storage_node(node.left, env, param_name)
+        right = _eval_storage_node(node.right, env, param_name)
+        return _STORAGE_EVAL_BINOPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        operand = _eval_storage_node(node.operand, env, param_name)
+        return -operand if isinstance(node.op, ast.USub) else operand
+    if isinstance(node, ast.IfExp):
+        condition = _eval_storage_node(node.test, env, param_name)
+        if condition:
+            return _eval_storage_node(node.body, env, param_name)
+        return _eval_storage_node(node.orelse, env, param_name)
+    raise ValueError(f"node {type(node).__name__} is not allowed in storage_layout")
+
+
+def eval_storage_layout(axes, shape, param_name, transposed=None):
+    """按逻辑视图 shape 安全求值参数卡 storage_layout，返回物理 storageShape。
+
+    - axes：List[str] 轴表达式（s0..sN 引用逻辑视图 shape 轴，t 引用转置态
+      1/0，支持 ``A if t else B`` 条件式），或按转置态选择的分支 dict
+      List[{"transposed": bool, "axes": List[str]}]；
+    - 白名单 AST 求值：仅允许整数常量、轴变量、+ - * // %、一元正负与
+      IfExp；函数调用/属性访问/未知轴/语法错误/除零一律返回 None，不抛出；
+    - 任一轴结果非正整数也返回 None；调用方保持 storage==view 旧行为。
+    """
+    if not axes or not shape:
+        return None
+    if isinstance(axes, dict):
+        axes = [axes]
+    if not isinstance(axes, list):
+        return None
+    exprs = axes
+    if axes and isinstance(axes[0], dict):
+        if transposed is None:
+            logger.error(
+                "Param '%s': storage_layout branch dict requires transposed flag, "
+                "got None", param_name)
+            return None
+        want = bool(transposed)
+        matched = [
+            branch for branch in axes
+            if isinstance(branch, dict)
+            and isinstance(branch.get("transposed"), bool)
+            and branch["transposed"] is want
+        ]
+        if len(matched) != 1:
+            logger.error(
+                "Param '%s': storage_layout has %d branch(es) matching "
+                "transposed=%s, need exactly 1", param_name, len(matched), want)
+            return None
+        exprs = matched[0].get("axes")
+    if not isinstance(exprs, list) or not exprs:
+        logger.error("Param '%s': storage_layout axes is empty or invalid", param_name)
+        return None
+    flat_shape = []
+    for dim in shape:
+        if isinstance(dim, bool) or not isinstance(dim, int):
+            logger.error(
+                "Param '%s': storage_layout requires flat int logical shape, got %s",
+                param_name, shape)
+            return None
+        flat_shape.append(dim)
+    env = {f"s{idx}": dim for idx, dim in enumerate(flat_shape)}
+    if transposed is not None:
+        env["t"] = 1 if transposed else 0
+    result = []
+    for axis_expr in exprs:
+        if not isinstance(axis_expr, str):
+            logger.error(
+                "Param '%s': storage_layout axis %r is not a string expression",
+                param_name, axis_expr)
+            return None
+        try:
+            tree = ast.parse(axis_expr, mode="eval")
+            value = _eval_storage_node(tree.body, env, param_name)
+        except (SyntaxError, ValueError, ZeroDivisionError, TypeError, RecursionError) as exc:
+            logger.error(
+                "Param '%s': storage_layout axis %r eval rejected: %s",
+                param_name, axis_expr, exc)
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            logger.error(
+                "Param '%s': storage_layout axis %r result %s is not a positive int",
+                param_name, axis_expr, value)
+            return None
+        result.append(value)
+    return result
+

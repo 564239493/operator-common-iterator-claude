@@ -47,17 +47,52 @@ class ConstraintEvaluator(ast.NodeVisitor):
 
     def visit_Name(self, node: ast.Name):
         if node.id not in self.context:
-            raise VariableBindingError("Variable not found: "f"{node.id}")
+            raise VariableBindingError(
+                f"Variable not found: {node.id} — not bound in the evaluation context",
+                param=node.id,
+                cause="unbound",
+            )
         return self.context[node.id]
 
     def visit_Attribute(self, node: ast.Attribute):
         value = self.visit(node.value)
-        try:
-            if isinstance(value, dict):
+        owner = node.value.id if isinstance(node.value, ast.Name) else None
+        owner_hint = f"'{owner}'" if owner else "the owning expression"
+
+        # 三种失败原因后果相同（本属性取不到），但根因完全不同，必须写清楚，
+        # 否则日志只留一句 "Attribute not found: dtype"，会被误判成属性名拼写
+        # 或建模缺陷，实际最常见的是参数缺席被映射成了 None。
+        # 消息保持短：同一批次会对多条约束重复出现，冗长解释会淹没日志本身。
+        if isinstance(value, dict):
+            if node.attr in value:
                 return value[node.attr]
+            raise VariableBindingError(
+                f"Attribute not found: {node.attr} — {owner_hint} is a dict without this key"
+                f" (available keys: {sorted(str(k) for k in value)})",
+                param=owner,
+                attr=node.attr,
+                cause="missing_key",
+            )
+
+        if value is None:
+            raise VariableBindingError(
+                f"Attribute not found: {node.attr} — {owner_hint} is None "
+                f"(parameter absent in this row, so its attributes are unreadable)",
+                param=owner,
+                attr=node.attr,
+                cause="absent",
+            )
+
+        try:
             return getattr(value, node.attr)
-        except (KeyError, AttributeError) as exc:
-            raise VariableBindingError("Attribute not found: "f"{node.attr}") from exc
+        except AttributeError as exc:
+            raise VariableBindingError(
+                f"Attribute not found: {node.attr} — {owner_hint} is a {type(value).__name__} "
+                f"object without this attribute",
+                param=owner,
+                attr=node.attr,
+                cause="missing_attr",
+            ) from exc
 
     # ==================================================
     # Compare

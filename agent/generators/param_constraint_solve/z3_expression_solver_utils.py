@@ -40,6 +40,10 @@ from agent.generators.param_constraint_solve.param_var_definition import TensorL
 
 logger = LazyLogger()
 
+# all()/any() 定长展开的上限：超过该长度继续用量词，避免展开后子句数爆炸。
+MAX_STATIC_UNROLL = 128
+
+
 class Z3ConstraintBuilder:
     _VAR_FACTORY = {
         'tensor': (TensorVar, lambda self, kwargs: (self.solver, kwargs.get("dtype"), kwargs.get('allowed_dtypes'),
@@ -64,10 +68,89 @@ class Z3ConstraintBuilder:
         # 仅用于兼容历史 constraints 中已经存在的 ``# TODO:`` 前缀。
         # 新版 torch_npu 提示词禁止再生成该前缀，但恢复旧任务时不能因列表未初始化崩溃。
         self.dropped_constraints = []
+        # 静态长度表：param -> 唯一确定的长度（确定性事实），供 all()/any() 定长展开。
+        self.static_lengths = {}
+        # 维度个数上限表：shape seq 常量名（如 "self.shape"）-> 文档声明的最大维度个数，
+        # 来自已硬断言的 len(p.shape) in dimensions；仅供 range() 量词展开推导循环上界。
+        self.static_rank_max = {}
+        # 标量参数取值范围表：param -> (lo, hi)，来自硬约束里 `lo <= p.range_value <= hi`
+        # 这类条款；仅供 range() 量词展开推导符号界的静态窗口（展开时会一并断言）。
+        self.static_param_ranges = {}
+        # 已断言过的 (参数名, lo, hi)：同一区间只断一次，避免展开多处时重复入库。
+        self.asserted_param_domains = set()
+        # 单次展开的元素上限，供转换器读取（避免反向 import 造成循环依赖）。
+        self.unroll_limit = MAX_STATIC_UNROLL
+        # 展开审计：(param, kind, length) 供日志与测试核对。
+        self.unrolled_quantifiers = []
 
     def get_next_slice_id(self):
         self._slice_counter += 1
         return self._slice_counter
+
+    def set_static_lengths(self, lengths):
+        """设置静态长度表；只接受 1..MAX_STATIC_UNROLL 的整数。"""
+        self.static_lengths = {
+            str(name): int(value)
+            for name, value in (lengths or {}).items()
+            if isinstance(value, int) and not isinstance(value, bool)
+            and 1 <= value <= MAX_STATIC_UNROLL
+        }
+        if self.static_lengths:
+            logger.info(f"[Unroll] Static lengths for quantifier unroll : '{self.static_lengths}'")
+
+    def get_static_length(self, var_name):
+        """返回可直接用于展开的长度；未知或超上限返回 None（继续用量词）。"""
+        return self.static_lengths.get(var_name)
+
+    def set_static_rank_max(self, bounds):
+        """设置 shape 维度个数上限表；键为 var_definition 的 ``f"{name}.shape"``，
+        只接受 1..MAX_STATIC_UNROLL 的整数。"""
+        self.static_rank_max = {
+            str(name): int(value)
+            for name, value in (bounds or {}).items()
+            if isinstance(value, int) and not isinstance(value, bool)
+            and 1 <= value <= MAX_STATIC_UNROLL
+        }
+        if self.static_rank_max:
+            logger.info(f"[Unroll] Static shape rank bounds for range quantifier : '{self.static_rank_max}'")
+
+    def get_rank_max(self, seq_name):
+        """返回 shape seq 的维度个数上限；未知返回 None（继续用量词）。"""
+        return self.static_rank_max.get(str(seq_name))
+
+    def set_static_param_ranges(self, ranges):
+        """设置标量参数的取值范围表；键为参数名，值为 (lo, hi) 整数二元组。"""
+        self.static_param_ranges = {
+            str(name): (int(value[0]), int(value[1]))
+            for name, value in (ranges or {}).items()
+            if isinstance(value, (list, tuple)) and len(value) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in value)
+            and value[0] <= value[1]
+        }
+        if self.static_param_ranges:
+            logger.info(f"[Unroll] Static scalar ranges for range quantifier : '{self.static_param_ranges}'")
+
+    def get_param_range(self, param_name):
+        """返回标量参数的静态取值范围；未知返回 None（继续用量词）。"""
+        return self.static_param_ranges.get(str(param_name))
+
+    def assert_param_domain(self, param_name, bounds, assertion):
+        """断言 range() 展开依赖的标量区间，同名同区间只断一次。
+
+        这里用 ``assert_and_track`` 而不是 ``solver.add``：展开窗口若因区间过窄
+        导致 UNSAT，这条断言必须能在 ``unsat_core()`` 里看到。用 ``add`` 时它没有
+        追踪字面量，core 要么是空的、要么指向一组单独看来自洽的条款，排障时会被
+        引向错误方向。
+        """
+        key = (str(param_name), int(bounds[0]), int(bounds[1]))
+        if key in self.asserted_param_domains:
+            return
+        self.asserted_param_domains.add(key)
+        self.solver.assert_and_track(
+            assertion, f"unroll_domain:{key[0]}[{key[1]},{key[2]}]")
+
+    def record_unroll(self, var_name, kind, length):
+        self.unrolled_quantifiers.append({"param": var_name, "kind": kind, "length": length})
 
     def declare_var(self, var_name, type_hint="scalar", dtype=None, allowed_dtypes=None, allowed_formats=None,
                     range_value=None, length=None, is_print_log=False):

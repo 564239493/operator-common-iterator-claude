@@ -139,6 +139,7 @@ def resume_run(run_ref: str) -> int:
             "current_prompt": state.get("current_prompt"),
             "operator_family": state.get("operator_family"),
             "test_framework": state.get("test_framework"),
+            "ttk_plugin": state.get("ttk_plugin") or "",
             "mode": state.get("mode"),
             "max_iterations": state.get("max_iterations"),
             "next_action": next_action,
@@ -399,11 +400,11 @@ def main() -> int:
         dest="scenes",
         default="",
         help=(
-            "场景描述直输（文本）：如 \"A2非量化groupListType等于2\"。由主协调器做"
-            "简单文字匹配（设备/量化场景/参数取值）对齐文档后写 selection.json；"
-            "原文存 run_state.scenes。未提供时进入手动输入模式（先展示文档设备/"
-            "量化场景/执行机建议再让用户输入）。场景收集为强制步骤，至少选择出设备"
-            "类型才进入 EXTRACT（legacy 三级场景扫描已下线删除）。"
+            "场景预填文本：如 \"A2非量化groupListType等于2\"，原文存 "
+            "run_state.scenes。场景收集固定为设备优先三段式：先只做设备对齐并让用户"
+            "从文档支持的设备中确认，设备确定后再读文档识别该设备下的量化场景并让"
+            "用户选择，最后可选参数取值，汇总写 selection.json。未提供时同样先交互"
+            "选设备。至少选择出设备类型才进入 EXTRACT（legacy 全量场景扫描已下线）。"
         ),
     )
     parser.add_argument(
@@ -445,6 +446,15 @@ def main() -> int:
             "测试框架；auto 对已适配的六个 torch_npu 算子选 ttk，其他 torch_npu "
             "文档选 constraints（仅约束提取），ACLNN 选 atk；ACLNN 可显式选择 ttk "
             "进入原生 TTK ACLNN 流程。"
+        ),
+    )
+    parser.add_argument(
+        "--ttk-plugin",
+        default="",
+        help=(
+            "TTK 专用：写入 run_state.ttk_plugin，EXECUTE 阶段作为 ttk 的 "
+            "--plugin 参数传入（本地文件或 / 开头的远端绝对路径）。"
+            "仅 --test-framework ttk 可用。"
         ),
     )
     parser.add_argument(
@@ -529,6 +539,8 @@ def main() -> int:
         )
     else:
         test_framework = args.test_framework
+    if args.ttk_plugin and test_framework != "ttk":
+        parser.error("--ttk-plugin 仅支持 --test-framework ttk")
     prompt = (
         resolve_input_path(args.prompt)
         if args.prompt
@@ -735,12 +747,13 @@ def main() -> int:
             "report": "",
         },
         "case_count": args.case_count,
-        "scenes": args.scenes or "",  # 用户场景描述直输（--scenes 原文；空 = 手动输入/legacy 模式）
+        "scenes": args.scenes or "",  # 场景预填文本（--scenes 原文；空 = 交互选择设备/场景）
         "human_constraints_upload": args.human_constraints_upload,  # 人工约束上传通道：检查点选「人工修复」后挂起等用户上传 constraints_copy.json
         "human_checkpoint_round": args.human_checkpoint_round,  # 0=禁用；>=1 时第 N 轮 constraint_extraction 失败触发人工补充检查点
         "human_checkpoint_resolved_iteration": 0,  # 已决断到的最大轮次；防上下文压缩后对同一轮重复询问
         "operator_family": operator_family,
         "test_framework": test_framework,
+        "ttk_plugin": args.ttk_plugin or "",
         "hs_scenario_mode": args.hs_scenario_mode,
         "run_scope": "constraints_only" if test_framework == "constraints" else "full",
         "scene": None,  # EXTRACT 前 SCENE_SCAN 回写: {enabled, scope, device_types, selection, param_modes, selection_policy, directive, scan}
@@ -780,6 +793,7 @@ def main() -> int:
             "mode": args.mode,
             "operator_family": operator_family,
             "test_framework": test_framework,
+            "ttk_plugin": args.ttk_plugin or "",
             "hs_scenario_mode": args.hs_scenario_mode,
             "run_scope": "constraints_only" if test_framework == "constraints" else "full",
             "server_config": str(server_config) if server_config else "",

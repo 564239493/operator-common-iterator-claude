@@ -15,7 +15,7 @@ import type { ReplayEvent } from '../api/types'
 const router = useRouter()
 const { loadError, ready, selectedRunId } = useTask()
 // 汇总位置 A/B 对比（临时开关，选定后删除）：bottom=沉到流程区末尾；rail=收进左侧轮次栏
-const layoutMode = ref<'bottom' | 'rail'>('bottom')
+const layoutMode = ref<'bottom' | 'rail'>('rail')
 function toggleLayout() { layoutMode.value = layoutMode.value === 'bottom' ? 'rail' : 'bottom' }
 const flowBoard = ref<InstanceType<typeof HandoffBoard>>()
 const flowScroll = ref(0)
@@ -123,6 +123,23 @@ const WAITING_STATES = new Set([
   'HUMAN_CHECKPOINT',
 ])
 
+// 状态机 → 中文标签（与 ConstraintsPage 的 STATE_LABELS 对齐，无幽灵态）
+const STATE_LABELS: Record<string, string> = {
+  PLAN: '规划', EXTRACT: '约束提取',
+  GENERATE: '用例生成',
+  EXECUTE: '用例执行', GATE: '质量门禁', DIAGNOSE: '根因诊断',
+  UPDATE_CONSTRAINTS: '增量更新', MIXED_FAILURE_REVIEW: '混合复核',
+  NEEDS_HUMAN_EVIDENCE: '待人工证据', HUMAN_CHECKPOINT: '人工检查',
+  AWAITING_HUMAN_CONSTRAINTS: '等待人工约束',
+  SUCCESS: '成功', MAX_ITERATIONS: '轮次耗尽',
+  STOP_GENERATOR_BUG: '生成器止损', STOP_EXECUTOR_BUG: '执行器止损',
+  STOPPED_BY_USER: '用户终止', BLOCKED: '阻断',
+}
+
+function stateLabel(s?: string | null): string {
+  return (s && STATE_LABELS[s]) || s || ''
+}
+
 const STATUS_CHIP: Record<string, { text: string; cls: string }> = {
   SUCCESS: { text: '✓ 流程已完成', cls: 'ok' },
   MAX_ITERATIONS: { text: '◷ 达到最大轮数', cls: 'warn' },
@@ -136,9 +153,10 @@ const STATUS_CHIP: Record<string, { text: string; cls: string }> = {
   AWAITING_HUMAN_CONSTRAINTS: { text: '◷ 等待人工补充约束', cls: 'warn' },
   HUMAN_CHECKPOINT: { text: '◷ 等待人工检查点', cls: 'warn' },
 }
+
 const statusChip = computed(() => {
   const s = runView.value?.state
-  return STATUS_CHIP[s] || { text: `● ${s || '…'}`, cls: 'run' }
+  return STATUS_CHIP[s] || { text: `● ${stateLabel(s) || '…'}`, cls: 'run' }
 })
 
 const metrics = computed(() => {
@@ -255,7 +273,10 @@ function fmtTime(at?: string | null) {
 
 function segStates(seg: any): string {
   const states = (seg.events || []).map((e: any) => e.state).filter(Boolean)
-  return states.filter((v: string, i: number) => i === 0 || states[i - 1] !== v).join(' → ')
+  return states
+    .filter((v: string, i: number) => i === 0 || states[i - 1] !== v)
+    .map((v: string) => stateLabel(v))
+    .join(' → ')
 }
 </script>
 
@@ -267,7 +288,7 @@ function segStates(seg: any): string {
     </TopBar>
 
     <aside class="round-rail" aria-label="测试轮次">
-      <div class="rail-heading">测试轮次 <span>{{ rounds.length }}</span></div>
+      <div class="rail-heading">测试轮次 <span class="cu-count">{{ rounds.length }}</span></div>
       <p class="rail-caption">选择轮次，查看过程</p>
       <nav class="round-list" aria-label="轮次选择">
         <button v-for="item in roundItems" :key="item.n" class="round-item"
@@ -288,7 +309,7 @@ function segStates(seg: any): string {
 
       <!-- 方案B（layout=rail）：汇总收进左栏，轮次列表下方紧凑竖排 -->
       <div v-if="runView && layoutMode === 'rail'" class="rail-summary">
-        <div class="rail-heading">轮次汇总</div>
+        <div class="rail-heading" style="padding-bottom: 10px;">轮次汇总</div>
         <div v-for="(m, i) in metrics" :key="i" class="rail-metric">
           <span class="rail-metric-label">{{ m.label }}</span>
           <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
@@ -298,7 +319,7 @@ function segStates(seg: any): string {
           <span>{{ c.text }}</span>
           <a v-if="c.link" :href="c.link.href">{{ c.link.label }} →</a>
         </div>
-        <details class="run-context"><summary>任务背景与状态历史</summary>
+        <details class="run-context" open><summary>任务背景与状态历史</summary>
           <p>文档：{{ runView.operator_doc }}</p>
           <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
         </details>
@@ -347,7 +368,7 @@ function segStates(seg: any): string {
           <template v-else>
             <span class="rsb-dot rsb-running"></span>
             <b>任务进行中</b>
-            <span>当前阶段 {{ runView?.state || '…' }} · 最后活动 {{ fmtTime(runView?.last_activity) }}</span>
+            <span>当前阶段 <strong class="stage-name">{{ stateLabel(runView?.state) || '…' }}</strong> · 最后活动 {{ fmtTime(runView?.last_activity) }}</span>
           </template>
         </div>
         <HandoffBoard
@@ -374,25 +395,27 @@ function segStates(seg: any): string {
 
           <!-- 方案A（layout=bottom）：汇总沉底——流程内容之后、页脚之前 -->
           <template v-if="layoutMode === 'bottom'">
-            <div class="round-heading">第 {{ selectedRound ?? '—' }} 轮汇总 <span>以下结果属于当前所选轮次</span></div>
-            <div class="summary">
-              <div v-for="(m, i) in metrics" :key="i" class="metric">
-                <span class="icon">{{ m.icon }}</span>
-                <div>
-                  <small>{{ m.label }}</small>
-                  <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
+            <div class="round-summary">
+              <div class="round-heading">第 {{ selectedRound ?? '—' }} 轮汇总 <span>以下结果属于当前所选轮次</span></div>
+              <div class="summary">
+                <div v-for="(m, i) in metrics" :key="i" class="metric">
+                  <span class="icon">{{ m.icon }}</span>
+                  <div>
+                    <small>{{ m.label }}</small>
+                    <strong>{{ m.value }} <em>{{ m.unit }}</em></strong>
+                  </div>
                 </div>
               </div>
+              <details class="run-context" open><summary>任务背景与状态历史</summary>
+                <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
+                <p>提示词快照：{{ runView.current_prompt || '—' }} · 用例预算：{{ runView.case_count ?? '—' }} · 装配知识：{{ (runView.current_prompt_modules || []).length }} 项</p>
+                <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
+                <p v-for="(seg, i) in runView.segments || []" :key="i">{{ fmtTime(seg.from_at) }} → {{ fmtTime(seg.to_at) }} · <span class="stage-seq">{{ segStates(seg) }}</span></p>
+              </details>
             </div>
             <div v-if="outcomes.length" class="outcomes">
               <div v-for="(c, i) in outcomes" :key="i" class="outcome" :class="c.tone"><strong>{{ c.title }}</strong><span>{{ c.text }}</span><a v-if="c.link" class="outcome-link" :href="c.link.href">{{ c.link.label }} →</a></div>
             </div>
-            <details class="run-context"><summary>任务背景与状态历史</summary>
-              <p>{{ metadata }} · {{ selectedRunId }}</p><p>文档：{{ runView.operator_doc }}</p>
-              <p>提示词快照：{{ runView.current_prompt || '—' }} · 用例预算：{{ runView.case_count ?? '—' }} · 装配知识：{{ (runView.current_prompt_modules || []).length }} 项</p>
-              <p>创建：{{ fmtTime(runView.created_at) }} · 最后活动：{{ fmtTime(runView.last_activity) }}</p>
-              <p v-for="(seg, i) in runView.segments || []" :key="i">{{ fmtTime(seg.from_at) }} → {{ fmtTime(seg.to_at) }} · {{ segStates(seg) }}</p>
-            </details>
           </template>
         </template>
         <div v-else v-loading="true" style="height: 300px" />
@@ -492,7 +515,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .expand-btn:hover { color: var(--wb-blue); }
 
 .screen-board { background: var(--wb-bg); }
-.board-area { padding: 0 36px 30px; max-width: 1800px; width: 100%; margin: 0 auto; }
+.board-area { padding: 0 36px 30px; max-width: 1800px; width: 100%; margin: 16px; }
 .section-title { display: flex; align-items: center; gap: 16px; margin: 4px 0 12px; }
 .section-title h2 { font-size: 20px; margin: 0; }
 .section-title > span { color: var(--wb-muted); font-size: 12px; }
@@ -539,7 +562,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
   .expand-btn { padding: 5px 12px; font-size: 11px; }
   .page-foot { flex-direction: column; gap: 6px; }
 }
-.band-dock { position: sticky; top: 72px; z-index: 19; background: var(--wb-card); border-bottom: 1px solid var(--wb-line); box-shadow: 0 4px 12px #152b4909; }
+.band-dock { position: sticky; top: 72px; z-index: 19; background: var(--wb-card); }
 .band-shell { max-width: 1800px; margin: auto; padding: 0 36px; }
 .band-grid { display: grid; grid-template-columns: minmax(0, 1fr) clamp(260px,24vw,330px); gap:18px; }
 .band-grid > :first-child { min-width:0; margin:0 1px; }
@@ -548,8 +571,9 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 @media(max-width:900px){.band-shell{padding:0 16px}.band-grid{grid-template-columns:minmax(0,1fr);gap:0}.band-actions{position:absolute;right:20px;top:-32px}.band-actions button{font-size:11px;padding:4px 10px}}
 
 .board-area { transition: transform .1s ease-out; }
-.run-status-bar { display:flex; align-items:center; gap:10px; padding:8px 16px; margin:12px 16px 0; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-card); font-size:12.5px; color:var(--wb-muted); }
+.run-status-bar { display:flex; align-items:center; gap:10px; padding:8px 16px; margin: 6px 0; border:1px solid var(--wb-line); border-radius:8px; background:var(--wb-card); font-size:12.5px; color:var(--wb-muted); }
 .run-status-bar b { color: var(--wb-ink); }
+.run-status-bar .stage-name { color: var(--wb-blue); font-weight: 700; }
 .rsb-dot { width:9px; height:9px; border-radius:50%; }
 .rsb-running { background: var(--wb-orange); animation: rsbPulse 1.6s ease-in-out infinite; }
 .rsb-terminal { background: var(--wb-green); }
@@ -559,18 +583,38 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .screen-board { scroll-margin-top: 72px; }
 @media(prefers-reduced-motion: reduce){.board-area{transition:none}}
 /* Full-width shared table: no reserved detail column or centered max-width. */
-.band-shell { max-width:none; padding:0; width:100%; }
+.band-shell { max-width:none; padding:16px; width:100%; background: #f5f7fb}
 .band-grid { display:block; position:relative; }
 .band-grid > :first-child { margin:0; width:100%; }
 .band-actions { position:absolute; right:8px; top:-31px; }
 .band-actions button { padding:4px 10px; font-size:11px; }
-.board-area { max-width:none; padding:0 0 24px; width:100%; }
-.outcomes,.page-foot { margin-left:16px; margin-right:16px; }
+.board-area { max-width:none; padding:0; width:calc(100% - 200px); }
 
 /* 轮次导航独立于横向泳道，滚动不会改变当前轮次。 */
 .round-rail { position:fixed; top:72px; bottom:0; left:0; width:174px; z-index:18; background:var(--wb-card); border-right:1px solid var(--wb-line); padding:24px 10px; overflow-y:auto; }
 .rail-heading { padding:0 10px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; color:var(--wb-ink); }
 .rail-heading span { color:var(--wb-muted); font-weight:400; }
+.cu-count {
+    margin-left: auto !important;
+    margin-right: 0 !important;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 8px !important;
+    border-radius: 9px !important;
+    border: 1px solid var(--cu-line, var(--blue-line, var(--wb-blue-line, #c9dcfa))) !important;
+    background: var(--cu-bg, var(--blue-bg, var(--wb-blue-soft, #edf4ff))) !important;
+    color: var(--cu-ink, var(--blue, var(--wb-blue, #2774ed))) !important;
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Consolas, monospace !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    line-height: 1 !important;
+    letter-spacing: .5px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
 .rail-caption { padding:0 10px; font-size:11px; color:var(--wb-muted); margin:8px 0 22px; }
 .round-list { display:flex; flex-direction:column; align-items:stretch; gap:0; height:auto; }
 .round-item { position:relative; display:flex; gap:10px; width:100%; min-height:112px; padding:14px 10px; border:0; border-radius:9px; background:transparent; color:var(--wb-ink); text-align:left; cursor:pointer; }
@@ -598,7 +642,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .rail-outcome.bad strong { color:var(--wb-red); }
 .rail-outcome.info strong { color:var(--wb-blue); }
 .rail-summary .run-context { font-size:10px; }
-.round-pager { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:24px 16px; color:var(--wb-muted); font-size:12px; }
+.round-pager { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:24px 0; color:var(--wb-muted); font-size:12px; }
 .round-pager button { border:1px solid var(--wb-line); border-radius:8px; padding:9px 16px; background:var(--wb-card); color:var(--wb-blue); cursor:pointer; }.round-pager button:disabled { opacity:.4; cursor:default; }
 .round-item:focus-visible,.latest-round:focus-visible,.round-pager button:focus-visible { outline:2px solid var(--wb-blue); outline-offset:2px; }
 .band-dock,.screen-board { margin-left:174px; }
@@ -618,19 +662,26 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 @media(max-width:900px){.view-switcher{top:-20px;padding-bottom:14px;margin-bottom:18px}.view-heading,.view-switcher button span{display:none}.view-switcher button{justify-content:center;padding:10px 0}}
 
 .screen-board { min-height:0; }
-.summary { margin:12px 0; }
-.board-area .outcomes { margin:10px 0 0; gap:10px; }
+/* 轮次汇总分组：标题 + 指标 + 任务背景收进同一卡片，对齐节点详情卡片样式
+   （.detail：--wb-card 底 + --wb-line 边 + 14px 圆角 + 18px 内边距） */
+.round-summary {
+  padding:18px 0;
+}
+.round-summary .summary { margin:12px 0 0; }
+.board-area .outcomes { margin:0 0 14px; gap:10px; }
 .board-area .outcome { padding:10px 14px; }
-.round-heading { font-size:13px; font-weight:650; color:var(--wb-ink); }
+.round-heading { font-size:13px; font-weight:650; color:var(--wb-ink); margin-bottom:4px; }
 .round-heading span { margin-left:10px; font-size:11px; font-weight:400; color:var(--wb-muted); }
-.run-context { margin-top:12px; font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }
-.run-context summary { cursor:pointer; }.run-context p { margin:8px 0; }
+/* 任务背景用节点详情 .skill-record 同款分隔（顶部细线 + 8px 留白） */
+.run-context { margin-top:16px; padding:8px 0; border-top:1px solid var(--wb-line); font-size:11px; color:var(--wb-muted); overflow-wrap:anywhere; }
+.run-context summary { cursor:pointer; color:var(--wb-blue); }.run-context p { margin:8px 0; }
+.run-context .stage-seq { color: var(--wb-blue); font-weight: 600; }
 
 /* 固定顶部区域，用剩余高度承载流程与详情，避免依赖固定汇总高度。 */
 .snap-container { display:flex; flex-direction:column; overflow:hidden; }
 .topbar { position:relative; top:auto; flex:0 0 72px; }
 .band-dock { position:relative; top:auto; flex:0 0 auto; }
-.screen-board { flex:1 1 0; min-height:0; overflow:auto; overscroll-behavior:contain; scroll-margin-top:0; }
+.screen-board { flex:1 1 0; min-height:0; width:100%; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; scroll-margin-top:0; }
 .board-area { flex:0 0 auto; }
 .screen-board :deep(.scroller) { max-height:none; }
 .screen-board :deep(.unified-detail) { scroll-margin-top:12px; }

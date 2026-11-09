@@ -86,7 +86,7 @@ class ReviewTests(unittest.TestCase):
         report = self.root / 'ops_cov_report' / 'report1'
         report.mkdir(parents=True)
         (report / 'demo_coverage.json').write_text('{"operator":"demo","granularities":{}}')
-        (report / 'analysis.md').write_text('# Test')
+        (report / 'aclnnLogSumExp_analysis.md').write_text('# Test')
         self.assertEqual(review.get(self.root, ['cover', 'dirs'], {}, '')[0]['operator'], 'demo')
         self.assertEqual(review.get(self.root, ['cover', 'report1', 'analysis'], {}, '')['content'], '# Test')
         with self.assertRaises(PathEscapeError):
@@ -97,7 +97,7 @@ class ReviewTests(unittest.TestCase):
         report = self.run / 'ops_cov_report' / 'r1'
         report.mkdir(parents=True)
         (report / 'demo_coverage.json').write_text('{"operator":"demo","granularities":{}}')
-        (report / 'analysis.md').write_text('# Run Cov')
+        (report / 'aclnnLogSumExp_analysis.md').write_text('# Run Cov')
         empty = self.run / 'ops_cov_report' / 'empty'
         empty.mkdir()
         dirs = review.get(self.root, ['runs', 'demo', 'cover', 'dirs'], {}, '')

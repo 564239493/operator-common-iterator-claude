@@ -38,3 +38,5 @@ ops-test-kit-master/
 *.swp
 .vite/
 tmp/
+
+ops_final_cov_report/

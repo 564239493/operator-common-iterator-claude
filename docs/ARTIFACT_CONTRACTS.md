@@ -17,6 +17,7 @@ runs/<operator>-<timestamp>/
     supplement_constraints.md          # 可选：--supplement-constraints 手写快照
     scene_directive.md                 # 可选：render_scene_directive.py 渲染（含 device_types/selection/param_modes/selection_policy 机读块），extractor 据此适配
     selection.json                     # 可选：主协调器场景文本直输匹配汇总（值级），render_scene_directive.py 据此渲染 directive
+    param_pins.json                    # 可选：用户对「无上界列表长度」的问询裁决（probe_param_pins.py patch 的输入，也是抑制重复提问的唯一依据）
     # legacy：scene_scan.json / scene_conflicts.json 仅存在于历史 run（三级场景扫描流程已下线删除）
   iter_001/
     constraints.json
@@ -26,6 +27,8 @@ runs/<operator>-<timestamp>/
     constraints.json.pre_supplement   # 可选：合并补充前的 EXTRACT 原始备份（每轮覆盖）
     constraints.json.pre_conflict      # 可选：冲突合并前备份
     constraints_patch.json             # 可选：约束补充阶段产出的 add/replace patch
+    param_probe.json                   # 可选：probe_param_pins.py probe 的 advisory 报告（CHECK 前产，每轮覆盖）
+    param_pins_patch.json              # 可选：probe_param_pins.py patch 由用户裁决渲染出的 constraints_patch（origin=param_pin）
     source_raw.json                    # 可选：source-analyst 确定性提取的源码事实
     source_evidence.json               # 可选：source-analyst diagnose 域产（match 与 confirmed 分离）
     supplement_additions.md            # 仅旧 schema 2.0 run 兼容；2.1 不再生成
@@ -118,14 +121,18 @@ state 状态合法值见 WORKFLOW.md §3 状态机。状态迁移操作见 itera
 必须满足 `agent.generators.common_model_definition.OperatorRule`。关键字段包括
 operator_name、product_support、parameters 和 constraints_in_parameters。每个约束
 应来自已冻结的有效事实源，不用聊天内容补充。每条约束带 `origin` 字段：`doc`（文档提取）、
-`source_analysis`（显式启用且精准命中的锁定源码分析知识）或
-`supplement`（约束补充阶段合并）。每条 `constraints_in_parameters` 约束条目带全局唯一
+`source_analysis`（显式启用且精准命中的锁定源码分析知识）、
+`supplement`（约束补充阶段合并）或 `param_pin`（用户在 PARAM PIN PROBE 中裁决的长度）。
+每条 `constraints_in_parameters` 约束条目带全局唯一
 `id`（格式 `C-<NNN>`，按文件出现顺序连续编号：extractor 产出；supplement 合并时
 `apply_supplement_constraints.py` 给新增条目分配新 id、replace 保留原 id），供
 analysis.json 的 `param_failure_locations.target_id` 关联。每条约束条目还必须带
 `src_txt_line`（整数数组，1-based、升序）：该约束 `src_text` 引用条款在算子文档快照
 （`inputs/` 下快照）中的具体行号，多条款列全部行；补充来源条目（`origin != "doc"`）
-对应补充文档行号，经 patch 的 `proposed.src_txt_line` 透传。extractor 落盘前逐条核对
+对应补充文档行号，经 patch 的 `proposed.src_txt_line` 透传。
+例外是 `origin=param_pin`：用户裁决没有文档条款可引，条目不带 `src_txt_line`，
+`src_text` 记的是确认依据（patch 的 `basis`），checker 只核对它与文档/其它约束是否冲突。
+extractor 落盘前逐条核对
 行号与原文一致；checker 复核行号与 `src_text` 的对应关系；updater/repairer 保留原值、
 新增条目必填、来源条款变化时更新。旧产物允许缺省（空数组），新提取必填。
 约束补充阶段产出的
@@ -340,6 +347,112 @@ patch 先通过`validate_artifacts.py constraints_patch`；
 `apply_supplement_constraints.py` 消费（合并写入 constraints.json），
 `constraint-checker` 消费（验证 finding 覆盖与 expected_effect）。
 
+## param_probe.json / param_pins.json / param_pins_parse.json / param_pins_patch.json
+
+CHECK 前的**参数长度探针**（advisory，不阻断流程）。它针对这样的列表参数：
+`array_length.value` 未固定（`[]`/缺失/`"N/A"`）、被跨参数 `len(p)` 表达式引用，
+且约束桶内不存在可传递上界。生成侧对这种参数只加 `z3.Length >= 1`，
+长度被完全释放，是已知的求解变慢来源。
+`scripts/probe_param_pins.py` 纯标准库实现，只读 constraints、不调用 LLM。
+
+`probe` → `<iter>/param_probe.json`（每个约束版本覆盖一次）：
+
+```json
+{
+  "schema_version": "1.0",
+  "generated_at": "<ISO8601>",
+  "constraints_file": "<绝对路径>",
+  "candidates": [{
+    "group_id": "G-9b997af5",
+    "params": ["actualSeqQLenOptional", "actualCmpSeqLenOptional"],
+    "leader": "actualSeqQLenOptional",
+    "platforms": ["Atlas A2 训练系列产品/Atlas 800I A2 推理产品"],
+    "type": "aclIntArray",
+    "array_length": [],
+    "evidence": ["C-021: len(a) == len(b) and len(b) == len(c)"],
+    "quantifier_constraints": ["C-012: all(... for c in a.range_value)"],
+    "suggested_values": [2, 3],
+    "suggestion_basis": ["无额外上下文线索，默认多 batch 常规值 2/3"],
+    "upper_bound": null,
+    "reason": "free_length_coupled",
+    "askable": true
+  }],
+  "skipped": [{"param": "cuSeqlens", "platform": "...", "reason": "not_len_referenced"}],
+  "warnings": [{"code": "mapping_anomaly", "param": "...", "platform": "...", "detail": "..."}],
+  "summary": {"n_candidates": 2, "n_groups": 1, "n_skip": 3, "n_warnings": 0}
+}
+```
+
+`skipped.reason` 取值：`array_length_pinned`（已有长度/区间）、`has_upper_bound`（桶内已有
+`len(p)==N`/`<=N`/`in [...]`/区间，或经 `len(p)==len(q)` 等长链传递到上界）、`invalid_length_entry`、
+`optional`、`unknown_optional`、`not_operator_param`、`mapping_anomaly`、`zero_length_conflict`、
+`not_len_referenced`（未被跨参数 `len()` 引用，不提问）。`warnings.code` 另有
+`legacy_cip_form`（旧 list 形态 `constraints_in_parameters`，只报告不产 patch）。
+同一等长连通分量的参数合并为**一组**，`leader` 是文档顺序最前者；只需固定 leader，
+其余成员由原有 `len(a)==len(b)` 链传递（实测三数组等长约束下，生成用例逐例长度一致）。
+
+`suggested_values` 是问询预设的建议长度（推荐值在前，最多 3 个），由脚本从已有事实确定性推导：
+桶内 `len(p) >= k` 下界优先，其次约束 `expr`/`src_text` 里出现的 batch 数量
+（`batchSize = 8` / `B=4` / `x 个 batch`），都没有则回落 `[2, 3]`；
+文档示例为单 batch（`B=1`）时不给 1，而是回落 2/3 以覆盖多 batch。
+`suggestion_basis` 逐条写明依据，由协调器原样带到题面。
+该推导不新增问询、不调用模型、不新增产物文件。
+
+`<run>/inputs/param_pins.json` 是用户裁决，由协调器写入，或由 `parse --decisions-output`
+在解析成功时直接落盘（跨迭代用于抑制重复提问）；按 `mode` 只填对应字段，下列示例并列展示各字段：
+
+```json
+{"schema_version": "1.0", "decisions": [{
+  "group_id": "G-9b997af5",
+  "params": ["actualSeqQLenOptional"],
+  "leader": "actualSeqQLenOptional",
+  "mode": "fix",
+  "length": 2,
+  "lengths": [2, 3],
+  "min_length": 2,
+  "max_length": 4,
+  "platform": "all",
+  "decided_by": "user"
+}]}
+```
+
+`mode` 取值：`fix` → `len(x) == N`；`set` → `len(x) in [2, 3]`（单值退化为 `fix`）；
+`range` → `2 <= len(x) <= 4`（**不写** `in [[2,3]]`，嵌套区间 membership 会被校验器拒绝）；
+`auto`/`skip` 不产条目，仅留档。`set` 语义是“每例长度取自集合”，不保证逐例轮换。
+
+`parse` → `<iter>/param_pins_parse.json`（每次解析覆盖一次，可选留存）：
+把用户在问询中自由输入的文本按闭集语法解析成决策，**全有或全无**。
+受支持格式：`a=2`、`a=[2,3]`/`a=2,3`、`a=2~4`/`a=2-4`、`a,b=2`/`a=b=2`、`全部=2`/`统一=2`；
+全角数字与中文标点（`，`、`、`、`～`）先归一。
+逗号后紧跟 `<参数名>=` 才算新赋值，否则并入上一个参数的取值列表
+（`a=2,3` 是集合，`a=2, b=3` 是两个赋值）。
+输出 `ok`/`normalized`/`decisions`/`warnings`/`errors`/`suggestions`：
+`ok=true` 时 `decisions` 与 `param_pins.json` 同构（多一个 `source` 记原始片段）；
+任一片段失败则 `ok=false`、`decisions=[]`（exit 2），`errors[].code` 取其一：
+`unrecognized`、`invalid_value`、`invalid_length`、`invalid_range`、`range_too_wide`、
+`bracket_mismatch`、`empty_fragment`、`missing_value`、`invalid_param_name`、`unknown_param`、
+`group_conflict`、`mixed_scope`、`no_askable_group`；`suggestions` 即格式清单，由协调器原样回显。
+`--decisions-output <path>` 在 `ok=true` 时直接把决策写成 `param_pins.json`
+（`{schema_version, decisions}`）；配合 `--decisions <旧文件>` 做合并，
+同 `group_id`/`leader` 原位替换、其余组保留，避免本轮覆盖历史决策导致已裁决组重复提问；
+`ok=false` 时不写文件，因此协调器不需要手工抄写 JSON。
+
+`patch` → `<iter>/param_pins_patch.json`，文件本身即标准 `constraints_patch` 数组（list，
+`op=add_constraint`、`proposed.expr_type="self_shape_dim_range"`、`relation_params=[leader]`、
+`basis` 记录组与证据），可以直接交给 `validate_artifacts.py constraints_patch`；
+`applied`/`warnings`/`summary` 只出现在命令行摘要输出，不写进文件。合并链路：
+`validate_artifacts.py constraints_patch` → `apply_supplement_constraints.py ... --origin param_pin`
+（`src_text=basis`）。冲突/重复由 patch 阶段先行拦截（`conflict_existing_exact`、
+`conflict_existing_set`、`unknown_group`、`no_platform`），已存在等价表达式则静默跳过。
+`apply_supplement_constraints.py` 每次覆盖 `constraints.json.pre_supplement`，
+因此固定值合并后该备份是 **pre-pin** 而非 EXTRACT 原始版；回滚按 `origin="param_pin"` 过滤，
+不依赖该备份。
+探针**只固定长度**，不写 `x[0] < x[1]` 之类逐元素展开。列表参数的 `all()/any()` 量词由
+生成器在**长度可静态确定**时定长展开为逐元素 `And`/`Or`，约束文本保持文档原样
+（上限 `MAX_STATIC_UNROLL = 128`，见 `agent/generators/param_constraint_solve/`）。
+选择长度超过 `UNROLL_LIMIT`（同 128）、且组内存在量词时，patch 带
+`large_length_quantifier` 警告，此时仍按量词求解，可能明显变慢。
+
 # conflict 段拆分后完整替换内容
 
 > 替换范围：ARTIFACT_CONTRACTS.md 中从
@@ -396,30 +509,37 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 三级场景扫描流程（scene-scanner Agent + Q1→Q2→Q3 征询 + `check_scene_conflicts.py`）
 **已整体下线删除**，新 run 不再产生本文件；保留说明仅为历史 run 兼容。
 `validate_artifacts.py scene_scan` 校验模式保留，仅用于校验历史 run 产物。
-当前唯一场景路径为**文本直输模式**（见 `selection.json` / `scene_directive.md`）。
+当前唯一场景路径为**设备优先三段式**（见 `selection.json` / `scene_directive.md`）。
 
 ## selection.json
 
-主协调器场景文本匹配结果落地到 `<run-dir>/inputs/selection.json`（文本直输模式，
-来源为 `--scenes "<场景描述>"` 或用户交互文本输入）。
+主协调器场景收集结果落地到 `<run-dir>/inputs/selection.json`（设备优先三段式：
+来源为 `--scenes "<场景描述>"` 预填文本或用户交互输入；先选设备，设备确定后再识别
+该设备下的量化场景并征询，最后可选参数取值）。
 形态 `{device_types, selection}`，
-`device_types` 为文档"产品支持情况"**设备全称非空清单（硬性必要项）**，
-`selection` 为 `{device: {template: <tpl_value>}}`，
+`device_types` 为文档"产品支持情况"**支持（√）设备全称非空清单（硬性必要项）**，
+`selection` 为 `{device: null | {template: <tpl_value>}}`，
+设备值 `null`（或空 dict）= 该设备**无场景维度**（该设备在文档中没有任何量化场景
+模板——无场景即**不选场景**，无需也不虚构"非量化"等模板名；仅按设备收窄
+`product_support`，不做场景屏蔽）；
 `<tpl_value>` ∈ `null`（保持自动）| `{param:[values]}`（文本匹配的显式取值；
 `"fix_all_default"` 文本模式不支持——无场景参数枚举）。
 
-供 `render_scene_directive.py` 解析 `param_modes`。
+供 `render_scene_directive.py` 解析 `param_modes` 与 `no_scene_devices`。
 无独立结构校验命令——`render_scene_directive.py` 对其内容的解析是唯一门禁
-（`device_types` 空 → `DEVICE_REQUIRED` exit 2）。由主协调器产出。
+（`device_types` 空 → `DEVICE_REQUIRED` exit 2；selection 无任何有效设备条目 →
+`EMPTY_SCENE` exit 2，设备值 `null` 是合法条目）。由主协调器产出。
 
 ## scene_directive.md
 
 `render_scene_directive.py` 渲染，落 `<run-dir>/inputs/scene_directive.md`（仅 `scope=subset`时存在）。
 逐设备列出选定设备/量化场景/参数取值，末尾附机读块
-`<!-- scene: {device_types, selection, param_modes, selection_policy, known_conflicts} -->`
-（文本直输模式 `known_conflicts` 恒为 `[]`）。
+`<!-- scene: {device_types, selection, param_modes, no_scene_devices, selection_policy, known_conflicts} -->`
+（文本直输模式 `known_conflicts` 恒为 `[]`；`no_scene_devices` 为未选出任何模板的
+无场景维度设备清单——这些设备不做场景屏蔽，仅按设备收窄）。
 `param_modes[device][param]` ∈ `{"expand": [取值清单]}` | `{"fix": X}`；
-缺键 = 按文档和已选场景自动适配，已选场景禁止的 Optional 参数显式生成 `param is None`。
+缺键 = 按文档和已选场景自动适配，已选场景禁止的 Optional 参数显式生成 `param is None`
+（无场景维度设备不存在"未选场景专属参数"，不虚构量化/非量化区分）。
 
 `constraint-extractor` 消费（按 `param_modes` 收窄 `allowed_range_value`，按 `device_types` 收窄 `product_support`，消费规则见
 `extract-constraints` skill 场景屏蔽规则段）；
@@ -432,11 +552,14 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 ## run_state.scene
 
 `init_run` 写 `null`，SCENE_SCAN 子步骤由 `render_scene_directive.py` 回写。
-形态`{enabled, scope, device_types, selection, param_modes, selection_policy, known_conflicts, directive, scan, source}`。
+形态`{enabled, scope, device_types, selection, param_modes, no_scene_devices, selection_policy, known_conflicts, directive, scan, source}`。
 `scope=subset` 时 `directive` 指向 `inputs/scene_directive.md`；
 `scope=off` 时 `enabled=false`、`directive=""` 且不写 directive 文件（extractor 见无 directive 即按全场景提取，行为不变）。
 `source` ∈ `scenes_param`（`--scenes` 直输）/ `interactive_input`（交互文本输入）。
-批处理（`iterate-directory`）不收集场景，`run_state.scene=null`。
+批处理（`iterate-directory`）在认领首个算术前写批次级 `batch_state.scene`（批次级
+只确认**设备**），并把“设备别名 + 场景原文”作为 `--scenes` 透传给每个单算子 run；
+每个单算子 run 再按自己的文档识别该设备下的量化场景并征询用户，`run_state.scene`
+仍由 `render_scene_directive.py` 正常回写（`source` 由该次 run 的入口决定）。
 
 无独立结构校验命令——`render_scene_directive.py` 写入时校验合法性，`init_run` 读取时校验初始 `null`。由
 `render_scene_directive.py` 回写。
@@ -617,12 +740,20 @@ runs/batches/<batch-id>/
 `batch_state.json` 必须冻结 source_directory、glob、recursive、prompt、
 `prompt_explicit`、`prompt_sources`、operator_family、test_framework、max_iterations、
 case_count、constraint_check_rounds、mode、server_config、supplement_constraints（可选，整批共享）、
-continue_on_error 和有序 operators。`prompt` 只在用户显式指定原样 prompt 时非空；
+continue_on_error、`scenes`、`scenes_from_cli`、`scene` 和有序 operators。`prompt` 只在用户显式指定原样 prompt 时非空；
 自动模式通过 `prompt_sources` 记录初始化时可用的各 family baseline，并让每个单算子
 `init_run` 自行选择/装配，防止混合目录把一个 family 的 prompt 传给另一个 family。
-每个 operator 包含原文档绝对路径、PENDING/RUNNING/COMPLETED 状态、单算子 run_id、
-run_dir 与 terminal_state。任意时刻最多只能有一个 RUNNING 项。
+`scene` 在批次场景确认前为 `null`；确认后形如
+`{source, raw, device, resolved_at, skip_unsupported, support:{supported,partial,unsupported,not_listed,unparsed}, inventory}`，
+其中 `inventory` 为设备并集与逐文档支持矩阵。未确认场景时 `batch_state.py claim`
+返回 `action=needs_scene`，不会认领算子。
+每个 operator 包含原文档绝对路径、PENDING/RUNNING/COMPLETED/SKIPPED 状态、单算子 run_id、
+run_dir 与 terminal_state；场景确认后还会写 `scene_status`
+（supported/partial/unsupported/not_listed/unparsed）和 `scene_text`（该文档设备别名 +
+用户场景原文，claim 时作为 `--scenes` 透传）。被批次因设备不支持而跳过的算子状态为
+`SKIPPED`、terminal_state 为 `SKIPPED_UNSUPPORTED_DEVICE`。任意时刻最多只能有一个 RUNNING 项。
 
 `batch_summary.json` 是由批次状态确定性生成的只读汇总视图，包含 total、pending、
-running、completed、success 和 failed。仅 `SUCCESS` 计入 success；`BLOCKED`、
-`MAX_ITERATIONS`、`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计入 failed。
+running、completed、skipped、success 和 failed。仅 `SUCCESS` 计入 success；`BLOCKED`、
+`MAX_ITERATIONS`、`STOP_GENERATOR_BUG`、`STOP_EXECUTOR_BUG` 和 `STOPPED_BY_USER` 计入 failed；
+`SKIPPED_UNSUPPORTED_DEVICE` 计入 skipped，不算成功也不算失败。
