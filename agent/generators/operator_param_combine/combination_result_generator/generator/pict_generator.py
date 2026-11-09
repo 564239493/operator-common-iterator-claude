@@ -10,6 +10,9 @@ PICT 真实工具集成 + PICT-compatible 生成器。
 2. 命令与环境探测           —— resolve_pict_command / check_pict_environment：
                               确定 PICT 执行命令（Linux: `pict model /o:N`；Windows: `pict.exe model /o:N`，
                               并支持 Windows 下经 WSL 执行 `wsl.exe -d <distro> -- pict ...`），
+                              PATH 上都没有时使用随项目自带的 third_party/pict/bin/<平台>-<架构>/，
+                              自带那份跑不起来就当作不存在，退回 WSL/全盘搜索等原有兜底
+                              （见 resolve_pict_command_with_fallback），
                               探测是否可执行，Windows 缺 32 位 VC++ 运行时(MSVCP140/VCRUNTIME140)时给出诊断。
 3. PICT 输入转换工具        —— convert_domain_json_to_pict_model：
                              把 domain_data dict（parameters + constraints，无 cases）直接转换为
@@ -28,6 +31,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -552,6 +556,9 @@ class PictCommand:
     platform: str
     via_wsl: bool = False
     wsl_distro: Optional[str] = None
+    # 来源标记：命中项目自带的 third_party/pict/bin/<平台>-<架构>/ 时为 True。
+    # 这类命令要先过探针才可信，见 resolve_pict_command_with_fallback()。
+    is_bundled: bool = False
 
 
 @dataclass
@@ -751,14 +758,84 @@ def _wsl_has_pict(distro: str) -> bool:
         return False
 
 
-def resolve_pict_command(pict_exe: Optional[str] = None, wsl_distro: Optional[str] = None,
-                         search_local: bool = True) -> Optional[PictCommand]:
-    """解析 PICT 可执行命令。
+def _project_root() -> Optional[str]:
+    """从本文件位置向上查找含 third_party/pict 的目录（即仓库根）；找不到返回 None。
 
-    优先级：显式 pict_exe > 环境变量 PICT_EXE > PATH >
-    [显式 wsl_distro 时] WSL > 自动 WSL（快速探测）> 本地全盘搜索兜底。
-    Linux 直接使用 `pict`；Windows 下先确认 WSL 中可用的 pict（探测快且可靠），
-    全盘搜索（os.walk 遍历各盘）代价高，仅作为最后兜底。
+    自带二进制跟着仓库走，所以只能按模块自身位置反查，不能用运行目录。
+    """
+    current = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        if os.path.isdir(os.path.join(current, "third_party", "pict")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+def _bundled_pict_dir() -> Optional[str]:
+    """给出随项目自带的 PICT 目录（不保证存在）；无法判定平台或找不到仓库根时返回 None。
+
+    目录名约定（产物来历见 third_party/pict/BUILD.md）：
+        win32  -> win-x64 / win-arm64
+        linux  -> linux-x86_64 / linux-aarch64
+    """
+    machine = platform.machine().lower()
+    if sys.platform == "win32":
+        key = "win-arm64" if machine in ("arm64", "aarch64") else "win-x64"
+    elif sys.platform.startswith("linux"):
+        key = "linux-aarch64" if machine in ("aarch64", "arm64") else "linux-x86_64"
+    else:
+        return None
+    root = _project_root()
+    if root is None:
+        return None
+    return os.path.join(root, "third_party", "pict", "bin", key)
+
+
+def _bundled_pict_candidates() -> List[str]:
+    """返回随项目自带的 PICT 可执行文件路径（不存在则空列表）。
+
+    shutil.which 是否顺带搜索当前目录取决于平台与 Python 版本（旧版 CPython 在
+    Windows 上会隐式前置 os.curdir，实测 3.12 已不再如此），不能依赖，
+    所有平台都显式按路径查找。
+    """
+    base = _bundled_pict_dir()
+    if base is None:
+        return []
+    # 与 resolve_pict_command 的 PATH 候选名保持一致：Windows 先 .exe
+    names = ["pict.exe", "pict"] if sys.platform == "win32" else ["pict"]
+    found = []
+    for name in names:
+        path = os.path.join(base, name)
+        if not os.path.isfile(path):
+            continue
+        if sys.platform != "win32" and not os.access(path, os.X_OK):
+            # git checkout / 解压 / 拷贝都可能丢执行位，尽力补上；
+            # 补不上（只读挂载等）就当作不可用，交给下面的 X_OK 判定
+            try:
+                os.chmod(path, os.stat(path).st_mode | 0o111)
+            except OSError:
+                pass
+        if sys.platform == "win32" or os.access(path, os.X_OK):
+            found.append(path)
+    return found
+
+
+def resolve_pict_command(pict_exe: Optional[str] = None, wsl_distro: Optional[str] = None,
+                         search_local: bool = True,
+                         include_bundled: bool = True) -> Optional[PictCommand]:
+    """解析 PICT 可执行命令；返回 None 表示一个来源都没找到。
+
+    优先级（自上而下，先命中先用）：
+    1. 显式 pict_exe、环境变量 PICT_EXE
+    2. PATH 上的 pict / pict.exe（用户自己装的一般走这条）
+    3. 随项目自带的 third_party/pict/bin/<平台>-<架构>/
+    4. [仅 Windows] 显式 wsl_distro 里的 pict，其次是自动探测到的 WSL
+    5. [仅 Windows] 本地全盘浅层搜索
+
+    Linux 直接使用 `pict`；全盘搜索（os.walk 遍历各盘）代价高，仅作最后兜底。
+    include_bundled=False 跳过第 3 步，专供回退路径使用。
     """
     cur = sys.platform
     explicit = []
@@ -778,6 +855,11 @@ def resolve_pict_command(pict_exe: Optional[str] = None, wsl_distro: Optional[st
         p = shutil.which(n)
         if p:
             return PictCommand([p], p, cur)
+
+    # 随项目自带的二进制：不依赖 shutil.which 是否搜索当前目录，一律显式查找
+    if include_bundled:
+        for p in _bundled_pict_candidates():
+            return PictCommand([p], p, cur, is_bundled=True)
 
     if cur == "win32":
         # 显式指定 WSL 发行版时，优先使用 WSL 中的 pict
@@ -800,7 +882,78 @@ def resolve_pict_command(pict_exe: Optional[str] = None, wsl_distro: Optional[st
     return None
 
 
+# 探针模型：只要能解析并产出组合表，就说明这个 pict 二进制真的可用
 _PROBE_MODEL = "p1: 1, 2\np2: x, y\n"
+
+# 自带二进制的可用性结论缓存（键为可执行文件路径）：一次进程内只探一次，
+# 避免每轮生成都多跑一个子进程。值 False 表示“跑不起来”。
+# 不做失效判断——替换或修复二进制后，需要重启进程才会重新探测。
+_BUNDLED_PROBE_CACHE: Dict[str, bool] = {}
+
+
+def _bundled_pict_works(cmd: PictCommand, timeout: int = 10) -> bool:
+    """探测随项目自带的 PICT 是否真能跑起来；结论按可执行文件路径缓存。
+
+    做法是用上面的小模型跑一次 /o:2，按返回码和输出分类判定。架构不符、缺 glibc/
+    libstdc++、无执行位、被安全软件拦截，都会落到“跑不起来”。
+    """
+    cached = _BUNDLED_PROBE_CACHE.get(cmd.executable)
+    if cached is not None:
+        return cached
+    verdict = False
+    probe_path = ""
+    try:
+        fd, probe_path = tempfile.mkstemp(suffix=".txt", prefix="pict_bundled_probe_", text=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_PROBE_MODEL)
+        full = _build_pict_cmd(cmd, probe_path, strength=2, seed=None)
+        kwargs: Dict[str, Any] = dict(capture_output=True, text=True, timeout=timeout,
+                                      encoding="utf-8", errors="replace")
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        res = subprocess.run(full, **kwargs)
+        combined = (res.stdout or "") + "\n" + (res.stderr or "")
+        verdict = _classify_failure(res.returncode, combined, cmd) == PictFailureCategory.SUCCESS
+        if not verdict:
+            logger.warning("bundled pict probe failed: executable=%s rc=%s", cmd.executable, res.returncode)
+    except Exception as exc:  # noqa: BLE001 - 任何异常都按“不可用”处理
+        logger.warning("bundled pict probe raised: executable=%s error=%r", cmd.executable, exc)
+        verdict = False
+    finally:
+        if probe_path:
+            try:
+                os.unlink(probe_path)
+            except OSError:
+                pass
+    _BUNDLED_PROBE_CACHE[cmd.executable] = verdict
+    return verdict
+
+
+def resolve_pict_command_with_fallback(pict_exe: Optional[str] = None,
+                                       wsl_distro: Optional[str] = None,
+                                       timeout: int = 10) -> Optional[PictCommand]:
+    """解析命令；自带二进制跑不起来时回退到原有兜底链（WSL / 全盘搜索）。
+
+    兜底语义：`third_party/pict/bin/...` 排在 PATH 之后、WSL 之前，是“没装 pict 时的
+    默认来源”；一旦它跑不起来（架构不符、缺 glibc/libstdc++、无执行位、被安全软件
+    拦截），就当作不存在，完全按接入前的规则重新解析，行为与接入前一致；
+    两边都没有时返回 None。
+
+    代价：只有真解析到自带二进制才会跑探针（几十毫秒，进程内缓存一次）；
+    PATH 上已有 pict 的用户根本不走这条分支。
+    """
+    cmd = resolve_pict_command(pict_exe=pict_exe, wsl_distro=wsl_distro)
+    if cmd is None or not cmd.is_bundled:
+        return cmd
+    if _bundled_pict_works(cmd, timeout=timeout):
+        return cmd
+    fallback = resolve_pict_command(pict_exe=pict_exe, wsl_distro=wsl_distro,
+                                    include_bundled=False)
+    logger.warning(
+        "bundled pict unavailable, falling back to original resolution: bundled=%s fallback=%s",
+        cmd.executable, fallback.executable if fallback else None,
+    )
+    return fallback
 
 
 def check_pict_environment(pict_exe: Optional[str] = None, wsl_distro: Optional[str] = None,
@@ -811,7 +964,7 @@ def check_pict_environment(pict_exe: Optional[str] = None, wsl_distro: Optional[
     分类为 launch_failure 并输出精确诊断；同时给出 WSL 备选建议。
     """
     cur = sys.platform
-    cmd = resolve_pict_command(pict_exe=pict_exe, wsl_distro=wsl_distro)
+    cmd = resolve_pict_command_with_fallback(pict_exe=pict_exe, wsl_distro=wsl_distro, timeout=timeout)
     if cmd is None:
         diags = ["No pict / pict.exe found on PATH, PICT_EXE, or common locations."]
         sugg = []
@@ -2097,7 +2250,8 @@ def execute_pict(
         else:
             rounds_dir = tempfile.mkdtemp(prefix="pict_exec_")
 
-        cmd = resolve_pict_command(pict_exe=pict_exe, wsl_distro=wsl_distro)
+        cmd = resolve_pict_command_with_fallback(pict_exe=pict_exe, wsl_distro=wsl_distro,
+                                                 timeout=timeout)
         if cmd is None:
             report = PictRunReport(success=False, failure_category=PictFailureCategory.PICT_NOT_FOUND)
             report.elapsed_time = time.perf_counter() - started
