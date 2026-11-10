@@ -10,7 +10,6 @@
       "platforms": [
         "Atlas A3 训练系列产品/Atlas A3 推理系列产品"
       ],
-      "cann_version": "cann9.0.0",
       "supports_npu": true,
       "supports_fusion": true,
       "fusion_devices": [0, 1],
@@ -37,6 +36,20 @@
       }
     }
   ],
+
+  "cov_server_ip": "192.168.1.100",
+  "cov_platform": {
+    "base_url": "http://<平台地址:端口>",
+    "platform_user": "<平台账号>",
+    "platform_password": "<平台密码>",
+    "env_user": "root",
+    "env_password": "<平台机 SSH root 密码>",
+    "env_port": "22"
+  },
+  "cann_version": "cann9.2.0",
+  "abnormal_case": "true",
+  "operator_dir": "<算子本地源码路径，如 D:\\path\\to\\ops-library>",
+
   "_fields": {
     "name": "服务器名称（用于日志）",
     "ip": "服务器 IP 地址",
@@ -65,6 +78,15 @@
     "atk": "ATK 执行配置；PLOG 采集与 TTK 链一致（env_init 建议同 TTK 先清理 plog_dir，保证 error_summary.log 只含本轮报错）",
     "atk.collect_plog": "真实 ATK 执行后是否同步 PLOG，默认 true；缺省回落到 ttk.collect_plog",
     "atk.plog_dir": "远端 PLOG 目录；缺省回落到 ttk.plog_dir / 默认 /root/ascend/log/debug",
-    "cann_version": "测试算子对应的cann版本，覆盖率归档必填"
+    "cov_server_ip": "覆盖率（covdata）执行机 IP；与 servers[] 中某成员的 ip 相等，按此匹配取该执行机的 port/username/password",
+    "accKit_platform.base_url": "覆盖率平台url",
+    "accKit_platform.platform_user": "平台用户名",
+    "accKit_platform.platform_password": "平台密码",
+    "accKit_platform.env_user": "平台所在环境用户名",
+    "accKit_platform.env_password": "平台所在环境密码",
+    "accKit_platform.env_port": "平台所在环境端口",
+    "cann_version": "CANN 版本（覆盖率归档必填，如 cann9.2.0）",
+    "abnormal_case": "异常场景用例开关（true/false，默认 true）",
+    "operator_dir": "算子本地源码路径（覆盖率分析必填）"
   }
 }
