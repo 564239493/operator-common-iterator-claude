@@ -445,7 +445,7 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
 | 字段 | 必填 | 说明 |
 | ---- | ---- | ---- |
 | `expr_type` | 是 | **自由字符串**。优先从 `knowledge/aclnn/common/expression_language.md` §expr_type 字典中选用；若字典无法覆盖，允许使用实际语义值（如 `cross_param_constraint`、`parameter_representation`、`self_value_enum`、`self_string_length`、`self_value_dependency`、`shape_choice`） |
-| `expr` | 是 | 规范化后合法的 Python 布尔表达式（第 6 章）；允许裸 `null`，执行前转换为 `None`；**不得为空字符串**——无法形式化的约束改记入相关参数 `description`/`src_text`，不产出 `constraints_in_parameters` 条目（见 `knowledge/aclnn/features/format_cast.md` §4.6.7、`knowledge/aclnn/features/broadcast.md` §B、§5、`knowledge/aclnn/common/expression_language.md` §语法 第 10 条） |
+| `expr` | 是 | 规范化后合法的 Python 布尔表达式（第 6 章）；允许裸 `null`，执行前转换为 `None`；**不得为空字符串**——无法形式化的约束改记入相关参数 `description`/`src_text`，不产出 `constraints_in_parameters` 条目（见 `knowledge/aclnn/features/format_cast.md` §4.6.7、`knowledge/aclnn/features/broadcast.md` §B、§5、`knowledge/aclnn/common/expression_language.md` §语法 第 10 条）。**参数名为 Python 关键字时不是“无法形式化”**：`expr` 用 `<参数名>_` 别名（如 `from_.range_value <= to_.range_value`），`relation_params` 仍写真实名 `from`/`to`（`knowledge/aclnn/common/expression_language.md` §语法 第 1/11 条） |
 | `relation_params` | 是 | 表达式中**所有**被引用的参数名（按出现顺序，去重） |
 | `src_text` | 是 | 原文摘录，**可为空字符串** |
 
@@ -707,7 +707,8 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
 | 文档**完全没有** `返回码` 章节 | `return_info=[]` |
 | `allowed_range_value` 只有单边界或开区间 | `allowed_range_value.value=[]`；在 `constraints_in_parameters` 中用 `value_dependency` 不等式表达，禁止为 `type=range` 写 `null` 端点 |
 | **文档写 bool 参数（无固定值约束）** | `allowed_range_value.type="enum"`、`value=[false, true]`；强行 bool 枚举，不允许填 `[]` 配 `type="range"`（否则下游生成器按浮点填充，会产生 1.0/1.23e-40 等非法值） |
-| 表达式无法用 Python 表达（自然语言公式） | **不**产出 `constraints_in_parameters` 条目（空 `expr` 违 §4.7.2）；把语义记入相关参数 `description`/`src_text` 摘录原文，待人工校对 |
+| **函数原型参数名是 Python 关键字（如 `from`）** | 用 `<参数名>_` 别名形式化（如 `from_.range_value <= to.range_value`、`from_.range_value >= 0`），`expr_type` 按语义选择，`relation_params` 仍写真实名 `from`/`to`；**不得**仅因参数名是关键字就把可形式化关系降级进 `description`（`knowledge/aclnn/common/expression_language.md` §语法 第 1/11 条） |
+| 表达式无法用 Python 表达（自然语言公式） | **不**产出 `constraints_in_parameters` 条目（空 `expr` 违 §4.7.2）；把语义记入相关参数 `description`/`src_text` 摘录原文，待人工校对。**注意**：参数名是 Python 关键字不属于本行情形，必须先用别名形式化 |
 | 文档出现矛盾（A段dtype=X，B段dtype=Y） | 优先**保守**取值（取并集），`src_text` 摘录矛盾原文，等待人工确认 |
 | 文档写"1维，最大长度256" | `dimensions.value=[1]`，**长度256 不得放入 `dimensions`**；须在 `constraints_in_parameters` 中加 `self_shape_axis_value` 约束 |
 | 文档写"shape 与 weight1 一致" / "与输入相同" | `dimensions.value=[]`；**跨参数引用留给 `constraints_in_parameters`** 的 `shape_equality` 约束 |
@@ -898,6 +899,9 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
     c. 文档约束无法形式化为 Python 布尔表达式（自然语言公式、broadcast 特殊
        dtype 不可靠形式化等）时，**不**产出 `constraints_in_parameters` 条目，
        改把语义记入相关参数 `description`/`src_text`（`knowledge/aclnn/features/broadcast.md` §B、§5、`knowledge/aclnn/common/expression_language.md` §语法 第 10 条）；
+       **参数名是 Python 关键字不属于“无法形式化”**：必须先用 `<参数名>_` 别名形式化
+       （如 `from_.range_value <= to.range_value`），`relation_params` 写真实名；仅当语义
+       本身不可形式化时才允许降级 `description`；
     d. 对 `aclnnNpuFormatCast`，当 `dtype_support_description` 含 actualFormat 确定映射时，
        `constraints_in_parameters` 中**必须**含可求解 `derived_value` 条目（如 A3/A2
        `actualFormat.range_value == dstFormat.range_value`），**不得**为 `expr=""` 空壳；
@@ -1029,8 +1033,17 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
     c. 已选场景或文档明确禁止的 Optional 参数 `P`，必须在每个支持平台生成独立的
        `presence_dependency` 条目，`expr="P is None"`、`relation_params=["P"]`，并以
        禁止输入原文作为 `src_text`。不得只写自然语言备注，不得依赖“未产出 presence
-       约束”隐式屏蔽。多场景同时保留时使用场景条件门控；已收窄到单一场景时可化简为
-       无条件 `P is None`。
+      约束”隐式屏蔽。多场景同时保留时使用场景条件门控；已收窄到单一场景时可化简为
+      无条件 `P is None`。
+
+38. **关键字参数名形式化自检**：扫描函数原型与参数卡名，若参数名是 Python 关键字
+    （`keyword.iskeyword(name)` 为真，当前语料为 `from`）：
+    a. 文档中与该参数相关的关系（如 `from <= to`、`from`/`to` 的 dtype 取值域）必须
+       在 `constraints_in_parameters` 中形式化，表达式层用 `<参数名>_` 别名
+       （如 `from_.range_value <= to_.range_value`、`from_.range_value >= 0`）；
+    b. `relation_params`、参数卡 key、`id` 与执行层参数名仍写真实名 `from`，禁止重命名；
+    c. 不得仅因参数名是 Python 关键字就把该关系降级进 `description`/`src_text`；
+       只有在关系语义本身不可形式化时才允许降级（§语法 第 10 条）。
 
 ## 7. 调用模板
 
@@ -1090,7 +1103,7 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
 2. 按 §3 输出对象合同（`OperatorRule`）输出 JSON；
 3. 内部执行第 6 章全部自检项（含 §6.15 NZ 块尺寸、§6.16 一段式一致性自检、§6.17 非 Tensor 数组禁用、§6.18 条件 Shape 与 shape_value_dependency 门控完整性、
    §6.19 TensorList 长度关系、§6.20 动态取值边界、§6.21 Partial-Shape 自检、§6.23 支持场景表→rank 联动、§6.25 大小/数量语义隐式 >0、§6.26 公共互推导/broadcast 知识展开、
-   §6.28 derived_value 可求解性、§6.29 格式转换 dtype 等式、§6.30 联合交叉 dtype/format 组合表、§6.32 必选参数"只支持 nullptr"取值语义、§6.33 dtype/value 逐字一致性、§6.34 条件布局门控、§6.35 条件存在性关系、§6.36 临时能力护栏）；
+   §6.28 derived_value 可求解性、§6.29 格式转换 dtype 等式、§6.30 联合交叉 dtype/format 组合表、§6.32 必选参数"只支持 nullptr"取值语义、§6.33 dtype/value 逐字一致性、§6.34 条件布局门控、§6.35 条件存在性关系、§6.36 临时能力护栏、§6.38 关键字参数名形式化）；
 4. **仅返回 JSON 字符串**，不要包含任何解释、代码块标记或额外文字。
 ```
 

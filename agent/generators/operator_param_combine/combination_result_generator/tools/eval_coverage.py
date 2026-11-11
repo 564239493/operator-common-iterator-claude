@@ -117,7 +117,7 @@ def run(config_path: str, cases_path: str, uncovered_path: str | None = None) ->
     if config.constraints:
         print(f"[config]    loaded {len(config.constraints)} constraint(s)")
 
-    constraint = build_constraint(config.constraints)
+    constraint = build_constraint(config.constraints, list(config.parameters.keys()))
     universe, tracker, builder = build_universe_and_tracker(config, constraint)
     universe_size = universe.size()
     print(f"[pair]      universe size = {universe_size} pairs")
@@ -282,7 +282,7 @@ def batch_run(config_dir: str, cases_dir: str, output_dir: str | None = None,
         if not config.parameters:
             logger.warning(f"Config for '{operator_name}' has 0 parameters, universe will be empty")
 
-        constraint = build_constraint(config.constraints)
+        constraint = build_constraint(config.constraints, list(config.parameters.keys()))
         universe, tracker, builder = build_universe_and_tracker(config, constraint)
         universe_size = universe.size()
 

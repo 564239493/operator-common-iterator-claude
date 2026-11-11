@@ -9,9 +9,11 @@ expr 接受 {具体值}、拒绝 {具体值}，一致吗"）。
 
 Z3 基础设施从 ``agent/generators`` 只读导入（Z3ConstraintBuilder +
 ASTtoZ3Converter + ExpressionPreprocessor），不复制实现——与生成管线同一条
-转换路径。转换失败通常意味着写法超出表达式语言或参数卡结构异常（如
-``allowed_range_value=[null]`` 的 presence 参数无法声明），生成时同样难以
-消费；逐条归因由 checker 结合 ``error`` 与 ``src_text`` 完成。
+转换路径。表达式解析统一走 ``ExpressionPreprocessor.parse_expression``，因此
+``from_`` 这类「Python 关键字参数名」别名会先转义解析、再在 AST 层还原为真实
+参数名 ``from``，与生成侧完全一致。转换失败通常意味着写法超出表达式语言或
+参数卡结构异常（如 ``allowed_range_value=[null]`` 的 presence 参数无法声明），
+生成时同样难以消费；逐条归因由 checker 结合 ``error`` 与 ``src_text`` 完成。
 
 状态语义（每条约束）：
   - ``ok_with_witnesses``：expr 可满足且可违反（正常约束，附正反例）
@@ -148,8 +150,9 @@ def _collect_param_cards(value: dict, platform: str) -> dict[str, dict]:
     return cards
 
 
-def _expr_param_names(expr: str) -> set[str]:
-    tree = ast.parse(expr, mode="eval")
+def _expr_param_names(expr: str, param_names=None) -> set[str]:
+    """返回 expr 引用的真实参数名（兼容 from_ 这类关键字参数名别名）。"""
+    tree = ExpressionPreprocessor.parse_expression(expr, param_names)
     return {
         node.id
         for node in ast.walk(tree)
@@ -277,13 +280,17 @@ def _add_range_domains(builder: Z3ConstraintBuilder, declared: dict, cards: dict
 
 
 def _verify_single_expr(expr: str, cards: dict, timeout_ms: int) -> dict:
-    """单条表达式：声明参数 → 补取值域 → 转换 → sat/Not(expr) 两次求解取证。"""
+    """单条表达式：声明参数 → 补取值域 → 转换 → sat/Not(expr) 两次求解取证。
+
+    ``cards`` 的 key 是真实参数名，用它作为关键字别名（``from_``）反查白名单。
+    """
     builder = Z3ConstraintBuilder(timeout_ms=timeout_ms)
-    names = _expr_param_names(expr)
+    param_names = list(cards.keys())
+    names = _expr_param_names(expr, param_names)
     declared = _declare_params(builder, names, cards)
     _add_range_domains(builder, declared, cards)
     undeclared = sorted(names - set(declared))
-    tree = ast.parse(expr, mode="eval")
+    tree = ExpressionPreprocessor.parse_expression(expr, param_names)
     z3_expr = ASTtoZ3Converter(builder).visit(tree.body)
     solver = builder.solver
 
@@ -329,10 +336,11 @@ def _verify_bucket_joint(
     if not exprs:
         return "ok", []
     builder = Z3ConstraintBuilder(timeout_ms=timeout_ms)
+    param_names = list(cards.keys())
     all_names: set[str] = set()
     for expr in exprs.values():
         try:
-            all_names |= _expr_param_names(expr)
+            all_names |= _expr_param_names(expr, param_names)
         except SyntaxError:
             continue
     declared = _declare_params(builder, all_names, cards)
@@ -423,7 +431,8 @@ def verify_constraints(value: dict, constraints_path: Path, timeout_ms: int = 60
                 continue
             normalized = ExpressionPreprocessor.normalize_json_null(expr)
             replaced = ExpressionPreprocessor.apply_keyword_replace(normalized)
-            if not ExpressionPreprocessor.validate_expression(replaced):
+            if not ExpressionPreprocessor.validate_expression(
+                    replaced, list(cards.keys())):
                 entry["status"] = "syntax_error"
                 entry["error"] = "invalid after null->None + keyword replace"
                 report["counts"]["syntax_error"] += 1

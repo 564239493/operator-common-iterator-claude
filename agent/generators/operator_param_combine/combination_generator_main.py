@@ -86,7 +86,9 @@ class PairwiseParamCombinationGenerator:
                 generator_config = PairwiseParamCombinationGenerator.load_config(
                     combination_input_data=combination_input_data)
                 generator_options = GeneratorOptions()
-                constraint_utils = build_constraint(generator_config.constraints)
+                constraint_utils = build_constraint(
+                    generator_config.constraints,
+                    list(generator_config.parameters.keys()))
             logger.debug(f"Constraint build success, operator : '{self.operator_rule_data.operator_name}'")
             with track_block("Universe generator"):
                 universe, tracker, builder = build_universe_and_tracker(generator_config, constraint_utils)
