@@ -5,7 +5,7 @@ description: 官方 aclTensor 数据类型互转换关系原文参考
 default_load: false
 triggers:
   - kind: doc_contains
-    value: "互转换|格式转换|format转换|计算结果转换成输出类型"
+    value: "互转换|可转换|可转换成|转换规则|格式转换|format转换|计算结果转换成输出类型"
 depends_on: []
 ---
 
