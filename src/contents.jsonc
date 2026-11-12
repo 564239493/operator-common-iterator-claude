@@ -67,7 +67,7 @@
     "skills_empty": "此版本尚未收录流程技能。",
     "knowledge_title": "知识库",
     "family_label": "算子类型",
-    "knowledge_intro": "知识帮助智能体理解算子规则；根据任务类型和问题按需使用。",
+    "knowledge_intro": "知识帮助智能体理解算子规则，按任务类型和问题按需使用。",
     "knowledge_empty": "此版本尚未收录该类知识。",
     "detail_label": "能力详情",
     "detail_knowledge": "知识说明",
@@ -89,19 +89,19 @@
     },
     "conditional": {
       "label": "按需使用",
-      "description": "任务涉及相关问题时才会装配使用，是否使用取决于当前任务。"
+      "description": "任务涉及相关问题时才装配使用。"
     },
     "reference": {
       "label": "可参考",
-      "description": "不直接参与执行，供形成分析和改进建议时参考。"
+      "description": "不直接参与执行，供分析问题和改进建议时参考。"
     },
     "denied": {
       "label": "不可使用",
-      "description": "与该智能体的职责或权限明确冲突，被明确禁止使用。"
+      "description": "与该智能体的职责或权限冲突，已明确禁止使用。"
     },
     "unmentioned": {
       "label": "按需装配",
-      "description": "没有为该智能体固定搭配；需要时同样可以装配使用，不代表被禁止。"
+      "description": "没有为该智能体固定搭配；需要时也可以装配使用，不代表被禁止。"
     },
     "out_of_scope": {
       "label": "其他知识类型",
@@ -335,7 +335,7 @@
       "color": "#f1c40f",
       "description": "针对检查发现的问题修复约束，并交由独立检查确认修复效果。",
       "when_to_use": "约束检查发现问题时",
-      "outcome": "针对问题修复后的约束，等待独立复检",
+      "outcome": "修复后的约束，等待独立复检",
       "availability": "ready",
       "relations": {
         "skill:repair-constraints": "required",
@@ -400,7 +400,7 @@
       "name": "case-executor",
       "role": "用例执行",
       "color": "#e6a23c",
-      "description": "执行已生成的测试用例，收集通过、失败及执行环境异常信息。",
+      "description": "执行已生成的测试用例，记录通过、失败和执行环境异常信息。",
       "when_to_use": "测试用例准备完成后",
       "outcome": "测试结果及失败日志",
       "availability": "ready",
@@ -414,7 +414,7 @@
       "color": "#17a2b8",
       "description": "检查本轮结果是否完整、可信，判断流程可以继续还是需要处理问题。",
       "when_to_use": "评审本轮测试结果时",
-      "outcome": "是否可以继续的判断与待处理问题",
+      "outcome": "能否继续的结论与待处理问题",
       "availability": "ready",
       "relations": {
         "skill:validate-run": "required"
@@ -479,9 +479,9 @@
       "name": "constraint-updater",
       "role": "约束更新",
       "color": "#e6a23c",
-      "description": "根据失败诊断对现有约束作针对性修改，为下一轮验证准备条件。",
+      "description": "根据失败诊断有针对性地修改现有约束，为下一轮验证准备条件。",
       "when_to_use": "失败诊断确认需要修改约束时",
-      "outcome": "供下一轮验证的更新约束",
+      "outcome": "更新后的约束，用于下一轮验证",
       "availability": "ready",
       "relations": {
         "skill:update-constraints": "required",
@@ -615,7 +615,7 @@
       "id": "skill:collect-operator-source",
       "name": "collect-operator-source",
       "title": "收集算子源码",
-      "description": "收集分析一个算子所需的源码及相关依赖，为源码分析准备材料。",
+      "description": "收集分析算子所需的源码及依赖，为源码分析准备材料。",
       "kind": "skill",
       "availability": "ready"
     },
@@ -639,7 +639,7 @@
       "id": "skill:execute-cases",
       "name": "execute-cases",
       "title": "执行测试用例",
-      "description": "执行已生成的测试用例，收集通过、失败及执行环境异常信息。",
+      "description": "执行已生成的测试用例，记录通过、失败和执行环境异常信息。",
       "kind": "skill",
       "availability": "ready"
     },
@@ -711,7 +711,7 @@
       "id": "skill:update-constraints",
       "name": "update-constraints",
       "title": "更新约束",
-      "description": "根据失败诊断对现有约束作针对性修改，为下一轮验证准备条件。",
+      "description": "根据失败诊断有针对性地修改现有约束，为下一轮验证准备条件。",
       "kind": "skill",
       "availability": "ready"
     },
@@ -929,7 +929,7 @@
       "id": "knowledge:aclnn:acl_format_enum",
       "name": "aclnn-acl-format-enum",
       "title": "数据格式枚举",
-      "description": "对应数据格式的名称与编号，帮助正确理解格式转换参数。",
+      "description": "给出数据格式的名称与编号，帮助正确理解格式转换参数。",
       "kind": "knowledge",
       "availability": "ready",
       "family": "aclnn",
