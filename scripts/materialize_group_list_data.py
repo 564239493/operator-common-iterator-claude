@@ -462,6 +462,104 @@ def _process_row(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any
             data, expected_len, attr_name,
         )
         detail_extra["expected_len"] = expected_len
+    elif validator in (
+        "indexer_cu_seqlens",
+        "indexer_seqused",
+        "indexer_cmp_residual",
+        "prefix_sum_prefix0",
+        "within_prefix",
+        "lt_scalar",
+    ):
+        target_shape = _shape_at(shapes, args.group_list_index, attr_name)
+        if target_shape is None or not target_shape:
+            return {
+                "testcase_name": testcase_name,
+                "action": "skipped_missing_target",
+                "attr_name": attr_name,
+                "validator": validator,
+            }
+        if existing is None:
+            raise ValueError(
+                f"{attr_name} is missing; the plugin value channel requires it"
+            )
+        data = _coerce_group_list_data(existing, f"{testcase_name}.{attr_name}")
+        if not isinstance(data, list) or not data:
+            raise ValueError(f"{attr_name} must be a non-empty list")
+        data = [int(item) for item in data]
+        expected_len = int(target_shape[0])
+        if expected_len < 0:
+            expected_len = len(data)
+        elif len(data) != expected_len:
+            raise ValueError(
+                f"{attr_name} length {len(data)} != target tensor length "
+                f"{expected_len}"
+            )
+        is_key = "KOptional" in str(args.target_param) or "k_" in str(attr_name)
+        if validator in ("indexer_cu_seqlens", "prefix_sum_prefix0"):
+            if data[0] != 0:
+                raise ValueError(f"{attr_name}[0] must be 0, got {data[0]}")
+            if any(value < 0 for value in data):
+                raise ValueError(f"{attr_name} must be non-negative")
+            if any(
+                data[index] > data[index + 1]
+                for index in range(len(data) - 1)
+            ):
+                raise ValueError(f"{attr_name} must be non-decreasing")
+            layout = _attr(
+                attrs,
+                "layoutKOptional" if is_key else "layoutQOptional",
+                "layout_k" if is_key else "layout_q",
+            )
+            if layout == "TND":
+                total_shape = _shape_at(
+                    shapes,
+                    args.weight_index if is_key else args.x_index,
+                    "k" if is_key else "q",
+                )
+                if total_shape and int(data[-1]) != int(total_shape[0]):
+                    raise ValueError(
+                        f"{attr_name}[-1] must equal "
+                        f"{'k' if is_key else 'q'}.shape[0]={total_shape[0]}, "
+                        f"got {data[-1]}"
+                    )
+        elif validator in ("indexer_seqused", "within_prefix"):
+            if any(value < 0 for value in data):
+                raise ValueError(f"{attr_name} must be non-negative")
+            ref_name = (
+                "cu_seqlens_k_values" if is_key else "cu_seqlens_q_values"
+            )
+            ref = attrs.get(ref_name)
+            if ref is not None:
+                ref_values = _coerce_group_list_data(
+                    ref, f"{testcase_name}.{ref_name}"
+                )
+                if isinstance(ref_values, list) and len(ref_values) == expected_len + 1:
+                    diffs = [
+                        int(ref_values[index + 1]) - int(ref_values[index])
+                        for index in range(expected_len)
+                    ]
+                    if any(
+                        data[index] > diffs[index]
+                        for index in range(expected_len)
+                    ):
+                        raise ValueError(
+                            f"{attr_name}[{index}] exceeds {ref_name} "
+                            "batch delta"
+                        )
+        else:
+            ratio = _attr(attrs, "cmpRatio", "cmp_ratio")
+            if ratio is None or int(ratio) <= 1:
+                raise ValueError(
+                    f"{attr_name} present but cmpRatio={ratio!r} does not "
+                    "enable cmp residual"
+                )
+            if any(value < 0 or value >= int(ratio) for value in data):
+                raise ValueError(
+                    f"{attr_name} values must satisfy 0 <= v < cmpRatio="
+                    f"{int(ratio)}"
+                )
+        detail_extra["expected_len"] = expected_len
+        action = "validated"
     else:
         raise ValueError(f"unsupported validator: {validator}")
 
@@ -611,7 +709,16 @@ def main() -> int:
     parser.add_argument("--attr-name", default="groupListData")
     parser.add_argument(
         "--validator",
-        choices=("group_list_data", "non_negative_monotonic"),
+        choices=(
+            "group_list_data",
+            "non_negative_monotonic",
+            "indexer_cu_seqlens",
+            "indexer_seqused",
+            "indexer_cmp_residual",
+            "prefix_sum_prefix0",
+            "within_prefix",
+            "lt_scalar",
+        ),
         default="group_list_data",
     )
     parser.add_argument("--target-param", default="groupListOptional")

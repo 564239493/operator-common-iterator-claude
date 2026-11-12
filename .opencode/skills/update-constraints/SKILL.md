@@ -26,6 +26,12 @@ description: 根据 analysis.json 的所有约束类失败簇，对复制后的 
 4. `before` 必须来自 `.pre_update`，`after` 必须来自更新后的 constraints；basis 必须可追溯。
 5. expected_effect 必须说明哪些失败 case 将被拒绝/修正，并检查代表性已通过 case 不被排除。
 6. 不允许空改、格式重写、无关数组重排或把特定失败 shape/value 写成黑名单。
+7. **值级 findings 分流**：若 finding 属于元素内容/长度语义（首0、非递减、末值、
+   `seqused<=cu差分`、`cmpResidual<cmpRatio`、plugin value 缺失/长度错），不要写入
+   `constraints.json`；改在 `<next>/value_constraints.json` 最小修改，并通过
+   `scripts/value_constraints_update_state.py prepare/finalize` 记录
+   `value_constraints_update.json`。纯值级更新时 `constraint_update.json` 可为空/不产；
+   两者同时存在时两套报告都要满足各自的覆盖与非 noop 门禁。
 
 ## change 记录与知识 skill
 

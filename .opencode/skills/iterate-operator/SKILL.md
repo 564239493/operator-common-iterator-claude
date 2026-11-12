@@ -204,6 +204,15 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      `inputs/conflict_candidates.json`）；两者只读文档快照、互不写对方产物，可并行。
      barrier（两者都完成）后进补充。`operator_src_snapshot` 为空时只委派
      `constraint-extractor`，退回纯文档驱动。
+   - **PLUGIN VALUE CONTRACT（EXTRACT barrier 后；Metadata/TTK 条件触发）**：
+     当 `run_state.test_framework="ttk"` 且 `run_state.ttk_plugin` 非空时，运行
+     `python scripts/prepare_plugin_values.py --run-dir <run-dir>`。该脚本**静态**分析
+     插件（不执行）、产出 `inputs/plugin_requirements.json` +
+     `inputs/value_constraints.candidates.json`；候选默认 `review_required=true`，
+     生成侧自动跳过。CHECK/REPAIR 阶段由 constraint-checker 复核候选，确认后主协调器运行
+     `python scripts/prepare_plugin_values.py --run-dir <run-dir> --confirm` 落盘
+     `inputs/value_constraints.json`，并用 `validate_artifacts.py value_constraints` 校验。
+     该步失败 → `BLOCKED`，不进入 GENERATE。
    - **CLASSIFY（EXTRACT barrier 后）**：主协调器跑
      `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，读
      stdout JSON（`operator_category` + `evidence`），运行
@@ -306,7 +315,10 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      2. 将 check 轮次设为 `current_round + 1`，委派一个**全新上下文**的
         `constraint-checker`。消息必须给绝对路径：run_state、算子文档快照、本轮最终
         constraints、report，以及存在的 scene directive、supplementary-doc、
-        supplement_constraints、conflict_candidates、conflict_resolution。**首轮 check
+        supplement_constraints、conflict_candidates、conflict_resolution；
+        Metadata/TTK 运行还必须给 `inputs/plugin_requirements.json` 与
+        `inputs/value_constraints.candidates.json`（checker 逐条核对候选规则与文档，
+        确认后才允许 `--confirm` 落盘）。**首轮 check
         还必须给** `<iter>/extraction_provenance.json` 与 `inputs/prompt_preanalysis.json`
         路径（checker 据此做必载知识审计：命中未应用 = open issue）。
         checker 只写 report、不改约束；
@@ -480,6 +492,14 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
         创建新轮版本和 `.pre_update`，禁止原地修改上一轮。
      4. 委派 `constraint-updater`，读取上一轮全部失败簇/findings/用例/执行证据，对新轮
         constraints 做最小 edit，并完成 finalize 与 `constraint_update` 校验。
+        **Metadata/TTK 运行额外规则**：若 findings 属于值级问题（plugin value 缺失/长度错/
+        首0/非递减/末值/`<=`/`<cmpRatio` 等），只更新新 iteration 的
+        `value_constraints.json`（从上一轮复制后最小修改），不得塞回 `constraints.json`。
+        版本化改用
+        `python scripts/value_constraints_update_state.py prepare --source <prev>/value_constraints.json --target <next>/value_constraints.json --analysis <prev>/analysis.json`
+        与 `finalize --report <next>/value_constraints_update.json`；更新后运行
+        `python scripts/validate_artifacts.py value_constraints <next>/value_constraints.json`。
+        约束类与值类 findings 同时存在时，两套 prepare/finalize 都要执行。
      4a. **回归校验**：constraint-updater 完成回归校验后，若返回 exit code 3，主协调器读取 `<next>/regression_check.json`。
          - 若 `limit_reached=true`（updater 自修正 3 次后仍有回归）：主协调器必须暂停流程，
            用 `AskUserQuestion` 弹框让用户选择：

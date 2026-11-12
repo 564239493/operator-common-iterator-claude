@@ -1488,7 +1488,9 @@ class ParamConstraintUtils(CommonDispatcher):
             if not param_info:
                 continue
             param_property_data = self.param_combinations.get(param_name)
-            is_present_value = param_property_data.is_present if param_property_data is not None else False
+            is_present_value = (True if param_name in self.operator_rule_data.outputs
+                                else (param_property_data.is_present
+                                      if param_property_data is not None else False))
             if not is_present_value:
                 continue
             param_type = param_info.type
@@ -1718,6 +1720,16 @@ class ParamConstraintUtils(CommonDispatcher):
                 param_attr_ori_status = param_name in self.case_input_map and getattr(
                     self.case_input_map.get(param_name), field_name, None) is not None
                 attr_value = property_dict.get(field_name, None)
+                if field_name == "shape":
+                    # shape 与"未解析"必须区分：rank-0 的 [] 是合法解，不能当作 None 跳过
+                    if property_dict.get("shape_resolved"):
+                        self.case_input_map[param_name].__setattr__(field_name, attr_value)
+                    elif param_name in self.operator_rule_data.outputs:
+                        logger.error(
+                            f"Output shape unresolved by Z3, operator name : "
+                            f"'{self.operator_name}', param name : '{param_name}'")
+                        return False
+                    continue
                 if field_name == "length":
                     # tensor_list 的 length 由 Z3 求解为自由变量（采样器未钉值时 length=None、
                     # ori_status=False），但 Z3 已解出 len（受 cross_param 如 len(x)<=128、
@@ -1748,4 +1760,18 @@ class ParamConstraintUtils(CommonDispatcher):
                 f"Post-check rejected resolved case (tensor rank/elements), "
                 f"operator name : '{self.operator_name}'")
             return False
+        # 关系式复核（fail-closed）：shape_equality / shape_broadcast 等必须在最终 case
+        # 上成立；否则拒绝落盘，避免"Z3 解过、case 未回写"的非法用例。
+        namespace = build_namespace(self.case_input_map)
+        for relation in constraint_after_solve_no:
+            if relation.expr_type not in {
+                    "shape_equality", "shape_broadcast", "shape_choice",
+                    "shape_dependency", "shape_value_dependency"}:
+                continue
+            ok, err = eval_constraint(relation.expr, namespace)
+            if ok is False:
+                logger.error(
+                    f"Post-check relation violated, operator name : "
+                    f"'{self.operator_name}', expr : '{relation.expr}', err : '{err}'")
+                return False
         return True

@@ -2410,6 +2410,84 @@ def validate_scene_scan(value) -> tuple[list[str], list[str]]:
     return _validate_scene_scan(value)
 
 
+VALUE_CONSTRAINT_GENERATORS = frozenset({
+    "prefix_sum_prefix0",
+    "within_prefix",
+    "lt_scalar",
+    "non_negative_monotonic",
+})
+
+
+def validate_value_constraints(value) -> list[str]:
+    """Validate value_constraints.json (per-element value semantics).
+
+    The file is a list (or ``{"value_constraints": [...]}``) of entries:
+    ``param`` (target tensor), optional ``value_attr`` (CSV attributes key),
+    ``rules`` / ``generator`` / ``generator_options``, ``src_txt_line`` and
+    ``origin``.  It deliberately does not reuse OperatorRule (extra:forbid).
+    """
+    if isinstance(value, dict):
+        value = value.get("value_constraints")
+    if not isinstance(value, list):
+        return ["value_constraints must be a list or {value_constraints: [...]}"]
+    errors: list[str] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(value):
+        prefix = f"value_constraints[{index}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        param = entry.get("param")
+        if not isinstance(param, str) or not param.strip():
+            errors.append(f"{prefix}.param must be a non-empty string")
+            continue
+        value_attr = entry.get("value_attr") or param
+        if not isinstance(value_attr, str) or not value_attr.strip():
+            errors.append(f"{prefix}.value_attr must be a string")
+        elif value_attr in seen:
+            errors.append(f"{prefix}.value_attr {value_attr!r} is duplicated")
+        else:
+            seen.add(value_attr)
+        rules = entry.get("rules")
+        if rules is not None and (
+            not isinstance(rules, list)
+            or not all(isinstance(rule, str) and rule for rule in rules)
+        ):
+            errors.append(f"{prefix}.rules must be a list of non-empty strings")
+        generator = entry.get("generator")
+        if generator is not None and generator not in VALUE_CONSTRAINT_GENERATORS:
+            errors.append(
+                f"{prefix}.generator {generator!r} is not one of "
+                f"{sorted(VALUE_CONSTRAINT_GENERATORS)}"
+            )
+        options = entry.get("generator_options")
+        if options is not None and not isinstance(options, dict):
+            errors.append(f"{prefix}.generator_options must be an object")
+        lines = entry.get("src_txt_line")
+        if lines is not None:
+            if (
+                not isinstance(lines, list)
+                or not lines
+                or not all(
+                    isinstance(line, int) and not isinstance(line, bool) and line >= 1
+                    for line in lines
+                )
+                or lines != sorted(lines)
+            ):
+                errors.append(
+                    f"{prefix}.src_txt_line must be a non-empty ascending "
+                    "array of positive integers"
+                )
+        origin = entry.get("origin")
+        if origin is not None and origin not in {
+            "doc", "supplement", "param_pin", "doc_candidate",
+        }:
+            errors.append(f"{prefix}.origin {origin!r} is invalid")
+        if not generator and not rules:
+            errors.append(f"{prefix} requires generator or rules")
+    return errors
+
+
 VALIDATORS = {
     "constraints": validate_constraints,
     "constraint_check": validate_constraint_check,
@@ -2426,6 +2504,7 @@ VALIDATORS = {
     "source_raw": validate_source_raw,
     "source_evidence": validate_source_evidence,
     "scene_scan": validate_scene_scan,
+    "value_constraints": validate_value_constraints,
 }
 
 

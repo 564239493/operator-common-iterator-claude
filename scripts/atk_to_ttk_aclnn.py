@@ -608,6 +608,20 @@ def _format_attrs(case: dict[str, Any], attr_specs: list[dict[str, str]]) -> dic
             continue
         if item.get("aux") is True or item.get("type") == "aux_attr":
             value = item.get("range_values")
+            if str(name).endswith("_values"):
+                # Per-element value channel consumed by a TTK plugin as
+                # ``kwargs["<name>_values"]``.  Keep a native Python list in the
+                # CSV attributes so the plugin receives an iterable, not a
+                # JSON string (the original plugin does ``for item in value``).
+                if isinstance(value, str):
+                    try:
+                        parsed = json.loads(value)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, list):
+                        value = parsed
+                attrs[name] = value
+                continue
             if not isinstance(value, str):
                 value = json.dumps(
                     value, ensure_ascii=False, separators=(",", ":"),
@@ -671,6 +685,7 @@ def convert_case(
     attr_specs: list[dict[str, str]] | None = None,
     plugin_filled: set[str] | None = None,
     plugin_defaults: dict[str, tuple[str, str]] | None = None,
+    plugin_always: set[str] | None = None,
 ) -> dict[str, str]:
     """Convert one ATK compact case to a TTK ACLNN CSV row dict."""
     api_name = case.get("name") or case.get(
@@ -696,6 +711,11 @@ def convert_case(
     data_ranges: list[tuple[Any, Any]] = []
     output_indexes: list[int] = []
     plugin_filled = plugin_filled or set()
+    plugin_always = (
+        (plugin_filled or _PREREQ_FILLED_NAMES)
+        if plugin_always is None
+        else plugin_always
+    )
 
     signature = signature or _SIGNATURE
     # Convert attr_specs to the format expected by _format_attrs
@@ -745,12 +765,19 @@ def convert_case(
             continue
 
         if item is None or item.get("type") not in ("tensor", "tensors"):
-            # A prerequisite-operator output (e.g. metadataOptional) must keep
-            # its (-1,) slot even when the generated case omitted the tensor;
+            # The plugin carrier slot (metadataOptional) must keep its (-1,)
+            # sentinel even when the generated case omitted the tensor;
             # otherwise TTK rejects the plugin result with "not declared as a
-            # supported -1 slot".  dtype/format come from the constraint card.
+            # supported -1 slot".  Other optional plugin-filled tensors are
+            # only promoted when the case actually carries them, so unused
+            # optionals stay ``None`` instead of demanding values.  dtype/
+            # format come from the constraint card.
             key = str(name).casefold()
-            if key in plugin_filled and plugin_defaults and key in plugin_defaults:
+            if (
+                key in plugin_always
+                and plugin_defaults
+                and key in plugin_defaults
+            ):
                 dtype_ttk, format_ttk = plugin_defaults[key]
                 shapes_parts.append(_TTK_PLUGIN_SENTINEL_SHAPE)
                 dtypes_parts.append(f"'{dtype_ttk}'")
@@ -773,11 +800,12 @@ def convert_case(
         format_ttk = _format_tensor_format(item.get("format"))
         storage_spec = _storage_shape_spec(item, shape)
 
-        if str(name).casefold() in plugin_filled and not is_tensor_list:
-            # Prerequisite-operator output (e.g. metadataOptional): declare the
-            # ``(-1,)`` sentinel so TTK reserves the slot for the --plugin to
-            # fill.  A concrete documented shape would make TTK build its own
-            # tensor and discard the plugin result.
+        if str(name).casefold() in plugin_always and not is_tensor_list:
+            # Plugin carrier / non-value prerequisite output (e.g.
+            # metadataOptional): declare the ``(-1,)`` sentinel so TTK reserves
+            # the slot for the --plugin to fill.  Value-carrying params
+            # (cuSeqlens/seqused/...) keep their concrete documented shape so
+            # the plugin's input adapter can copy generated values into them.
             shapes_parts.append(_TTK_PLUGIN_SENTINEL_SHAPE)
             dtypes_parts.append(f"'{dtype_ttk}'")
             formats_parts.append(f"'{format_ttk}'")
@@ -990,13 +1018,24 @@ def convert_file(
     source: Path,
     destination: Path,
     constraints: dict[str, Any] | None = None,
+    plugin_filled: set[str] | None = None,
+    plugin_value_params: set[str] | None = None,
 ) -> dict[str, Any]:
     cases = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(cases, list) or not cases:
         raise ValueError("TTK_ACLNN_CASES_REQUIRED: source must be a non-empty JSON array")
     signature, attr_specs = _signature_from_constraints(constraints)
-    plugin_filled = _plugin_filled_tensor_names(constraints)
-    plugin_defaults = _plugin_filled_cards(constraints, plugin_filled)
+    filled = _plugin_filled_tensor_names(constraints)
+    if plugin_filled:
+        filled |= {str(name).casefold() for name in plugin_filled}
+    value_params = {
+        str(name).casefold() for name in (plugin_value_params or set())
+    }
+    plugin_always = filled - value_params
+    plugin_filled = filled
+    plugin_defaults = _plugin_filled_cards(constraints, plugin_always)
+    for key in plugin_always:
+        plugin_defaults.setdefault(key, ("int32", "ND"))
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     rows = [
@@ -1006,6 +1045,7 @@ def convert_file(
             attr_specs=attr_specs,
             plugin_filled=plugin_filled,
             plugin_defaults=plugin_defaults,
+            plugin_always=plugin_always,
         )
         for i, case in enumerate(cases)
     ]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +56,49 @@ RESUME_TERMINAL_STATES = frozenset({
     "STOP_EXECUTOR_BUG",
     "STOPPED_BY_USER",
 })
+
+# A Metadata-style prerequisite operator is referenced by name in the primary
+# doc or lives as a sibling ``*Metadata*.md`` doc.  The plugin contract is
+# mandatory for a full TTK run; constraints-only runs do not execute remotely.
+ACLNN_DOC_NAME_RE = re.compile(r"\baclnn[A-Za-z0-9_]+")
+COMPANION_HINT_TOKENS = ("前置算子", "前置", "配合使用", "依赖", "配套")
+
+
+def _auto_detect_companion_docs(doc: Path, doc_text: str) -> list[Path]:
+    """Find sibling ACLNN docs referenced as a prerequisite by the primary doc."""
+    primary = doc.stem.casefold()
+    found: dict[str, Path] = {}
+    for match in ACLNN_DOC_NAME_RE.finditer(doc_text):
+        name = match.group(0).rstrip("_")
+        if name.casefold() == primary:
+            continue
+        line_start = doc_text.rfind("\n", 0, match.start()) + 1
+        line_end = doc_text.find("\n", match.end())
+        line = doc_text[line_start: line_end if line_end != -1 else len(doc_text)]
+        related = name.casefold().startswith(primary) or any(
+            token in line for token in COMPANION_HINT_TOKENS
+        )
+        if not related:
+            continue
+        for suffix in (doc.suffix or ".md", ".md", ".MD"):
+            candidate = doc.with_name(f"{name}{suffix}")
+            if candidate.is_file() and candidate.resolve() != doc.resolve():
+                found[candidate.name.casefold()] = candidate.resolve()
+                break
+    return sorted(found.values(), key=lambda path: path.name.casefold())
+
+
+def _metadata_operator_reasons(doc_text: str, companions: list[Path]) -> list[str]:
+    """Deterministic signals that the operator depends on a Metadata pre-op."""
+    reasons: list[str] = []
+    for companion in companions:
+        if "metadata" in companion.stem.casefold():
+            reasons.append(f"companion:{companion.name}")
+    if re.search(r"\bmetadataOptional\b", doc_text):
+        reasons.append("signature:metadataOptional")
+    if "aclnnLightningIndexerV2Metadata" in doc_text:
+        reasons.append("reference:aclnnLightningIndexerV2Metadata")
+    return reasons
 
 
 def resume_run(run_ref: str) -> int:
@@ -349,6 +393,17 @@ def main() -> int:
         help="算子文档路径 (项目内或外部绝对路径)",
     )
     parser.add_argument(
+        "--companion-doc",
+        dest="companion_docs",
+        action="append",
+        default=[],
+        help=(
+            "前置/伴随算子文档路径（可重复）。省略时自动识别同目录下主文档引用的 "
+            "aclnn* 前置文档（典型：aclnnLightningIndexerV2 自动识别 "
+            "aclnnLightningIndexerV2Metadata）。只读快照到 run/inputs/。"
+        ),
+    )
+    parser.add_argument(
         "--prompt",
         default=None,
         help=(
@@ -541,6 +596,49 @@ def main() -> int:
         test_framework = args.test_framework
     if args.ttk_plugin and test_framework != "ttk":
         parser.error("--ttk-plugin 仅支持 --test-framework ttk")
+
+    explicit_companions: list[Path] = []
+    for raw in args.companion_docs:
+        candidate = resolve_input_path(raw)
+        if not candidate.is_file():
+            sibling = (doc.parent / Path(raw).name).resolve()
+            if sibling.is_file():
+                candidate = sibling
+        if not candidate.is_file():
+            print(json.dumps(
+                {
+                    "ok": False,
+                    "requires_user_action": True,
+                    "code": "COMPANION_DOC_NOT_FOUND",
+                    "message": "--companion-doc 指向的文档不存在。",
+                    "companion_doc": str(raw),
+                },
+                ensure_ascii=False,
+            ))
+            return 2
+        explicit_companions.append(candidate)
+    companions = explicit_companions or _auto_detect_companion_docs(doc, doc_text)
+    metadata_reasons = _metadata_operator_reasons(doc_text, companions)
+    if metadata_reasons and test_framework == "ttk" and not args.ttk_plugin:
+        print(json.dumps(
+            {
+                "ok": False,
+                "requires_user_action": True,
+                "code": "TTK_PLUGIN_REQUIRED",
+                "message": (
+                    "检测到 Metadata 前置算子依赖；full TTK 执行必须提供 "
+                    "--ttk-plugin <path>（对应 ttk 命令的 --plugin），"
+                    "支持本地文件/目录或以 / 开头的远端绝对路径。"
+                    "若只需要约束提取，请使用 --test-framework constraints。"
+                ),
+                "operator_doc": str(doc),
+                "detected": metadata_reasons,
+                "companion_docs": [str(path) for path in companions],
+            },
+            ensure_ascii=False,
+        ))
+        return 2
+
     prompt = (
         resolve_input_path(args.prompt)
         if args.prompt
@@ -646,6 +744,17 @@ def main() -> int:
     prompt_update_decisions = input_dir / "prompt_update_decisions.json"
     supplement_snapshot = input_dir / "supplement_constraints.md"
     shutil.copy2(doc, doc_snapshot)
+    companion_snapshots: list[dict[str, str]] = []
+    for companion in companions:
+        companion_snapshot = input_dir / companion.name
+        shutil.copy2(companion, companion_snapshot)
+        companion_snapshots.append({
+            "role": "prerequisite",
+            "source": str(companion),
+            "snapshot": str(companion_snapshot),
+            "sha256": _file_sha256(companion_snapshot),
+            "auto_detected": companion not in explicit_companions,
+        })
     if supplement_path is not None:
         # --supplement-constraints：外部补充约束文件只读复制到 inputs/，
         # EXTRACT 后据此对 constraints.json 做关系补充（add/replace）。
@@ -717,6 +826,9 @@ def main() -> int:
         "run_id": run_id,
         "operator_doc_source": str(doc),
         "operator_doc": str(doc_snapshot),
+        "companion_docs": companion_snapshots,
+        "metadata_dependency_reasons": metadata_reasons,
+        "ttk_plugin_required": bool(metadata_reasons and test_framework == "ttk"),
         "current_prompt_source": str(prompt),
         "current_prompt": str(prompt_snapshot),
         "current_prompt_modules": loaded_modules,
@@ -774,6 +886,9 @@ def main() -> int:
             "run_dir": str(run_dir),
             "operator_doc_source": str(doc),
             "operator_doc_snapshot": str(doc_snapshot),
+            "companion_docs": companion_snapshots,
+            "metadata_dependency_reasons": metadata_reasons,
+            "ttk_plugin_required": bool(metadata_reasons and test_framework == "ttk"),
             "prompt_snapshot": str(prompt_snapshot),
             "prompt_modules": loaded_modules,
             "prompt_preanalysis": str(prompt_preanalysis) if prompt_preanalysis.is_file() else "",

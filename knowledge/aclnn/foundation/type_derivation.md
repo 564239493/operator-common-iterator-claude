@@ -5,7 +5,7 @@ description: 官方 aclTensor 数据类型互推导关系（Type Promotion）原
 default_load: false
 triggers:
   - kind: doc_contains
-    value: "互推导|数据类型推导|type_promotion|推导之后的数据类型"
+    value: "互推导|数据类型推导|推导规则|type_promotion|推导之后的数据类型"
 depends_on: []
 ---
 
