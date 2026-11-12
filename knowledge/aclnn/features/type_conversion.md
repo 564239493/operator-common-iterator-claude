@@ -5,7 +5,7 @@ description: 官方输入互推导与输出 dtype 互转换关系
 default_load: false
 triggers:
   - kind: doc_contains
-    value: "互转换关系|输出.*数据类型.*推导|计算结果转换成输出类型"
+    value: "互转换|可转换|可转换成|转换规则|输出.*数据类型.*推导|计算结果转换成输出类型"
 depends_on: [broadcast, platform_dtype, expression_language, type_conversion_foundation]
 ---
 

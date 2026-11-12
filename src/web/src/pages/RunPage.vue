@@ -591,7 +591,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .board-area { max-width:none; padding:0; width:calc(100% - 200px); }
 
 /* 轮次导航独立于横向泳道，滚动不会改变当前轮次。 */
-.round-rail { position:fixed; top:72px; bottom:0; left:0; width:174px; z-index:18; background:var(--wb-card); border-right:1px solid var(--wb-line); padding:24px 10px; overflow-y:auto; }
+.round-rail { position:fixed; top:72px; bottom:0; left:0; width:200px; z-index:18; background:var(--wb-card); border-right:1px solid var(--wb-line); padding:24px 10px; overflow-y:auto; }
 .rail-heading { padding:0 10px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; color:var(--wb-ink); }
 .rail-heading span { color:var(--wb-muted); font-weight:400; }
 .cu-count {
@@ -645,7 +645,7 @@ h1 { font-size: clamp(20px, 2.2vw, 28px); margin: 0 0 4px; letter-spacing: -0.8p
 .round-pager { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:24px 0; color:var(--wb-muted); font-size:12px; }
 .round-pager button { border:1px solid var(--wb-line); border-radius:8px; padding:9px 16px; background:var(--wb-card); color:var(--wb-blue); cursor:pointer; }.round-pager button:disabled { opacity:.4; cursor:default; }
 .round-item:focus-visible,.latest-round:focus-visible,.round-pager button:focus-visible { outline:2px solid var(--wb-blue); outline-offset:2px; }
-.band-dock,.screen-board { margin-left:174px; }
+.band-dock,.screen-board { margin-left:200px; }
 @media(max-width:900px){
   .round-rail{width:64px;padding:20px 6px}.rail-heading{font-size:11px;padding:0;justify-content:center}.rail-heading span,.rail-caption,.round-copy,.latest-round{display:none}
   .round-list{margin-top:20px}.round-item{min-height:64px;padding:12px;justify-content:center}.round-item:not(:last-child)::after{left:25px;top:40px;bottom:-12px}.round-item.chosen::before{left:-6px}
