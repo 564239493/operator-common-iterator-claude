@@ -253,10 +253,6 @@ const stats = computed(() => {
 const kpiItems = computed(() => {
   const s = stats.value;
   const ovVer = scopeOverview.value;
-  const verNames = new Set([
-    ...scopeVersions.value.map((v: any) => v.name),
-    ...ovVer.map((v: any) => v.name),
-  ]);
   const ovNames = new Set(ovVer.map((v: any) => v.name));
   const treeLibs = scopeVersions.value
     .filter((v: any) => !ovNames.has(v.name))
@@ -281,6 +277,9 @@ const kpiItems = computed(() => {
     total.line += (v.total && v.total.line) || 0;
     total.branch += (v.total && v.total.branch) || 0;
   });
+  // 算子总数卡：已执行数（树叶子）并入总量（权威总数据 total.operators），
+  // 参考函数总量卡样式（已执行 / 总量 · 执行率）；无总数据版本不展示
+  const opTotal = ovVer.reduce((a, v) => a + ((v.total && v.total.operators) || 0), 0);
   const hasTree = scopeVersions.value.length > 0;
   const fmt = (x: number) => x.toLocaleString('en-US');
   const totalCard = (k: 'func' | 'line' | 'branch', label: string, color: string) => {
@@ -297,10 +296,24 @@ const kpiItems = computed(() => {
         : '该版本暂无覆盖率报告',
     };
   };
+  const opCard = () => {
+    const c = hasTree ? s.leaves : 0;
+    const t = opTotal;
+    const rate = t ? +(c / t * 100).toFixed(1) : 0;
+    return {
+      n: hasTree ? fmt(c) : '—',
+      u: t ? ' / ' + fmt(t) : '',
+      l: '算子总数',
+      color: 'var(--wb-purple)',
+      rate,
+      sub: hasTree
+        ? (t ? `已执行 ${fmt(c)} / 总量 ${fmt(t)} · 执行率 ${rate}%` : '暂无总量数据')
+        : '该版本暂无覆盖率报告',
+    };
+  };
   return [
-    { n: verNames.size, u: '个', l: '版本', color: '' },
     { n: domainCount, u: '个', l: ovVer.length ? '算子域' : '算子库', color: '' },
-    { n: hasTree ? s.leaves : '—', u: hasTree ? '个' : '', l: '算子报告', color: '' },
+    opCard(),
     totalCard('func', '函数总量', 'var(--wb-green)'),
     totalCard('line', '行总量', 'var(--wb-orange)'),
     totalCard('branch', '分支总量', 'var(--wb-blue)'),
@@ -353,8 +366,10 @@ const rootListItems = computed(() => {
 });
 function goRootList(name: string) { enterNode([verTab.value, name]); }
 const runCards = computed(() => runList.value.map((r: any) => ({
-  key: r.run_id, title: r.run_id, badge: r.has_analysis ? '含分析' : '内嵌', badgeType: 'has-md',
-  meta: `${r.operator} · ${r.domain || '-'}`, func: r.func, line: r.line, branch: r.branch,
+ key: r.run_id, title: r.run_id,
+  badge: r.has_cov_report === false ? '无报告' : r.has_analysis ? '含分析' : '内嵌',
+  badgeType: r.has_cov_report === false ? 'no-cov' : r.has_analysis ? 'has-md' : 'cov-only',
+  meta: `${r.operator} · ${r.domain || '—'}`, func: r.func, line: r.line, branch: r.branch,
 })));
 
 function rateHex(r: number) { return r >= 80 ? '#159b78' : r >= 50 ? '#df8a27' : '#da5961'; }
@@ -437,6 +452,13 @@ async function selectRun(runId: string) {
   uncoveredReasons.value = {};
   coveredUncoveredLines.value = {};
   expandedFunc.value = '';
+  const run = runList.value.find((r: any) => r.run_id === runId);
+  if (run && run.has_cov_report === false) {
+    // 无覆盖率产物的任务：不请求详情，直接提示
+    detailLoading.value = false;
+    ElMessage.warning('该 run 暂无覆盖率报告（缺少 ops_cov_report 产物）');
+    return;
+  }
   try {
     const [covRes, anaRes] = await Promise.all([
       fetch(runDetailUrl(runId, 'coverage')).then(r => r.json()),
@@ -878,7 +900,7 @@ onMounted(() => { loadTree(); loadOverview(); });
 .crumb .sep { color: var(--text-muted); }
 
 /* KPI */
-.kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; padding: 0 22px; margin-bottom: 14px; flex-shrink: 0; }
+.kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; padding: 0 22px; margin-bottom: 14px; flex-shrink: 0; }
 @media (max-width: 1100px) { .kpi-row { grid-template-columns: repeat(3, 1fr); } }
 .kpi { position: relative; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px 11px; box-shadow: var(--wb-shadow); overflow: hidden; }
 .kpi::before { content: ""; position: absolute; left: 0; top: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--wb-blue-line)); }

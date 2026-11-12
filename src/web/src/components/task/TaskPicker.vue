@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useTask } from '../../composables/useTask'
 import { fmtTaskOption, fmtTaskTime, stateTagType } from './group'
 import type { RunSummary } from '../../api/types'
@@ -14,7 +14,7 @@ import type { RunSummary } from '../../api/types'
  *   可选中任意层级节点，值为 '/' 连接的全路径（与页面 path 一致）。
  */
 type Mode = 'default' | 'runs' | 'covtree'
- 
+
 const props = withDefaults(defineProps<{
   disabled?: boolean
   mode?: Mode
@@ -30,11 +30,11 @@ const props = withDefaults(defineProps<{
   tree: null,
   modelValue: undefined,
 })
- 
+
 const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>()
- 
+
 const { runs, selectedRunId, selectedRun, groups, selectRun } = useTask()
- 
+
 /* ===== default 模式：按算子分组（原行为） ===== */
 const value = computed({
   get: () => selectedRunId.value,
@@ -44,8 +44,57 @@ const current = computed(() => selectedRun.value)
 const frameworkText = (r: { test_framework?: string; mode?: string }) =>
   `${r.test_framework || '—'} · ${r.mode || '—'}`
 
+/* ===== 分组展开/收起（default 与 runs 模式通用） =====
+ * 点击分组标题（grp-head，替代 el-option-group 原生 title）切换该组选项的展开/收起。
+ * 默认全部收起（展开集合为空）；过滤输入非空时强制全展开，避免折叠组内的匹配项被隐藏；
+ * 当前选中任务所在的分组默认展开（用户手动切换过该组后以手动状态为准）。
+ */
+const expanded = ref<Set<string>>(new Set())
+const touched = ref<Set<string>>(new Set())
+const filterQuery = ref('')
+function toggleGroup(op: string) {
+  const nextExp = new Set(expanded.value)
+  if (nextExp.has(op)) nextExp.delete(op)
+  else nextExp.add(op)
+  expanded.value = nextExp
+  const nextTouch = new Set(touched.value)
+  nextTouch.add(op)
+  touched.value = nextTouch
+}
+function onFilter(q: string) { filterQuery.value = q }
+/** 当前选中任务所在的分组：优先查列表记录（operator），兜底从 run_id 反推（去掉尾部 3 段时间戳） */
+const selectedGroup = computed(() => {
+  const id = props.modelValue !== undefined ? props.modelValue : selectedRunId.value
+  if (!id) return ''
+  if (props.mode !== 'runs') {
+    const rec = selectedRun.value
+    if (rec && rec.operator) return rec.operator
+  } else {
+    const rec = runsOptions.value.find((r: RunSummary) => r.run_id === id)
+    if (rec && rec.operator) return rec.operator
+  }
+  const parts = id.split('-')
+  return parts.length > 3 ? parts.slice(0, -3).join('-') : ''
+})
+function grpVisible(op: string) {
+  if (filterQuery.value.length) return true
+  if (expanded.value.has(op)) return true
+  return !touched.value.has(op) && !!selectedGroup.value && op === selectedGroup.value
+}
+
 /* ===== runs 模式：runs 下目录平铺，每个目录名为一条数据 ===== */
 const runsOptions = computed(() => (props.list && props.list.length ? props.list : runs.value))
+/** runs 模式按算子分组（后端已为无报告 run 推导 operator；无则归「未分组」） */
+const runGroups = computed(() => {
+  const map = new Map<string, RunSummary[]>()
+  runsOptions.value.forEach((r: RunSummary) => {
+    const op = r.operator || '未分组'
+    const arr = map.get(op)
+    if (arr) arr.push(r)
+    else map.set(op, [r])
+  })
+  return [...map.entries()].map(([operator, runs]) => ({ operator, runs }))
+})
 const runsValue = computed({
   get: () => (props.modelValue !== undefined ? props.modelValue : selectedRunId.value),
   set: (v: string) => {
@@ -53,7 +102,7 @@ const runsValue = computed({
     else selectRun(v)
   },
 })
- 
+
 /* ===== covtree 模式：ops_final_cov_report 目录层级（树结构下拉） ===== */
 const versions = computed(() => (props.tree && Array.isArray(props.tree.versions) ? props.tree.versions : []))
 /** 转 el-tree-select 数据：每节点带 value=层级路径（与页面 path.join('/') 一致，node-key 取 value），
@@ -72,7 +121,7 @@ const covValue = computed({
   get: () => props.modelValue ?? '',
   set: (v: string) => emit('update:modelValue', v),
 })
- 
+
 /* ===== 树节点覆盖率指标（每层展示 函数/行/分支 覆盖率） ===== */
 const fmtRate = (r: number | undefined | null) => (typeof r !== 'number' ? '—' : `${Math.round(r)}%`)
 const rateCls = (r: number | undefined | null) => {
@@ -82,7 +131,7 @@ const rateCls = (r: number | undefined | null) => {
 </script>
 
 <template>
- <!-- default：按算子分组（工作台等页面原有行为） -->
+  <!-- default：按算子分组（工作台等页面原有行为） -->
   <el-select
     v-if="mode === 'default'"
     v-model="value"
@@ -90,7 +139,9 @@ const rateCls = (r: number | undefined | null) => {
     filterable
     placeholder="选择任务"
     :disabled="props.disabled"
+    popper-class="task-picker-popper"
     data-test="task-picker"
+    @filter="onFilter"
   >
     <template #label>
       <span v-if="current" class="picked">
@@ -102,27 +153,39 @@ const rateCls = (r: number | undefined | null) => {
     <el-option-group
       v-for="g in groups"
       :key="g.operator"
-      :label="`${g.operator}（${g.runs.length}）`"
+      :label="g.operator"
     >
-      <el-option
-        v-for="r in g.runs"
-        :key="r.run_id"
-        :value="r.run_id"
-        :label="fmtTaskOption(r)"
-        :title="r.run_id"
+      <!-- 自定义分组标题：点击展开/收起（替代原生 title） -->
+      <div
+        class="grp-head"
+        :title="grpVisible(g.operator) ? '点击收起该组' : '点击展开该组'"
+        @click="toggleGroup(g.operator)"
       >
-        <div class="task-option">
-          <span class="task-time">{{ fmtTaskTime(r.created_at) }}</span>
-          <el-tag v-if="r.state" size="small" :type="stateTagType(r.state)" effect="light">{{ r.state }}</el-tag>
-          <span class="task-meta">第 {{ r.current_iteration ?? '—' }}/{{ r.max_iterations ?? '—' }} 轮</span>
-          <span class="task-meta meta-dim">{{ frameworkText(r) }}</span>
-        </div>
-      </el-option>
+        <span class="grp-arrow" :class="{ on: grpVisible(g.operator) }">▸</span>
+        <b class="grp-name">{{ g.operator }}</b>
+        <span class="grp-count">（{{ g.runs.length }}）</span>
+      </div>
+      <div class="grp-options" v-show="grpVisible(g.operator)">
+        <el-option
+          v-for="r in g.runs"
+          :key="r.run_id"
+          :value="r.run_id"
+          :label="fmtTaskOption(r)"
+          :title="r.run_id"
+        >
+          <div class="task-option">
+            <span class="task-time">{{ fmtTaskTime(r.created_at) }}</span>
+            <el-tag v-if="r.state" size="small" :type="stateTagType(r.state)" effect="light">{{ r.state }}</el-tag>
+            <span class="task-meta">第 {{ r.current_iteration ?? '—' }}/{{ r.max_iterations ?? '—' }} 轮</span>
+            <span class="task-meta meta-dim">{{ frameworkText(r) }}</span>
+          </div>
+        </el-option>
+      </div>
     </el-option-group>
     <el-option v-if="!groups.length && !runs.length" value="" label="暂无可解析的任务" disabled />
   </el-select>
 
-  <!-- runs：runs 下目录平铺，每个目录名为一条数据 -->
+  <!-- runs：runs 下目录按算子分组，每个目录名为一条数据 -->
   <el-select
     v-else-if="mode === 'runs'"
     v-model="runsValue"
@@ -130,11 +193,36 @@ const rateCls = (r: number | undefined | null) => {
     filterable
     placeholder="选择任务目录"
     :disabled="props.disabled"
+    popper-class="task-picker-popper"
+    @filter="onFilter"
   >
-    <el-option v-for="r in runsOptions" :key="r.run_id" :value="r.run_id" :label="r.run_id" :title="r.run_id" />
+    <el-option-group
+      v-for="g in runGroups"
+      :key="g.operator"
+      :label="g.operator"
+    >
+      <!-- 自定义分组标题：点击展开/收起 -->
+      <div
+        class="grp-head"
+        :title="grpVisible(g.operator) ? '点击收起该组' : '点击展开该组'"
+        @click="toggleGroup(g.operator)"
+      >
+        <span class="grp-arrow" :class="{ on: grpVisible(g.operator) }">▸</span>
+        <b class="grp-name">{{ g.operator }}</b>
+        <span class="grp-count">（{{ g.runs.length }}）</span>
+      </div>
+      <div class="grp-options" v-show="grpVisible(g.operator)">
+        <el-option v-for="r in g.runs" :key="r.run_id" :value="r.run_id" :label="r.run_id" :title="r.run_id">
+          <div class="task-option">
+            <span class="task-time">{{ r.run_id }}</span>
+            <span v-if="r.has_cov_report === false" class="task-meta no-cov">暂无覆盖率报告</span>
+          </div>
+        </el-option>
+      </div>
+    </el-option-group>
     <el-option v-if="!runsOptions.length" value="" label="暂无任务目录" disabled />
   </el-select>
- 
+
   <!-- covtree：ops_final_cov_report 目录层级（树结构下拉，可选中任意层级） -->
   <el-tree-select
     v-else
@@ -193,6 +281,7 @@ const rateCls = (r: number | undefined | null) => {
 .task-time { color: var(--wb-ink); font-variant-numeric: tabular-nums; }
 .task-meta { color: var(--wb-muted); font-size: 12px; white-space: nowrap; }
 .meta-dim { color: var(--wb-faint); margin-left: auto; }
+.task-meta.no-cov { color: var(--wb-red, #da5961); }
 
 /* covtree 选中展示：算子名（粗）+ 完整层级路径（弱化、超长省略） */
 .cov-picked { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; overflow: hidden; }
@@ -202,6 +291,33 @@ const rateCls = (r: number | undefined | null) => {
 
 <!-- 树结构下拉弹层 teleport 到 body，需全局样式 -->
 <style>
+/* 任务下拉（default/runs）分组展开收起：隐藏 el-option-group 原生标题，使用自定义可点击标题行 */
+.task-picker-popper .el-select-group__title { display: none; }
+.task-picker-popper .grp-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 20px 3px;
+  font-size: 12px;
+  color: var(--wb-muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.task-picker-popper .grp-head:hover { color: var(--wb-blue); }
+.task-picker-popper .grp-arrow {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--wb-faint);
+  transition: transform .15s ease;
+}
+.task-picker-popper .grp-arrow.on { transform: rotate(90deg); }
+.task-picker-popper .grp-name { color: var(--wb-ink); font-weight: 600; }
+.task-picker-popper .grp-count { color: var(--wb-faint); font-variant-numeric: tabular-nums; }
+/* 组内选项相对标题缩进，体现层级 */
+.task-picker-popper .grp-options .el-select-dropdown__item { padding-left: 34px; }
+
 .cov-tree-popper {
   width: 540px !important;
   max-width: calc(100vw - 24px) !important;
@@ -213,7 +329,7 @@ const rateCls = (r: number | undefined | null) => {
 .cov-tree-popper .el-select-dropdown__list {
   padding: 5px;
 }
- 
+
 .cov-tree-popper .el-tree {
   padding: 0;
   background: transparent;
@@ -247,7 +363,7 @@ const rateCls = (r: number | undefined | null) => {
  * 使相邻行竖线连成整段、首行上延恰好触达父节点行底（顶端不悬空、不越过按钮）；
  * 末行竖线收在行底。横线从竖线连到该行内容起点（长度 = 18 - 3.5 = 14.5px）。 ===== */
 .cov-tree-popper .el-tree-node__content { position: relative; }
- 
+
 .cov-tree-popper .el-tree-node__children > .el-tree-node > .el-tree-node__content::before {
   content: '';
   position: absolute;
