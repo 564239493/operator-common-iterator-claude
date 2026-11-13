@@ -768,7 +768,10 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                 if node.id == self.vn: return self.ph
                 return super().visit_Name(node)
 
-        cond_expr = TempVisitor(self.builder, loop_var_name, k).visit(condition_ast)
+        tv = TempVisitor(self.builder, loop_var_name, k)
+        cond_expr = tv.visit(condition_ast)
+        # 生成器的 if 过滤条件（`all(P(i) for i in R if C(i))` 里的 C 也要并入判断条件，
+        cond_expr = self._apply_generator_filters(tv, comprehension, cond_expr, quantifier_op)
         bounds = z3.And(k >= start, k < stop)
         if not (isinstance(step, z3.IntNumRef) and step.as_long() == 1):
             bounds = z3.And(bounds, (k - start) % step == 0)
@@ -783,6 +786,28 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             return z3.ForAll([k], z3.Implies(bounds, cond_expr))
         else:
             return z3.Exists([k], z3.And(bounds, cond_expr))
+
+    @staticmethod
+    def _apply_generator_filters(visitor, comprehension, cond_expr, quantifier_op):
+        """把生成器末尾的 ``if`` 过滤条件并入判断条件。
+
+        ``all(P(i) for i in R if C(i))`` 只在满足 ``C(i)`` 的下标上要求 ``P(i)``；
+        ``any`` 同理，只在满足 ``C(i)`` 的下标上找见证。并入后等价于：
+
+        - ``ForAll``：``bounds => P``  变为  ``bounds => C => P``
+        - ``Exists``：``bounds and P`` 变为  ``bounds and C and P``
+
+        只处理 ``cond_expr`` 本身：量词与定长展开两条下游路径都会把它原样包进
+        ``Implies(bounds, ·)`` / ``And(bounds, ·)``，所以在这里并入一次即可。
+        没有过滤条件时原样返回。
+        """
+        filters = getattr(comprehension, "ifs", None)
+        if not filters:
+            return cond_expr
+        guard = z3.And(*[visitor.visit(item) for item in filters])
+        if quantifier_op == z3.ForAll:
+            return z3.Implies(guard, cond_expr)
+        return z3.And(guard, cond_expr)
 
     @staticmethod
     def _short_expr(expr, limit=3000):
@@ -963,6 +988,12 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
     def _handle_quantifier(self, gen_node, quantifier_op):
         try:
+            if len(gen_node.generators) > 1:
+                # 目前只建模第一个 for 子句，其余会被忽略，可能与 Python 语义不一致。
+                logger.warning(
+                    f"[Quantifier] {len(gen_node.generators)} 个 for 子句，仅建模第 1 个: "
+                    f"{ast.unparse(gen_node)[:200]}"
+                )
             comprehension = gen_node.generators[0]
 
             # --- range() special case ---
@@ -1008,7 +1039,10 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                     if node.id == self.vn: return self.ph
                     return super().visit_Name(node)
 
-            cond_expr = TempVisitor(self.builder, loop_var_name, placeholder).visit(condition_ast)
+            tv = TempVisitor(self.builder, loop_var_name, placeholder)
+            cond_expr = tv.visit(condition_ast)
+            # 列表路径同样要并入生成器的 if 过滤条件，见 _apply_generator_filters。
+            cond_expr = self._apply_generator_filters(tv, comprehension, cond_expr, quantifier_op)
             actual_val = target_obj[k] if is_sequence else z3.Select(target_obj, k)
             final_cond = z3.substitute(cond_expr, (placeholder, actual_val))
 
