@@ -113,11 +113,12 @@ def _exact_len_facts(tree) -> tuple[dict, list]:
     return constants, edges
 
 
-def resolve_static_lengths(exprs, hard_lengths=None) -> dict:
+def resolve_static_lengths(exprs, hard_lengths=None, param_names=None) -> dict:
     """从约束表达式与组合期硬钉长度解析出「唯一确定的长度」。
 
     :param exprs: 约束表达式文本列表
     :param hard_lengths: 已在变量声明期硬钉的长度（非 free-length 参数的组合长度）
+    :param param_names: 参数名清单，用于兼容 Python 关键字参数名
     :return: param -> length；只返回能唯一确定且 1..MAX_STATIC_UNROLL 的参数
     """
     hard = {
@@ -144,7 +145,7 @@ def resolve_static_lengths(exprs, hard_lengths=None) -> dict:
         if not isinstance(expr, str) or not expr.strip():
             continue
         try:
-            tree = ast.parse(expr, mode="eval")
+            tree = ExpressionPreprocessor.parse_expression(expr, param_names)
         except SyntaxError:
             continue
         if not _is_conjunctive(tree):
@@ -393,6 +394,10 @@ class ParamConstraintUtils(CommonDispatcher):
         self.broadcast_master_params = defaultdict(List[InterParamConstraint])
         self.has_set_value_param = defaultdict(ParamSetValueFlag)
         self.relation_params = list(operator_rule_data.inputs.keys())
+        # 表达式语法校验/解析的关键字参数名白名单（真实参数名口径）。
+        # 仅用于把 `from` 这类 Python 关键字参数名在 expr 文本层转义为 `from_`。
+        self._expr_param_names = list(operator_rule_data.inputs.keys()) + list(
+            getattr(operator_rule_data, "outputs", {}) or {})
         self.customize_constraint_patch = CustomizeConstraintPatch(case=case,
                                                                    case_generate_instance=case_generate_instance,
                                                                    inter_param_constraints=inter_param_constraints,
@@ -521,8 +526,8 @@ class ParamConstraintUtils(CommonDispatcher):
         builder.solver.push()
         for static_expr in param_static_expr_list:
             replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
-            if ExpressionPreprocessor.validate_expression(replace_expr):
-                tree = ast.parse(replace_expr, mode='eval')
+            if ExpressionPreprocessor.validate_expression(replace_expr, self._expr_param_names):
+                tree = ExpressionPreprocessor.parse_expression(replace_expr, self._expr_param_names)
                 converter = ASTtoZ3Converter(builder)
                 z3_constraint = converter.visit(tree.body)
                 if z3_constraint is not None:
@@ -534,8 +539,8 @@ class ParamConstraintUtils(CommonDispatcher):
             for static_expr in param_static_expr_list:
                 param_union_expr.append(static_expr)
                 replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
-                if ExpressionPreprocessor.validate_expression(replace_expr):
-                    tree = ast.parse(replace_expr, mode='eval')
+                if ExpressionPreprocessor.validate_expression(replace_expr, self._expr_param_names):
+                    tree = ExpressionPreprocessor.parse_expression(replace_expr, self._expr_param_names)
                     converter = ASTtoZ3Converter(builder)
                     z3_constraint = converter.visit(tree.body)
                     if z3_constraint is not None:
@@ -553,8 +558,8 @@ class ParamConstraintUtils(CommonDispatcher):
             builder.solver.push()
             for static_expr in param_static_expr_list:
                 replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
-                if ExpressionPreprocessor.validate_expression(replace_expr):
-                    tree = ast.parse(replace_expr, mode='eval')
+                if ExpressionPreprocessor.validate_expression(replace_expr, self._expr_param_names):
+                    tree = ExpressionPreprocessor.parse_expression(replace_expr, self._expr_param_names)
                     converter = ASTtoZ3Converter(builder)
                     z3_constraint = converter.visit(tree.body)
                     if z3_constraint is not None:
@@ -571,8 +576,8 @@ class ParamConstraintUtils(CommonDispatcher):
                 for static_expr in param_static_expr_list:
                     param_union_expr.append(static_expr)
                     replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
-                    if ExpressionPreprocessor.validate_expression(replace_expr):
-                        tree = ast.parse(replace_expr, mode='eval')
+                    if ExpressionPreprocessor.validate_expression(replace_expr, self._expr_param_names):
+                        tree = ExpressionPreprocessor.parse_expression(replace_expr, self._expr_param_names)
                         converter = ASTtoZ3Converter(builder)
                         z3_constraint = converter.visit(tree.body)
                         if z3_constraint is not None:
@@ -590,8 +595,8 @@ class ParamConstraintUtils(CommonDispatcher):
             try:
                 replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
                 is_sat = False
-                if ExpressionPreprocessor.validate_expression(replace_expr):
-                    tree = ast.parse(replace_expr, mode='eval')
+                if ExpressionPreprocessor.validate_expression(replace_expr, self._expr_param_names):
+                    tree = ExpressionPreprocessor.parse_expression(replace_expr, self._expr_param_names)
                     converter = ASTtoZ3Converter(builder)
                     z3_constraint = converter.visit(tree.body)
                     if z3_constraint is not None:
@@ -612,8 +617,8 @@ class ParamConstraintUtils(CommonDispatcher):
                 try:
                     replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
                     is_sat = False
-                    if ExpressionPreprocessor.validate_expression(replace_expr):
-                        tree = ast.parse(replace_expr, mode='eval')
+                    if ExpressionPreprocessor.validate_expression(replace_expr, self._expr_param_names):
+                        tree = ExpressionPreprocessor.parse_expression(replace_expr, self._expr_param_names)
                         converter = ASTtoZ3Converter(builder)
                         z3_constraint = converter.visit(tree.body)
                         if z3_constraint is not None:
@@ -628,8 +633,8 @@ class ParamConstraintUtils(CommonDispatcher):
                     param_union_expr.append(static_expr)
                     # 永久添加
                     replace_expr = ExpressionPreprocessor.apply_keyword_replace(static_expr)
-                    if ExpressionPreprocessor.validate_expression(replace_expr):
-                        tree = ast.parse(replace_expr, mode='eval')
+                    if ExpressionPreprocessor.validate_expression(replace_expr, self._expr_param_names):
+                        tree = ExpressionPreprocessor.parse_expression(replace_expr, self._expr_param_names)
                         converter = ASTtoZ3Converter(builder)
                         z3_constraint = converter.visit(tree.body)
                         if z3_constraint is not None:
@@ -663,9 +668,11 @@ class ParamConstraintUtils(CommonDispatcher):
         def _build_constraint(expr_str: str):
             """对应 Java buildConstraint：关键字替换 + 语法校验 + AST→Z3 表达式。"""
             replaced = ExpressionPreprocessor.apply_keyword_replace(expr_str)
-            if not ExpressionPreprocessor.validate_expression(replaced):
+            if not ExpressionPreprocessor.validate_expression(
+                    replaced, self._expr_param_names):
                 return None
-            tree = ast.parse(replaced, mode='eval')
+            tree = ExpressionPreprocessor.parse_expression(
+                replaced, self._expr_param_names)
             return ASTtoZ3Converter(builder).visit(tree.body)
 
         builder.solver.push()
@@ -821,9 +828,9 @@ class ParamConstraintUtils(CommonDispatcher):
                 continue
             try:
                 replaced = ExpressionPreprocessor.apply_keyword_replace(expr)
-                if not ExpressionPreprocessor.validate_expression(replaced):
+                if not ExpressionPreprocessor.validate_expression(replaced, param_universe):
                     continue
-                tree = ast.parse(replaced, mode="eval")
+                tree = ExpressionPreprocessor.parse_expression(replaced, param_universe)
             except Exception:
                 continue
             # comprehension 循环变量（i/idx 等）不是参数，排除
@@ -1265,7 +1272,9 @@ class ParamConstraintUtils(CommonDispatcher):
                 continue
             logger.debug("Solve none in constraint : ")
             logger.debug(f"     ori expr : '{expr_ori}'")
-            new_expr = remove_missing_param_exprs(expression=expr_ori, existing_params=existing_params)
+            new_expr = remove_missing_param_exprs(
+                expression=expr_ori, existing_params=existing_params,
+                param_names=self._expr_param_names)
             logger.debug(f"after replace : '{new_expr}'")
             constraint_solve_none = copy.deepcopy(constraint)
             constraint_solve_none.expr = new_expr
@@ -1331,6 +1340,7 @@ class ParamConstraintUtils(CommonDispatcher):
         return resolve_static_lengths(
             [getattr(constraint, "expr", "") or "" for constraint in constraints or []],
             hard_lengths,
+            self._expr_param_names,
         )
 
     def _static_rank_max_for_unroll(self) -> dict:
@@ -1421,7 +1431,8 @@ class ParamConstraintUtils(CommonDispatcher):
             if not isinstance(text, str) or not text.strip():
                 continue
             try:
-                tree = ast.parse(text, mode="eval")
+                tree = ExpressionPreprocessor.parse_expression(
+                    text, self._expr_param_names)
             except SyntaxError:
                 continue
             if not _is_conjunctive(tree):
@@ -1670,11 +1681,13 @@ class ParamConstraintUtils(CommonDispatcher):
                 continue
             try:
                 replaced = ExpressionPreprocessor.apply_keyword_replace(domain_expr)
-                if not ExpressionPreprocessor.validate_expression(replaced):
+                if not ExpressionPreprocessor.validate_expression(
+                        replaced, self._expr_param_names):
                     logger.error(
                         f"Domain static expr invalid, skip hard assert : '{domain_expr}'")
                     continue
-                tree = ast.parse(replaced, mode='eval')
+                tree = ExpressionPreprocessor.parse_expression(
+                    replaced, self._expr_param_names)
                 z3_constraint = ASTtoZ3Converter(builder).visit(tree.body)
                 if z3_constraint is not None:
                     builder.solver.assert_and_track(

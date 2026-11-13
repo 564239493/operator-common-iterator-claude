@@ -55,6 +55,7 @@ from agent.generators.operator_param_combine.combination_result_generator.genera
     GeneratorOptions
 from agent.generators.operator_param_combine.combination_result_generator.generator.model import GenerationResult, \
     TestSuite, TestCase, TestValue
+from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.common_utils.logger_util import LazyLogger
 from agent.generators.common_utils.timing import track
 
@@ -1817,13 +1818,19 @@ def _translate_expr(node: ast.AST, columns: set, warnings: List[str],
 
 
 def _translate_constraint(expr: str, columns: set,
-                          parameters: Optional[Dict[str, List[Any]]] = None) -> Tuple[Optional[str], List[str]]:
-    """翻译单条约束；返回 (pict_text 或 None, warnings)。None 表示应剔除。"""
+                          parameters: Optional[Dict[str, List[Any]]] = None,
+                          param_names=None) -> Tuple[Optional[str], List[str]]:
+    """翻译单条约束；返回 (pict_text 或 None, warnings)。None 表示应剔除。
+
+    ``param_names`` 为真实参数名清单：若参数名是 Python 关键字（如 ``from``），
+    先在文本层转义为 ``from_`` 通过 ast.parse，再还原 AST 名称，下游列名仍按
+    真实参数名（``from_range_value``）生成。
+    """
     warnings: List[str] = []
     if not isinstance(expr, str) or not expr.strip():
         return None, ["empty constraint"]
     try:
-        tree = ast.parse(expr, mode="eval")
+        tree = ExpressionPreprocessor.parse_expression(expr, param_names)
     except SyntaxError as exc:
         return None, ["python syntax error: {}".format(exc)]
     lines = _translate_expr(tree.body, columns, warnings, parameters)
@@ -1902,7 +1909,8 @@ def convert_domain_json_to_pict_model(operator_name: str,
     constraint_map: Dict[str, List[str]] = {}
     col_set = set(columns)
     for c in constraints:
-        translated, ws = _translate_constraint(c, col_set, typed_domains)
+        translated, ws = _translate_constraint(
+            c, col_set, typed_domains, list(raw_parameters.keys()))
         if translated is None:
             dropped_constraints.append(c)
             warnings.extend(ws or ["untranslatable constraint dropped: {}".format(c[:80])])

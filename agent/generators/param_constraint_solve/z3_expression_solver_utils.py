@@ -27,7 +27,6 @@
     # 求解
     builder.solve()
 """
-import ast
 from typing import Dict
 
 import z3
@@ -189,6 +188,10 @@ class Z3ConstraintBuilder:
             return None
         return self.var_map[var_name]
 
+    def keyword_param_names(self):
+        """已声明参数中恰为 Python 关键字的参数名（表达式层别名转义白名单）。"""
+        return ExpressionPreprocessor.keyword_param_names(self.var_map.keys())
+
     def add_constraints(self, expr_str_dict: Dict[str, str]):
         for expr_str_name, expr_str in expr_str_dict.items():
             # 通用 TODO 标记：在 apply_keyword_replace 与 validate_expression 之前先
@@ -198,7 +201,8 @@ class Z3ConstraintBuilder:
                 self.add_constraint(expr_str_name, expr_str)
                 continue
             replace_expr = ExpressionPreprocessor.apply_keyword_replace(expr_str)
-            if ExpressionPreprocessor.validate_expression(replace_expr):
+            if ExpressionPreprocessor.validate_expression(
+                    replace_expr, self.keyword_param_names()):
                 self.add_constraint(expr_str_name, replace_expr)
 
     def add_constraint(self, expr_name, expr_str, is_print_log=False):
@@ -218,7 +222,8 @@ class Z3ConstraintBuilder:
                 logger.debug(f"[TODO-SKIP] {expr_str}")
             return
         try:
-            tree = ast.parse(expr_str, mode='eval')
+            tree = ExpressionPreprocessor.parse_expression(
+                expr_str, self.keyword_param_names())
             converter = ASTtoZ3Converter(self)
             z3_constraint = converter.visit(tree.body)
             if z3_constraint is not None:

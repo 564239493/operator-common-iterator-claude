@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import List, Set, Optional, Any, Dict, TYPE_CHECKING, Callable
 
 from agent.generators.common_utils.data_handle_utils import DataHandleUtil
+from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.operator_param_combine.combination_result_generator.constraint.whitelist import ALLOWED_NAMES, \
     ALLOWED_CALLABLES
 
@@ -28,16 +29,17 @@ class DroppedRecord:
     detail: str = ""
 
 
-def _collect_name_ids(expr: str) -> Set[str]:
+def _collect_name_ids(expr: str, param_names=None) -> Set[str]:
     """
     收集表达式中所有 ``ast.Name`` 的标识符。
 
     用于降级台账记录未命中白名单的名字。
     :param expr: 约束表达式原文
+    :param param_names: 参数名清单，用于兼容 Python 关键字参数名
     :return: 表达式中出现的标识符集合
     """
     try:
-        tree = ast.parse(expr, mode="eval")
+        tree = ExpressionPreprocessor.parse_expression(expr, param_names)
     except SyntaxError:
         # 解析失败时无可用标识符，返回空集合，交由调用方按原逻辑继续处理
         return set()
@@ -53,6 +55,9 @@ class CombinationConstraintGenerate:
     def __init__(self, operator_rule_data: OperatorRule):
         self.operator_rule_data = operator_rule_data
         self._ALLOWED_NAMES: Set[str] = set(ALLOWED_NAMES)
+        # 真实参数名清单：用于把表达式里 from_ 形式的别名还原为真实参数名。
+        self._param_names = list(operator_rule_data.inputs.keys()) + list(
+            getattr(operator_rule_data, "outputs", {}) or {})
 
     @staticmethod
     def _dot_to_underscore(name: str) -> str:
@@ -462,7 +467,9 @@ class CombinationConstraintGenerate:
         """值域传播入口：转换原始约束 → 通过 == 关系传播值域 → 更新 parameters"""
         transformed_constraints = []
         for constraint in self.operator_rule_data.constraints_in_parameters:
-            expr = CombinationConstraintGenerate._transform_presence_to_is_present(constraint.expr)
+            expr = ExpressionPreprocessor.restore_keyword_names(
+                constraint.expr, self._param_names)
+            expr = CombinationConstraintGenerate._transform_presence_to_is_present(expr)
             expr = CombinationConstraintGenerate._replace_len_to_length(expr, param_type_dict)
             transformed_constraints.append(expr)
 
@@ -486,7 +493,9 @@ class CombinationConstraintGenerate:
                         valid_factor_refs.add(f"{param_name}.{attr_name}")
 
         for constraint in self.operator_rule_data.constraints_in_parameters:
-            raw_expr = self._transform_presence_to_is_present(constraint.expr)
+            raw_expr = ExpressionPreprocessor.restore_keyword_names(
+                constraint.expr, self._param_names)
+            raw_expr = self._transform_presence_to_is_present(raw_expr)
             raw_expr = CombinationConstraintGenerate._replace_len_to_length(raw_expr, param_type_dict,
                                                                             valid_factor_refs)
             raw_expr = CombinationConstraintGenerate._normalize_string_constants(raw_expr, parameters)
@@ -503,7 +512,8 @@ class CombinationConstraintGenerate:
                 candidate = CombinationConstraintGenerate._prune_invalid_subclauses(
                     raw_expr, self.is_valid_combinatorial_constraint)
             if candidate is None:
-                unknown_names = sorted(_collect_name_ids(raw_expr) - self._ALLOWED_NAMES)
+                unknown_names = sorted(
+                    _collect_name_ids(raw_expr, self._param_names) - self._ALLOWED_NAMES)
                 dim_refs = CombinationConstraintGenerate.detect_unrepresentable_dim_index(raw_expr)
                 dropped_records.append(DroppedRecord(
                     expr=constraint.expr,

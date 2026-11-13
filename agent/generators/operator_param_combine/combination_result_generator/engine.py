@@ -19,6 +19,7 @@ from agent.generators.operator_param_combine.combination_result_generator.covera
 from agent.generators.operator_param_combine.combination_result_generator.generator import GeneratorOptions
 from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
 from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
+from agent.generators.operator_param_combine.combination_result_generator.constraint.ast_parser import ConstraintParser
 from agent.generators.operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
 from agent.generators.operator_param_combine.combination_result_generator.constraint.evaluator import \
     ConstraintEvaluator
@@ -59,11 +60,12 @@ def load_options(data: dict) -> GeneratorOptions:
     )
 
 
-def build_constraint(constraints: tuple[str, ...]) -> ConstraintProtocol | None:
+def build_constraint(constraints: tuple[str, ...],
+                     param_names=None) -> ConstraintProtocol | None:
     if not constraints:
         return None
 
-    compiler = ConstraintCompiler()
+    compiler = ConstraintCompiler(parser=ConstraintParser(param_names))
     evaluator = ConstraintEvaluator()
     compiled = []
     for expr in constraints:

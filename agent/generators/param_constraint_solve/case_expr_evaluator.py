@@ -147,7 +147,13 @@ def build_namespace(case_input_map: Dict[str, InputCaseConfig]) -> Dict[str, Par
     与 generate-cases post-check 命名空间约定。不沿用 per-run 脚本把 additionalDtype
     特判成裸 int 的做法（裸 int 不支持 `.range_value`）。
     """
-    return {name: Param(ci) for name, ci in case_input_map.items()}
+    namespace = {name: Param(ci) for name, ci in case_input_map.items()}
+    # 关键字参数名（如 from）在表达式层以 from_ 兼容；同时注册别名键，
+    # 使直接使用别名写法的约束也能求值（schema/执行层仍用真实名）。
+    for real_name, alias in ExpressionPreprocessor.keyword_param_alias_map(
+            case_input_map.keys()).items():
+        namespace[alias] = namespace[real_name]
+    return namespace
 
 
 def eval_constraint(expr: str, namespace: Dict[str, Param]) -> Tuple[Optional[bool], Optional[str]]:
@@ -166,7 +172,11 @@ def eval_constraint(expr: str, namespace: Dict[str, Param]) -> Tuple[Optional[bo
     except Exception as e:  # 病态 expr tokenize 失败
         return None, f"normalize: {type(e).__name__}: {e}"
     try:
-        tree = _CeilDivRewriter().visit(ast.parse(normed, mode='eval'))
+        # 只把关键字参数名交给转义白名单：namespace 里同时注册了 `from_` 别名键，
+        # 若把别名当真实参数名会与 `from`→`from_` 的映射冲突。
+        keyword_param_names = ExpressionPreprocessor.keyword_param_names(namespace.keys())
+        tree = _CeilDivRewriter().visit(
+            ExpressionPreprocessor.parse_expression(normed, keyword_param_names))
         ast.fix_missing_locations(tree)
         code = compile(tree, "<constraint>", "eval")
     except SyntaxError as e:

@@ -121,6 +121,16 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
     - `undeclared_params` 非空：核对 expr 引用的参数名是否真的存在于
       inputs/outputs 参数卡；拼错或漏卡记 open issue；
     - `skipped_todo` 不记 issue；`unknown` 退回人工目视检查（同规则 3）。
+11. **关键字参数名形式化审计**：扫描函数原型与 `inputs`/`outputs` 参数卡名，找出
+    `keyword.iskeyword(name)` 为真的参数（当前语料为 `from`）。对每个命中参数：
+    - 文档中与其相关的关系（如 `from <= to`、`from`/`to` 的 dtype 取值域）只出现在
+      `description`/`src_text`，`constraints_in_parameters` 无对应 expr → 记 open issue；
+      `suggestion` 要求用 `<参数名>_` 别名形式化（如
+      `from_.range_value <= to_.range_value`），`relation_params` 仍写真实名；
+    - expr 直接写裸关键字导致 `verify_relation_exprs.py` 报 syntax_error → 记 open issue，
+      要求改为别名写法（关键字本身**不是**不可形式化的理由）；
+    - 仅当关系语义本身不可形式化时才允许降级 `description`，不得以“参数名是关键字”
+      作为降级依据。
 
 ## 唯一报告
 
