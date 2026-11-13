@@ -343,22 +343,6 @@ function cardsOf(nodes: any[]): any[] {
   });
 }
 const childCards = computed(() => cardsOf(currentChildren.value));
-// 算子（crumb 第 5 层）节点后的产品覆盖率卡片：每个产品目录的函数/行/分支覆盖率
-const productCards = computed(() => {
-  if (source.value !== 'global' || path.value.length !== 5) return [];
-  const c = current.value;
-  if (!c) return [];
-  return childrenOf(c).map((p: any) => {
-    const s = p.summary || {};
-    return {
-      key: p.name,
-      title: p.name,
-      meta: p.has_analysis ? '含分析文档' : '产品覆盖率',
-      func: s.func || 0, line: s.line || 0, branch: s.branch || 0,
-      sub: p.domain ? `域：${p.domain}` : undefined,
-    };
-  });
-});
 // 根视图列表（M1）：单版本 → 该版本算子库/域卡（下钻路径带版本前缀）
 const rootListItems = computed(() => {
   const v = tree.value.versions.find((x: any) => x.name === verTab.value);
@@ -777,14 +761,6 @@ onMounted(() => { loadTree(); loadOverview(); });
               :rate-hex="rateHex"
               hint-all="该目录有覆盖率数据；未覆盖详情需对应 analysis.md（本目录未提供时仅展示覆盖率）。"
               @toggle="toggleFunc" />
-            <!-- 算子节点后：各产品（产品目录）的覆盖率数据 -->
-            <div v-if="path.length === 5 && productCards.length" class="prod-sec">
-              <h3 class="prod-sec-title">产品覆盖率（{{ current.name }}）</h3>
-              <CoverageList
-                :items="productCards"
-                tag="点击产品查看该产品的覆盖率详情（可切换产品）"
-                @select="goNode($event.key)" />
-            </div>
           </template>
           <div v-else class="cov-empty">该目录无有效覆盖率数据</div>
           </div>
@@ -930,9 +906,6 @@ onMounted(() => { loadTree(); loadOverview(); });
 /* 产品层 detail-head 的产品标签（与任务选择器/树形图的「产品」标签同色） */
 .dl-tag { font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 9px; white-space: nowrap; }
 .dl-tag.prod { color: var(--wb-purple); background: var(--wb-purple-soft); }
-/* 算子节点后的产品覆盖率区 */
-.prod-sec { margin-top: 20px; padding-top: 16px; border-top: 1px dashed var(--wb-line); }
-.prod-sec-title { margin: 0 0 10px; font-size: 15px; font-weight: 650; color: var(--wb-ink); }
 .panel { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; box-shadow: var(--wb-shadow); }
 .panel h3 { margin: 0 0 10px; font-size: 14px; color: var(--text); }
 .mods { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 12px; }
