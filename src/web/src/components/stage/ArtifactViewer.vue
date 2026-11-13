@@ -41,7 +41,7 @@ watch(visible, (v) => {
       <div class="meta">
         <el-tag size="small" effect="plain">大小 {{ (payload.size / 1024).toFixed(1) }} KB</el-tag>
         <el-tag size="small" effect="plain" type="info">sha256 {{ payload.sha256.slice(0, 12) }}…</el-tag>
-        <el-tag v-if="payload.truncated" size="small" type="warning">已截断（长列表/长字符串仅显示样本）</el-tag>
+        <el-tag v-if="payload.truncated" size="small" type="warning">已截断（长列表或长字符串仅显示样本）</el-tag>
         <el-tag v-if="payload.json?._error" size="small" type="danger">{{ payload.json._error }}</el-tag>
       </div>
       <pre class="json-view">{{ payload.json_text }}</pre>

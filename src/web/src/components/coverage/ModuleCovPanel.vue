@@ -62,7 +62,7 @@ const cards = computed(() => {
     det: props.covered.filter((r: any) => moduleOfDir(r.dir) === k).length,
   });
   return {
-    op: { label: '算子整体', note: 'op = host + kernel · 点击复位为全部', metrics: metrics('op') },
+    op: { label: '算子整体', note: 'op 由 host 和 kernel 组成 · 点击复位为全部', metrics: metrics('op') },
     host: { label: 'Host 侧代码', note: `未覆盖 ${counts('host').unc} · 行明细 ${counts('host').det}`, metrics: metrics('host') },
     tiling: { label: 'tiling 逻辑（host 内）', note: `未覆盖 ${counts('tiling').unc} · 行明细 ${counts('tiling').det}`, metrics: metrics('tiling') },
     kernel: { label: 'Kernel 侧代码', note: `未覆盖 ${counts('kernel').unc} · 行明细 ${counts('kernel').det}`, metrics: metrics('kernel') },
@@ -210,7 +210,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', measure));
         </div>
 
         <div class="hint" v-if="selModule === 'all' && !filteredUncovered.length && !filteredCovered.length">{{ hintAll }}</div>
-        <div class="hint" v-else-if="selModule !== 'all' && !filteredUncovered.length && !filteredCovered.length">模块「{{ selModule }}」暂无未覆盖函数 / 未覆盖行明细记录。</div>
+        <div class="hint" v-else-if="selModule !== 'all' && !filteredUncovered.length && !filteredCovered.length">模块「{{ selModule }}」暂无未覆盖函数或未覆盖行明细记录。</div>
       </div>
     </div>
   </div>

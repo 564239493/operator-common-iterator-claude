@@ -333,7 +333,7 @@ function cardsOf(nodes: any[]): any[] {
     const title = n.name || n.operator || '';
     const badge = cov
       ? (n.has_analysis ? '含分析' : '算子')
-      : (n.kind === 'merged' ? '目录·合并' : '汇总');
+      : (n.kind === 'merged' ? '目录（合并）' : '汇总');
     const meta = kids.length
       ? `${kids.length} 个子项 · ${countLeaves(n)} 个算子`
       : (n.domain || '-');
@@ -405,9 +405,9 @@ async function loadTree() {
     const res = await fetch(treeUrl());
     const data = await res.json();
     if (data && data.versions) tree.value = data;
-    else if (data && data.error) { ElMessage.error('加载覆盖率失败: ' + data.error); tree.value = { versions: [] }; }
+    else if (data && data.error) { ElMessage.error('加载覆盖率失败：' + data.error); tree.value = { versions: [] }; }
     else tree.value = { versions: [] };
-  } catch (e: any) { ElMessage.error('加载目录列表失败: ' + e.message); }
+  } catch (e: any) { ElMessage.error('加载目录列表失败：' + e.message); }
   finally { syncVerTab(); loading.value = false; }
 }
 
@@ -424,13 +424,13 @@ async function loadDetail(nodePath: string[]) {
       fetch(detailUrl(nodePath, 'analysis')).then(r => r.json()).catch(() => null),
     ]);
     if (covRes && !covRes.error) coverData.value = covRes;
-    else ElMessage.error('加载覆盖率失败: ' + (covRes && covRes.error ? covRes.error : '未知'));
+    else ElMessage.error('加载覆盖率失败：' + (covRes && covRes.error ? covRes.error : '未知'));
     if (anaRes && !anaRes.error && anaRes.content) {
       const parsed = parseAnalysis(anaRes.content);
       uncoveredReasons.value = parsed.reasons;
       coveredUncoveredLines.value = parsed.linesDetail;
     }
-  } catch (e: any) { ElMessage.error('请求失败: ' + e.message); }
+  } catch (e: any) { ElMessage.error('请求失败：' + e.message); }
   finally { detailLoading.value = false; }
 }
 
@@ -441,7 +441,7 @@ async function loadRunList() {
     const res = await fetch(runsUrl());
     const data = await res.json();
     runList.value = (data && data.runs) ? data.runs : [];
-  } catch (e: any) { ElMessage.error('加载任务列表失败: ' + e.message); }
+  } catch (e: any) { ElMessage.error('加载任务列表失败：' + e.message); }
   finally { loading.value = false; }
 }
 
@@ -456,7 +456,7 @@ async function selectRun(runId: string) {
   if (run && run.has_cov_report === false) {
     // 无覆盖率产物的任务：不请求详情，直接提示
     detailLoading.value = false;
-    ElMessage.warning('该 run 暂无覆盖率报告（缺少 ops_cov_report 产物）');
+    ElMessage.warning('该任务暂无覆盖率报告（缺少 ops_cov_report 产物）');
     return;
   }
   try {
@@ -465,13 +465,13 @@ async function selectRun(runId: string) {
       fetch(runDetailUrl(runId, 'analysis')).then(r => r.json()).catch(() => null),
     ]);
     if (covRes && !covRes.error) coverData.value = covRes;
-    else ElMessage.error('加载覆盖率失败: ' + (covRes && covRes.error ? covRes.error : '未知'));
+    else ElMessage.error('加载覆盖率失败：' + (covRes && covRes.error ? covRes.error : '未知'));
     if (anaRes && !anaRes.error && anaRes.content) {
       const parsed = parseAnalysis(anaRes.content);
       uncoveredReasons.value = parsed.reasons;
       coveredUncoveredLines.value = parsed.linesDetail;
     }
-  } catch (e: any) { ElMessage.error('请求失败: ' + e.message); }
+  } catch (e: any) { ElMessage.error('请求失败：' + e.message); }
   finally { detailLoading.value = false; }
 }
 
@@ -795,7 +795,7 @@ onMounted(() => { loadTree(); loadOverview(); });
           <div class="view-scroll">
             <CoverageList
               :title="path.join(' / ') + ' → 子项'"
-              tag="点击子项下钻；带 coverage 的目录可看本目录覆盖率 + 未覆盖详情"
+              tag="点击子项下钻；含覆盖率的目录可查看本目录覆盖率与未覆盖详情"
               :items="childCards"
               @select="goNode($event.key)" />
           </div>
@@ -825,7 +825,7 @@ onMounted(() => { loadTree(); loadOverview(); });
             :expanded="expandedFunc"
             :cover-type-of="coverTypeOf"
             :rate-hex="rateHex"
-            hint-all="目录级合并 / 算子叶子层才有覆盖率 + analysis.md 分析文档；汇总层（版本/库/域）仅展示预聚合覆盖率。"
+            hint-all="只有目录级合并和算子叶子层才有覆盖率与 analysis.md 分析文档；汇总层（版本、库、域）仅展示预聚合覆盖率。"
             @toggle="toggleFunc" />
         </template>
         <div v-else class="cov-empty">该算子无有效覆盖率数据</div>

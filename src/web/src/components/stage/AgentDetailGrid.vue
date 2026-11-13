@@ -51,7 +51,7 @@ const summaryLines = computed(() => {
   if (name === 'case-generator' && it.generation) {
     const p = it.generation.progress || {}
     push('进程状态', p.state, p.state === 'complete' ? 'ok' : undefined)
-    push('pid 存活', p.pid_alive ? '是' : '否')
+    push('进程存活', p.pid_alive ? '是' : '否')
     push('生成总数', p.total ?? it.generation.summary?.total)
     push('耗时（秒）', p.elapsed_seconds?.toFixed?.(1))
   }
@@ -147,7 +147,7 @@ const runtime = computed(() => props.engineer?.runtime || null)
           <dt>场景</dt>
           <dd v-if="scene.enabled">
             {{ (scene.device_types || []).join('、') }}
-            <template v-if="scene.selection"> · {{ Object.keys(scene.selection).length }} 设备已选</template>
+            <template v-if="scene.selection"> · 已选 {{ Object.keys(scene.selection).length }} 个设备</template>
           </dd>
           <dd v-else>未启用</dd>
           <dt>提示词快照</dt>
@@ -169,7 +169,7 @@ const runtime = computed(() => props.engineer?.runtime || null)
       <!-- 列 2：技能与知识 -->
       <div class="col-card">
         <div class="col-title">技能 / 知识库</div>
-        <div class="col-sub">预加载 Skill</div>
+        <div class="col-sub">预加载技能</div>
         <div class="tags">
           <span v-for="s in engineer.skills || []" :key="s" class="skill-chip">{{ s }}</span>
           <span v-if="!(engineer.skills || []).length" class="empty">无</span>
@@ -211,12 +211,12 @@ const runtime = computed(() => props.engineer?.runtime || null)
         <div class="col-title">能否进入下一阶段</div>
         <template v-if="gate">
           <div class="gate-box" :class="{ ok: gateOk }">
-            {{ gateOk ? `允许：gate ${gate.status_raw || gate.status} → ${gate.next_state || '—'}`
-                       : `不允许：${(gate.blocking_issues || []).length ? `${gate.blocking_issues.length} 条阻断` : `gate ${gate.status_raw || gate.status}`} → ${gate.next_state || '—'}` }}
+            {{ gateOk ? `允许：门禁 ${gate.status_raw || gate.status} → ${gate.next_state || '—'}`
+                       : `不允许：${(gate.blocking_issues || []).length ? `${gate.blocking_issues.length} 条阻断` : `门禁 ${gate.status_raw || gate.status}`} → ${gate.next_state || '—'}` }}
           </div>
           <div v-if="gate.summary" class="gate-summary">
             检查 {{ gate.summary.passed ?? '?' }}/{{ gate.summary.total }} 通过
-            <span v-if="gate.summary_derived" class="mini-badge" title="顶层无汇总键，由 checks 现算">现算</span>
+            <span v-if="gate.summary_derived" class="mini-badge" title="顶层无汇总键，由检查项现算">现算</span>
           </div>
           <div v-if="(gate.blocking_issues || []).length" class="blocking">
             <div class="col-sub" style="color: var(--wb-red)">阻断项</div>
