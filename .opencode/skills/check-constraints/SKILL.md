@@ -21,12 +21,35 @@ description: 对照算子文档及本轮明确补充证据检查最终 constrain
   `inputs/conflict_resolution.json`、触发本轮更新的上一轮 `analysis.json`、
   当前轮 `constraint_update.json` 或 `constraints_patch.json`；
 - 首轮（初始化 EXTRACT 后）还必须读取：当前 `<iter-dir>/extraction_provenance.json`
-  与 `inputs/prompt_preanalysis.json`（做必载知识审计，见检查规则第 9 条）。
+  与 `inputs/prompt_preanalysis.json`（做必载知识审计，见检查规则第 9 条）；
+- Metadata/TTK（`run_state.test_framework=ttk` 且存在 `inputs/plugin_requirements.json`）
+  还必须读取：`inputs/plugin_requirements.json` 与
+  `inputs/value_constraints.candidates.json`，按「步骤 M」复核。
 
 只读上述输入与理解结构所必需的 schema/校验代码；其他 run、历史产物、memory 与
 Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权威，此处不再
 复述。允许通过 skill 工具加载 `.opencode/skills/` 下按 family 匹配的知识 skill
 （`aclnn-*` / `torch-npu-*`）复核对应规则是否被正确应用。
+
+## 步骤 M：插件值契约候选复核（Metadata/TTK 条件触发）
+
+若 `inputs/value_constraints.candidates.json` 存在，逐条核对候选（`review_required=true`）：
+
+- `value_attr` / `param` 必须与 `plugin_requirements.json` 的
+  `required_value_attrs` 一一对应；对不上或插件未要求 → 记 open issue；
+- `rules` 必须被 `src_txt_line` 引用的原文支撑；窗口误命中（例如把 cuSeqlens 规则
+  挂到 cmpResidualK）或缺少依据 → 记 open issue；
+- `generator` 必须与规则一致（`prefix_sum_prefix0` / `within_prefix` /
+  `lt_scalar` / `non_negative_monotonic`），options 中的 `length_from` /
+  `total_from` / `ref_attr` / `ratio_attr` 必须能由文档参数表与 plugin 契约推出；
+- `within_prefix` 的 `block_budget_from` / `block_num_dim` / `block_size_dim` /
+  `block_layout_*` 只用于 PA_BBND key 容量约束（block_table 容量覆盖
+  `sum(ceil(seqused_k/block_size))`），必须能由 blockTable/PA 文档条款支撑；
+- 值级 issue 在 `constraint_check.json` 中用 `constraint="value_constraints:<param>"`
+  记录；只有本轮报告 `passed` 后，主协调器才能运行
+  `scripts/prepare_plugin_values.py --run-dir <run> --confirm` 落正式
+  `value_constraints.json`；
+- 未确认的候选（`review_required=true`）不得被生成侧消费。
 
 ## 步骤 0：正反例取证（仅 operator_family=aclnn）
 

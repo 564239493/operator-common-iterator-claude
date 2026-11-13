@@ -22,6 +22,9 @@
   --wb-red: #da5961;
   --wb-red-soft: #fff0f1;
   --wb-red-line: #f4c8cc;
+  --wb-purple: #7c6cf0;
+  --wb-purple-soft: #f0eeff;
+  --wb-purple-line: #d5d0f9;
 
   --wb-code-bg: #f5f7fa;
   --wb-hover: #f7faff;
@@ -56,6 +59,9 @@ html[data-theme='dark'] {
   --wb-red: #f3838b;
   --wb-red-soft: #3a1d20;
   --wb-red-line: #6e3238;
+  --wb-purple: #a79df7;
+  --wb-purple-soft: #26204a;
+  --wb-purple-line: #4d4488;
 
   --wb-code-bg: #0d1220;
   --wb-hover: #1d2740;

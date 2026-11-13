@@ -782,12 +782,12 @@ class TensorVar(BaseVar):
         if self.shape.decl() in decls:
             logger.info("Get Tensor shape")
             shape_len = model.eval(z3.Length(self.shape)).as_long()
-            if shape_len > 0:
-                try:
-                    shape_vals = [model.eval(self.shape[i]).as_long() for i in range(shape_len)]
-                    result["shape"] = shape_vals
-                except Exception as e:
-                    logger.warning(f"Could not resolve shape get actual values for {self.name}: {str(e)}")
+            try:
+                shape_vals = [model.eval(self.shape[i]).as_long() for i in range(shape_len)]
+                result["shape"] = shape_vals
+                result["shape_resolved"] = True
+            except Exception as e:
+                logger.warning(f"Could not resolve shape get actual values for {self.name}: {str(e)}")
 
         # 4. 提取实际值集合
         if self._range_value_arr.decl() in decls:
@@ -911,12 +911,12 @@ class TensorListVar(BaseVar):
 
         if self.elem_shape.decl() in decls:
             shape_len = model.eval(z3.Length(self.elem_shape)).as_long()
-            if shape_len > 0:
-                try:
-                    shape_vals = [model.eval(self.elem_shape[i]).as_long() for i in range(shape_len)]
-                    result['shape'] = shape_vals
-                except Exception as e:
-                    logger.warning(f"Could not resolve shape for {self.name}: {str(e)}")
+            try:
+                shape_vals = [model.eval(self.elem_shape[i]).as_long() for i in range(shape_len)]
+                result['shape'] = shape_vals
+                result['shape_resolved'] = True
+            except Exception as e:
+                logger.warning(f"Could not resolve shape for {self.name}: {str(e)}")
 
         if self._range_value_arr.decl() in decls:
             actual_values = set()

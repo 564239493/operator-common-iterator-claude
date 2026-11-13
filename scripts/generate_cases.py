@@ -869,6 +869,7 @@ def _main() -> int:
                 spec["name"]: spec.get("signature_index")
                 for spec in specs
                 if spec.get("signature_index") is not None
+                and spec.get("value_kind") != "tensor_values"
             }
             if aux_targets:
                 template = (
@@ -924,8 +925,15 @@ def _main() -> int:
 
             ttk_output = output_dir / "cases_ttk.csv"
             ttk_temporary = ttk_output.with_name(f".{ttk_output.name}.tmp")
+            plugin_value_params = {
+                str(spec["target_param"]).casefold()
+                for spec in specs
+                if spec.get("target_param")
+                and spec.get("value_kind") == "tensor_values"
+            }
             conversion = convert_file(
-                cases_json_path, ttk_temporary, constraints=constraints
+                cases_json_path, ttk_temporary, constraints=constraints,
+                plugin_value_params=plugin_value_params,
             )
             aux_materializations: list[dict[str, Any]] = []
             group_list_report = None

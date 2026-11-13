@@ -879,7 +879,7 @@ export default {
             <button type="button" class="back-btn" @click="backToWorkbench"
                     title="返回工作台轮次汇总">← 返回工作台</button>
             <span class="field-label">算子任务</span>
-            <TaskPicker :disabled="editMode" />
+            <TaskPicker mode="runs" :disabled="editMode" />
             <span class="field-label">轮次</span>
             <el-select v-model="currentIter" class="iter-select" placeholder="迭代" :disabled="!selectedRunId || editMode"
                        @change="onIterChange">
@@ -1394,6 +1394,19 @@ export default {
     background: var(--wb-hover);
     box-shadow: 0 0 0 1px var(--border) inset;
 }
+
+/* 返回工作台：本页由工作台汇总卡「查看约束情况」进入，提供明确的回退入口 */
+.back-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--accent);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.back-btn:hover { background: var(--wb-hover, rgba(255, 255, 255, 0.06)); }
 
 /* 返回工作台：本页由工作台汇总卡「查看约束情况」进入，提供明确的回退入口 */
 .back-btn {

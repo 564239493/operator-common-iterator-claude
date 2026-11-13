@@ -511,6 +511,39 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 `validate_artifacts.py scene_scan` 校验模式保留，仅用于校验历史 run 产物。
 当前唯一场景路径为**设备优先三段式**（见 `selection.json` / `scene_directive.md`）。
 
+## plugin_requirements.json / value_constraints.json
+
+Metadata 前置算子 + TTK `--plugin` 时，EXTRACT 阶段由
+`scripts/prepare_plugin_values.py` 产出：
+
+- `inputs/plugin_requirements.json`：插件静态契约（`required_value_attrs`、
+  `metadata_slot`、`aux_targets`、`plugin_sha256`、`file:line` 证据）。
+- `inputs/value_constraints.candidates.json`：从主/伴随文档 + 插件契约提取的候选
+  value 规则，条目 `origin="doc_candidate"`、`review_required=true`。
+- `iter_<N>/value_constraints.json`：经 constraint-checker 复核、主协调器
+  `--confirm` 终审后的正式文件（生成/更新只读这一份）。首轮同时写
+  `inputs/value_constraints.json` 作为审计副本。反馈轮的值级更新由
+  `scripts/value_constraints_update_state.py` 版本化，产出
+  `iter_<N>/value_constraints_update.json` + `value_constraints.json.pre_update`。
+  结构为列表（或 `{"value_constraints":[...]}`），每条：
+
+```json
+{
+  "param": "<目标 tensor，如 cuSeqlensQOptional>",
+  "value_attr": "<CSV attributes 键，如 cu_seqlens_q_values>",
+  "rules": ["first_zero", "non_decreasing", "length_b_plus_1"],
+  "generator": "prefix_sum_prefix0 | within_prefix | lt_scalar | non_negative_monotonic",
+  "generator_options": {"length_from": "...", "total_from": "q"},
+  "src_txt_line": [140, 141, 427],
+  "origin": "doc | supplement | doc_candidate",
+  "review_required": false
+}
+```
+
+约束：`value_attr` 唯一；`src_txt_line` 非空升序；`generator` 必须在白名单内；
+未带 `--confirm` 的候选（`review_required=true`）不会被生成侧消费。
+由 `python scripts/validate_artifacts.py value_constraints <path>` 校验。
+
 ## selection.json
 
 主协调器场景收集结果落地到 `<run-dir>/inputs/selection.json`（设备优先三段式：
