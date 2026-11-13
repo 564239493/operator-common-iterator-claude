@@ -104,7 +104,7 @@ const rings = computed(() => {
     </div>
 
     <div class="mr-foot">
-      <span>实心弧 = 已覆盖 · 浅底 = 未覆盖 · 环心 = 整体 %</span>
+      <span>实心弧表示已覆盖 · 浅底表示未覆盖 · 环心表示整体覆盖率</span>
       <span class="mr-legend">
         <i class="dot" :style="{ background: '#72cdb9' }"></i>≥ 80%
         <i class="dot" :style="{ background: '#fdcf87' }"></i>&lt; 80%

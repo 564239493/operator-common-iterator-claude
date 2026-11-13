@@ -12,7 +12,7 @@ export function stageInputs(role: string, round: number, run: any) {
   switch(role) {
     case 'scene-scanner': return [doc]
     case 'constraint-extractor': return [doc,prompt,{label:'场景指令（如已生成）',path:'inputs/scene_directive.md',evidence:'按流程定义引用，存在性未核实'}]
-    case 'constraint-checker': return [doc,constraints(),...(round===1?[file('extraction_provenance.json',1,'知识应用报告')]:[file('constraint_update.json',round,'更新报告（自动更新路径）')])]
+    case 'constraint-checker': return [doc,constraints(),...(round===1?[file('extraction_provenance.json',1,'知识应用报告')]:[file('constraint_update.json',round,'更新报告（自动更新流程）')])]
     case 'constraint-repairer': return [doc,constraints(),check()]
     case 'case-generator': return [constraints(),state]
     case 'case-executor': return [cases(),...(run?.test_framework==='ttk'?[file('cases_ttk.csv',round,'TTK 用例')]:[doc]),state]
@@ -20,7 +20,7 @@ export function stageInputs(role: string, round: number, run: any) {
     case 'failure-analyst': return [doc,constraints(),cases(),execution()]
     case 'constraint-updater': return round>1?[doc,file('constraints.json',round-1,'上一轮约束'),file('analysis.json',round-1,'上一轮诊断'),file('execution_result.json',round-1,'上一轮执行结果')]:[]
     case 'constraint-supplementer': return [constraints(),{label:'补充证据（可选）',path:'inputs/supplementary-doc.md / inputs/supplement_constraints.md',evidence:'需由具体任务提供'}]
-    case 'source-analyst': return [doc,{label:'源码快照（可选）',path:'inputs/src_snapshot/',evidence:'存在性未核实；提取与诊断路径所需材料不同'}]
+    case 'source-analyst': return [doc,{label:'源码快照（可选）',path:'inputs/src_snapshot/',evidence:'存在性未核实；提取与诊断所需材料不同'}]
     case 'prompt-optimizer': return [doc,prompt,file('analysis.json',round,'诊断证据（如已生成）')]
     default:return []
   }

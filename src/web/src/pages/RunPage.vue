@@ -180,7 +180,7 @@ const metrics = computed(() => {
     },
     {
       icon: '▤',
-      label: '失败簇 / 约束发现',
+      label: '失败簇与约束发现',
       value: anaIt?.analysis ? `${anaIt.analysis.failure_cluster_count} / ${anaIt.analysis.constraint_finding_count}` : '—',
       unit: anaIt?.analysis?.overall_action || '未诊断',
     },
@@ -188,7 +188,7 @@ const metrics = computed(() => {
       icon: '◎',
       label: '质量门禁',
       value: g ? `${g.summary?.passed ?? '?'}/${g.summary?.total ?? '?'}` : '—',
-      unit: g ? `next: ${g.next_state || '—'}` : '未评审',
+      unit: g ? `下一步：${g.next_state || '—'}` : '未评审',
     },
   ]
 })
@@ -218,8 +218,8 @@ const outcomes = computed(() => {
         : `△ 执行 ${e.passed}/${e.total} 通过`,
       text:
         e.verdict === 'engine_error'
-          ? `engine_error：${e.engine_error || '详见执行结果'}`
-          : `执行器已完成；通过 ${e.passed}/${e.total}。`,
+          ? `引擎错误：${e.engine_error || '详见执行结果'}`
+          : `执行器已完成，通过 ${e.passed}/${e.total}。`,
       // 覆盖率是本轮执行的产物：入口随执行结果卡（hash 路由内跳转，任务上下文由共享选择携带）
       link: { label: '查看覆盖率', href: router.resolve({ path: '/coverage' }).href },
     })
