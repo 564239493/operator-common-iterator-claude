@@ -11,6 +11,7 @@ import operator
 import z3
 
 from agent.generators.common_utils.logger_util import LazyLogger
+from agent.generators.data_definition.constants import ParamModelConfig
 from agent.generators.param_constraint_solve.param_var_definition import TensorVar, ListVar, ScalarVar, TensorListVar, DTYPE_MAP
 
 logger = LazyLogger()
@@ -49,9 +50,10 @@ def _register_rec_fn(name: str, seq_sort, arg_sort, body_builder):
     return fn
 
 
-# shape 秩上限：与 validate_artifacts 对 dimensions 的 [0,10] 上限一致。prod(shape)
-# 用秩有界 If 展开（见 _prod_z3_sequence），不依赖 Z3 递归函数。
-_MAX_SHAPE_RANK = 10
+# prod(shape) 秩有界 If 展开（见 _prod_z3_sequence）的兜底因子数：求解器里读不到
+# 已硬断言的维度个数上界时使用。与 PICT 组合期未声明 dimensions 的默认维度池
+# DEFAULT_TENSOR_SHAPE_SET（1-8 维）同口径，不依赖 Z3 递归函数。
+_PROD_RANK_FALLBACK = ParamModelConfig.DEFAULT_TENSOR_SHAPE_DIM_MAX
 
 
 # ==========================================
@@ -770,7 +772,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
         tv = TempVisitor(self.builder, loop_var_name, k)
         cond_expr = tv.visit(condition_ast)
-        # 生成器的 if 过滤条件（`all(P(i) for i in R if C(i))` 里的 C 也要并入判断条件，
+        # 生成器的 if 过滤条件（`all(P(i) for i in R if C(i))` 里的 C）也要并入判断条件
         cond_expr = self._apply_generator_filters(tv, comprehension, cond_expr, quantifier_op)
         bounds = z3.And(k >= start, k < stop)
         if not (isinstance(step, z3.IntNumRef) and step.as_long() == 1):
@@ -1234,12 +1236,18 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         return SumSeq(seq)
 
     def _prod_z3_sequence(self, seq):
-        # 秩有界 If 展开替代 Z3 递归函数：shape 的 rank 受参数 dimensions 约束
-        # （validator 上限 _MAX_SHAPE_RANK=10），逐维连乘，Length<=i 的维度贡献
-        # 因子 1；空序列（Length==0）结果恒为 1。避免递归函数（递归函数求解慢、
-        # 且同名 RecAddDefinition 在全局 ctx 重复注册抛异常致约束被静默丢弃）。
+        # 秩有界 If 展开替代 Z3 递归函数（递归函数求解慢、且同名 RecAddDefinition
+        # 在全局 ctx 重复注册抛异常致约束被静默丢弃）。因子数优先取求解器已硬断言的
+        # 维度个数上界 builder.static_rank_max（四档口径见
+        # param_constraint_utils._static_rank_max_for_unroll：文档 dimensions /
+        # 约束 len(p.shape)<=N / 兜底 8，文档给出更高上界如 0～25 维时按 25 展开），
+        # 读取不到再兜底 _PROD_RANK_FALLBACK。逐维连乘，Length<=i 的维度贡献
+        # 因子 1；空序列（Length==0）结果恒为 1。
+        rank_max = (self.builder.get_rank_max(seq.decl().name())
+                    if z3.is_const(seq) else None)
+        bound = rank_max if rank_max else _PROD_RANK_FALLBACK
         result = z3.IntVal(1)
-        for i in range(_MAX_SHAPE_RANK):
+        for i in range(bound):
             result = z3.If(z3.Length(seq) > i, seq[i], 1) * result
         return result
 

@@ -193,6 +193,15 @@ python scripts/validate_artifacts.py constraints <constraints.json>
 | `dimensions.value` | 是 | `List[int]` 或 `[]` | **合法 rank 的显式枚举**：列表中的每个整数都是一个真实可选 rank，不表示区间；如 `[1, 2, 3]` 表示支持 1～3 维，`[1, 3]` 表示只支持 1 维或 3 维；固定 3 维写 `[3]`；不适用 → `[]` |
 | `dimensions.src_text` | 是 | `str` | 摘录原文（如 `"2-3"`、`"2维"`） |
 
+**rank 只给下界时的补齐规则**（防 range() 量词无上界导致求解变慢/超时）：
+
+- 原文只写“不少于 N 维”“N 维及以上”“rank ≥ N”这类下界时，上界取项目兜底维度数上限 8，
+  `dimensions.value` 写成 `[N, N+1, …, 8]`（如“至少 2 维”写 `[2,3,4,5,6,7,8]`），
+  并在 description 加 `[DOC_GAP:rank]` 注明上界为补齐值；下界已 ≥8 时只写 `[8]` 并同样标注。
+- **8 只是“原文没给上界”时的兜底，不是能截断文档的硬天花板**：原文明确给出上界时照原文完整枚举
+  （“0～25 维”写 `[0,1,…,25]`），不得按 8 或任何固定值截断；只有原文只给下界、或完全没有上界信息时才用 8。
+- 原文对 rank 毫无说明时才写 `[]` + `[DOC_GAP:rank]`；不得跳过补齐直接把下界当唯一 rank。
+
 **`is_optional` 判定强制规则**：
 
 - **优先依据参数表的"输入/输出/可选输入/可选输出"等分类列**：分类为"输入"或"输出"时，
@@ -763,7 +772,7 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
 6. **关系参数一致**：`expr` 中**所有出现的标识符**都在 `relation_params` 中；`relation_params` 中所有参数名都在 `inputs`/`outputs` 有对应卡片（隐式维度变量/外部常量允许例外，但须在 `inputs` 中登记）。
 7. **来源可溯**：`function_explanation`/`dtype`/`format`/`dimensions`/`allowed_range_value` 的 `src_text` 至少 30% 非空（无来源的纯模型外推视为无效）。
 8. **隐式参数完整性**：所有在 `constraints_in_parameters` 的 `expr` 中出现的**非函数签名标识符**（如 `BS`、`H`、`N`、`rankSize`），必须**全部**出现在 `inputs` 中，且 `is_operator_param.value=false`。
-9. **dimensions 合理性与类型门禁**：仅 `aclTensor` / `aclTensorList` 允许 `dimensions.value` 非空；其他类型必须为 `[]`。非空时必须是去重、升序的合法 rank 显式枚举，且每项均为满足 `0 ≤ rank ≤ 10` 的整数。连续范围必须完整展开：原文“1～3维”写 `[1,2,3]`，禁止写成 `[1,3]`；只有原文明示“1维或3维”时才写 `[1,3]`。轴长度及每轴范围不得写入 `dimensions.value`，应由 `constraints_in_parameters` 表达。
+9. **dimensions 合理性与类型门禁**：仅 `aclTensor` / `aclTensorList` 允许 `dimensions.value` 非空；其他类型必须为 `[]`。非空时必须是去重、升序的合法 rank 显式枚举，且每项均为非负整数。连续范围必须完整展开：原文“1～3维”写 `[1,2,3]`，禁止写成 `[1,3]`；只有原文明示“1维或3维”时才写 `[1,3]`。轴长度及每轴范围不得写入 `dimensions.value`，应由 `constraints_in_parameters` 表达。原文只给 rank 下界时按上方“rank 只给下界时的补齐规则”补齐到 8，不得留 `[]`；原文给出上界时照原文完整枚举，不得截断。
 10. **枚举拆分完整**：若 `allowed_range_value.type=enum` 且 value 是 `List[str]`，则字符串中**不得**再包含 `/`、`、`、`以及`、`and`、`/` 等分隔符（必须已被拆成独立元素）。
 11. **range 的 null 禁令**：若 `allowed_range_value.type=range`，所有区间端点必须为
     实际数值且不得为 `null`；`type=enum` 的离散候选允许包含 `null`。

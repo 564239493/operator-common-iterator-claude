@@ -70,6 +70,11 @@ depends_on: []
 ## 5. Shape、列表与返回值
 
 - `dimensions` 表示离散 rank 集合，不表示 rank 区间。文档写 1~8 维时展开为 `[1,2,3,4,5,6,7,8]`。
+  文档只给 rank 下界（“不少于 N 维”“N 维及以上”）时，上界取项目兜底上限 8 并完整展开
+  （“至少 2 维”→`[2,3,4,5,6,7,8]`），description 加 `[DOC_GAP:rank]`；该 8 只是原文没给
+  上界时的兜底，原文给出上界时照原文完整枚举（如“0～25 维”→`[0,1,…,25]`），不得截断；
+  只有文档对 rank 毫无说明才写 `[]`——约束按 `len(p.shape)` 或 `p.shape[<变量>]` 引用
+  shape 时，`[]` 会让量词没有展开上界，求解变慢甚至超时。
 - 对 Python `List[int]`、tuple、aclIntArray 等非 Tensor 容器，“shape 为 `[N]`”或
   “长度为 N”表示容器长度，固定长度写 `array_length.value=[N]`；不得写入
   `dimensions`。长度区间才写 `array_length.value=[[lo,hi]]`。
