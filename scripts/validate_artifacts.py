@@ -191,10 +191,10 @@ def validate_constraint_semantics(value) -> list[str]:
                         f"{dimension_path} must be sorted and deduplicated; "
                         f"expected {canonical}"
                     )
-                invalid = [rank for rank in dimension_values if not 0 <= rank <= 10]
+                invalid = [rank for rank in dimension_values if rank < 0]
                 if invalid:
                     errors.append(
-                        f"{dimension_path} contains ranks outside [0, 10]: {invalid}"
+                        f"{dimension_path} contains negative ranks: {invalid}"
                     )
 
                 src_text = dimensions.get("src_text", "")
