@@ -23,8 +23,8 @@ description: 对照算子文档及本轮明确补充证据检查最终 constrain
 - 首轮（初始化 EXTRACT 后）还必须读取：当前 `<iter-dir>/extraction_provenance.json`
   与 `inputs/prompt_preanalysis.json`（做必载知识审计，见检查规则第 9 条）；
 - Metadata/TTK（`run_state.test_framework=ttk` 且存在 `inputs/plugin_requirements.json`）
-  还必须读取：`inputs/plugin_requirements.json` 与
-  `inputs/value_constraints.candidates.json`，按「步骤 M」复核。
+  还必须读取：`inputs/plugin_requirements.json`、`inputs/value_constraints.candidates.json`
+  与（若存在）`inputs/plugin_contract_review.json`，按「步骤 M」复核。
 
 只读上述输入与理解结构所必需的 schema/校验代码；其他 run、历史产物、memory 与
 Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权威，此处不再
@@ -49,7 +49,12 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
   记录；只有本轮报告 `passed` 后，主协调器才能运行
   `scripts/prepare_plugin_values.py --run-dir <run> --confirm` 落正式
   `value_constraints.json`；
-- 未确认的候选（`review_required=true`）不得被生成侧消费。
+- 未确认的候选（`review_required=true`）不得被生成侧消费；
+- `confidence="unresolved"` 的条目不得 confirm，必须记 open issue 并说明缺口；
+- `plugin_requirements.json.required_attributes`（如 `template_run_mode`）必须有生成侧
+  覆盖证据（插件契约报告或生成代码/规则），否则记 open issue；
+- 若存在 `inputs/plugin_contract_review.json`：其 `constraint_suggestions` 必须已落库
+  或被明确拒绝并说明理由；`gaps` 非空时逐条记 open 或标注非阻断理由。
 
 ## 步骤 0：正反例取证（仅 operator_family=aclnn）
 

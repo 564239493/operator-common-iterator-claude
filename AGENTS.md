@@ -155,6 +155,7 @@ opencode  # 启动 opencode
 | 阶段 | 子智能体 | 开工首载技能 | 主要产物 |
 |---|---|---|---|
 | 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` + `extraction_provenance.json` |
+| 插件契约分析（`--ttk-plugin` 条件） | `plugin-contract-analyst` | `analyze-ttk-plugin-contract` | `inputs/plugin_contract_review.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
 | 失败后约束增量更新 | `constraint-updater` | `update-constraints` | 新版 `constraints.json` + `constraint_update.json` |
@@ -170,10 +171,10 @@ opencode  # 启动 opencode
 
 ### opencode 编排层（.opencode/）
 
-- `.opencode/agents/*.md` — 12 个专职子智能体定义（WHO：角色身份、权限白名单、
+- `.opencode/agents/*.md` — 13 个专职子智能体定义（WHO：角色身份、权限白名单、
   返回契约；流程细节一律在各阶段技能，不重复抄写）
 - `.opencode/skills/<name>/SKILL.md` — 流程与知识技能（HOW：可执行规则、输入清单、
-  校验命令）。手写流程技能 17 个（`iterate-operator`、`iterate-directory`、各阶段技能；
+  校验命令）。手写流程技能 18 个（`iterate-operator`、`iterate-directory`、各阶段技能；
   其中 `atc-cpu-golden-derivation` 已废弃留档——CPU golden 已在生成时 mock 化，见
   WORKFLOW.md）
   + `build_knowledge_skills.py` 生成的知识技能 43 个（`aclnn-*` / `torch-npu-*`，生成物禁止手改）
