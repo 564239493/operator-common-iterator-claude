@@ -128,6 +128,13 @@ CSV 只是该统一中间模型的框架 adapter 产物。同时检查 `ttk_conv
 `golden_manifest.json`；`operator_family=aclnn` 使用 TTK 原生 ACLNN runner，
 同样不生成也不要求 E2E Golden plugin/manifest。
 
+当 `run_state.ttk_plugin` 非空且存在插件值规格（`value_constraints.json`）时，生成器
+会在写出 `<iter>/cases.json` 后自动调用 `apply_plugin_case_contract`：
+注入 `template_run_mode`/`ori_kv_topk_mode`/`cmp_kv_topk_mode`，并按
+seqused/cu_seqlens 规范化 KV/block table 物理 shape，产出
+`<iter>/plugin_case_contract_report.json`。这是生成器内部行为，case-generator
+不得手工重复注入或修改 CSV attributes；发现报告缺失/异常时按 generator_bug 报告。
+
 ## 生成后诊断
 
 `post_check_report.json` 不是必需产物，默认不创建。Z3 约束、Python 复检、

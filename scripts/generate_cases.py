@@ -918,6 +918,22 @@ def _main() -> int:
         cases_json_path, selected_source.read_text(encoding="utf-8"),
     )
 
+    if (
+        args.test_framework == "ttk"
+        and any(
+            spec.get("value_kind") == "tensor_values" for spec in specs
+        )
+    ):
+        try:
+            from scripts.operator_aux_params import apply_plugin_case_contract
+        except ModuleNotFoundError:
+            from operator_aux_params import apply_plugin_case_contract
+        contract_report = apply_plugin_case_contract(cases_json_path)
+        _atomic_write_json(
+            output_dir / "plugin_case_contract_report.json",
+            contract_report,
+        )
+
     if args.test_framework == "ttk":
         if operator_name.startswith("aclnn"):
             from scripts.atk_to_ttk_aclnn import convert_file

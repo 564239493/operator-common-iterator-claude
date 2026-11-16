@@ -163,7 +163,9 @@ def main() -> int:
             "ok": False, "code": "OPERATOR_DOC_NOT_FOUND", "doc": str(doc),
         }, ensure_ascii=False))
         return 2
-    candidates = extract(doc, _companion_paths(state), requirements)
+    candidates = extract(
+        doc, _companion_paths(state), requirements, constraints
+    )
     candidates_path = inputs_dir / "value_constraints.candidates.json"
     candidates_path.write_text(
         json.dumps({

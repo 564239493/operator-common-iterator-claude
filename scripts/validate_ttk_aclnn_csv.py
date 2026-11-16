@@ -125,6 +125,7 @@ def validate_csv(csv_path: Path) -> dict:
     issues: list[str] = []
     warnings: list[str] = []
 
+    csv.field_size_limit(2**31 - 1)
     with open(csv_path, "r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         headers = set(reader.fieldnames or [])

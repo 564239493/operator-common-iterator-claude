@@ -206,12 +206,24 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      `constraint-extractor`，退回纯文档驱动。
    - **PLUGIN VALUE CONTRACT（EXTRACT barrier 后；Metadata/TTK 条件触发）**：
      当 `run_state.test_framework="ttk"` 且 `run_state.ttk_plugin` 非空时，运行
-     `python scripts/prepare_plugin_values.py --run-dir <run-dir>`。该脚本**静态**分析
-     插件（不执行）、产出 `inputs/plugin_requirements.json` +
-     `inputs/value_constraints.candidates.json`；候选默认 `review_required=true`，
-     生成侧自动跳过。CHECK/REPAIR 阶段由 constraint-checker 复核候选，确认后主协调器运行
+     `python scripts/prepare_plugin_values.py --run-dir <run-dir>`。分析器**静态**解析
+     插件源码（不执行），从真实 kwargs/attribute 读取（含非 `*_values` 名称、f-string
+     模板+调用点实参、常量元组循环、`AUX_TARGETS`）产出
+     `inputs/plugin_requirements.json`（schema 1.1，含 `resolution`/`confidence`/
+     `required_attributes`）与 `inputs/value_constraints.candidates.json`；候选由
+     「文档序列语义 + 插件参数名/值语义」自动推导（`prefix_sum_prefix0` /
+     `within_prefix` / `lt_scalar`），默认 `review_required=true`，生成侧自动跳过。
+     CHECK/REPAIR 阶段由 constraint-checker 按步骤 M 复核；确认后主协调器运行
      `python scripts/prepare_plugin_values.py --run-dir <run-dir> --confirm` 落盘
-     `inputs/value_constraints.json`，并用 `validate_artifacts.py value_constraints` 校验。
+     `inputs/value_constraints.json`（必要时以 reviewed 候选经
+     `finalize_value_constraints.py`），并用 `validate_artifacts.py value_constraints` 校验。
+     `--ttk-plugin` 存在时还必须委派 `plugin-contract-analyst` 读插件快照产出
+     `inputs/plugin_contract_review.json`（属性确认/场景属性/约束建议/缺口）；发现缺失
+     约束时追加到 `inputs/supplement_constraints.md` 并重跑 SUPPLEMENT 后再 CHECK。
+     生成阶段（TTK 且存在插件值规格）由生成器自动调用
+     `apply_plugin_case_contract` 注入 `template_run_mode`/`*_kv_topk_mode` 并按
+     seqused/cu_seqlens 规范化 KV/block table shape，产出
+     `plugin_case_contract_report.json`；case-generator 不得重复注入。
      该步失败 → `BLOCKED`，不进入 GENERATE。
    - **CLASSIFY（EXTRACT barrier 后）**：主协调器跑
      `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，读

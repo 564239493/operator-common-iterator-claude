@@ -19,7 +19,11 @@ skill「必载知识协议」逐条 skill 加载清单内知识 skill 并应用�
 调度消息含 `scene_directive` 路径时必须读取，严格按其 `selection`、`param_modes`
 （`{"expand": [取值清单]}` / `{"fix": X}` / 缺键）与 `device_types` 适配参数和
 `product_support`，规则见 skill「场景屏蔽规则」「设备→`product_support` 规则」
-与第 12 条自检。开始前读取 `run_state.json.operator_family`，family 专用规则
+与第 12 条自检。当调度消息带有 `--ttk-plugin`（或 `run_state.ttk_plugin` 非空、
+`inputs/ttk_plugin_snapshot/` 存在）时，还必须读取插件快照与
+`inputs/plugin_requirements.json`，按 skill「插件派生约束」小节产出
+`origin="plugin_contract"` 的约束：`src_text` 写 `plugin: <file>:<line> ...`，
+无对应文档条款时 `src_txt_line` 可缺省；证据不足记入存疑点，不得臆造。开始前读取 `run_state.json.operator_family`，family 专用规则
 （hs/torch_npu Python 原型、aclnn 模式判定、跨 family 禁读）见 skill 步骤 2 与 5。
 每条 `constraints_in_parameters` 条目必须带全局唯一 `id`（`C-<NNN>` 顺序编号）
 和 `src_txt_line`（1-based 升序行号数组，指向算子文档快照中 `src_text` 引用条款

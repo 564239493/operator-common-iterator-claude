@@ -516,10 +516,21 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 Metadata 前置算子 + TTK `--plugin` 时，EXTRACT 阶段由
 `scripts/prepare_plugin_values.py` 产出：
 
-- `inputs/plugin_requirements.json`：插件静态契约（`required_value_attrs`、
-  `metadata_slot`、`aux_targets`、`plugin_sha256`、`file:line` 证据）。
-- `inputs/value_constraints.candidates.json`：从主/伴随文档 + 插件契约提取的候选
-  value 规则，条目 `origin="doc_candidate"`、`review_required=true`。
+- `inputs/plugin_requirements.json`：插件静态契约（schema 1.1）。`required_value_attrs`
+  每条含 `name`/`base_name`/`target_param`/`channel`/`resolution`（`kind`/`file`/`line`/
+  `template`/`arg`）/`evidence`/`confidence`（`declared|derived|unresolved`）；
+  `required_attributes` 列出插件直接读取的标量属性（如 `template_run_mode`）；
+  `metadata_slot`、`aux_targets`、`plugin_sha256` 保留。分析器从真实
+  kwargs/attribute 读取推导（f-string 模板+调用点实参、常量元组循环、`AUX_TARGETS`），
+  不再假设属性名以 `*_values` 结尾。
+- `inputs/plugin_contract_review.json`：`plugin-contract-analyst` 读插件源码后的核对
+  结果（`confirmed_value_attrs` / `scenario_attributes` / `constraint_suggestions` /
+  `gaps`，每条带 `plugin: file:line` 证据）。
+- `inputs/value_constraints.candidates.json`：从主/伴随文档 + 插件契约自动提取的候选
+  value 规则（`origin="doc_candidate"`、`review_required=true`）；
+  `confidence=unresolved` 的条目不得 confirm。
+- `<iter>/plugin_case_contract_report.json`：生成器 `apply_plugin_case_contract` 的审计
+  （注入的 `template_run_mode`/`*_kv_topk_mode` 与 canonical shape 修改明细）。
 - `iter_<N>/value_constraints.json`：经 constraint-checker 复核、主协调器
   `--confirm` 终审后的正式文件（生成/更新只读这一份）。首轮同时写
   `inputs/value_constraints.json` 作为审计副本。反馈轮的值级更新由
