@@ -967,14 +967,23 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
        `optional is None or x.dtype == optional.dtype` 必须均为
        `type_dependency`，不得为 `type_equality`。
 **聚合表达式求解器兼容性补充检查**：遍历所有 `expr`：
-    a. 不得出现 `sum(... for ... in ...)`、`sum(... for ... in zip(...))` 或
-       `sum([comprehension])`；当前生成器只支持 `sum(param.range_value)` 这类
-       对完整数组的直接求和；
-    b. 对 `reduceSum(A[i] - B[i])` 等线性聚合，必须改写为
+    a. 逐元素计算后再聚合写 `sum(生成器)`（或 `sum([...])` 列表推导）：被求和项须为
+       数值表达式；只支持**单个** `for` 子句与默认的 1 步长，禁止 `zip(...)` 生成器、
+       多 `for` 子句、`range(a, b, step)` 的非 1 步长；整段求和仍可直接写
+       `sum(param.range_value)`；
+    b. 迭代窗口必须能静态确定：`range(...)` 的界须由整数常量、`len(p.shape)` 的维度个数
+       范围、或 `len(p)` 的长度上界推出（可再做 `+ - * // 常量` 等整数运算）；用 `len(p)`
+       当循环上界时，必须另有 `len(p) <= N` 或 `len(p) == N` 约束给出上界，或参数卡
+       `array_length` 已声明长度枚举/区间；直接遍历序列
+       （`for v in p.range_value`）时长度须由 `len(p) == N` 唯一确定。推不出窗口的
+       `sum(生成器)` 会在求解期转换失败，该场景 fail-closed（0 用例）；
+    c. 对 `reduceSum(A[i] - B[i])` 等线性聚合，优先改写为
        `sum(A.range_value) - sum(B.range_value)`，并保留原有门控与容量不等式；
-    c. 不得用 `range(min(len(A), len(B)))` 静默截断较长数组；只在文档
+       也可逐下标写 `sum(A.range_value[i] - B.range_value[i] for i in range(len(A)))`，
+       但必须有长度上界；
+    d. 不得用 `range(min(len(A), len(B)))` 静默截断较长数组；只在文档
        明确要求等长时另建长度约束；
-    d. `aclnnScatterPaKvCache` 专项形式必须为
+    e. `aclnnScatterPaKvCache` 专项形式必须为
        `(seqLensOptional is None or compressLensOptional is None) or `
        `(sum(seqLensOptional.range_value) - sum(compressLensOptional.range_value) <= `
        `num_blocks.range_value * block_size.range_value)`，不得产出索引生成器或

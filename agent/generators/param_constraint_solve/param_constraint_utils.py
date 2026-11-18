@@ -34,6 +34,10 @@ from agent.generators.param_constraint_solve.z3_expression_solver_utils import (
     ASTtoZ3Converter,
     MAX_STATIC_UNROLL,
 )
+from agent.generators.param_constraint_solve.length_bounds import (
+    resolve_unroll_window,
+    sum_window_len_refs,
+)
 
 logger = LazyLogger()
 
@@ -166,16 +170,70 @@ def _shape_ref_names(exprs) -> set:
     return names
 
 
-def _rank_upper_facts(tree) -> dict:
-    """合取式里 `len(p.shape)` 的静态上界：name -> {上界, ...}。
+def _len_ref_names(exprs) -> set:
+    """约束里用 `len(p)` / `p.length` 引用过长度的参数名。"""
+    names = set()
+    for expr in exprs or []:
+        if not isinstance(expr, str) or not expr.strip():
+            continue
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            target = _len_target_name(node)
+            if target:
+                names.add(target)
+    return names
 
-    只认 `<=` / `<` / `==` / `in [..]` 的整数常量（含链式比较）；整棵树须已是合取式
-    （由调用方保证），否则界可能只在某个分支成立。
+
+def _sum_range_len_refs(exprs) -> set:
+    """`sum(... for i in range(...))` 展开窗口里引用长度的参数名。
+
+    只认 ``sum`` 生成式/列表推导、单条 ``for ... in range(...)`` 且 ``range()``
+    参数里出现的 ``len(p)`` / ``p.length``：这些参数的长度上界决定展开窗口，
+    超阈值截断只落在它们身上。``sum`` 外的 ``range(len(p))`` 量词不算窗口。
+    """
+    names = set()
+    for expr in exprs or []:
+        if not isinstance(expr, str) or not expr.strip():
+            continue
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "sum" and len(node.args) == 1):
+                continue
+            container = node.args[0]
+            if not isinstance(container, (ast.GeneratorExp, ast.ListComp)):
+                continue
+            for comprehension in container.generators:
+                iter_node = comprehension.iter
+                if not (isinstance(iter_node, ast.Call)
+                        and isinstance(iter_node.func, ast.Name)
+                        and iter_node.func.id == "range"):
+                    continue
+                for arg in iter_node.args:
+                    for sub_node in ast.walk(arg):
+                        target = _len_target_name(sub_node)
+                        if target:
+                            names.add(target)
+    return names
+
+
+def _rank_upper_facts(tree, name_of=_shape_len_target_name) -> dict:
+    """合取式里 `len(...)` 的静态上界：name -> {上界, ...}。
+
+    ``name_of`` 选择识别形态：默认 ``len(p.shape)``（维度个数），传 ``_len_target_name``
+    则识别 ``len(p)``（列表长度）。只认 `<=` / `<` / `==` / `in [..]` 的整数常量
+    （含链式比较）；整棵树须已是合取式（由调用方保证），否则界可能只在某个分支成立。
     """
     facts = {}
 
     def add(name, value):
-        # 0 维无轴可展开；超上限由 set_static_rank_max 过滤
+        # 0 维/空列表无下标可展开；超上限由 set_static_* 过滤
         if _is_static_int(value) and value >= 1:
             facts.setdefault(name, set()).add(value)
 
@@ -184,12 +242,12 @@ def _rank_upper_facts(tree) -> dict:
             continue
         left_node = node.left
         for op, right_node in zip(node.ops, node.comparators):
-            shape_name = _shape_len_target_name(left_node)
+            shape_name = name_of(left_node)
             right_is_int = isinstance(right_node, ast.Constant) and _is_static_int(right_node.value)
             if isinstance(op, (ast.LtE, ast.Lt, ast.Eq)) and shape_name and right_is_int:
                 add(shape_name, right_node.value - 1 if isinstance(op, ast.Lt) else right_node.value)
             else:
-                right_name = _shape_len_target_name(right_node)
+                right_name = name_of(right_node)
                 left_is_int = isinstance(left_node, ast.Constant) and _is_static_int(left_node.value)
                 if isinstance(op, (ast.GtE, ast.Gt, ast.Eq)) and right_name and left_is_int:
                     add(right_name, left_node.value - 1 if isinstance(op, ast.Gt) else left_node.value)
@@ -202,8 +260,8 @@ def _rank_upper_facts(tree) -> dict:
     return facts
 
 
-def _rank_upper_from_exprs(exprs, param_name):
-    """多条合取约束里 `len(p.shape)` 的最紧静态上界；推不出返回 None。"""
+def _upper_from_exprs(exprs, param_name, name_of=_shape_len_target_name):
+    """多条合取约束里 `len(...)` 的静态上界，多个候选取最小；推不出返回 None。"""
     upper = None
     for expr in exprs or []:
         if not isinstance(expr, str) or not expr.strip():
@@ -214,9 +272,19 @@ def _rank_upper_from_exprs(exprs, param_name):
             continue
         if not _is_conjunctive(tree):
             continue
-        for value in _rank_upper_facts(tree).get(param_name, ()):
+        for value in _rank_upper_facts(tree, name_of).get(param_name, ()):
             upper = value if upper is None else min(upper, value)
     return upper
+
+
+def _rank_upper_from_exprs(exprs, param_name):
+    """多条合取约束里 `len(p.shape)` 的静态上界，多个候选取最小；推不出返回 None。"""
+    return _upper_from_exprs(exprs, param_name, _shape_len_target_name)
+
+
+def _len_upper_from_exprs(exprs, param_name):
+    """多条合取约束里 `len(p)` 的静态上界，多个候选取最小；推不出返回 None。"""
+    return _upper_from_exprs(exprs, param_name, _len_target_name)
 
 
 def resolve_static_lengths(exprs, hard_lengths=None) -> dict:
@@ -1441,6 +1509,67 @@ class ParamConstraintUtils(CommonDispatcher):
             hard_lengths,
         )
 
+    def _param_ori_data(self, param_name):
+        """按名字取参数卡：inputs 优先，其次 outputs。"""
+        if param_name in self.operator_rule_data.inputs:
+            return self.operator_rule_data.inputs.get(param_name)
+        return self.operator_rule_data.outputs.get(param_name)
+
+    def _static_length_max_for_unroll(self, constraints=None, builder=None) -> dict:
+        """收集列表参数的长度上限，供 ``range(len(p))`` / ``sum()`` 展开推导静态窗口。
+
+        取值优先级（与维度个数上限的文档档同构，实现在 ``length_bounds.resolve_length_upper``，
+        与取证脚本 ``scripts/verify_relation_exprs.py`` 共用同一份代码）：
+        ① 文档 ``array_length`` 声明的上限（枚举取 max / 区间取最大上端）；
+        ② 合取约束里 ``len(p) <= N`` / ``< N`` / ``in [...]`` 推出的上界（含链式比较；
+        精确长度 ``len(p) == N`` 归 ``_static_lengths_for_unroll`` 管，这里顺带也能得到
+        同样的界）。两档都没有则不登记（列表长度没有兜底档），转换器随之拒绝展开该
+        表达式（fail-closed）。
+
+        上界超过静态展开阈值时，只有作为 ``sum()`` 窗口的参数才截断到阈值
+        （``length_bounds.resolve_unroll_window``），其余参数照旧不登记、量词保持原样。
+        截断后 ``len(p) <= 阈值`` 与文档档上界一并并入硬断言：冲突消解会丢弃软表达式，
+        丢弃后展开只覆盖 ``[0, 界)``，原不等式被悄悄削弱。
+
+        :param constraints: 本轮 ``constraints_in_parameters`` 条目（取 ``.expr``）
+        :param builder: 已建好的求解器，用于跳过未声明的参数
+        :return: 参数名 -> 长度上界
+        """
+        length_max = {}
+        self._len_hard_exprs = []
+        exprs = [getattr(constraint, "expr", "") or "" for constraint in constraints or []]
+        sum_refs = sum_window_len_refs(exprs)
+        for param_name in sorted(_len_ref_names(exprs)):
+            param_info = self.case_input_map.get(param_name)
+            if param_info is None or DataMatchMap.Z3_VAR_TYPE_MAP.get(
+                    getattr(param_info, "type", None)) not in ("list", "tensor_list"):
+                continue
+            combination = self.param_combinations.get(param_name) if self.param_combinations else None
+            if combination is not None and not combination.is_present:
+                continue
+            if builder is not None and param_name not in builder.var_map:
+                continue
+            # ① 文档 array_length；推不出再看 ② 约束文本（文档优先、不回退）。
+            # 取值优先级、阈值与截断范围统一在 length_bounds，取证脚本调同一份实现。
+            param_ori_data = self._param_ori_data(param_name)
+            bound, declared = resolve_unroll_window(
+                param_name,
+                getattr(param_ori_data, "array_length", None) if param_ori_data else None,
+                exprs,
+                allow_clamp=param_name in sum_refs)
+            if bound is None:
+                continue
+            if declared is not None:
+                logger.warning(
+                    f"[Unroll] list length bound for '{param_name}' narrowed to {bound} : "
+                    f"declared upper bound {declared} exceeds the static unroll limit, "
+                    f"generation is limited to len({param_name}) <= {bound}")
+            length_max[param_name] = bound
+            self._len_hard_exprs.append(f"len({param_name}) <= {bound}")
+        if length_max:
+            logger.debug(f"[Unroll] Static list length bounds: {length_max}")
+        return length_max
+
     def _rank_max_from_doc(self) -> dict:
         """文档 `dimensions` 声明的维度个数上限，已由
         ``build_param_shape_len_constraint`` 硬断言，不会被冲突消解丢弃。
@@ -1743,6 +1872,10 @@ class ParamConstraintUtils(CommonDispatcher):
             builder.set_static_lengths(
                 {name: value for name, value in static_lengths.items() if name in builder.var_map}
             )
+        # 列表长度上限，供 range(len(p)) / sum() 展开推导静态窗口
+        length_max = self._static_length_max_for_unroll(constraint_after_solve_no, builder)
+        if length_max:
+            builder.set_static_length_max(length_max)
         # range() 展开的循环上界，取值规则见 _static_rank_max_for_unroll
         rank_max = self._static_rank_max_for_unroll(constraint_after_solve_no, builder)
         if rank_max:
@@ -1798,6 +1931,8 @@ class ParamConstraintUtils(CommonDispatcher):
                                               hard_static_expr_list=domain_static)
         # 非文档来源的维度个数上限须与文档域同权硬断言，否则会被偏好消解丢弃
         domain_static.extend(getattr(self, "_rank_hard_exprs", None) or [])
+        # 同理：约束推出的列表长度上限也必须硬断言，否则 range(len(p)) / sum() 的展开窗口会大于实际可达长度，原不等式被悄悄削弱
+        domain_static.extend(getattr(self, "_len_hard_exprs", None) or [])
         self.build_param_length_constraint(all_static, builder, check=False)
 
         # 文档声明的标量取值域（allowed_range_value enum/range）是硬约束：在偏好

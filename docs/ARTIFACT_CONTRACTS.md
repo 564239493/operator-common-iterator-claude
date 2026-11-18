@@ -447,8 +447,12 @@ CHECK 前的**参数长度探针**（advisory，不阻断流程）。它针对�
 `apply_supplement_constraints.py` 每次覆盖 `constraints.json.pre_supplement`，
 因此固定值合并后该备份是 **pre-pin** 而非 EXTRACT 原始版；回滚按 `origin="param_pin"` 过滤，
 不依赖该备份。
-探针**只固定长度**，不写 `x[0] < x[1]` 之类逐元素展开。列表参数的 `all()/any()` 量词由
-生成器在**长度可静态确定**时定长展开为逐元素 `And`/`Or`，约束文本保持文档原样
+探针**只固定长度**，不写 `x[0] < x[1]` 之类逐元素展开。以下均为**生成器内部行为**，
+约束文本保持文档原样（量词/聚合照常书写，不需逐下标展开）：列表参数的 `all()/any()`
+量词在**长度可静态确定**时定长展开为逐元素 `And`/`Or`；`range(...)` 量词在循环界可由
+常量 / `len(p.shape)` 维度数范围 / `len(p)` 长度上界推出时展开为逐下标 `Implies` 合取；
+`sum(表达式 for i in ...)`（含 `sum([...])`）按同一套静态窗口展开为逐项连加，窗口外的
+下标由 guard 短路
 （上限 `MAX_STATIC_UNROLL = 128`，见 `agent/generators/param_constraint_solve/`）。
 选择长度超过 `UNROLL_LIMIT`（同 128）、且组内存在量词时，patch 带
 `large_length_quantifier` 警告，此时仍按量词求解，可能明显变慢。
