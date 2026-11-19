@@ -23,15 +23,21 @@ Outputs:
   ``selected_platform``/``platform_selection_reason``
 - ``<iter_dir>/generation.log``       — when ``--iter-dir`` is passed, a
   timestamped log mirror of the run for diagnostics
+- with ``--csv-plugin`` (ttk only): ``cases_ttk.pre_plugin.csv`` preserves the
+  base CSV, the plugin writes the final ``cases_ttk.csv``, and
+  ``csv_plugin_report.json``/``csv_plugin.log`` record the invocation. The
+  document-driven aux-parameter pipeline is skipped.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import logging
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -68,6 +74,231 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+_CSV_PLUGIN_TIMEOUT_SECONDS = 1800
+
+
+def _resolve_csv_plugin_path(raw: str) -> Path:
+    """Resolve a user-provided local CSV post-processing script."""
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    return candidate.resolve()
+
+
+def _csv_header_and_row_count(path: Path) -> tuple[list[str], int]:
+    """Read just the header and non-empty data-row count from a CSV file."""
+    csv.field_size_limit(2**31 - 1)
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        try:
+            header = next(reader)
+        except StopIteration as exc:
+            raise ValueError(f"{path}: CSV is empty") from exc
+        row_count = sum(1 for row in reader if any(cell.strip() for cell in row))
+    return header, row_count
+
+
+def _fail_csv_plugin(
+    *,
+    generation_status_path: Path,
+    report_path: Path,
+    report: dict[str, Any],
+    code: str,
+    message: str,
+) -> None:
+    """Persist a failed CSV-plugin report/status and abort generation."""
+    report["ok"] = False
+    report.setdefault("errors", []).append(f"{code}: {message}")
+    _atomic_write_json(report_path, report)
+    _atomic_write_json(generation_status_path, {
+        "state": "failed",
+        "code": code,
+        "message": message,
+        "csv_plugin_report": str(report_path),
+    })
+    raise RuntimeError(f"{code}: {message}")
+
+
+def _apply_csv_plugin(
+    *,
+    plugin_path: Path,
+    output_dir: Path,
+    ttk_output: Path,
+    generation_status_path: Path,
+    baseline_validation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the user CSV plugin on the converted TTK CSV.
+
+    The base CSV is preserved as ``cases_ttk.pre_plugin.csv``; the plugin
+    writes the final ``cases_ttk.csv`` used by EXECUTE. The plugin contract is
+    the same as ``/home/fill_group_list_data.py``:
+    ``--input_case_csv <base> --output_case_csv <final>``.
+    """
+    report_path = output_dir / "csv_plugin_report.json"
+    log_path = output_dir / "csv_plugin.log"
+    base_csv = output_dir / "cases_ttk.pre_plugin.csv"
+    report: dict[str, Any] = {
+        "enabled": True,
+        "ok": False,
+        "script": str(plugin_path),
+        "input_csv": str(base_csv),
+        "output_csv": str(ttk_output),
+        "returncode": None,
+        "log": str(log_path),
+        "report": str(report_path),
+        "errors": [],
+    }
+    base_renamed = False
+
+    def fail(code: str, message: str) -> None:
+        if base_renamed:
+            # Never leave a partial/invalid plugin result at the fixed EXECUTE
+            # path. The pre-plugin CSV remains available for diagnosis.
+            ttk_output.unlink(missing_ok=True)
+        _fail_csv_plugin(
+            generation_status_path=generation_status_path,
+            report_path=report_path,
+            report=report,
+            code=code,
+            message=message,
+        )
+
+    if not plugin_path.is_file():
+        fail("CSV_PLUGIN_NOT_FOUND", f"csv plugin not found: {plugin_path}")
+    if not ttk_output.is_file():
+        fail(
+            "CSV_PLUGIN_INPUT_MISSING",
+            f"TTK CSV was not produced before csv plugin: {ttk_output}",
+        )
+
+    try:
+        input_header, input_rows = _csv_header_and_row_count(ttk_output)
+    except (OSError, ValueError) as exc:
+        fail("CSV_PLUGIN_INPUT_INVALID", f"cannot read generated TTK CSV: {exc}")
+
+    base_csv.unlink(missing_ok=True)
+    ttk_output.replace(base_csv)
+    base_renamed = True
+
+    command = [
+        sys.executable,
+        str(plugin_path),
+        "--input_case_csv",
+        str(base_csv),
+        "--output_case_csv",
+        str(ttk_output),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="backslashreplace",
+            timeout=_CSV_PLUGIN_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        log_path.write_text(
+            "$ " + " ".join(command) + "\n\n[timeout] "
+            + f"{_CSV_PLUGIN_TIMEOUT_SECONDS}s\n",
+            encoding="utf-8",
+        )
+        fail(
+            "CSV_PLUGIN_TIMEOUT",
+            f"csv plugin exceeded {_CSV_PLUGIN_TIMEOUT_SECONDS}s: {plugin_path}",
+        )
+    except OSError as exc:
+        fail("CSV_PLUGIN_EXEC_FAILED", f"cannot execute csv plugin: {exc}")
+
+    log_path.write_text(
+        "$ " + " ".join(command)
+        + "\n\n[stdout]\n" + (completed.stdout or "")
+        + "\n[stderr]\n" + (completed.stderr or ""),
+        encoding="utf-8",
+    )
+    report["returncode"] = completed.returncode
+    if completed.returncode != 0:
+        stderr_excerpt = (completed.stderr or "").strip()
+        if len(stderr_excerpt) > 2000:
+            stderr_excerpt = stderr_excerpt[-2000:]
+        fail(
+            "CSV_PLUGIN_FAILED",
+            f"csv plugin exited with {completed.returncode}"
+            + (f": {stderr_excerpt}" if stderr_excerpt else ""),
+        )
+
+    if not ttk_output.is_file():
+        fail(
+            "CSV_PLUGIN_OUTPUT_INVALID",
+            f"csv plugin did not create output CSV: {ttk_output}",
+        )
+    try:
+        output_header, output_rows = _csv_header_and_row_count(ttk_output)
+    except (OSError, ValueError) as exc:
+        fail("CSV_PLUGIN_OUTPUT_INVALID", f"cannot read plugin output CSV: {exc}")
+    if output_header != input_header:
+        fail(
+            "CSV_PLUGIN_OUTPUT_INVALID",
+            "plugin output header changed: "
+            f"input={input_header!r}, output={output_header!r}",
+        )
+    if output_rows != input_rows:
+        fail(
+            "CSV_PLUGIN_OUTPUT_INVALID",
+            f"plugin output row count changed: input={input_rows}, "
+            f"output={output_rows}",
+        )
+
+    validation = None
+    if baseline_validation is not None:
+        from scripts.validate_ttk_aclnn_csv import validate_csv
+
+        validation = validate_csv(ttk_output)
+        report["validation"] = validation
+        if baseline_validation.get("valid") and not validation.get("valid"):
+            fail(
+                "CSV_PLUGIN_OUTPUT_INVALID",
+                "plugin output failed TTK ACLNN CSV validation: "
+                + json.dumps(validation.get("issues", [])[:20], ensure_ascii=False),
+            )
+        if not baseline_validation.get("valid") and not validation.get("valid"):
+            logger.warning(
+                "csv plugin output keeps pre-existing TTK ACLNN validation issues: %s",
+                json.dumps(validation.get("issues", [])[:10], ensure_ascii=False),
+            )
+
+    report.update({
+        "ok": True,
+        "row_count": output_rows,
+        "artifact_hashes": {
+            "input_csv": _sha256(base_csv),
+            "output_csv": _sha256(ttk_output),
+        },
+    })
+    _atomic_write_json(report_path, report)
+    logger.info(
+        "csv plugin applied: script=%s rows=%d input=%s output=%s",
+        plugin_path,
+        output_rows,
+        base_csv,
+        ttk_output,
+    )
+    return report
+
+
+def _csv_plugin_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    if report is None:
+        return None
+    return {
+        key: report.get(key)
+        for key in (
+            "enabled", "script", "input_csv", "output_csv", "report",
+            "row_count", "artifact_hashes",
+        )
+    }
 
 
 def _hs_generation_gate_errors(
@@ -510,6 +741,16 @@ def _main() -> int:
         ),
     )
     parser.add_argument(
+        "--csv-plugin",
+        default=None,
+        help=(
+            "TTK 专用：基础 cases_ttk.csv 生成后，调用该本地 Python 脚本做 "
+            "CSV 后处理。脚本契约：--input_case_csv <基础CSV> "
+            "--output_case_csv <最终CSV>。启用时跳过文档驱动的辅助参数构造/"
+            "groupListData materialize/aux golden.py；ttk_plugin 值契约保留。"
+        ),
+    )
+    parser.add_argument(
         "--hs-scenario-mode",
         choices=("original", "planned"),
         default="original",
@@ -544,6 +785,11 @@ def _main() -> int:
     args = parser.parse_args()
     if args.count < 1:
         raise SystemExit("count must be positive")
+    if args.csv_plugin and args.test_framework != "ttk":
+        raise SystemExit("--csv-plugin 仅支持 --test-framework ttk")
+    csv_plugin_path = (
+        _resolve_csv_plugin_path(args.csv_plugin) if args.csv_plugin else None
+    )
 
     iter_dir = Path(args.iter_dir) if args.iter_dir else None
     iter_log_path = _setup_iter_log(iter_dir) if iter_dir else None
@@ -621,6 +867,14 @@ def _main() -> int:
                 "stale cases.json or CSV artifacts from an earlier attempt."
             ),
         })
+        if csv_plugin_path is not None and not csv_plugin_path.is_file():
+            message = f"csv plugin not found: {csv_plugin_path}"
+            _atomic_write_json(generation_status_path, {
+                "state": "failed",
+                "code": "CSV_PLUGIN_NOT_FOUND",
+                "message": message,
+            })
+            raise RuntimeError(f"CSV_PLUGIN_NOT_FOUND: {message}")
     scenario_generation: dict[str, Any] = {}
     if args.test_framework == "ttk":
         from agent.hs import is_hs_operator
@@ -841,60 +1095,71 @@ def _main() -> int:
         "updated_cases": 0,
         "updated_params": 0,
     }
+    specs: list[dict[str, Any]] = []
     if args.test_framework == "ttk":
-        from scripts.operator_aux_params import (
-            ensure_run_aux_specs,
-            inject_aux_params_into_file,
-        )
+        from scripts.operator_aux_params import inject_aux_params_into_file
 
-        spec_payload = ensure_run_aux_specs(
-            output_dir.parent, operator_name, constraints,
-        )
-        specs = spec_payload.get("aux_params", []) or []
-        aux_report = inject_aux_params_into_file(
-            selected_source, operator_name, specs=specs,
-        )
-        plugin = next(
-            (spec.get("plugin") for spec in specs if spec.get("plugin")),
-            None,
-        )
-        if plugin:
-            plugin_path = ROOT / plugin
-            if plugin_path.is_file():
-                shutil.copy2(plugin_path, output_dir / "golden.py")
-            else:
-                logger.warning("aux plugin not found: %s", plugin_path)
-        elif specs:
-            aux_targets = {
-                spec["name"]: spec.get("signature_index")
-                for spec in specs
-                if spec.get("signature_index") is not None
-                and spec.get("value_kind") != "tensor_values"
-            }
-            if aux_targets:
-                template = (
-                    ROOT / "scripts" / "aux_input_plugin_template.py"
-                ).read_text(encoding="utf-8")
-                template = template.replace(
-                    "AUX_TARGETS = {}",
-                    f"AUX_TARGETS = {aux_targets!r}",
-                    1,
-                )
-                template = template.replace(
-                    '__input__ = {"aclnn": {}}',
-                    "__input__ = {\"aclnn\": {"
-                    + json.dumps(operator_name)
-                    + ': "apply_aux_params"}}',
-                    1,
-                )
-                (output_dir / "golden.py").write_text(
-                    template, encoding="utf-8",
-                )
-            else:
-                logger.warning(
-                    "aux params have no signature_index; generic input plugin "
-                    "not generated"
-                )
+        if csv_plugin_path is not None:
+            # ``--csv-plugin`` owns the document-driven auxiliary-parameter
+            # construction. Keep only the ttk_plugin value contract
+            # (plugin_requirements.json + value_constraints.json); do not run
+            # doc/knowledge detection or write inputs/aux_params.json.
+            from scripts.operator_aux_params import detect_plugin_value_specs
+
+            specs = detect_plugin_value_specs(output_dir.parent, constraints)
+        else:
+            from scripts.operator_aux_params import ensure_run_aux_specs
+
+            spec_payload = ensure_run_aux_specs(
+                output_dir.parent, operator_name, constraints,
+            )
+            specs = spec_payload.get("aux_params", []) or []
+        if specs:
+            aux_report = inject_aux_params_into_file(
+                selected_source, operator_name, specs=specs,
+            )
+        if csv_plugin_path is None:
+            plugin = next(
+                (spec.get("plugin") for spec in specs if spec.get("plugin")),
+                None,
+            )
+            if plugin:
+                plugin_path = ROOT / plugin
+                if plugin_path.is_file():
+                    shutil.copy2(plugin_path, output_dir / "golden.py")
+                else:
+                    logger.warning("aux plugin not found: %s", plugin_path)
+            elif specs:
+                aux_targets = {
+                    spec["name"]: spec.get("signature_index")
+                    for spec in specs
+                    if spec.get("signature_index") is not None
+                    and spec.get("value_kind") != "tensor_values"
+                }
+                if aux_targets:
+                    template = (
+                        ROOT / "scripts" / "aux_input_plugin_template.py"
+                    ).read_text(encoding="utf-8")
+                    template = template.replace(
+                        "AUX_TARGETS = {}",
+                        f"AUX_TARGETS = {aux_targets!r}",
+                        1,
+                    )
+                    template = template.replace(
+                        '__input__ = {"aclnn": {}}',
+                        "__input__ = {\"aclnn\": {"
+                        + json.dumps(operator_name)
+                        + ': "apply_aux_params"}}',
+                        1,
+                    )
+                    (output_dir / "golden.py").write_text(
+                        template, encoding="utf-8",
+                    )
+                else:
+                    logger.warning(
+                        "aux params have no signature_index; generic input plugin "
+                        "not generated"
+                    )
         if aux_report.get("updated_params"):
             logger.info(
                 "injected auxiliary params: %s",
@@ -934,6 +1199,7 @@ def _main() -> int:
             contract_report,
         )
 
+    csv_plugin_report: dict[str, Any] | None = None
     if args.test_framework == "ttk":
         if operator_name.startswith("aclnn"):
             from scripts.atk_to_ttk_aclnn import convert_file
@@ -1020,6 +1286,14 @@ def _main() -> int:
             conversion = {**conversion, "csv_validation": csv_validation}
             ttk_temporary.replace(ttk_output)
             conversion["destination"] = str(ttk_output)
+            if csv_plugin_path is not None:
+                csv_plugin_report = _apply_csv_plugin(
+                    plugin_path=csv_plugin_path,
+                    output_dir=output_dir,
+                    ttk_output=ttk_output,
+                    generation_status_path=generation_status_path,
+                    baseline_validation=csv_validation,
+                )
             for item in aux_materializations:
                 report = item["report"]
                 report["input_csv"] = str(ttk_output)
@@ -1056,6 +1330,7 @@ def _main() -> int:
                 "semantically_clean_count": conversion["semantically_clean_count"],
                 "output": str(ttk_output),
                 "adapter": "scripts.atk_to_ttk_aclnn.convert_file",
+                "csv_plugin": _csv_plugin_summary(csv_plugin_report),
                 "aux_params": aux_report,
                 "aux_params_report": (
                     str(output_dir / "aux_params_report.json")
@@ -1096,6 +1371,10 @@ def _main() -> int:
                 "selected_execution_file": str(selected_source),
                 "cases_json": str(cases_json_path),
                 "cases_csv": str(ttk_output),
+                "csv_plugin_report": (
+                    str(output_dir / "csv_plugin_report.json")
+                    if csv_plugin_report is not None else None
+                ),
                 "artifact_hashes": summary["artifact_hashes"],
             })
             print(json.dumps(summary, ensure_ascii=False))
@@ -1192,6 +1471,13 @@ def _main() -> int:
             )
         ttk_temporary.replace(ttk_output)
         conversion["destination"] = str(ttk_output)
+        if csv_plugin_path is not None:
+            csv_plugin_report = _apply_csv_plugin(
+                plugin_path=csv_plugin_path,
+                output_dir=output_dir,
+                ttk_output=ttk_output,
+                generation_status_path=generation_status_path,
+            )
         summary = {
             "operator_name": operator_name,
             "test_framework": "ttk",
@@ -1222,6 +1508,7 @@ def _main() -> int:
             "golden_covered_cases": None,
             "golden_manifest": None,
             "adapter": "scripts.atc_to_ttk.convert_file",
+            "csv_plugin": _csv_plugin_summary(csv_plugin_report),
             "ttk_content_generation_mode": conversion["content_generation_mode"],
             "ttk_content_generation_limitations": conversion["content_generation_limitations"],
             "ttk_materialization": (
@@ -1244,6 +1531,10 @@ def _main() -> int:
             "selected_execution_file": str(selected_source),
             "cases_json": str(cases_json_path),
             "cases_csv": str(ttk_output),
+            "csv_plugin_report": (
+                str(output_dir / "csv_plugin_report.json")
+                if csv_plugin_report is not None else None
+            ),
             "artifact_hashes": summary["artifact_hashes"],
         })
         print(json.dumps(summary, ensure_ascii=False))

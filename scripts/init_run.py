@@ -184,6 +184,7 @@ def resume_run(run_ref: str) -> int:
             "operator_family": state.get("operator_family"),
             "test_framework": state.get("test_framework"),
             "ttk_plugin": state.get("ttk_plugin") or "",
+            "csv_plugin": state.get("csv_plugin") or "",
             "mode": state.get("mode"),
             "max_iterations": state.get("max_iterations"),
             "next_action": next_action,
@@ -513,6 +514,26 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--csv-plugin",
+        default="",
+        help=(
+            "TTK 专用：写入 run_state.csv_plugin。GENERATE 完成 cases.json → "
+            "cases_ttk.csv 后，以 --input_case_csv/--output_case_csv 调用该本地 "
+            "Python 脚本生成新的执行 CSV；启用时跳过文档驱动的辅助参数构造流程。"
+            "仅 --test-framework ttk 可用。"
+        ),
+    )
+    parser.add_argument(
+        "--ttk-plugin-root",
+        default="",
+        help=(
+            "TTK 专用：写入 run_state.ttk_plugin_root，EXECUTE 阶段作为 ttk 插件"
+            "打包根目录传入（--plugin-root）。当 --ttk-plugin 指向的插件目录依赖"
+            "同级/上级共享模块（如 gmm/common/tests/ttk）时，用本参数指定包含它们的"
+            "本地目录；仅 --test-framework ttk 可用。"
+        ),
+    )
+    parser.add_argument(
         "--hs-scenario-mode",
         choices=("original", "planned"),
         default="original",
@@ -596,6 +617,18 @@ def main() -> int:
         test_framework = args.test_framework
     if args.ttk_plugin and test_framework != "ttk":
         parser.error("--ttk-plugin 仅支持 --test-framework ttk")
+    if args.ttk_plugin_root and test_framework != "ttk":
+        parser.error("--ttk-plugin-root 仅支持 --test-framework ttk")
+    if args.ttk_plugin_root and not args.ttk_plugin:
+        parser.error("--ttk-plugin-root 必须与 --ttk-plugin 同时使用")
+    ttk_plugin_root = ""
+    if args.ttk_plugin_root:
+        candidate_root = resolve_input_path(args.ttk_plugin_root)
+        if not candidate_root.is_dir():
+            parser.error(f"--ttk-plugin-root 不是本地目录: {candidate_root}")
+        ttk_plugin_root = str(candidate_root)
+    if args.csv_plugin and test_framework != "ttk":
+        parser.error("--csv-plugin 仅支持 --test-framework ttk")
 
     explicit_companions: list[Path] = []
     for raw in args.companion_docs:
@@ -866,6 +899,8 @@ def main() -> int:
         "operator_family": operator_family,
         "test_framework": test_framework,
         "ttk_plugin": args.ttk_plugin or "",
+        "ttk_plugin_root": ttk_plugin_root,
+        "csv_plugin": args.csv_plugin or "",
         "hs_scenario_mode": args.hs_scenario_mode,
         "run_scope": "constraints_only" if test_framework == "constraints" else "full",
         "scene": None,  # EXTRACT 前 SCENE_SCAN 回写: {enabled, scope, device_types, selection, param_modes, selection_policy, directive, scan}
@@ -909,6 +944,8 @@ def main() -> int:
             "operator_family": operator_family,
             "test_framework": test_framework,
             "ttk_plugin": args.ttk_plugin or "",
+            "ttk_plugin_root": ttk_plugin_root,
+            "csv_plugin": args.csv_plugin or "",
             "hs_scenario_mode": args.hs_scenario_mode,
             "run_scope": "constraints_only" if test_framework == "constraints" else "full",
             "server_config": str(server_config) if server_config else "",
