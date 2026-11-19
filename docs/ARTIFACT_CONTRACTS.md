@@ -35,6 +35,9 @@ runs/<operator>-<timestamp>/
     generation_summary.json
     cases.json
     cases_ttk.csv
+    cases_ttk.pre_plugin.csv         # 可选：--csv-plugin 前的基础 CSV 保留副本
+    csv_plugin_report.json            # 可选：--csv-plugin 调用与输出校验报告
+    csv_plugin.log                    # 可选：--csv-plugin stdout/stderr
     execution_result.json
     ttk_artifacts/plog/                 # TTK E2E：本次执行 PLOG
       manifest.json
@@ -657,6 +660,30 @@ ACLNN 模式；`api_name=torch_npu.*` 时使用 TTK E2E 模式。cases.json 中
 使用：
 
 `python scripts/validate_artifacts.py ttk_cases <iter>/cases_ttk.csv`
+
+### `--csv-plugin` 后处理
+
+当 `run_state.csv_plugin` 非空时，生成器在基础 `cases_ttk.csv` 完成后调用该本地
+Python 脚本：
+
+```text
+python <csv_plugin> --input_case_csv <iter>/cases_ttk.pre_plugin.csv \
+  --output_case_csv <iter>/cases_ttk.csv
+```
+
+- 基础 CSV 保留为 `cases_ttk.pre_plugin.csv`；最终 `cases_ttk.csv` 是插件输出，
+  EXECUTE 继续读取该固定路径。
+- `csv_plugin_report.json` 记录 `script`/`input_csv`/`output_csv`/`returncode`/
+  `row_count`/`validation`/`artifact_hashes`；`csv_plugin.log` 保留 stdout/stderr。
+- 插件输出必须保持表头与行数不变；ACLNN 还必须通过
+  `scripts.validate_ttk_aclnn_csv.validate_csv`（基础 CSV 原本 valid 时）。
+- 插件非 0 退出、输出缺失/非法或校验失败即阻断 GENERATE，不写出可执行的
+  `cases_ttk.csv`，不得回退使用基础 CSV。
+- 启用 `--csv-plugin` 时跳过文档驱动的 `inputs/aux_params.json`、groupListData
+  materialize 和 aux `golden.py`；`ttk_plugin` 值契约（plugin_requirements /
+  value_constraints / plugin_case_contract）仍保留。
+- `generation_summary.json.csv_plugin` 记录摘要（脚本、输入/输出路径、报告路径、
+  row_count、hashes）；未启用时为 `null`。
 
 TTK 路径消费统一 `cases.json`，但不得生成或消费 ATK `cases_executor.py/cases_expanded.json`。
 所有 TTK 模式都生成 `ttk_conversion_audit.json`。只有 torch_npu/E2E 生成
