@@ -235,6 +235,23 @@ class PICTGenerator(BaseGenerator):
                            self._operator_name)
             return None
 
+        # M7 约束集一致性：PICT 收敛时若松弛过约束（removed_constraints 非空），
+        # 后过滤必须用与 PICT 相同的约束集——否则按全量约束过滤会把 PICT 按
+        # 松弛后约束集生成的行再用全量判死（实证 149 行全灭）。
+        # 注意：必须在 _pict_rows_to_suite 之前设置——全灭早退路径也需要生效。
+        removed_lines = set(report.removed_constraints or [])
+        if removed_lines and self._pict_model is not None:
+            dropped_origins = {
+                origin for origin, lines in (self._pict_model.constraint_map or {}).items()
+                if any(line in removed_lines for line in lines)
+            }
+            if dropped_origins:
+                self._removed_constraint_origins = dropped_origins
+                logger.warning(
+                    "operator=%s post-filter aligned with PICT: %d origin constraint(s) relaxed "
+                    "by PICT will also be skipped in filtering",
+                    self._operator_name, len(dropped_origins))
+
         self._pict_used = True
         suite = self._pict_rows_to_suite(cases)
         if suite.size() == 0:
@@ -246,6 +263,7 @@ class PICTGenerator(BaseGenerator):
             coverage_rate=self._coverage_tracker.coverage_rate(),
             iterations=len(suite.cases),
             elapsed_time=time.time() - start_time,
+            engine="real_pict",
         )
 
     @track("PictGenerator._build_pict_model")
@@ -391,7 +409,15 @@ class PICTGenerator(BaseGenerator):
             if not factor_values:
                 continue
             if self._filter_by_constraint and self._constraint is not None:
+                # M7：PICT 松弛过的原始约束不参与本行过滤
+                # （_removed_constraint_origins 由 _build_with_real_pict 依据
+                # report.removed_constraints 反查填充；未松弛时为空集 = 全量过滤）
+                origins = getattr(self, "_removed_constraint_origins", None) or set()
                 try:
+                    constraint_eval_context = self.build_constraint_eval_context(test_case.values)
+                    ok = self._constraint.evaluate(constraint_eval_context, skip_expressions=origins)
+                except TypeError:
+                    # 旧签名兼容：evaluate 不支持 skip_expressions 时退回全量
                     constraint_eval_context = self.build_constraint_eval_context(test_case.values)
                     ok = self._constraint.evaluate(constraint_eval_context)
                 except Exception as exc:
@@ -1678,6 +1704,245 @@ def _guarded_cross_eq_lines(node: ast.BoolOp, columns: set, warnings: List[str],
     return out
 
 
+def _split_branches_by_second_factor(bodies: List[ast.AST], columns: set,
+                                      parameters: Optional[Dict[str, List[Any]]],
+                                      warnings_note: List[str],
+                                      max_line_len: int = 500) -> Optional[List[str]]:
+    """把分组内的 And 支按后续判别因子递归拆分为嵌套 IF-AND 行。
+
+    对所有支共有的前导相等比较逐级处理：
+    - 单值因子：并入 IF 前缀（fixed），继续提取下一级；
+    - 多值同列因子：按取值分区，每个分区递归处理剩余合取，
+      直至单行 THEN 体不超过 max_line_len（叶子，深度上限 8）。
+    未出现的分区取值以 FALSE 哨兵标记；恒真/恒假分区由调用方**直接省略**
+    ——PICT 语法三条铁律（实测 rc=5 实证）：THEN 后必须是比较式（裸 True/False
+    非法）、THEN 不得引用 IF 已约束参数（自反式非法）。省略区域由 Python
+    后过滤兜底（"PICT 候选 + 约束二次过滤"架构的本来分工）。
+
+    :param bodies: 一级分组剥离首因子后的 And 支列表
+    :param columns: PICT 合法列集合
+    :param parameters: 各列取值域
+    :param warnings_note: 告警收集器（原地追加）
+    :param max_line_len: 单行 THEN 体长度目标上限
+    :return: 递归拆分后的标记行（__FIXED__ / __SPLIT__|cond|body）；不适用时 None
+    """
+
+    def render_or(nodes: List[ast.AST]) -> Optional[str]:
+        probe = _translate_or_base(ast.BoolOp(op=ast.Or(), values=nodes), columns, warnings_note, parameters)
+        if probe is None:
+            return None
+        return " OR ".join(part.rstrip(";") for part in probe)
+
+    def recurse(working: List[ast.AST], depth: int) -> Optional[List[Tuple[str, str]]]:
+        """递归分区。返回 [(条件增量, THEN 体)] 列表；体为 TRUE/FALSE 哨兵或表达式。"""
+        joined = render_or(working)
+        if joined is None:
+            return None
+        if len(joined) <= max_line_len or depth >= 8:
+            # 叶子：短体直接返回（depth 上限时接受现状，避免无限递归）
+            return [("", joined)]
+        # 提取所有支共有的前导相等比较（每支首项须为「同列 == 常量」）
+        candidate: Dict[Tuple[str, str], List[List[ast.AST]]] = {}
+        for body in working:
+            terms = body.values if (isinstance(body, ast.BoolOp) and isinstance(body.op, ast.And)) else [body]
+            if not terms:
+                return None
+            first = terms[0]
+            if not (isinstance(first, ast.Compare) and len(first.ops) == 1
+                    and isinstance(first.ops[0], ast.Eq)):
+                return None
+            col2 = _operand_column(first.left)
+            val2 = first.comparators[0]
+            if col2 is None or not isinstance(val2, ast.Constant):
+                return None
+            candidate.setdefault((col2, repr(val2.value)), []).append(list(terms[1:]))
+        cols_seen = {c for (c, _) in candidate}
+        if len(cols_seen) != 1:
+            return None
+        split_col = next(iter(cols_seen))
+        out: List[Tuple[str, str]] = []
+        covered: set = set()
+        for (c, v), rests in candidate.items():
+            covered.add(v)
+            rest_nodes = [ast.BoolOp(op=ast.And(), values=rest) if len(rest) > 1
+                          else (rest[0] if rest else ast.Constant(value=True))
+                          for rest in rests]
+            # 全部剩余为恒真：该分区恒真
+            if all(isinstance(n, ast.Constant) and n.value is True for n in rest_nodes):
+                out.append(("[{}] = {}".format(split_col, _format_domain_value(ast.literal_eval(v))), "TRUE"))
+                continue
+            sub_result = recurse(rest_nodes, depth + 1)
+            if sub_result is None:
+                return None
+            for cond_inc, body_text in sub_result:
+                cond = "[{}] = {}".format(split_col, _format_domain_value(ast.literal_eval(v)))
+                if cond_inc:
+                    cond += " AND {}".format(cond_inc)
+                out.append((cond, body_text))
+        # 未出现的分区取值补恒假哨兵（由调用方省略，语义由后过滤兜底）
+        for raw2 in (parameters or {}).get(split_col, []):
+            if repr(raw2) in covered:
+                continue
+            fv2 = _format_domain_value(raw2)
+            if fv2 is None:
+                continue
+            out.append(("[{}] = {}".format(split_col, fv2), "FALSE"))
+        return out
+
+    # 前导单值因子并入 __FIXED__ 前缀
+    fixed_parts: List[str] = []
+    working = list(bodies)
+    for _ in range(8):
+        joined_probe = render_or(working)
+        if joined_probe is None:
+            return None
+        if len(joined_probe) <= max_line_len:
+            return None
+        candidate: Dict[Tuple[str, str], List[List[ast.AST]]] = {}
+        ok = True
+        for body in working:
+            terms = body.values if (isinstance(body, ast.BoolOp) and isinstance(body.op, ast.And)) else [body]
+            first = terms[0] if terms else None
+            if not (isinstance(first, ast.Compare) and len(first.ops) == 1
+                    and isinstance(first.ops[0], ast.Eq)):
+                ok = False
+                break
+            col2 = _operand_column(first.left)
+            val2 = first.comparators[0]
+            if col2 is None or not isinstance(val2, ast.Constant):
+                ok = False
+                break
+            candidate.setdefault((col2, repr(val2.value)), []).append(list(terms[1:]))
+        if not ok:
+            return None
+        cols_seen = {c for (c, _) in candidate}
+        if len(cols_seen) != 1:
+            return None
+        vals_seen = {v for (_, v) in candidate}
+        if len(vals_seen) == 1:
+            fv2 = _format_domain_value(ast.literal_eval(next(iter(vals_seen))))
+            if fv2 is None:
+                return None
+            fixed_parts.append("[{}] = {}".format(next(iter(cols_seen)), fv2))
+            working = [ast.BoolOp(op=ast.And(), values=rest) if len(rest) > 1
+                       else (rest[0] if rest else ast.Constant(value=True))
+                       for rest in next(iter(candidate.values()))]
+            continue
+        break
+    else:
+        return None
+    result = recurse(working, 0)
+    if result is None:
+        return None
+    lines: List[str] = []
+    for cond, body_text in result:
+        lines.append("__SPLIT__|{}|{}".format(cond, body_text))
+    if fixed_parts:
+        lines.insert(0, "__FIXED__|" + " AND ".join(fixed_parts))
+    return lines
+
+
+def _or_group_by_discriminator(node: ast.BoolOp, columns: set,
+                               parameters: Optional[Dict[str, List[Any]]] = None,
+                               max_disjuncts: int = 20,
+                               warnings: Optional[List[str]] = None) -> Optional[List[str]]:
+    """超大顶层 OR 的判别因子分组改写。
+
+    背景（gmmV5 实证）：dtype 组合大表翻译为单行 17,247 字符 / 102 个析取支，
+    PICT 对每个候选行整式求值 102 支，是 60s 超时的主因。所有支的首合取项
+    都是同一因子的相等比较（本例 x.dtype），按其取值分组改写为
+    `IF [因子] = V THEN ( (组内支1) OR (组内支2) ... );`，每组支数大幅下降。
+    组内 THEN 仍超长时由 _split_branches_by_second_factor 递归拆分。
+    恒真/恒假分区直接省略（PICT 语法限制，违规区域由后过滤兜底）。
+    泛化性（2026-11-16 全量普查）：137 算子 / 2,080 条约束中，18 条大 OR
+    （8 个量化类算子）形态假设 100% 命中；形态不匹配时返回 None 安全回退。
+
+    :param node: 顶层 OR 的 ast.BoolOp 节点
+    :param columns: PICT 合法列集合
+    :param parameters: 各列取值域（列名 -> 值列表）
+    :param max_disjuncts: 分组触发的支数阈值，默认 20
+    :param warnings: 告警收集器（原地追加）
+    :return: 改写后的 PICT 约束行；不满足分组条件时 None，调用方保持原翻译。
+    """
+    if len(node.values) <= max_disjuncts:
+        return None
+    # 收集每支首合取项的因子相等比较（因子 == 常量）
+    groups: Dict[Tuple[str, str], List[ast.AST]] = {}
+    for v in node.values:
+        terms = v.values if (isinstance(v, ast.BoolOp) and isinstance(v.op, ast.And)) else [v]
+        if not terms:
+            return None
+        first = terms[0]
+        if not (isinstance(first, ast.Compare) and len(first.ops) == 1
+                and isinstance(first.ops[0], ast.Eq)):
+            return None
+        col = _operand_column(first.left)
+        val = first.comparators[0]
+        if col is None or not isinstance(val, ast.Constant):
+            return None
+        # 剥离首项后的剩余合取子式；单支仅剩首项时以 True 占位
+        if len(terms) > 2:
+            body = ast.BoolOp(op=ast.And(), values=list(terms[1:]))
+        elif len(terms) == 2:
+            body = terms[1]
+        else:
+            body = ast.Constant(value=True)
+        groups.setdefault((col, repr(val.value)), []).append(body)
+    # 分组数须 >= 2（单组无分区意义）且每组仍为可翻译结构
+    if len(groups) < 2:
+        return None
+    warnings_note: List[str] = []
+    lines: List[str] = []
+    for (col, val_repr), bodies in groups.items():
+        if len(bodies) == 1 and isinstance(bodies[0], ast.Constant) and bodies[0].value is True:
+            # 恒真分区无信息量，不生成 PICT 行（自反式同样被 PICT 拒绝，
+            # 2026-11-16 实证；省略后该区域不受约束，语义无损）
+            continue
+        fv = _format_domain_value(ast.literal_eval(val_repr))
+        if fv is None:
+            return None
+        # 递归拆分：THEN 内 Or 仍超长时按后续判别因子逐级再分区（嵌套 IF-AND）
+        sub_lines = _split_branches_by_second_factor(bodies, columns, parameters, warnings_note)
+        if sub_lines is not None:
+            fixed_cond = ""
+            for split_line in sub_lines:
+                if split_line.startswith("__FIXED__|"):
+                    # 所有支共有的单值前导因子：并入每条 IF 条件
+                    fixed_cond = split_line[len("__FIXED__|"):]
+                    continue
+                # 形态 __SPLIT__|cond_inc|body → IF [一级]=V [AND fixed] AND cond_inc THEN body;
+                payload = split_line[len("__SPLIT__"):]
+                _, cond_inc, body = payload.split("|", 2)
+                body = body.strip()
+                cond = "[{}] = {}".format(col, fv)
+                if fixed_cond:
+                    cond += " AND {}".format(fixed_cond)
+                if cond_inc:
+                    cond += " AND {}".format(cond_inc)
+                if body == "FALSE":
+                    # 恒假分区（未出现的取值区域）不生成 PICT 行——自反式
+                    # THEN [x] <> [x] 被 PICT 拒绝（THEN 不得引用 IF 已约束参数，
+                    # 2026-11-16 实证 rc=5 十八轮全在剔除该形态）。省略后 PICT
+                    # 模型对该区域宽松，违规组合由 Python 后过滤兜底。
+                    continue
+                elif body == "TRUE":
+                    # 恒真分区：约束本身无信息（该区域恒满足），同样省略
+                    continue
+                elif body:
+                    lines.append("IF {} THEN {};".format(cond, body))
+                else:
+                    return None
+            continue
+        inner = _translate_or_base(ast.BoolOp(op=ast.Or(), values=bodies), columns, warnings_note, parameters)
+        if inner is None:
+            return None
+        lines.append("IF [{}] = {} THEN {};".format(col, fv, " OR ".join(
+            part.rstrip(";") for part in inner)))
+    if warnings is not None:
+        warnings.extend(warnings_note)
+    return lines
+
+
 def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
                   parameters: Optional[Dict[str, List[Any]]] = None) -> Optional[List[str]]:
     """``_translate_or_base`` 的外层包装：在既有翻译结果之上追加守卫式跨参等式展开行。
@@ -1694,6 +1959,10 @@ def _translate_or(node: ast.BoolOp, columns: set, warnings: List[str],
     :param parameters: 各列取值域
     :return: 合并后的 PICT 约束行；两者皆空时返回 ``None``
     """
+    # M2：超大 OR 先尝试判别因子分组改写（降低 PICT 单约束求值代价）
+    grouped = _or_group_by_discriminator(node, columns, parameters)
+    if grouped is not None:
+        return grouped
     base = _translate_or_base(node, columns, warnings, parameters)
     extra: List[str] = []
     try:
@@ -1784,6 +2053,42 @@ def _translate_and_term(node: ast.AST, columns: set, warnings: List[str],
     return ["({});".format(r)] if r is not None else None
 
 
+def _negate(node: ast.AST) -> Optional[ast.AST]:
+    """AST 级取反规范化（德摩根），供顶层 NOT 翻译使用。
+
+    not(a and b) -> or(not a, not b)；not(a or b) -> and(not a, not b)；
+    not(x == v) -> x != v；not(x != v) -> x == v；
+    not(x in [...]) -> x not in [...]；not(x not in [...]) -> x in [...]；
+    not not a -> a；不等号翻转 < <-> >=、> <-> <=。
+    不可规范化的形态（函数调用取反等）返回 None，调用方维持旧行为。
+
+    :param node: 待取反的子表达式 AST 节点
+    :return: 取反后的等价 AST 节点；不可规范化时 None
+    """
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return node.operand
+    if isinstance(node, ast.BoolOp):
+        flip = ast.Or if isinstance(node.op, ast.And) else ast.And
+        neg_values = [_negate(v) for v in node.values]
+        if any(nv is None for nv in neg_values):
+            return None
+        return ast.BoolOp(op=flip(), values=neg_values)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        left, op, right = node.left, node.ops[0], node.comparators[0]
+        if isinstance(op, ast.Eq):
+            return ast.Compare(left=left, ops=[ast.NotEq()], comparators=[right])
+        if isinstance(op, ast.NotEq):
+            return ast.Compare(left=left, ops=[ast.Eq()], comparators=[right])
+        if isinstance(op, ast.In):
+            return ast.Compare(left=left, ops=[ast.NotIn()], comparators=[right])
+        if isinstance(op, ast.NotIn):
+            return ast.Compare(left=left, ops=[ast.In()], comparators=[right])
+        if isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+            flip_map = {ast.Lt: ast.GtE, ast.LtE: ast.Gt, ast.Gt: ast.LtE, ast.GtE: ast.Lt}
+            return ast.Compare(left=left, ops=[flip_map[type(op)]()], comparators=[right])
+    return None
+
+
 def _translate_expr(node: ast.AST, columns: set, warnings: List[str],
                     parameters: Optional[Dict[str, List[Any]]] = None) -> Optional[List[str]]:
     """把一条 Python 约束表达式翻译为 0..n 条 PICT 约束行（均已带分号）。"""
@@ -1806,6 +2111,11 @@ def _translate_expr(node: ast.AST, columns: set, warnings: List[str],
     if isinstance(node, ast.Call):
         return _translate_anyall(node, columns, warnings, parameters)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        # M3：德摩根规范化后再走常规翻译（gmmV5 的 3 条 not(...) 维度规则由此找回）；
+        # 不可规范化形态维持原行为（告警 + None）
+        normalized = _negate(node.operand)
+        if normalized is not None:
+            return _translate_expr(normalized, columns, warnings, parameters)
         warnings.append("top-level NOT cannot be expressed as a bare PICT constraint")
         return None
     if isinstance(node, ast.Constant):
@@ -2127,10 +2437,31 @@ def execute_pict(
             try:
                 res, dt = _run_pict(cmd, round_model_path, strength, seed, timeout)
             except subprocess.TimeoutExpired:
-                rounds.append(PictRoundResult(
+                round_result = PictRoundResult(
                     round_index=round_idx, constraints_in_use=len(remaining),
                     failure_category=PictFailureCategory.TIMEOUT, returncode=None,
-                    stderr="timeout after {}s".format(timeout), stdout=""))
+                    stderr="timeout after {}s".format(timeout), stdout="")
+                rounds.append(round_result)
+                # M1-2：超时批量松弛。依据（2026-11-17 实测）：PICT 对这类模型呈
+                # 双峰分布——可解时 1s 出结果，不可解时 600s 也无进展；且瓶颈是
+                # 模型级耦合总量而非单行复杂度（移除组与保留组的单行复杂度区间
+                # 重叠，无单行阈值可分）。故首轮超时即批量移除「可松弛行（非 IF
+                # 分区行——dtype 语义载体，松弛会连带 M7 丢失后过滤兜底）中
+                # 长度 TOP ⌈半数⌉」，仍超时再对余下可松弛行取半，最多 log₂ 轮。
+                relaxable = [i for i, l in enumerate(remaining) if not l.startswith("IF ")]
+                n_drop = (len(relaxable) + 1) // 2
+                if round_idx + 1 < max_rounds and n_drop > 0:
+                    drop_idx = set(sorted(relaxable, key=lambda i: -len(remaining[i]))[:n_drop])
+                    dropped_lines = [remaining[i] for i in sorted(drop_idx, reverse=True)]
+                    for i in sorted(drop_idx, reverse=True):
+                        remaining.pop(i)
+                    removed.extend(dropped_lines)
+                    round_result.removed_constraint = dropped_lines[0]
+                    logger.warning("pict round %d timed out; dropped %d longest non-partition "
+                                   "constraint(s) (max len=%d) and will retry",
+                                   round_idx, len(dropped_lines), len(dropped_lines[0]))
+                    final_category = PictFailureCategory.TIMEOUT
+                    continue
                 final_category = PictFailureCategory.TIMEOUT
                 break
 
@@ -2157,7 +2488,26 @@ def execute_pict(
                 break
 
             if category in (PictFailureCategory.LAUNCH_FAILURE, PictFailureCategory.PICT_NOT_FOUND,
-                            PictFailureCategory.TIMEOUT, PictFailureCategory.OVER_CONSTRAINED):
+                            PictFailureCategory.OVER_CONSTRAINED):
+                final_category = category
+                break
+            # TIMEOUT 分类（子进程以超时码退出的形态）同 M1-2：非分区行松弛重试
+            if category == PictFailureCategory.TIMEOUT:
+                # 同异常路径：批量移除最长非分区行（IF 分区行承载 dtype 语义不松弛）
+                relaxable = [i for i, l in enumerate(remaining) if not l.startswith("IF ")]
+                n_drop = (len(relaxable) + 1) // 2
+                if round_idx + 1 < max_rounds and n_drop > 0:
+                    drop_idx = set(sorted(relaxable, key=lambda i: -len(remaining[i]))[:n_drop])
+                    dropped_lines = [remaining[i] for i in sorted(drop_idx, reverse=True)]
+                    for i in sorted(drop_idx, reverse=True):
+                        remaining.pop(i)
+                    removed.extend(dropped_lines)
+                    round_result.removed_constraint = dropped_lines[0]
+                    logger.warning("pict round %d timed out (exit); dropped %d longest non-partition "
+                                   "constraint(s) (max len=%d) and will retry",
+                                   round_idx, len(dropped_lines), len(dropped_lines[0]))
+                    final_category = PictFailureCategory.TIMEOUT
+                    continue
                 final_category = category
                 break
 

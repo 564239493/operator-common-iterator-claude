@@ -70,3 +70,7 @@ class GenerationResult:
     coverage_rate: float
     iterations: int
     elapsed_time: float
+    # M5：生成引擎标识："real_pict" | "in_process_fallback"。
+    # 旧行为不区分，产物元信息看不出「以为在用 PICT 实际回退」。
+    engine: str = "in_process_fallback"
+    pict_failure_category: str = ""
