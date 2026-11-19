@@ -206,3 +206,31 @@ class FunctionAlreadyRegisteredError(
     """
 
     ERROR_CODE = "C2005"
+
+# ============================================================
+# UNFILLED 哨兵（部分求值场景）
+# ============================================================
+
+
+class _Unfilled:
+    """部分求值中「尚未填充的属性」哨兵。
+
+    与 None（合法数据值）严格区分：None 参与比较（None == 2 → False），
+    会把增量填充中途的候选错杀；UNFILLED 表示属性值尚未确定，参与任何
+    比较均应视为「不可判定」——由 evaluator 的缺席降级路径放行。
+    """
+
+    def __eq__(self, other):
+        return isinstance(other, _Unfilled)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash("_unfilled_")
+
+    def __repr__(self):
+        return "<unfilled>"
+
+
+UNFILLED = _Unfilled()

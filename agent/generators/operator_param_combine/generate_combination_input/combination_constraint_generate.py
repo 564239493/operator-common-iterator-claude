@@ -464,13 +464,26 @@ class CombinationConstraintGenerate:
         return re.sub(r"len\(([a-zA-Z_]\w*)\)", _replacer, expr)
 
     def propagate_constraint_values(self, parameters: Dict, param_type_dict: Dict[str, str]) -> None:
-        """值域传播入口：转换原始约束 → 通过 == 关系传播值域 → 更新 parameters"""
+        """值域传播入口：转换原始约束 → 通过 == 关系传播值域 → 更新 parameters
+
+        M6 域裁剪：形如 `P is None`（转换后 `P.is_present == False`）的整条
+        场景屏蔽约束，把 P 的 is_present 域收窄为 [False] 并从约束列表剔除——
+        以约束形态存在时因子域仍含 true，采样 50% 概率撞死该条。
+        仅处理整条等价于 `P.is_present == False` 的形态；混合条件不裁剪。
+        """
         transformed_constraints = []
         for constraint in self.operator_rule_data.constraints_in_parameters:
             expr = ExpressionPreprocessor.restore_keyword_names(
                 constraint.expr, self._param_names)
             expr = CombinationConstraintGenerate._transform_presence_to_is_present(expr)
             expr = CombinationConstraintGenerate._replace_len_to_length(expr, param_type_dict)
+            # M6：整条 `P.is_present == False` → 收窄 is_present 域并跳过该约束
+            mask = re.fullmatch(r"(\w+)\.is_present == False", expr.strip())
+            if mask and mask.group(1) in parameters:
+                param_name = mask.group(1)
+                if isinstance(parameters[param_name].get("is_present"), list):
+                    parameters[param_name]["is_present"] = [False]
+                continue
             transformed_constraints.append(expr)
 
         CombinationConstraintGenerate._propagate_equal_values(parameters, transformed_constraints)

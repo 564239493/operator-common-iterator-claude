@@ -105,6 +105,7 @@ class CoverageDrivenGenerator(BaseGenerator):
             coverage_rate=self._coverage_tracker.coverage_rate(),
             iterations=iterations,
             elapsed_time=time.time() - start_time,
+            engine="in_process_fallback",
         )
 
     def finalize(self) -> None:

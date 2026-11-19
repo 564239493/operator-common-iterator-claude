@@ -94,8 +94,13 @@ def build_constraint(constraints: tuple[str, ...],
             #               "param": str | None, "attr": str | None, "cause": str}}
             self.skipped_exprs: dict[str, dict] = {}
 
-        def evaluate(self, context) -> bool:
+        def evaluate(self, context, skip_expressions=None) -> bool:
+            # skip_expressions：PICT 收敛时松弛过的原始约束集合——后过滤
+            # 需与 PICT 用同一约束集，被松弛的约束不参与求值（M7 约束集一致性）。
+            skip = skip_expressions or set()
             for constraint_compile in compiled:
+                if constraint_compile.expression in skip:
+                    continue
                 try:
                     if not evaluator.evaluate(constraint_compile.tree, context):
                         self.failed_exprs.add(constraint_compile.expression)
