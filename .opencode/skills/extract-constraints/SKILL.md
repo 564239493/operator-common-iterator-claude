@@ -26,6 +26,37 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 完整隔离禁令（其他 run、memory、历史构建脚本、历史 constraints 复制等）与知识
 skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再复述。
 
+## 插件派生约束（`--ttk-plugin` 条件触发）
+
+当 `run_state.ttk_plugin` 非空（或调度消息给出插件快照路径）时，除文档约束外还必须
+读取 `inputs/ttk_plugin_snapshot/assets/`（`spec.py`、`impl/inputs.py`、
+`impl/npu_preprocess.py`、`case_converter/README.md`、`case_converter/case_schema.py`）
+与 `inputs/plugin_requirements.json`（schema 1.1），产出 `origin="plugin_contract"`
+的约束。证据写 `src_text = "plugin: <file>:<line> <原文/事实>"`；仅有文档依据的条目
+才填 `src_txt_line`，插件专属条目可缺省（checker 允许）。
+
+必须逐条判断并按证据落库（无证据不要臆造）：
+
+1. **模板与 ratio/mask**：cmpKv 缺席（SWA）⇒ `cmpRatio == 1`、`cmpMaskMode == 0`；
+   cmpSparseIndices 存在（CSA）⇒ `cmpRatio == 4`（设备 OpDef 运行期口径）、
+   `cmpMaskMode == 3`；cmpKv 存在且 cmpSparseIndices 缺席（HCA）⇒ `cmpRatio == 128`、
+   `cmpMaskMode == 3`。
+2. **dtype**：`q`、`oriKvOptional`、`cmpKvOptional`、`attnOutOut` 的 dtype 一致
+   （OpDef 只接受全 FLOAT16 或全 BFLOAT16）。
+3. **presence 反向**：blockTable 仅 `layoutKv == PA_BBND`（cmp 侧还需 cmpKv 存在）；
+   `cuSeqlens*` 仅对应 `TND`；`cmpSparseIndices` 存在 ⇒ cmpKv 存在；
+   `oriSparseIndices` 存在 ⇒ cmpKv/cmpSparseIndices 均缺席；cmpKv 缺席 ⇒
+   `sequsedCmpKv` 缺席。
+4. **rank/轴**：sparse indices 与 q 的 rank 关系（BSND 4 维 `(B,S1,N2,K)`、
+   TND 3 维 `(T1,N2,K)`），末两维绑定 N2/K。
+5. **PA 容量/稠密 cmp 长度**：block_num/block_table 与 seqused/block_size 的派生关系；
+   稠密 cmp 在 residual 缺席时 `cmpKv` 序列长度 == `oriKv` 长度 // cmpRatio
+   （BSND 用 `shape[1]`，TND 用 `shape[0]`）。
+6. **规模上限**（如 B/T 上限）属人工补充，不归插件契约，除非插件源码明确声明。
+
+冲突处理：插件/设备运行期证据优先于文档文字；同一语义已在文档约束中表达时保留
+文档条目，不重复新增；差异写入 `src_text` 说明张力。每条仍须全局唯一 `id`。
+
 ## 必载知识协议（强制）
 
 读取冻结快照 `prompt_v1.md` 末尾的「本次必载知识清单」（`<!-- required-knowledge-begin -->`

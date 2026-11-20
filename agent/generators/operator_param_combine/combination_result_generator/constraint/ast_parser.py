@@ -15,6 +15,7 @@ Version:
 
 import ast
 
+from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.operator_param_combine.combination_result_generator.constraint import ConstraintSyntaxError
 
 
@@ -27,6 +28,10 @@ class ConstraintParser:
 
     AST validation belongs to ASTAdapter.
     """
+
+    def __init__(self, param_names=None):
+        # 真实参数名清单：用于兼容 Python 关键字参数名（如 from）。
+        self.param_names = param_names
 
 
     def parse(
@@ -68,9 +73,9 @@ class ConstraintParser:
 
         try:
 
-            tree = ast.parse(
+            tree = ExpressionPreprocessor.parse_expression(
                 expression,
-                mode="eval",
+                self.param_names,
             )
 
 

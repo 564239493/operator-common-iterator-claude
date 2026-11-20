@@ -46,7 +46,7 @@ const summaryLines = computed(() => {
   if (name === 'case-generator' && it.generation) {
     const p = it.generation.progress || {}
     push('进程状态', p.state, p.state === 'complete' ? 'ok' : undefined)
-    push('pid 存活', p.pid_alive ? '是' : '否')
+    push('进程存活', p.pid_alive ? '是' : '否')
     push('生成总数', p.total ?? it.generation.summary?.total)
     push('耗时（秒）', p.elapsed_seconds?.toFixed?.(1))
   }
@@ -139,8 +139,8 @@ const gateVerdict = computed(() => {
   return {
     ok,
     text: ok
-      ? `允许：gate ${g.status_raw || g.status} → ${g.next_state || '—'}`
-      : `不允许：${blocking ? `${blocking} 条阻断` : `gate ${g.status_raw || g.status}`} → ${g.next_state || '—'}`,
+      ? `允许：门禁 ${g.status_raw || g.status} → ${g.next_state || '—'}`
+      : `不允许：${blocking ? `${blocking} 条阻断` : `门禁 ${g.status_raw || g.status}`} → ${g.next_state || '—'}`,
   }
 })
 
@@ -194,7 +194,7 @@ function openArtifact(path: string) {
       <!-- 补充约束：补充结果与应用情况分开（合并归主协调器） -->
       <template v-if="engineer.name === 'constraint-supplementer' && (extras.application || extras.origins)">
         <div class="detail-label">补丁应用情况</div>
-        <p class="subtle">{{ extras.application || '—（空补丁无需应用；origin 计数仅辅助信息）' }}</p>
+        <p class="subtle">{{ extras.application || '—（空补丁无需应用；来源计数仅作辅助信息）' }}</p>
       </template>
 
       <!-- 提示词优化：裁决与提案互不推翻 -->
@@ -226,7 +226,7 @@ function openArtifact(path: string) {
         </ul>
       </details>
 
-      <div class="detail-label">产物 / 证据来源</div>
+      <div class="detail-label">产物与证据来源</div>
       <div v-if="artifacts.length" class="files">
         <div v-for="a in artifacts" :key="a.fullPath" class="file-line">
           <span class="file-path">{{ a.fullPath }}</span>

@@ -8,6 +8,7 @@ from typing import Optional
 from typing import Tuple
 
 from agent.generators.common_utils.timing import track
+from agent.generators.operator_param_combine.combination_result_generator.constraint.exceptions import UNFILLED
 from agent.generators.operator_param_combine.combination_result_generator.constraint.interfaces import ConstraintProtocol
 from agent.generators.operator_param_combine.combination_result_generator.coverage import PairUniverse, CoverageTracker, Pair
 from agent.generators.operator_param_combine.combination_result_generator.coverage.parameter import Factor
@@ -201,7 +202,16 @@ class CandidateGenerator:
     def _check_value_partial(self, testcase, param_name, attr_name, value):
         if self._constraint is None:
             return True
-        context = {p: dict(attrs) for p, attrs in testcase.values.items()}
+        # M4：部分求值时"尚未填充的属性"必须不可判定（放行），不能用 None 冒充
+        # 实值——None == 2 会求值为 False，把增量填充中途的候选错杀
+        # （gmmV5 实证：400 轮 0 行）。UNFILLED 哨兵在 evaluator 中按
+        # 不可判定处理（缺席降级路径放行）。
+        context = {}
+        for p, attrs in testcase.values.items():
+            row = dict(attrs)
+            for key in ("dimension", "shape_property", "format", "length"):
+                row.setdefault(key, UNFILLED)
+            context[p] = row
         if param_name not in context:
             context[param_name] = {}
         context[param_name][attr_name] = value

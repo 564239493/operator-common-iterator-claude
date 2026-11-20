@@ -43,6 +43,7 @@ Responsibility:
 import ast
 import copy
 
+from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.operator_param_combine.combination_result_generator.constraint.dependency import \
     DependencyAnalyzer
 
@@ -158,7 +159,8 @@ class _SubExprRemover(ast.NodeTransformer):
         return node
 
 
-def remove_missing_param_exprs(expression: str, existing_params: set[str]) -> str:
+def remove_missing_param_exprs(expression: str, existing_params: set[str],
+                               param_names=None) -> str:
     """
     移除约束表达式中引用不存在参数的子表达式。
 
@@ -167,13 +169,17 @@ def remove_missing_param_exprs(expression: str, existing_params: set[str]) -> st
             原始约束表达式字符串。
         existing_params:
             已存在的参数名集合。
+        param_names:
+            全部参数名清单（用于兼容 Python 关键字参数名，如 from）。
+            缺省时退回 existing_params。
 
     Returns:
         移除不存在参数相关子表达式后的字符串。
     """
     if expression is None or expression.strip() == "" or existing_params is None:
         return expression
-    tree = ast.parse(expression, mode="eval")
+    tree = ExpressionPreprocessor.parse_expression(
+        expression, param_names if param_names is not None else existing_params)
     remover = _SubExprRemover(frozenset(existing_params))
     new_tree = remover.visit(tree)
     return ast.unparse(new_tree)

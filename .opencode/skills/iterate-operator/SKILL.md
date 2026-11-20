@@ -1,7 +1,7 @@
 ---
 name: iterate-operator
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--ttk-plugin path] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
+argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--ttk-plugin path] [--csv-plugin path] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
 ---
 
 # 算子闭环迭代
@@ -50,6 +50,13 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    （本地文件、本地目录或 `/` 开头的远端绝对路径；本地目录会连同父目录上下文
    ——同级目录——一起打包上传，远端解压后按目录传入）。非 TTK 传入即报错，
    不要与 ATK 混用。
+   `--csv-plugin <本地脚本路径>` 可选，仅 TTK：建 run 时写入 `run_state.csv_plugin`。
+   GENERATE 完成 `cases.json → cases_ttk.csv` 后，生成器以
+   `--input_case_csv <基础CSV> --output_case_csv <最终CSV>` 调用该脚本；基础 CSV 保留为
+   `cases_ttk.pre_plugin.csv`，最终 `cases_ttk.csv` 继续供 EXECUTE 使用。启用时跳过
+   文档驱动的辅助参数构造、groupListData materialize 和 aux `golden.py`；`ttk_plugin`
+   的值契约保留。脚本必须本地存在且为 `.py`；失败（非 0/输出缺失/表头或行数变化）
+   以 `CSV_PLUGIN_FAILED`/`CSV_PLUGIN_OUTPUT_INVALID` 阻断 GENERATE。非 TTK 传入即报错。
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
@@ -60,7 +67,7 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
     `--web` 默认关闭；开启时在「首轮 CHECK 通过后 DASHBOARD 拉起」步骤把 `--web`
     透传给 `raise_dashboard.py` 打开浏览器；不传则仅确保 server 就绪并返回 URL、
     **不自动打开浏览器**。该旗标只影响是否自动开浏览器，不影响 server 与工作台可用性。
-2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、`--ttk-plugin`、
+2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、`--ttk-plugin`、`--csv-plugin`、
    `--supplement-constraints`、`--source-analysis-knowledge`、`--operator-family`、`--test-framework`、
    `--hs-scenario-mode`、`--constraint-check-rounds`、`--scenes "<场景描述>"` 等参数，
    `--scenes` 原文存 `run_state.scenes`（场景直输模式标记），
@@ -206,12 +213,24 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      `constraint-extractor`，退回纯文档驱动。
    - **PLUGIN VALUE CONTRACT（EXTRACT barrier 后；Metadata/TTK 条件触发）**：
      当 `run_state.test_framework="ttk"` 且 `run_state.ttk_plugin` 非空时，运行
-     `python scripts/prepare_plugin_values.py --run-dir <run-dir>`。该脚本**静态**分析
-     插件（不执行）、产出 `inputs/plugin_requirements.json` +
-     `inputs/value_constraints.candidates.json`；候选默认 `review_required=true`，
-     生成侧自动跳过。CHECK/REPAIR 阶段由 constraint-checker 复核候选，确认后主协调器运行
+     `python scripts/prepare_plugin_values.py --run-dir <run-dir>`。分析器**静态**解析
+     插件源码（不执行），从真实 kwargs/attribute 读取（含非 `*_values` 名称、f-string
+     模板+调用点实参、常量元组循环、`AUX_TARGETS`）产出
+     `inputs/plugin_requirements.json`（schema 1.1，含 `resolution`/`confidence`/
+     `required_attributes`）与 `inputs/value_constraints.candidates.json`；候选由
+     「文档序列语义 + 插件参数名/值语义」自动推导（`prefix_sum_prefix0` /
+     `within_prefix` / `lt_scalar`），默认 `review_required=true`，生成侧自动跳过。
+     CHECK/REPAIR 阶段由 constraint-checker 按步骤 M 复核；确认后主协调器运行
      `python scripts/prepare_plugin_values.py --run-dir <run-dir> --confirm` 落盘
-     `inputs/value_constraints.json`，并用 `validate_artifacts.py value_constraints` 校验。
+     `inputs/value_constraints.json`（必要时以 reviewed 候选经
+     `finalize_value_constraints.py`），并用 `validate_artifacts.py value_constraints` 校验。
+     `--ttk-plugin` 存在时还必须委派 `plugin-contract-analyst` 读插件快照产出
+     `inputs/plugin_contract_review.json`（属性确认/场景属性/约束建议/缺口）；发现缺失
+     约束时追加到 `inputs/supplement_constraints.md` 并重跑 SUPPLEMENT 后再 CHECK。
+     生成阶段（TTK 且存在插件值规格）由生成器自动调用
+     `apply_plugin_case_contract` 注入 `template_run_mode`/`*_kv_topk_mode` 并按
+     seqused/cu_seqlens 规范化 KV/block table shape，产出
+     `plugin_case_contract_report.json`；case-generator 不得重复注入。
      该步失败 → `BLOCKED`，不进入 GENERATE。
    - **CLASSIFY（EXTRACT barrier 后）**：主协调器跑
      `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，读
@@ -364,7 +383,8 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      报告成功范围仅为约束提取。跳过 case-generator、executor、Golden 和执行质量门禁。
    - `case-generator`：读取 `run_state.hs_scenario_mode`，调用
      `generate_cases.py` 时原样透传 `--hs-scenario-mode`；旧 run 缺少该字段时使用
-     `original`，不得自行改成 `planned`。
+     `original`，不得自行改成 `planned`。同时读取 `run_state.csv_plugin`，非空时原样
+     透传 `--csv-plugin <路径>`；不得在 GENERATE 阶段临时更换或猜测该脚本。
    - **生成的等待由主协调器负责，不由 case-generator 子 Agent 负责**（关键）：case-generator
      是子 Agent，寿命只有 ~1-2 分钟，只能用**前台** `bash` 跑 `scripts/generation_progress.py launch`
      （~1 秒、exit 0）后报告生成子进程 `pid`/`<iter>` 路径/cases 路径/count/platforms 后**结束本轮**

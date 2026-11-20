@@ -276,6 +276,10 @@ source-analyst 产 `conflict-doc.md` 后，若非空，主协调器输出 `requi
 动作：所有框架先调用原有 Z3 生成器得到统一 `cases.json`；ATK直接消费，TTK通过
 adapter 生成 `cases_ttk.csv` 和转换审计。torch_npu/E2E 额外生成 Golden manifest；
 ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生成原生 ACLNN CSV。
+`run_state.csv_plugin` 非空时，TTK 在基础 CSV 后调用该脚本
+（`--input_case_csv/--output_case_csv`），基础文件保留为 `cases_ttk.pre_plugin.csv`，
+插件输出继续写 `cases_ttk.csv`；同时跳过文档驱动的 aux 参数构造与 groupListData
+materialize。插件失败即阻断 GENERATE，不进入 EXECUTE。
 完成条件：`cases.json` 非空；TTK 还要求 CSV 与 audit 结构合法。
 失败策略：不让 LLM 手工“补齐”用例，保留 generator_bug 证据。
 

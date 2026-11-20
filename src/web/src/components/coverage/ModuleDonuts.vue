@@ -102,7 +102,7 @@ const donuts = computed(() => {
     </div>
 
     <div class="md-foot">
-      <span>实心弧 = 已覆盖 · 浅底 = 未覆盖</span>
+      <span>实心弧表示已覆盖 · 浅底表示未覆盖</span>
       <span class="md-legend">
         <i class="dot" :style="{ background: '#72cdb9' }"></i>≥ 80%
         <i class="dot" :style="{ background: '#fdcf87' }"></i>&lt; 80%

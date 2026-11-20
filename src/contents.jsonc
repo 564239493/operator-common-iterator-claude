@@ -45,7 +45,7 @@
   "default_family": "aclnn",
   "ui": {
     "title": "智能体列表",
-    "subtitle": "职责独立，按需加载技能与知识的智能体",
+    "subtitle": "各智能体职责独立，按需加载技能与知识",
     "refresh": "刷新",
     "refreshing": "正在刷新…",
     "refresh_failed": "内容刷新失败，当前显示上次加载的内容。",
@@ -85,7 +85,7 @@
   "relation_labels": {
     "required": {
       "label": "必备",
-      "description": "开工时一定装配的基础能力，随时可用。"
+      "description": "开工时必须装配的基础能力，随时可用。"
     },
     "conditional": {
       "label": "按需使用",
@@ -144,7 +144,7 @@
       "name": "scene-scanner",
       "role": "场景扫描",
       "color": "#f1c40f",
-      "description": "识别设备、量化方案和可选参数，帮助你确定本次测试范围。",
+      "description": "识别设备、量化方案和可选参数，用于确定本次测试范围。",
       "when_to_use": "确定测试范围时",
       "outcome": "可供选择的设备、量化方案与特性参数",
       "availability": "ready",
@@ -156,7 +156,7 @@
       "name": "constraint-extractor",
       "role": "约束提取",
       "color": "#409eff",
-      "description": "从算子文档中整理输入输出、取值范围及参数之间的限制，为生成测试用例提供依据。",
+      "description": "从算子文档中整理输入输出、取值范围和参数之间的限制，作为生成测试用例的依据。",
       "when_to_use": "开始测试、需要从文档建立约束时",
       "outcome": "用于生成测试用例的结构化约束",
       "availability": "ready",
@@ -211,7 +211,7 @@
       "name": "source-analyst",
       "role": "源码分析",
       "color": "#20c997",
-      "description": "从算子源码中整理约束事实，区分已确认信息、待确认信息和与文档冲突的信息。",
+      "description": "从算子源码中整理约束事实，区分已确认、待确认和与文档冲突的信息。",
       "when_to_use": "启用源码分析、需要补充文档证据时",
       "outcome": "已确认事实、待确认问题与冲突说明",
       "availability": "ready",
@@ -412,7 +412,7 @@
       "name": "quality-reviewer",
       "role": "质量门禁",
       "color": "#17a2b8",
-      "description": "检查本轮结果是否完整、可信，判断流程可以继续还是需要处理问题。",
+      "description": "检查本轮结果是否完整、可信，判断流程能否继续，还是需要先处理问题。",
       "when_to_use": "评审本轮测试结果时",
       "outcome": "能否继续的结论与待处理问题",
       "availability": "ready",
@@ -425,7 +425,7 @@
       "role": "失败诊断",
       "color": "#9b59b6",
       "description": "结合文档、测试用例和执行日志，区分约束、用例生成及执行环节的问题。",
-      "when_to_use": "测试发生失败、需要定位原因时",
+      "when_to_use": "测试失败、需要定位原因时",
       "outcome": "失败原因分类与后续处理建议",
       "availability": "ready",
       "relations": {
@@ -591,7 +591,7 @@
       "id": "skill:analyze-source",
       "name": "analyze-source",
       "title": "分析源码规则",
-      "description": "从算子源码中整理约束事实，区分已确认信息、待确认信息和与文档冲突的信息。",
+      "description": "从算子源码中整理约束事实，区分已确认、待确认和与文档冲突的信息。",
       "kind": "skill",
       "availability": "ready"
     },
@@ -647,7 +647,7 @@
       "id": "skill:extract-constraints",
       "name": "extract-constraints",
       "title": "提取算子约束",
-      "description": "从算子文档中整理输入输出、取值范围及参数之间的限制，为生成测试用例提供依据。",
+      "description": "从算子文档中整理输入输出、取值范围和参数之间的限制，作为生成测试用例的依据。",
       "kind": "skill",
       "availability": "ready"
     },
@@ -695,7 +695,7 @@
       "id": "skill:scan-scenes",
       "name": "scan-scenes",
       "title": "识别测试场景",
-      "description": "识别设备、量化方案和可选参数，帮助你确定本次测试范围。",
+      "description": "识别设备、量化方案和可选参数，用于确定本次测试范围。",
       "kind": "skill",
       "availability": "ready"
     },
@@ -719,7 +719,7 @@
       "id": "skill:validate-run",
       "name": "validate-run",
       "title": "评审测试结果",
-      "description": "检查本轮结果是否完整、可信，判断流程可以继续还是需要处理问题。",
+      "description": "检查本轮结果是否完整、可信，判断流程能否继续，还是需要先处理问题。",
       "kind": "skill",
       "availability": "ready"
     }
@@ -869,7 +869,7 @@
       "id": "knowledge:aclnn:implicit_pos",
       "name": "aclnn-implicit-pos",
       "title": "隐式位置约束",
-      "description": "识别表示大小、数量等参数时隐含的正数限制。",
+      "description": "识别大小、数量等参数隐含的正数限制。",
       "kind": "knowledge",
       "availability": "ready",
       "family": "aclnn",
@@ -1139,7 +1139,7 @@
       "id": "knowledge:torch_npu:npu_quant_lightning_indexer",
       "name": "torch-npu-npu-quant-lightning-indexer",
       "title": "量化闪电索引",
-      "description": "检查量化闪电索引的量化场景与接口描述冲突。",
+      "description": "检查量化闪电索引的量化场景，以及接口描述中的冲突。",
       "kind": "knowledge",
       "availability": "ready",
       "family": "torch_npu",

@@ -103,6 +103,20 @@ launcher 在 ~1 秒内 stdout 打印**一行** JSON 标记（`pid`/`started_epoc
 python scripts/generate_cases.py --constraints <constraints.json> --output <iter>/cases_ttk.csv --count <N> --test-framework ttk --hs-scenario-mode <run_state.hs_scenario_mode> --server-config servers.json
 ```
 
+`run_state.csv_plugin` 非空时必须追加 `--csv-plugin <run_state.csv_plugin>`。生成器在基础
+`cases_ttk.csv` 完成后调用该本地脚本：
+
+```text
+python <csv_plugin> --input_case_csv <iter>/cases_ttk.pre_plugin.csv \
+  --output_case_csv <iter>/cases_ttk.csv
+```
+
+基础 CSV 保留为 `cases_ttk.pre_plugin.csv`，最终 `cases_ttk.csv` 继续供 EXECUTE 使用；
+调用日志与结果写入 `csv_plugin.log`/`csv_plugin_report.json`。启用 `--csv-plugin` 时
+生成器跳过文档驱动的 `inputs/aux_params.json`、groupListData materialize 和 aux
+`golden.py`；`ttk_plugin` 值契约仍保留。脚本非 0 退出、输出缺失、表头/行数变化或
+ACLNN CSV 校验由通过变为失败时，GENERATE 直接失败，不得回退使用基础 CSV。
+
 所有产品的 `cases_<platform>.json` 仍分别生成并保留；执行平台选择与 ATK 同一逻辑
 （`_select_execution_platform`：`--platform` 显式指定 → 场景阶段单选设备 → 按
 `servers.json` 中服务器顺序及各服务器 `platforms` 顺序选择第一个已有用例桶的平台）。
@@ -127,6 +141,13 @@ CSV 只是该统一中间模型的框架 adapter 产物。同时检查 `ttk_conv
 禁止手写 CSV 绕过 Z3 生成结果。`operator_family=hs` 默认不要求
 `golden_manifest.json`；`operator_family=aclnn` 使用 TTK 原生 ACLNN runner，
 同样不生成也不要求 E2E Golden plugin/manifest。
+
+当 `run_state.ttk_plugin` 非空且存在插件值规格（`value_constraints.json`）时，生成器
+会在写出 `<iter>/cases.json` 后自动调用 `apply_plugin_case_contract`：
+注入 `template_run_mode`/`ori_kv_topk_mode`/`cmp_kv_topk_mode`，并按
+seqused/cu_seqlens 规范化 KV/block table 物理 shape，产出
+`<iter>/plugin_case_contract_report.json`。这是生成器内部行为，case-generator
+不得手工重复注入或修改 CSV attributes；发现报告缺失/异常时按 generator_bug 报告。
 
 ## 生成后诊断
 

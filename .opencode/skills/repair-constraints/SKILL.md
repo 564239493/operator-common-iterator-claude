@@ -22,6 +22,9 @@ description: 根据 constraint_check.json 对当前 constraints.json 做最小�
   （当前最大编号 +1，全局唯一）。
 - `src_txt_line`（文档快照行号数组）为溯源字段：修复保留原条目时原样保留，新增条目
   必须带该字段（从 `inputs/` 快照核实），来源条款不变时保持原值。
+- 关键字参数名（`keyword.iskeyword`，如 `from`）相关修复：表达式层使用 `<参数名>_`
+  别名（如 `from_.range_value <= to.range_value`），`relation_params`、参数卡 key、`id`
+  与执行层参数名仍用真实名 `from`；不得因参数名是关键字而继续降级 `description`。
 
 **知识 skill 按需加载**：待修复问题涉及量化、NZ/格式、广播、dtype 推导等主题时，
 先 skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再

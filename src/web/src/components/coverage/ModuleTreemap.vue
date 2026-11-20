@@ -113,7 +113,7 @@ const charts = computed(() => {
       { key: 'tiling', kind: 'tile', x: hostBodyX, y: hostBodyY, w: tilingW, h: hostBodyH, fill: solidOf(tiling), stroke: leafLine(tiling), headerH: 0,
         name: 'tiling', rate: rateStr(tiling), tip: `tiling · ${rateStr(tiling)} (${fmt(tiling.covered)}/${fmt(tiling.total)}) · 属于 host` },
       { key: 'rest', kind: 'tile', x: restX, y: hostBodyY, w: restW, h: hostBodyH, fill: solidOf(rest), stroke: leafLine(rest), headerH: 0,
-        name: 'host·其余', rate: rateStr(rest), tip: `host·其余 · ${rateStr(rest)} (${fmt(rest.covered)}/${fmt(rest.total)})` },
+        name: 'host 其余', rate: rateStr(rest), tip: `host 其余 · ${rateStr(rest)} (${fmt(rest.covered)}/${fmt(rest.total)})` },
       // kernel（op 内、host 旁）
       { key: 'kernel', kind: 'tile', x: kernelX, y: bodyY, w: kernelW, h: bodyH, fill: solidOf(kernel), stroke: leafLine(kernel), headerH: 0,
         name: 'kernel', rate: rateStr(kernel), tip: `kernel · ${rateStr(kernel)} (${fmt(kernel.covered)}/${fmt(kernel.total)})` },

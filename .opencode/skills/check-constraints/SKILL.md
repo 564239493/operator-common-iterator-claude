@@ -23,8 +23,8 @@ description: 对照算子文档及本轮明确补充证据检查最终 constrain
 - 首轮（初始化 EXTRACT 后）还必须读取：当前 `<iter-dir>/extraction_provenance.json`
   与 `inputs/prompt_preanalysis.json`（做必载知识审计，见检查规则第 9 条）；
 - Metadata/TTK（`run_state.test_framework=ttk` 且存在 `inputs/plugin_requirements.json`）
-  还必须读取：`inputs/plugin_requirements.json` 与
-  `inputs/value_constraints.candidates.json`，按「步骤 M」复核。
+  还必须读取：`inputs/plugin_requirements.json`、`inputs/value_constraints.candidates.json`
+  与（若存在）`inputs/plugin_contract_review.json`，按「步骤 M」复核。
 
 只读上述输入与理解结构所必需的 schema/校验代码；其他 run、历史产物、memory 与
 Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权威，此处不再
@@ -49,7 +49,12 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
   记录；只有本轮报告 `passed` 后，主协调器才能运行
   `scripts/prepare_plugin_values.py --run-dir <run> --confirm` 落正式
   `value_constraints.json`；
-- 未确认的候选（`review_required=true`）不得被生成侧消费。
+- 未确认的候选（`review_required=true`）不得被生成侧消费；
+- `confidence="unresolved"` 的条目不得 confirm，必须记 open issue 并说明缺口；
+- `plugin_requirements.json.required_attributes`（如 `template_run_mode`）必须有生成侧
+  覆盖证据（插件契约报告或生成代码/规则），否则记 open issue；
+- 若存在 `inputs/plugin_contract_review.json`：其 `constraint_suggestions` 必须已落库
+  或被明确拒绝并说明理由；`gaps` 非空时逐条记 open 或标注非阻断理由。
 
 ## 步骤 0：正反例取证（仅 operator_family=aclnn）
 
@@ -125,6 +130,16 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
     - `undeclared_params` 非空：核对 expr 引用的参数名是否真的存在于
       inputs/outputs 参数卡；拼错或漏卡记 open issue；
     - `skipped_todo` 不记 issue；`unknown` 退回人工目视检查（同规则 3）。
+11. **关键字参数名形式化审计**：扫描函数原型与 `inputs`/`outputs` 参数卡名，找出
+    `keyword.iskeyword(name)` 为真的参数（当前语料为 `from`）。对每个命中参数：
+    - 文档中与其相关的关系（如 `from <= to`、`from`/`to` 的 dtype 取值域）只出现在
+      `description`/`src_text`，`constraints_in_parameters` 无对应 expr → 记 open issue；
+      `suggestion` 要求用 `<参数名>_` 别名形式化（如
+      `from_.range_value <= to_.range_value`），`relation_params` 仍写真实名；
+    - expr 直接写裸关键字导致 `verify_relation_exprs.py` 报 syntax_error → 记 open issue，
+      要求改为别名写法（关键字本身**不是**不可形式化的理由）；
+    - 仅当关系语义本身不可形式化时才允许降级 `description`，不得以“参数名是关键字”
+      作为降级依据。
 
 ## 唯一报告
 

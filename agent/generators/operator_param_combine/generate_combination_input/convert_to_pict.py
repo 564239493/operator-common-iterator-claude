@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.generators.common_utils.expression_analysis import ExpressionPreprocessor
 from agent.generators.common_utils.logger_util import LazyLogger
 
 logger = LazyLogger()
@@ -186,7 +187,8 @@ def _format_ast(node: ast.expr) -> str:
     return ast.unparse(node) if hasattr(ast, "unparse") else str(node)
 
 
-def translate_constraint(python_expr: str, warnings: Optional[List[str]] = None) -> str:
+def translate_constraint(python_expr: str, warnings: Optional[List[str]] = None,
+                         param_names=None) -> str:
     """
     将一条 Python 约束表达式翻译为 PICT 语法。
     成功时返回以 ``;`` 结尾的 PICT 约束文本。
@@ -194,10 +196,11 @@ def translate_constraint(python_expr: str, warnings: Optional[List[str]] = None)
     P6：失败时同时写入 warnings，避免约束在 PICT 侧被静默削弱。
     :param python_expr: Python 约束表达式原文
     :param warnings: 可选的告警收集器；传入时把翻译失败原因追加进去
+    :param param_names: 真实参数名清单，用于兼容 Python 关键字参数名（如 from）
     :return: 以 ``;`` 结尾的 PICT 约束文本，或 ``//`` 注释行
     """
     try:
-        tree = ast.parse(python_expr.strip(), mode="eval")
+        tree = ExpressionPreprocessor.parse_expression(python_expr.strip(), param_names)
         result = _translate_expr(tree.body)
         return result + " ;"
     except _TranslateError as e:
@@ -258,7 +261,7 @@ def convert_json_to_pict(json_path: str, output_path: str) -> None:
         failed_count = 0
         translate_warnings: List[str] = []
         for c in constraints:
-            pict = translate_constraint(c, translate_warnings)
+            pict = translate_constraint(c, translate_warnings, list(parameters.keys()))
             lines.append(pict)
             if pict.startswith("//"):
                 failed_count += 1

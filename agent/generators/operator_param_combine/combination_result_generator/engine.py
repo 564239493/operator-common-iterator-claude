@@ -19,6 +19,7 @@ from agent.generators.operator_param_combine.combination_result_generator.covera
 from agent.generators.operator_param_combine.combination_result_generator.generator import GeneratorOptions
 from agent.generators.operator_param_combine.combination_result_generator.model.generator_config import GeneratorConfig
 from agent.generators.operator_param_combine.combination_result_generator.model.parameter_model import ParameterModel
+from agent.generators.operator_param_combine.combination_result_generator.constraint.ast_parser import ConstraintParser
 from agent.generators.operator_param_combine.combination_result_generator.constraint.compiler import ConstraintCompiler
 from agent.generators.operator_param_combine.combination_result_generator.constraint.evaluator import \
     ConstraintEvaluator
@@ -59,11 +60,12 @@ def load_options(data: dict) -> GeneratorOptions:
     )
 
 
-def build_constraint(constraints: tuple[str, ...]) -> ConstraintProtocol | None:
+def build_constraint(constraints: tuple[str, ...],
+                     param_names=None) -> ConstraintProtocol | None:
     if not constraints:
         return None
 
-    compiler = ConstraintCompiler()
+    compiler = ConstraintCompiler(parser=ConstraintParser(param_names))
     evaluator = ConstraintEvaluator()
     compiled = []
     for expr in constraints:
@@ -92,8 +94,13 @@ def build_constraint(constraints: tuple[str, ...]) -> ConstraintProtocol | None:
             #               "param": str | None, "attr": str | None, "cause": str}}
             self.skipped_exprs: dict[str, dict] = {}
 
-        def evaluate(self, context) -> bool:
+        def evaluate(self, context, skip_expressions=None) -> bool:
+            # skip_expressions：PICT 收敛时松弛过的原始约束集合——后过滤
+            # 需与 PICT 用同一约束集，被松弛的约束不参与求值（M7 约束集一致性）。
+            skip = skip_expressions or set()
             for constraint_compile in compiled:
+                if constraint_compile.expression in skip:
+                    continue
                 try:
                     if not evaluator.evaluate(constraint_compile.tree, context):
                         self.failed_exprs.add(constraint_compile.expression)
