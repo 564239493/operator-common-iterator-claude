@@ -11,6 +11,7 @@ import operator
 import z3
 
 from agent.generators.common_utils.logger_util import LazyLogger
+from agent.generators.data_definition.constants import ParamModelConfig
 from agent.generators.param_constraint_solve.param_var_definition import TensorVar, ListVar, ScalarVar, TensorListVar, DTYPE_MAP
 
 logger = LazyLogger()
@@ -49,9 +50,14 @@ def _register_rec_fn(name: str, seq_sort, arg_sort, body_builder):
     return fn
 
 
-# shape 秩上限：与 validate_artifacts 对 dimensions 的 [0,10] 上限一致。prod(shape)
-# 用秩有界 If 展开（见 _prod_z3_sequence），不依赖 Z3 递归函数。
-_MAX_SHAPE_RANK = 10
+# prod(shape) 秩有界 If 展开（见 _prod_z3_sequence）的兜底因子数：求解器里读不到
+# 已硬断言的维度个数上界时使用。与 PICT 组合期未声明 dimensions 的默认维度池
+# DEFAULT_TENSOR_SHAPE_SET（1-8 维）同口径，不依赖 Z3 递归函数。
+_PROD_RANK_FALLBACK = ParamModelConfig.DEFAULT_TENSOR_SHAPE_DIM_MAX
+
+# TensorListVar 的 tensor 个数是独立 Int 常量 "<参数名>.length"，名称后缀须与
+# param_var_definition.TensorListVar 保持一致。
+_TENSOR_LIST_LEN_SUFFIX = ".length"
 
 
 # ==========================================
@@ -555,6 +561,9 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
         除数为 0：常量在转换期抛 ValueError；符号除数时这条约束不限制 q。
         两边都是 Python 整数常量时按整除语义直接算出结果，不建约束。
+
+        builder.ceil_div_inline 打开时不建变量、不加断言，直接返回除法表达式
+        （量词兜底路径用：断言会落在量词外面，只能靠纯表达式表达）。
         """
         if isinstance(left, TensorElementProxy):
             left = left._scalar()
@@ -571,6 +580,12 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         if not (z3.is_int(left) and z3.is_int(right)):
             raise TypeError(
                 f"Ceil division requires Int operands, got {left.sort()}/{right.sort()}")
+
+        # 纯表达式模式：直接返回除法表达式（不建变量、不加断言）。除数为正时
+        # 除数为负时 Z3 的 Div 恰好就是向上取整；除数为 0 退化成 0。
+        if getattr(self.builder, "ceil_div_inline", False):
+            return z3.If(right > 0, -((-left) / right),
+                         z3.If(right < 0, left / right, z3.IntVal(0)))
 
         # 缓存挂在 builder 上：每条约束都会 new 一个转换器，挂在转换器上等于不去重。
         cache = getattr(self.builder, "_div_cache", None)
@@ -727,13 +742,38 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
     def _handle_max_min(self, node, func_name):
         if len(node.args) == 0: raise ValueError(f"{func_name}() requires at least 1 argument")
+        is_max = (func_name == 'max')
+        if len(node.args) == 1:
+            if isinstance(node.args[0], (ast.GeneratorExp, ast.ListComp)):
+                return self._handle_max_min_generator(node.args[0], is_max)
+            seq_var = self._resolve_sequence_var(node.args[0])
+            if seq_var is not None:
+                return self._handle_max_min_seq(seq_var, is_max)
         args_z3 = [self.visit(arg) for arg in node.args]
         if any(a is None for a in args_z3): raise ValueError(f"{func_name}() argument failed")
-        is_max = (func_name == 'max')
         if len(node.args) == 1:
             return self._handle_max_min_seq(args_z3[0], is_max)
         else:
             return self._handle_max_min_scalars(args_z3, is_max)
+
+    def _resolve_sequence_var(self, arg_node):
+        """把 max/min 的单参数按 AST 形态解析回参数变量对象。
+
+        整列表/整张量的 max/min 需要按变量类型取序列长度和元素，而``visit_Name`` 对 ListVar 返回 z3 序列常量、对 ``.range_value``
+        属性访问返回该属性表达式，均不是变量对象本身。这里直接按``名字`` / ``名字.range_value`` 取回 TensorVar、TensorListVar 或
+        ListVar；其它形态返回 None，由调用方走原有 visit 分支。
+        """
+        if isinstance(arg_node, ast.Name):
+            name = arg_node.id
+        elif isinstance(arg_node, ast.Attribute) and arg_node.attr == 'range_value' \
+                and isinstance(arg_node.value, ast.Name):
+            name = arg_node.value.id
+        else:
+            return None
+        var = self.builder.get_var(name)
+        if isinstance(var, (TensorVar, TensorListVar, ListVar)):
+            return var
+        return None
 
     def _handle_range_quantifier(self, comprehension, condition_ast, quantifier_op):
         range_call = comprehension.iter
@@ -768,21 +808,134 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                 if node.id == self.vn: return self.ph
                 return super().visit_Name(node)
 
-        cond_expr = TempVisitor(self.builder, loop_var_name, k).visit(condition_ast)
-        bounds = z3.And(k >= start, k < stop)
-        if not (isinstance(step, z3.IntNumRef) and step.as_long() == 1):
-            bounds = z3.And(bounds, (k - start) % step == 0)
+        def build_cond(index_value):
+            """按具体下标重新转换一次生成器体（含生成器自带的 if 过滤条件）。
+
+            必须逐个下标重新转换，不能只转一次再 substitute：CeilDiv 这类函数在转换时会向求解器额外添加关于中间变量的断言，
+            substitute 改不到它们，所有展开子句就会共用同一个自由变量，约束等于没写。
+            """
+            visitor = TempVisitor(self.builder, loop_var_name, index_value)
+            cond = visitor.visit(condition_ast)
+            return self._apply_generator_filters(visitor, comprehension, cond, quantifier_op)
 
         # 守护式定长展开：上界可由文档的维度个数范围推出时，把 range() 量词改写成逐下标
         # 子句，避免 Z3 对含 shape 索引的量词反复实例化导致超时。
-        unrolled = self._try_unroll_range(start, stop, step, k, cond_expr, quantifier_op)
+        unrolled = self._try_unroll_range(start, stop, step, build_cond, quantifier_op)
         if unrolled is not None:
             return unrolled
+
+        # 推不出展开窗口时只能保留量词。量词体泄漏断言时先用无断言的纯表达式
+        # 仍泄漏才报错（见 _convert_quantifier_body）。
+        cond_expr = self._convert_quantifier_body(
+            lambda: build_cond(k), {k.decl()},
+            f"range() 量词 {ast.unparse(condition_ast)[:160]}")
+
+        bounds = z3.And(k >= start, k < stop)
+        if not (isinstance(step, z3.IntNumRef) and step.as_long() == 1):
+            bounds = z3.And(bounds, (k - start) % step == 0)
 
         if quantifier_op == z3.ForAll:
             return z3.ForAll([k], z3.Implies(bounds, cond_expr))
         else:
             return z3.Exists([k], z3.And(bounds, cond_expr))
+
+    @staticmethod
+    def _apply_generator_filters(visitor, comprehension, cond_expr, quantifier_op):
+        """把生成器末尾的 ``if`` 过滤条件并入判断条件。
+
+        ``all(P(i) for i in R if C(i))`` 只在满足 ``C(i)`` 的下标上要求 ``P(i)``；
+        ``any`` 同理，只在满足 ``C(i)`` 的下标上找见证。并入后等价于：
+
+        - ``ForAll``：``bounds => P``  变为  ``bounds => C => P``
+        - ``Exists``：``bounds and P`` 变为  ``bounds and C and P``
+
+        只处理 ``cond_expr`` 本身：量词与定长展开两条下游路径都会把它原样包进
+        ``Implies(bounds, ·)`` / ``And(bounds, ·)``，所以在这里并入一次即可。
+        没有过滤条件时原样返回。
+        """
+        filters = getattr(comprehension, "ifs", None)
+        if not filters:
+            return cond_expr
+        guard = z3.And(*[visitor.visit(item) for item in filters])
+        if quantifier_op == z3.ForAll:
+            return z3.Implies(guard, cond_expr)
+        return z3.And(guard, cond_expr)
+
+    def _convert_quantifier_body(self, build_body, decls, context):
+        """转换保留下来的量词体；泄漏断言时改用无断言的纯表达式除法重转。
+
+        量词体在转换期可能向求解器追加断言（CeilDiv 的取值区间、切片长度等）。
+        这些断言不受量词约束，一旦引用循环变量就会落到量词外面，把「每个下标都
+        成立」悄悄放宽成「存在某个值成立」。CeilDiv 可以换成不加断言的除法表达式
+        （builder.ceil_div_inline），量词得以保留，代价是求解更慢；其它来源的泄漏
+        无法并入量词，仍抛错，由上层按 conversion_failed 拒产该 case。
+
+        :param build_body: 无参回调，按当前模式转换一次量词体
+        :param decls: 判泄漏的常量集合（循环变量 / 元素占位符）
+        :param context: 日志与报错里的定位文本
+        """
+        builder = self.builder
+        solver = builder.solver
+        cache = getattr(builder, "_div_cache", None)
+        cached_keys = set(cache or ())
+
+        # 探测：断言全部回滚，试转产生的中间变量不能残留在真实求解器里
+        before = len(solver.assertions())
+        solver.push()
+        try:
+            build_body()
+            leaked = [a for a in solver.assertions()[before:]
+                      if self._expr_mentions_decl(a, decls)]
+        finally:
+            solver.pop()
+            if cache is not None:
+                for key in set(cache) - cached_keys:
+                    del cache[key]
+        if not leaked:
+            return build_body()
+
+        logger.warning(f"[Unroll] 量词体追加了 {len(leaked)} 条引用循环变量的断言，"
+                       f"改用无断言的纯表达式除法保留量词: {context}")
+        builder.ceil_div_inline = True
+        try:
+            before = len(solver.assertions())
+            cond_expr = build_body()
+            self._reject_leaked_quantifier_assertions(before, decls, context)
+        finally:
+            builder.ceil_div_inline = False
+        return cond_expr
+
+    def _reject_leaked_quantifier_assertions(self, before_count, decls, context):
+        """保留量词前的检查：转换期新增的断言不能引用循环变量。
+
+        这类断言落在量词外面，会把「对所有下标成立」放宽成「存在某个值成立」，
+        求解照样 sat，但约束已经被削弱。检出即抛错中止转换，上层按
+        ``conversion_failed`` 拒产该 case。
+
+        :param before_count: 转换量词体之前 ``solver.assertions()`` 的条数
+        :param decls: 要检查的常量（循环变量 / 元素占位符）
+        :param context: 报错信息里的定位文本，通常是原表达式片段
+        """
+        new_assertions = self.builder.solver.assertions()[before_count:]
+        leaked = [a for a in new_assertions if self._expr_mentions_decl(a, decls)]
+        if not leaked:
+            return
+        raise NotImplementedError(
+            f"量词体转换时额外添加了 {len(leaked)} 条引用循环变量的断言，无法并入量词: "
+            f"{self._short_expr(leaked[0], 400)}；上下文: {context}。"
+            "请把循环范围改写成能静态展开的常量或长度窗口。")
+
+    @staticmethod
+    def _expr_mentions_decl(expr, decls):
+        """表达式中是否出现给定常量（按 decl 精确匹配，含量词体内部）。"""
+        if z3.is_app(expr):
+            if expr.decl() in decls:
+                return True
+            return any(ASTtoZ3Converter._expr_mentions_decl(arg, decls)
+                       for arg in expr.children())
+        if z3.is_quantifier(expr):
+            return ASTtoZ3Converter._expr_mentions_decl(expr.body(), decls)
+        return False
 
     @staticmethod
     def _short_expr(expr, limit=3000):
@@ -795,9 +948,9 @@ class ASTtoZ3Converter(ast.NodeVisitor):
     def _int_bounds(self, expr, depth=0):
         """整数表达式的保守区间 (lo, hi)；推不出返回 None（一律回退量词）。
 
-        只处理确定性的取值来源：整数常量、``Length(<shape seq>)``（上界来自
-        已硬断言的文档维度个数范围）、max/min 译成的 If 链、标量参数的声明区间、
-        一元负号、以及 + - * 的区间运算。
+        只处理确定性的取值来源：整数常量、``Length(<seq>)`` 与 ``<p>.length``（上界来自
+        已硬断言的维度个数范围或列表长度上界）、max/min 译成的 If 链、标量参数的声明区间、
+        一元负号、``//``（除数为非零整数常量）、以及 + - * 的区间运算。
         任何不认识的形态都返回 None —— 宁可不展开，也不用猜测的界改变语义。
 
         取自参数声明区间的界会被 ``_try_unroll_range`` 一并断言进求解器：只有模型
@@ -817,11 +970,19 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         if kind == z3.Z3_OP_SEQ_LENGTH and len(args) == 1:
             seq = args[0]
             if z3.is_const(seq):
-                rank_max = self.builder.get_rank_max(seq.decl().name())
-                if rank_max:
-                    # 维度个数由 len(p.shape) in dimensions 硬断言；下界保守取 0，
+                # shape seq 用维度个数上界；列表 seq 用约束推出的长度上界（或精确长度）。
+                # 取最小的已知界：精确长度优先于长度上界，否则上界被截断到展开阈值后，
+                # 精确长度更小的参数也会按满窗口展开。
+                name = seq.decl().name()
+                upper = min(filter(None, (
+                    self.builder.get_rank_max(name),
+                    self.builder.get_static_length(name),
+                    self.builder.get_length_max(name),
+                )), default=None)
+                if upper:
+                    # 上界来自已硬断言的文档维度范围 / 约束 len(p) 关系；下界保守取 0，
                     # 不依赖文档是否允许 0 维（下界只影响展开起点，取小只会多出被 guard 短路成真的子句，不会漏掉任何可达下标）。
-                    return (0, rank_max)
+                    return (0, upper)
             return None
         if kind == z3.Z3_OP_ITE and len(args) == 3:
             then_bounds = self._int_bounds(args[1], depth + 1)
@@ -830,6 +991,9 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                 return (min(then_bounds[0], else_bounds[0]),
                         max(then_bounds[1], else_bounds[1]))
             return None
+        # `//` 译成 ToInt(ToReal(a) / ToReal(b))
+        if kind == z3.Z3_OP_TO_INT and len(args) == 1:
+            return self._trunc_bounds(args[0], depth)
         # 一元负号：区间取反（-min(...) 这类尾部窗口的起点）
         if kind == z3.Z3_OP_UMINUS and len(args) == 1:
             inner = self._int_bounds(args[0], depth + 1)
@@ -838,6 +1002,17 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             return (-inner[1], -inner[0])
         # 标量参数：取声明区间（如 range(0, axis.range_value) 的上界）
         if kind == z3.Z3_OP_UNINTERPRETED and not args:
+            # tensor_list 的个数是 Int 常量 `<参数名>.length`（不是 Length(seq)），
+            # 上界同样来自约束里 len(p) 推出的列表长度上界。
+            name = expr.decl().name()
+            if name.endswith(_TENSOR_LIST_LEN_SUFFIX):
+                param_name = name[:-len(_TENSOR_LIST_LEN_SUFFIX)]
+                upper = min(filter(None, (
+                    self.builder.get_static_length(param_name),
+                    self.builder.get_length_max(param_name),
+                )), default=None)
+                if upper:
+                    return (0, upper)
             return self._param_int_range(expr)
         children = [self._int_bounds(arg, depth + 1) for arg in args]
         if not children or any(bound is None for bound in children):
@@ -852,6 +1027,39 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                 lo, hi = lo * bound[0], hi * bound[1]
             return (lo, hi)
         return None
+
+    def _trunc_bounds(self, quotient, depth):
+        """``ToInt(a / b)`` 的保守区间；只处理 b 为非零整数常量的实数除法。
+
+        ToInt 是向零截断，对被除数区间 ``[lo, hi]`` 保守取 ``floor/ceil`` 两端，
+        得到的窗口可能略宽于真实取值，多出的下标由 guard 短路，不改变语义。
+        """
+        if not (z3.is_app(quotient) and quotient.decl().kind() == z3.Z3_OP_DIV
+                and quotient.num_args() == 2):
+            return None
+        divisor = self._int_constant(quotient.arg(1))
+        if not divisor:
+            return None
+        inner = self._int_bounds(self._strip_to_real(quotient.arg(0)), depth + 1)
+        if inner is None:
+            return None
+        lo, hi = inner
+        return (min(lo // divisor, hi // divisor),
+                max(-((-lo) // divisor), -((-hi) // divisor)))
+
+    @staticmethod
+    def _strip_to_real(expr):
+        """剥掉 ``ToReal(...)``，取回原始整数表达式。"""
+        while z3.is_app(expr) and expr.decl().kind() == z3.Z3_OP_TO_REAL and expr.num_args() == 1:
+            expr = expr.arg(0)
+        return expr
+
+    def _int_constant(self, expr):
+        """整数常量（可带 ``ToReal`` 包装）的 Python 值；不是常量或为 0 返回 None。"""
+        expr = self._strip_to_real(expr)
+        if not z3.is_int_value(expr):
+            return None
+        return expr.as_long() or None
 
     def _param_int_range(self, expr):
         """标量参数声明的整数区间 (lo, hi)；不是带整数区间的标量返回 None。
@@ -890,7 +1098,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             found.extend(self._param_domain_assertions(arg, depth + 1))
         return found
 
-    def _try_unroll_range(self, start, stop, step, loop_var, cond_expr, quantifier_op):
+    def _try_unroll_range(self, start, stop, step, build_term, quantifier_op):
         """range() 量词守护式展开；返回 None 表示保持原量词。
 
         等价性：设 ``[lo, hi)`` 覆盖所有可达模型里 ``[start, stop)`` 的取值，则
@@ -900,6 +1108,10 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
         区间外的下标由 guard 短路，不改变约束力。``lo/hi`` 推不出、或展开宽度
         超过 ``builder.unroll_limit`` 时返回 None（继续用量词）。
+
+        ``build_term`` 输入一个具体下标，返回该下标下的子句。调用方必须逐下标
+        重新转换，不能转一次再 substitute：转换期额外添加的断言（如 CeilDiv 的
+        ``__div_N`` 取值）改不到，所有子句会共用同一个自由变量。
 
         ``lo < 0`` 同样允许展开：下标转换已把负索引归一成 ``If(idx < 0, Len+idx, idx)``，
         代入负常量后与执行期的 Python 负索引语义一致（``range(-2, 0)`` 对应末两维）。
@@ -917,7 +1129,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         hi = stop_bounds[1]
         if hi <= lo:
             return None
-        unroll_limit = getattr(self.builder, "unroll_limit", 128)
+        unroll_limit = self.builder.unroll_limit
         if hi - lo > unroll_limit:
             logger.debug(f"[Unroll] range width {hi - lo} exceeds limit {unroll_limit}, keep quantifier")
             return None
@@ -930,7 +1142,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         terms = []
         for value in range(lo, hi):
             guard = z3.And(z3.IntVal(value) >= start, z3.IntVal(value) < stop)
-            body = z3.simplify(z3.substitute(cond_expr, (loop_var, z3.IntVal(value))))
+            body = z3.simplify(build_term(z3.IntVal(value)))
             terms.append(z3.Implies(guard, body) if quantifier_op == z3.ForAll
                          else z3.And(guard, body))
         kind = "all" if quantifier_op == z3.ForAll else "any"
@@ -963,6 +1175,12 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
     def _handle_quantifier(self, gen_node, quantifier_op):
         try:
+            if len(gen_node.generators) > 1:
+                # 目前只建模第一个 for 子句，其余会被忽略，可能与 Python 语义不一致。
+                logger.warning(
+                    f"[Quantifier] {len(gen_node.generators)} 个 for 子句，仅建模第 1 个: "
+                    f"{ast.unparse(gen_node)[:200]}"
+                )
             comprehension = gen_node.generators[0]
 
             # --- range() special case ---
@@ -1008,23 +1226,31 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                     if node.id == self.vn: return self.ph
                     return super().visit_Name(node)
 
-            cond_expr = TempVisitor(self.builder, loop_var_name, placeholder).visit(condition_ast)
-            actual_val = target_obj[k] if is_sequence else z3.Select(target_obj, k)
-            final_cond = z3.substitute(cond_expr, (placeholder, actual_val))
+            def build_cond(element_value):
+                """按具体元素值重新转换一次生成器体，原因见 _handle_range_quantifier。"""
+                visitor = TempVisitor(self.builder, loop_var_name, element_value)
+                cond = visitor.visit(condition_ast)
+                # 列表路径同样要并入生成器的 if 过滤条件，见 _apply_generator_filters。
+                return self._apply_generator_filters(visitor, comprehension, cond, quantifier_op)
 
             # 定长展开：Seq 长度已确定时把量词改成逐元素 And/Or——
             # ForAll(k, 0<=k<N => P(k)) ≡ And(P(0..N-1))，Exists 同理变 Or（N>=1）。
             # 约束文本仍是 all()/any()，求解器只看到点对点子句。
             static_len = self.builder.get_static_length(iter_param_name) if iter_param_name else None
             if is_sequence and static_len:
-                elements = [
-                    z3.substitute(cond_expr, (placeholder, target_obj[index]))
-                    for index in range(static_len)
-                ]
+                elements = [build_cond(target_obj[index]) for index in range(static_len)]
                 kind = "all" if quantifier_op == z3.ForAll else "any"
                 self.builder.record_unroll(iter_param_name, kind, static_len)
                 logger.debug(f"[Unroll] {kind}() over '{iter_param_name}' unrolled to {static_len} elements")
                 return z3.And(*elements) if quantifier_op == z3.ForAll else z3.Or(*elements)
+
+            # 长度不可静态确定，只能保留量词；泄漏断言时同样先尝试纯表达式除法
+            # （见 _convert_quantifier_body）。
+            cond_expr = self._convert_quantifier_body(
+                lambda: build_cond(placeholder), {placeholder.decl(), k.decl()},
+                f"对 '{iter_param_name}' 的量词 {ast.unparse(condition_ast)[:160]}")
+            actual_val = target_obj[k] if is_sequence else z3.Select(target_obj, k)
+            final_cond = z3.substitute(cond_expr, (placeholder, actual_val))
 
             if quantifier_op == z3.ForAll:
                 bounds = z3.And(k >= 0, k < z3.Length(target_obj)) if is_sequence else (k >= 0)
@@ -1063,9 +1289,12 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         return result
 
     def _handle_max_min_seq(self, target, is_max):
-        # 优化：如果是具体单值，直接返回
+        # 优化：如果是具体单值，直接返回。
+        # 列表参数的 range_value 只是元素取值的静态种子，元素本身仍由求解模型
+        # 决定（可能被其他约束改写），不能按单值折叠，否则 max/min 会算成种子值。
         spec = getattr(target, '_range_spec', None)
-        if spec is not None and not isinstance(spec, (list, tuple)):
+        if spec is not None and not isinstance(spec, (list, tuple)) \
+                and not isinstance(target, ListVar):
             logger.info(f"[Optimize] max/min on fixed value tensor {target.name}: {spec}")
             if isinstance(spec, bool):
                 return z3.BoolVal(spec)
@@ -1132,11 +1361,211 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             return target.shape[0]
         raise NotImplementedError(f"Cannot determine length for type {type(target).__name__}")
 
+    def _handle_max_min_generator(self, generator_node, is_max):
+        """``max/min(elt for i in R [if C])`` 取最值。
+
+        与 ``sum`` 的生成器写法一样，只有迭代窗口能静态确定时才有确定语义：
+        窗口由 ``_int_bounds`` 或静态长度表推出，逐项展开后按 ``If`` 链折叠；
+        推不出或超展开上限时保持抛错（宁可不支持，不猜界）。
+        """
+        comprehensions = generator_node.generators
+        if len(comprehensions) > 1:
+            raise NotImplementedError(
+                f"max/min with multiple for clauses is not supported: {ast.unparse(generator_node)[:200]}")
+        comprehension = comprehensions[0]
+        if getattr(comprehension, "is_async", 0):
+            raise NotImplementedError("max/min over async comprehension is not supported")
+        if (isinstance(comprehension.iter, ast.Call)
+                and isinstance(comprehension.iter.func, ast.Name)
+                and comprehension.iter.func.id == 'range'):
+            return self._handle_max_min_range(comprehension, generator_node.elt, is_max)
+        return self._handle_max_min_sequence(comprehension, generator_node.elt, is_max)
+
+    def _maxmin_whole_list_var(self, comprehension, elt_node):
+        """识别 ``p.range_value[i] for i in range(len(p))`` 这类整列表最值。
+
+        元素逐个取满 ``p`` 的全部元素、且没有 ``if`` 过滤时，生成器写法与
+        ``max(p.range_value)`` 完全等价，直接复用整列表的量词编码即可；
+        列表长度是否静态已知都不影响。其它形态返回 None，交给逐项展开路径。
+        """
+        if comprehension.ifs:
+            return None
+        loop_var = getattr(comprehension.target, 'id', None)
+        if not loop_var:
+            return None
+        range_call = comprehension.iter
+        if not (isinstance(range_call, ast.Call)
+                and isinstance(range_call.func, ast.Name)
+                and range_call.func.id == 'range'):
+            return None
+        rargs = range_call.args
+        if len(rargs) == 2:
+            start = rargs[0]
+            if not (isinstance(start, ast.Constant) and start.value == 0):
+                return None
+            stop = rargs[1]
+        elif len(rargs) == 1:
+            stop = rargs[0]
+        else:
+            return None
+        if not (isinstance(stop, ast.Call)
+                and isinstance(stop.func, ast.Name) and stop.func.id == 'len'
+                and len(stop.args) == 1 and isinstance(stop.args[0], ast.Name)):
+            return None
+        param_name = stop.args[0].id
+        if not isinstance(elt_node, ast.Subscript) \
+                or not (isinstance(elt_node.slice, ast.Name)
+                        and elt_node.slice.id == loop_var):
+            return None
+        base = elt_node.value
+        if isinstance(base, ast.Attribute) and base.attr == 'range_value':
+            base = base.value
+        if not (isinstance(base, ast.Name) and base.id == param_name):
+            return None
+        var = self.builder.get_var(param_name)
+        return var if isinstance(var, ListVar) else None
+
+    def _handle_max_min_range(self, comprehension, elt_node, is_max):
+        """``max/min(f(i) for i in range(...))``：按静态窗口逐下标展开后折叠。"""
+        range_call = comprehension.iter
+        if len(range_call.args) not in (1, 2, 3):
+            raise ValueError("range() expects 1-3 arguments")
+        args = [self.visit(arg) for arg in range_call.args]
+        if any(arg is None for arg in args):
+            raise ValueError("range() argument failed")
+
+        if len(args) == 1:
+            start, stop, step = z3.IntVal(0), args[0], z3.IntVal(1)
+        elif len(args) == 2:
+            start, stop, step = args[0], args[1], z3.IntVal(1)
+        else:
+            start, stop, step = args
+        if not (z3.is_int_value(step) and step.as_long() == 1):
+            raise NotImplementedError(f"max/min over range() with step {step} is not supported")
+
+        start_bounds = self._int_bounds(start)
+        stop_bounds = self._int_bounds(stop)
+        unroll_limit = self.builder.unroll_limit
+        too_wide = start_bounds and stop_bounds and stop_bounds[1] - start_bounds[0] > unroll_limit
+        if not start_bounds or not stop_bounds or too_wide:
+            # 窗口确定不了（常见于列表长度只由求解决定）时，整列表遍历没有逐项展开的必要：
+            # `p.range_value[i] for i in range(len(p))` 与 `max(p.range_value)` 同义，
+            # 直接复用整列表的量词编码。其它形态保持 fail-closed。
+            whole_list_var = self._maxmin_whole_list_var(comprehension, elt_node)
+            if whole_list_var is not None:
+                return self._handle_max_min_seq(whole_list_var, is_max)
+        if not start_bounds or not stop_bounds:
+            raise NotImplementedError(
+                f"max/min over range() requires statically known bounds: {ast.unparse(range_call)[:200]}")
+        lo, hi = start_bounds[0], stop_bounds[1]
+        if too_wide:
+            raise NotImplementedError(
+                f"max/min unroll width {hi - lo} exceeds limit {unroll_limit}: {ast.unparse(range_call)[:200]}")
+
+        # 窗口可能由标量参数的声明区间推出：断言进去，保证展开覆盖所有可达下标。
+        for bound_expr in (start, stop):
+            for name, bounds, assertion in self._param_domain_assertions(bound_expr):
+                self.builder.assert_param_domain(name, bounds, assertion)
+
+        terms = []
+        for value in range(lo, hi):
+            body = self._maxmin_element(comprehension, elt_node, z3.IntVal(value), is_max)
+            guard = z3.And(z3.IntVal(value) >= start, z3.IntVal(value) < stop)
+            terms.append(z3.If(guard, body, self._extreme_like(body, is_max)))
+        self.builder.record_unroll("range", "max" if is_max else "min", len(terms))
+        if not terms:
+            raise ValueError("max/min() over empty window")
+        return self._handle_max_min_scalars(terms, is_max)
+
+    def _handle_max_min_sequence(self, comprehension, elt_node, is_max):
+        """``max/min(f(v) for v in p.range_value)``：按静态长度逐元素展开后折叠。"""
+        iter_param_name = self._iter_param_name(comprehension.iter)
+        iter_target = self.visit(comprehension.iter)
+        if iter_target is None:
+            raise ValueError("max/min() iter target is None")
+
+        if hasattr(iter_target, 'get_element_sort'):
+            if isinstance(iter_target, TensorVar):
+                target_obj = iter_target.range_value
+                is_sequence = False
+            else:
+                target_obj = iter_target.get_z3_expr()
+                is_sequence = True
+        elif z3.is_seq(iter_target):
+            target_obj = iter_target
+            is_sequence = True
+        elif z3.is_array(iter_target):
+            target_obj = iter_target
+            is_sequence = False
+        else:
+            raise TypeError(f"Cannot iterate over type: {type(iter_target).__name__}")
+
+        static_len = self.builder.get_static_length(iter_param_name) if iter_param_name else None
+        if not static_len:
+            raise NotImplementedError(
+                f"max/min() over '{ast.unparse(comprehension.iter)[:200]}' requires a statically known length")
+
+        terms = []
+        for index in range(static_len):
+            element = target_obj[index] if is_sequence else z3.Select(target_obj, index)
+            body = self._maxmin_element(comprehension, elt_node, element, is_max)
+            if is_sequence:
+                # 静态长度可能是上界：超出实际长度的下标不参与折叠。
+                guard = z3.IntVal(index) < z3.Length(target_obj)
+                body = z3.If(guard, body, self._extreme_like(body, is_max))
+            terms.append(body)
+        self.builder.record_unroll(iter_param_name, "max" if is_max else "min", static_len)
+        return self._handle_max_min_scalars(terms, is_max)
+
+    def _maxmin_element(self, comprehension, elt_node, loop_value, is_max):
+        """把循环变量替换成具体值得到单项表达式；尾部 ``if`` 过滤写成单位元分支。"""
+        loop_var_name = comprehension.target.id
+
+        class TempVisitor(ASTtoZ3Converter):
+            def __init__(self, builder, vn, ph):
+                super().__init__(builder)
+                self.vn, self.ph = vn, ph
+
+            def visit_Name(self, node):
+                if node.id == self.vn:
+                    return self.ph
+                return super().visit_Name(node)
+
+        visitor = TempVisitor(self.builder, loop_var_name, loop_value)
+        body = visitor.visit(elt_node)
+        if body is None:
+            raise ValueError("max/min() element expression failed")
+        if isinstance(body, bool):
+            raise NotImplementedError(
+                f"max/min over non-numeric element is not supported: {ast.unparse(elt_node)[:200]}")
+        if isinstance(body, int):
+            body = z3.IntVal(body)
+        elif isinstance(body, float):
+            body = z3.RealVal(body)
+        if not z3.is_expr(body) or not z3.is_arith(body):
+            raise NotImplementedError(
+                f"max/min over non-numeric element is not supported: {ast.unparse(elt_node)[:200]}")
+        filters = getattr(comprehension, "ifs", None)
+        if filters:
+            guard = z3.And(*[visitor.visit(item) for item in filters])
+            body = z3.If(guard, body, self._extreme_like(body, is_max))
+        return body
+
+    @staticmethod
+    def _extreme_like(expr, is_max):
+        """与 expr 同 sort 的折叠单位元：取 max 用下界，取 min 用上界。"""
+        if z3.is_real(expr):
+            return z3.RealVal(-(10 ** 308)) if is_max else z3.RealVal(10 ** 308)
+        if z3.is_int(expr):
+            return z3.IntVal(-(2 ** 63)) if is_max else z3.IntVal(2 ** 63 - 1)
+        raise NotImplementedError(
+            f"max/min over unsupported element sort: {expr.sort()}")
+
     def _handle_sum(self, node, func_name):
         if len(node.args) == 0:
             raise ValueError("sum() requires at least 1 argument")
 
-        if len(node.args) == 1 and isinstance(node.args[0], ast.GeneratorExp):
+        if len(node.args) == 1 and isinstance(node.args[0], (ast.GeneratorExp, ast.ListComp)):
             return self._handle_sum_generator(node.args[0])
 
         if len(node.args) == 1 and isinstance(node.args[0], ast.Name):
@@ -1200,12 +1629,18 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         return SumSeq(seq)
 
     def _prod_z3_sequence(self, seq):
-        # 秩有界 If 展开替代 Z3 递归函数：shape 的 rank 受参数 dimensions 约束
-        # （validator 上限 _MAX_SHAPE_RANK=10），逐维连乘，Length<=i 的维度贡献
-        # 因子 1；空序列（Length==0）结果恒为 1。避免递归函数（递归函数求解慢、
-        # 且同名 RecAddDefinition 在全局 ctx 重复注册抛异常致约束被静默丢弃）。
+        # 秩有界 If 展开替代 Z3 递归函数（递归函数求解慢、且同名 RecAddDefinition
+        # 在全局 ctx 重复注册抛异常致约束被静默丢弃）。因子数优先取求解器已硬断言的
+        # 维度个数上界 builder.static_rank_max（四档口径见
+        # param_constraint_utils._static_rank_max_for_unroll：文档 dimensions /
+        # 约束 len(p.shape)<=N / 兜底 8，文档给出更高上界如 0～25 维时按 25 展开），
+        # 读取不到再兜底 _PROD_RANK_FALLBACK。逐维连乘，Length<=i 的维度贡献
+        # 因子 1；空序列（Length==0）结果恒为 1。
+        rank_max = (self.builder.get_rank_max(seq.decl().name())
+                    if z3.is_const(seq) else None)
+        bound = rank_max if rank_max else _PROD_RANK_FALLBACK
         result = z3.IntVal(1)
-        for i in range(_MAX_SHAPE_RANK):
+        for i in range(bound):
             result = z3.If(z3.Length(seq) > i, seq[i], 1) * result
         return result
 
@@ -1247,5 +1682,139 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             result = result + v
         return result
 
-    def _handle_sum_generator(self, gen_node):
-        raise NotImplementedError("sum() with generator expression is not yet supported")
+    def _handle_sum_generator(self, generator_node):
+        """``sum(elt for i in R [if C])`` / ``sum([elt for i in R [if C]])`` 求和。
+
+        只有在迭代窗口能静态确定时才有确定语义：``range()`` 的界由 ``_int_bounds``
+        推出，序列取静态长度表。推不出或超展开上限时保持抛错（宁可不支持，不猜界）。
+        """
+        comprehensions = generator_node.generators
+        if len(comprehensions) > 1:
+            raise NotImplementedError(
+                f"sum() with multiple for clauses is not supported: {ast.unparse(generator_node)[:200]}")
+        comprehension = comprehensions[0]
+        if getattr(comprehension, "is_async", 0):
+            raise NotImplementedError("sum() over async comprehension is not supported")
+        if (isinstance(comprehension.iter, ast.Call)
+                and isinstance(comprehension.iter.func, ast.Name)
+                and comprehension.iter.func.id == 'range'):
+            return self._handle_sum_range(comprehension, generator_node.elt)
+        return self._handle_sum_sequence(comprehension, generator_node.elt)
+
+    def _handle_sum_range(self, comprehension, elt_node):
+        """``sum(f(i) for i in range(...))``：按静态窗口逐下标展开后相加。"""
+        range_call = comprehension.iter
+        if len(range_call.args) not in (1, 2, 3):
+            raise ValueError("range() expects 1-3 arguments")
+        args = [self.visit(arg) for arg in range_call.args]
+        if any(arg is None for arg in args):
+            raise ValueError("range() argument failed")
+
+        if len(args) == 1:
+            start, stop, step = z3.IntVal(0), args[0], z3.IntVal(1)
+        elif len(args) == 2:
+            start, stop, step = args[0], args[1], z3.IntVal(1)
+        else:
+            start, stop, step = args
+        if not (z3.is_int_value(step) and step.as_long() == 1):
+            raise NotImplementedError(f"sum() over range() with step {step} is not supported")
+
+        start_bounds = self._int_bounds(start)
+        stop_bounds = self._int_bounds(stop)
+        if not start_bounds or not stop_bounds:
+            raise NotImplementedError(
+                f"sum() over range() requires statically known bounds: {ast.unparse(range_call)[:200]}")
+        lo, hi = start_bounds[0], stop_bounds[1]
+        unroll_limit = self.builder.unroll_limit
+        if hi - lo > unroll_limit:
+            raise NotImplementedError(
+                f"sum() unroll width {hi - lo} exceeds limit {unroll_limit}: {ast.unparse(range_call)[:200]}")
+
+        # 窗口可能由标量参数的声明区间推出：断言进去，保证展开覆盖所有可达下标。
+        for bound_expr in (start, stop):
+            for name, bounds, assertion in self._param_domain_assertions(bound_expr):
+                self.builder.assert_param_domain(name, bounds, assertion)
+
+        terms = []
+        for value in range(lo, hi):
+            body = self._summand(comprehension, elt_node, z3.IntVal(value))
+            guard = z3.And(z3.IntVal(value) >= start, z3.IntVal(value) < stop)
+            terms.append(z3.If(guard, body, self._zero_like(body)))
+        self.builder.record_unroll("range", "sum", len(terms))
+        return self._sum_scalars(terms) if terms else z3.IntVal(0)
+
+    def _handle_sum_sequence(self, comprehension, elt_node):
+        """``sum(f(v) for v in p.range_value)``：按静态长度逐元素展开后相加。"""
+        iter_param_name = self._iter_param_name(comprehension.iter)
+        iter_target = self.visit(comprehension.iter)
+        if iter_target is None:
+            raise ValueError("sum() iter target is None")
+
+        if hasattr(iter_target, 'get_element_sort'):
+            if isinstance(iter_target, TensorVar):
+                target_obj = iter_target.range_value
+                is_sequence = False
+            else:
+                target_obj = iter_target.get_z3_expr()
+                is_sequence = True
+        elif z3.is_seq(iter_target):
+            target_obj = iter_target
+            is_sequence = True
+        elif z3.is_array(iter_target):
+            target_obj = iter_target
+            is_sequence = False
+        else:
+            raise TypeError(f"Cannot iterate over type: {type(iter_target).__name__}")
+
+        static_len = self.builder.get_static_length(iter_param_name) if iter_param_name else None
+        if not static_len:
+            raise NotImplementedError(
+                f"sum() over '{ast.unparse(comprehension.iter)[:200]}' requires a statically known length")
+
+        terms = []
+        for index in range(static_len):
+            element = target_obj[index] if is_sequence else z3.Select(target_obj, index)
+            terms.append(self._summand(comprehension, elt_node, element))
+        self.builder.record_unroll(iter_param_name, "sum", static_len)
+        return self._sum_scalars(terms)
+
+    def _summand(self, comprehension, elt_node, loop_value):
+        """把循环变量替换成具体值，得到单项表达式；尾部 ``if`` 过滤写成 ``If(C, elt, 0)``。"""
+        loop_var_name = comprehension.target.id
+
+        class TempVisitor(ASTtoZ3Converter):
+            def __init__(self, builder, vn, ph):
+                super().__init__(builder)
+                self.vn, self.ph = vn, ph
+
+            def visit_Name(self, node):
+                if node.id == self.vn:
+                    return self.ph
+                return super().visit_Name(node)
+
+        visitor = TempVisitor(self.builder, loop_var_name, loop_value)
+        body = visitor.visit(elt_node)
+        if body is None:
+            raise ValueError("sum() element expression failed")
+        if isinstance(body, bool):
+            raise NotImplementedError(
+                f"sum() over non-numeric element is not supported: {ast.unparse(elt_node)[:200]}")
+        if isinstance(body, int):
+            # visit_Constant 对字面量返回裸 Python 值：纯常量被求和项（如 sum(1 for ...)
+            # 的计数写法）包回 z3 数值，不再误判为"非数字"。
+            body = z3.IntVal(body)
+        elif isinstance(body, float):
+            body = z3.RealVal(body)
+        if not z3.is_expr(body) or not z3.is_arith(body):
+            raise NotImplementedError(
+                f"sum() over non-numeric element is not supported: {ast.unparse(elt_node)[:200]}")
+        filters = getattr(comprehension, "ifs", None)
+        if filters:
+            guard = z3.And(*[visitor.visit(item) for item in filters])
+            body = z3.If(guard, body, self._zero_like(body))
+        return body
+
+    @staticmethod
+    def _zero_like(expr):
+        """与 expr 同 sort 的零值，用于 If 分支和空窗口。"""
+        return z3.RealVal(0) if z3.is_real(expr) else z3.IntVal(0)

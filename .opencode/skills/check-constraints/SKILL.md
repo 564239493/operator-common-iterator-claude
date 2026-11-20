@@ -113,8 +113,12 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
       引用具体实例值作为证据；
     - `tautology`：先判成因。参数卡 `allowed_range_value` 已收窄导致的冗余
       （如场景 fix 后 expr 与域重叠、前件在当前域永假）语义正确，不记 issue——
-      域与 expr 一致本身就是场景屏蔽自洽的佐证；表达式写法本身恒真（与取值域
-      无关）记 open issue；
+      域与 expr 一致本身就是场景屏蔽自洽的佐证；同理，条目带 `length_bounds`
+      （取证脚本按参数卡 `array_length` / 伴随约束 `len(p) <= N` 登记并断言的
+      列表长度上界）时，**界约束本身**（如 `len(repeats) <= 8`）被判恒真属
+      界与 expr 同源，语义正确不记 issue，**不得因此删除或改写该约束**——它是
+      `sum()`/`range(len(p))` 展开窗口的上界来源，删除会使生成期转换失败；
+      表达式写法本身恒真（与取值域无关）记 open issue；
     - `unsatisfiable`（参数卡域内不可满足）、`bucket_status=contradiction`
       （整桶矛盾，引用 `unsat_core`）→ open issue；
     - `unconvertible`：按 `error` 归因。error 为 `'NoneType' object has no
@@ -174,7 +178,12 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
 
 - 无 open/unfixed → `passed`；允许保留 fixed 历史。
 - 有 open/unfixed 且 `current_round < max_rounds` → `needs_repair`。
-- 有 open/unfixed 且 `current_round == max_rounds` → `failed`。
+- 有 open/unfixed 且 `current_round == max_rounds` → `failed`。该状态只表示
+  **本 iteration 的检查轮次预算耗尽**，不代表问题不可修复；协调器可在用户选择
+  「继续修复」后用 `scripts/extend_constraint_check.py` 扩容预算（report 的
+  `max_rounds` 提升、`status` 改回 `needs_repair`），修复后由新一轮完整复检重写本报告。
+- `max_rounds` 以 `run_state.constraint_check.max_rounds` 为准（`init_run.py`
+  `--constraint-check-rounds` 配置，默认 3；可能已被扩容），不得写死 3。
 
 每次写完运行：
 

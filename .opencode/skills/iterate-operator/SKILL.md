@@ -349,19 +349,29 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
         把 report 的 `current_round/status` 回写子状态。报告 `passed` → 结束子循环，随后运行
         `python scripts/flow_control.py advance --run-dir <run-dir>` 推进到 GENERATE
         （constraints-only 范围由推进器按 `run_scope` 自动改道 SUCCESS，见下）；
-        `failed`（或 `needs_repair` 且轮次用尽）→ 运行
-        `python scripts/flow_control.py advance --run-dir <run-dir>`
-        （推进器将裁决至 `BLOCKED`，history 附 `code=CONSTRAINT_CHECK_FAILED`），
-        列出未修复问题并终止，
-        禁止进入 constraints-only SUCCESS 或 GENERATE。
+        报告 `failed` 只表示**本 iteration 的检查轮次预算用尽**（`current_round ==max_rounds` 且仍有 open/unfixed），
+        不代表问题不可修复，不得直接终止。先弹一次`AskUserQuestion`（固定顺序）：
+        1. **继续修复（推荐）**：运行
+           `python scripts/extend_constraint_check.py --run-dir <run-dir> --extra-rounds 3`
+           （report 的 `max_rounds` 提升 3 轮、`status` 由 `failed` 改回 `needs_repair`， 同步 `run_state.constraint_check`；
+           可先加 `--dry-run` 预览），然后**直接回第 4 步**
+           按原 open/unfixed 委派 constraint-repairer，复检回到第 2 步。每次轮次用尽都重新询问，不得自动扩容或连续扩容。
+        2. **立即停止**：运行
+           `python scripts/flow_control.py advance --run-dir <run-dir>`
+           （推进器将裁决至 `BLOCKED`，history 附 `code=CONSTRAINT_CHECK_FAILED`），
+           列出未修复问题并终止。
+        两种情况都禁止进入 constraints-only SUCCESS 或 GENERATE。
      4. 报告 `needs_repair` → 委派一个与 checker **隔离的新上下文**
         `constraint-repairer`，输入同一证据集 + constraints + report。repairer 只能 edit
         report 中 open/unfixed 对应约束，不得完整重提、不改 report 状态；修改后必须跑
         validate_operator_rule → normalize → validate_artifacts constraints。成功后运行
         `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --status recheck_pending`，
         回到第 2 步由新的 checker 上下文做下一轮完整复检。
-     5. `max_rounds=3` 的语义是 check1 → repair → check2 → repair → check3；最后一次
-        repair 后必有 check，不接受未复检约束。任何下游阶段开始前都必须确认当前
+     5. `max_rounds=3`（`--constraint-check-rounds` 配置）的语义是 check1 → repair →
+        check2 → repair → check3；最后一次 repair 后必有 check，不接受未复检约束。
+        用户在第 3 步选择继续修复后，`scripts/extend_constraint_check.py` 会扩容本 iteration 的预算（每次 +3），
+        扩容轮同样是 repair→check 并计入 budget；新预算随 `run_state.constraint_check.max_rounds` 保留（`--reset` 继承），
+        本次 run 内后续 iteration 同样生效。任何下游阶段开始前都必须确认当前
         iteration 的 report 有效且 `status=passed`。若 passed 后又因迟到的 conflict
         resolution 或人工操作修改了 constraints，旧 passed 立即失效；运行
         `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --current-round 0 --status pending`，
@@ -606,7 +616,9 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
 8. **CHECK/REPAIR 子循环**：人工提交的是新约束版本，进 CHECK 前先按第 6 步规则跑一次
    PARAM PIN PROBE（`inputs/param_pins.json` 已裁决的组不再问，`--origin param_pin` 合并）。
    人工来源无 findings 清单，checker 做**首轮式完整语义检查**
-   （文档快照 + prompt + 场景指令 + 补充证据）；`failed` → `BLOCKED` 照旧。
+   （文档快照 + prompt + 场景指令 + 补充证据）；轮次用尽 `failed` 时与第 6 步
+   CHECK/REPAIR 同一套处理——先弹「继续修复 / 立即停止」，继续修复走
+   `scripts/extend_constraint_check.py` 扩容，选择停止才 `BLOCKED`。
    `passed` → GENERATE → EXECUTE → GATE → DIAGNOSE。若再次以 constraint_extraction 失败且
    `current_iteration >= human_checkpoint_round` → **回到 human-checkpoint 检查点重新弹四选一**
    （用户可再选人工修复 / 人工补充 / 自动修复 / 停止，逐轮切换）。终态（`SUCCESS` / `BLOCKED` /

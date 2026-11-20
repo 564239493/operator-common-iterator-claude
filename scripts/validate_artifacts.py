@@ -150,19 +150,31 @@ def _is_nested_numeric_interval_membership(node: ast.AST) -> bool:
 def _has_unsupported_sum_comprehension(node: ast.AST) -> bool:
     """Detect aggregate forms that the Z3 expression converter cannot lower.
 
-    ``sum(param.range_value)`` is supported.  Generator/list/set
-    comprehensions inside ``sum`` are not; linear reductions should be
-    rewritten algebraically, e.g. ``sum(A) - sum(B)``.
+    ``sum(param.range_value)``、``sum(表达式 for i in ...)`` 与 ``sum([表达式 for ...])``
+    都支持；仍不支持的是：多个 ``for`` 子句、``zip(...)`` 迭代、``set`` 推导，以及非 1 步长的 ``range(a, b, step)``。
     """
     for item in ast.walk(node):
         if not isinstance(item, ast.Call):
             continue
         if not isinstance(item.func, ast.Name) or item.func.id != "sum":
             continue
-        if item.args and isinstance(
-            item.args[0], (ast.GeneratorExp, ast.ListComp, ast.SetComp)
-        ):
+        if not item.args:
+            continue
+        comprehension = item.args[0]
+        if isinstance(comprehension, ast.SetComp):
             return True
+        if not isinstance(comprehension, (ast.GeneratorExp, ast.ListComp)):
+            continue
+        if len(comprehension.generators) != 1:
+            return True
+        iter_node = comprehension.generators[0].iter
+        if isinstance(iter_node, ast.Call) and isinstance(iter_node.func, ast.Name):
+            if iter_node.func.id == "zip":
+                return True
+            if iter_node.func.id == "range" and len(iter_node.args) == 3:
+                step = iter_node.args[2]
+                if not (isinstance(step, ast.Constant) and step.value == 1):
+                    return True
     return False
 
 
@@ -191,10 +203,10 @@ def validate_constraint_semantics(value) -> list[str]:
                         f"{dimension_path} must be sorted and deduplicated; "
                         f"expected {canonical}"
                     )
-                invalid = [rank for rank in dimension_values if not 0 <= rank <= 10]
+                invalid = [rank for rank in dimension_values if rank < 0]
                 if invalid:
                     errors.append(
-                        f"{dimension_path} contains ranks outside [0, 10]: {invalid}"
+                        f"{dimension_path} contains negative ranks: {invalid}"
                     )
 
                 src_text = dimensions.get("src_text", "")
@@ -288,9 +300,10 @@ def validate_constraint_semantics(value) -> list[str]:
         if _has_unsupported_sum_comprehension(tree):
             errors.append(
                 f"constraints_in_parameters[{platform}][{index}].expr uses "
-                "sum() with a generator/comprehension, which the Z3 "
-                "converter does not support; for linear reductions rewrite "
-                "sum(A[i] - B[i]) as "
+                "sum() with an unsupported comprehension shape (multiple for "
+                "clauses, zip() iteration, set comprehension, or non-unit "
+                "range step); single-for sum(表达式 for i in ...) is supported, "
+                "and linear reductions can be rewritten as "
                 "sum(A.range_value) - sum(B.range_value)"
             )
         if any(

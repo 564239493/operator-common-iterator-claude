@@ -193,6 +193,15 @@ python scripts/validate_artifacts.py constraints <constraints.json>
 | `dimensions.value` | 是 | `List[int]` 或 `[]` | **合法 rank 的显式枚举**：列表中的每个整数都是一个真实可选 rank，不表示区间；如 `[1, 2, 3]` 表示支持 1～3 维，`[1, 3]` 表示只支持 1 维或 3 维；固定 3 维写 `[3]`；不适用 → `[]` |
 | `dimensions.src_text` | 是 | `str` | 摘录原文（如 `"2-3"`、`"2维"`） |
 
+**rank 只给下界时的补齐规则**（防 range() 量词无上界导致求解变慢/超时）：
+
+- 原文只写“不少于 N 维”“N 维及以上”“rank ≥ N”这类下界时，上界取项目兜底维度数上限 8，
+  `dimensions.value` 写成 `[N, N+1, …, 8]`（如“至少 2 维”写 `[2,3,4,5,6,7,8]`），
+  并在 description 加 `[DOC_GAP:rank]` 注明上界为补齐值；下界已 ≥8 时只写 `[8]` 并同样标注。
+- **8 只是“原文没给上界”时的兜底，不是能截断文档的硬天花板**：原文明确给出上界时照原文完整枚举
+  （“0～25 维”写 `[0,1,…,25]`），不得按 8 或任何固定值截断；只有原文只给下界、或完全没有上界信息时才用 8。
+- 原文对 rank 毫无说明时才写 `[]` + `[DOC_GAP:rank]`；不得跳过补齐直接把下界当唯一 rank。
+
 **`is_optional` 判定强制规则**：
 
 - **优先依据参数表的"输入/输出/可选输入/可选输出"等分类列**：分类为"输入"或"输出"时，
@@ -246,15 +255,16 @@ python scripts/validate_artifacts.py constraints <constraints.json>
 
 **dtype 为空时的类型回填规则**：
 - 优先使用文档明确给出的 dtype；只有未提取到任何 dtype、即 `dtype.value=[]` 时才执行回填；
-- `aclIntArray` → `["int"]`，`aclFloatArray` → `["float"]`，`aclBoolArray` → `["bool"]`
-  （仅当文档"数据类型"列缺失、为空、为 `-` / `N/A` 时才启用该回落；列有值时一律逐字提取列值，见下方「非 Tensor 数组参数的 dtype 提取规则」）；
+- `aclIntArray` → `["INT64"]`（aclIntArray 未明确说明元素数据类型时默认 INT64：ACL 接口 `aclCreateIntArray` 只接受 int64 数组，元素数据类型由类型系统固定，默认回落不算伪造文档没有的信息），`aclFloatArray` → `["float"]`，`aclBoolArray` → `["bool"]`
+  （仅当文档"数据类型"列缺失、为空、为 `-` / `N/A`，或列值仅为容器类型名（如 `aclIntArray`、`aclIntArray*`）未给出元素数据类型时，才启用该回落；列有元素 dtype 值时一律逐字提取列值，见下方「非 Tensor 数组参数的 dtype 提取规则」）；
+- aclIntArray 回落时可优先摘示例出处：文档调用示例中该参数经 `aclCreateIntArray(...)` 构造（构造变量或实参数组名与参数名对应，如 `kernelSize`/`kernelSizeData`/`kernelSizeArray`；示例写法可能是 `std::vector<int64_t>` 也可能是原生数组 `int64_t xxx[]`，匹配以 `aclCreateIntArray` 调用点为准，不要求 `std::vector` 声明形式）时，将该构造行摘入 `dtype.src_text`（`src_txt_line` 指向示例原文行）；变量对应不上时不摘，`src_text` 保持空；
 - 其他非 Tensor 参数使用 `type.value` 回填，例如 `type.value="int"` 时输出 `dtype.value=["int"]`；
 - `aclTensor` / `aclTensorList` 不得用类型名回填 dtype；其 dtype 必须来自文档，确实未说明时保持 `[]`；
 - 文档明确参数"只支持传空指针""必须为空指针"或"仅支持空指针"时，`dtype.value` 保持 `[]`
   （参数本身无有效元素类型）；此时取值约束由 `allowed_range_value={"value": [null], "type":
   "enum"}` 承载，`src_text` 摘含 `nullptr`/`空指针` 的原文（见 §4.6「"支持/仅支持输入 nullptr"」
   规则与 §6.32 自检）；
-- 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`。
+- 回填仅补 `dtype.value`，不得伪造 `dtype.src_text`（唯一例外：aclIntArray 按上一条摘录示例中 `aclCreateIntArray` 构造行——示例原文是真实出处，非伪造）。
 - 注：`aclIntArray` / `aclFloatArray` / `aclBoolArray` 的 dtype 与 Tensor 参数同规则——
   文档"数据类型"列有值就逐字提取，列缺失/为空才按上表回落（见下方「非 Tensor 数组参数的dtype 提取规则」）。
 
@@ -274,9 +284,9 @@ python scripts/validate_artifacts.py constraints <constraints.json>
 
 **非 Tensor 数组参数的 dtype 提取规则（`aclIntArray` / `aclFloatArray` / `aclBoolArray`）**：
 - 与 Tensor 参数同规则：文档"数据类型"列给出该数组参数的元素 dtype 时，**逐字**提取写入 `dtype.value`，`src_text` 摘录该列原文。例：列写 `INT64` → `dtype.value=["INT64"]`；列写 `INT32` → `dtype.value=["INT32"]`；列写多个候选（如 `INT32/INT64`）→ `dtype.value=["INT32","INT64"]`。**不得**再一律改写成 `["int"]`，也不得做数值宽度换算（`INT64` 不得写成 `int` / `int64`）。
-- 列值形态照抄，不做语义改写：即使该列给的是张量 dtype 候选（如 `FLOAT16`/`BFLOAT16`），也按列原文提取，不在提取期替文档做"这是关联张量 dtype"的判断。仅在该列**缺失、为空、为 `-` / `N/A`**（未给出任何元素类型）时，才按上方"类型回填规则"回落：`aclIntArray` → `["int"]`、`aclFloatArray` → `["float"]`、`aclBoolArray` → `["bool"]`；回填不得伪造 `dtype.src_text`。
+- 列值形态照抄，不做语义改写：即使该列给的是张量 dtype 候选（如 `FLOAT16`/`BFLOAT16`），也按列原文提取，不在提取期替文档做"这是关联张量 dtype"的判断。仅在该列**缺失、为空、为 `-` / `N/A`，或列值仅为容器类型名**（`aclIntArray` / `aclIntArray*` 等，未给出元素数据类型）时，才按上方"类型回填规则"回落：`aclIntArray` → `["INT64"]`、`aclFloatArray` → `["float"]`、`aclBoolArray` → `["bool"]`；回落不伪造 `dtype.src_text`（例外：aclIntArray 可摘示例中 `aclCreateIntArray` 构造行，见回填规则）。
 - 列值只用于 `dtype.value`，**不**写进 `allowed_range_value`（`aclIntArray` 的取值域是数组值本身，如 `[-2,-1]`，见 `knowledge/aclnn/common/allowed_range.md` §aclIntArray特殊取值）。
-- 典型场景一：`aclnnNsaCompressAttention` 的 `actualSeqQLenOptional`（`aclIntArray`，文档"数据类型"列 `INT64`）→ `dtype.value=["INT64"]`、`src_text="INT64"`。典型场景二：`aclnnCalculateMatmulWeightSize` 的 `tensorShape`（`aclIntArray`，文档"数据类型"列 `FLOAT16`/`BFLOAT16`）→ 按列原文 `dtype.value=["FLOAT16","BFLOAT16"]`。仅当该列没有内容时才回落到 `["int"]`。
+- 典型场景一：`aclnnNsaCompressAttention` 的 `actualSeqQLenOptional`（`aclIntArray`，文档"数据类型"列 `INT64`）→ `dtype.value=["INT64"]`、`src_text="INT64"`。典型场景二：`aclnnCalculateMatmulWeightSize` 的 `tensorShape`（`aclIntArray`，文档"数据类型"列 `FLOAT16`/`BFLOAT16`）→ 按列原文 `dtype.value=["FLOAT16","BFLOAT16"]`。仅当该列没有内容（或只写容器类型名）时才回落到 `["INT64"]`。
 
 **类型前置规则（必须先于下表执行）**：
 - 仅当 `type.value` 为 `aclTensor` 或 `aclTensorList` 时，才从文档提取并填写 `dimensions.value`；
@@ -731,7 +741,7 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
 | **`shape_value_dependency` 按 `<param>_transposed` 隐式 bool 写轴位 if/else 门控（旧写法）** | 已废止：改按 §4.6.3 I 在该张量卡声明 `transpose_id`，轴等式/ceil 关系统一按逻辑视图 L 改写为**单条无分支** `shape_equality`/`shape_value_dependency`（bool 仅保留场景 `value_dependency`）；参考 `knowledge/aclnn/features/transpose_shape.md`；`src_text` 同时摘录"非转置 NZ (b, n1, k1, k0, n0)" 与 "转置 NZ (b, k1, n1, n0, k0)" 原文 |
 | **一段式算子：函数原型无 `GetWorkspaceSize`** | `function_signature` 取唯一函数声明；参数列表无 `workspaceSize`/`executor`。不得伪造 `GetWorkspaceSize` 段；**不得**写入 `is_single_function_mode` 字段 |
 | **一段式算子：输出为标量指针（`uint64_t*`/`int64_t*` 等）** | 该参数**进 `outputs`**（`type.value` 去 `*`、`format="N/A"`、`dimensions=[]`、`is_operator_param=true`），**不**当流程参数排除；`aclnnCalculateMatmulWeightSize` 的 `weightTensorSize` 即此 |
-| **非 Tensor 数组参数的 dtype 按文档提取** | `aclIntArray` / `aclFloatArray` / `aclBoolArray` 的 `dtype.value` 逐字取文档"数据类型"列（如列 `INT64` → `["INT64"]`，不得改写成 `["int"]`）；仅当该列缺失、为空、为 `-` / `N/A` 时才回落 `["int"]` / `["float"]` / `["bool"]`（见 §4.6.3 非 Tensor 数组 dtype 规则） |
+| **非 Tensor 数组参数的 dtype 按文档提取** | `aclIntArray` / `aclFloatArray` / `aclBoolArray` 的 `dtype.value` 逐字取文档"数据类型"列（如列 `INT64` → `["INT64"]`，不得改写成 `["int"]`）；仅当该列缺失、为空、为 `-` / `N/A` 或只写容器类型名时才回落 `["INT64"]` / `["float"]` / `["bool"]`（aclIntArray 元素数据类型固定为 int64；见 §4.6.3 非 Tensor 数组 dtype 规则） |
 | **aclIntArray / aclFloatArray / aclBoolArray 的 expr 禁用 `.shape`** | 这类非 Tensor 数组无 `.shape` 属性；长度约束写 `len(paramName)`（如 `2 <= len(tensorShape) <= 6`、`len(tensorShape) >= 1`），**禁止** `len(paramName.shape)` / `paramName.shape[i]`（运行期 `AttributeError`）；`.shape` 仅 `aclTensor`/`aclTensorList` 可用 |
 | **aclTensorList 参数 P 写“长度与 Q 相同”** | P 为 Optional 时生成 `(P is None) or (len(P) == len(Q))`，否则生成 `len(P) == len(Q)`；禁止 `.array_length` 和 `len(P.shape)`；相同文案出现在多个参数行时逐参数生成，不能去重 |
 | **backward / grad 文档写“gradOutput 与 self/input 维度一致”，同时末尾轴由 padding 等参数派生** | 按 `knowledge/aclnn/features/backward_partial.md` §4.6.6 / `knowledge/aclnn/common/expression_language.md` §常用模式 模式 7 拆分：①前缀切片相等；②rank 相等；③文档明确的派生轴公式。禁止只提取末维公式，也禁止用 `gradInput.shape == self.shape` 替代 gradOutput 跟随关系 |
@@ -764,7 +774,7 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
 6. **关系参数一致**：`expr` 中**所有出现的标识符**都在 `relation_params` 中；`relation_params` 中所有参数名都在 `inputs`/`outputs` 有对应卡片（隐式维度变量/外部常量允许例外，但须在 `inputs` 中登记）。
 7. **来源可溯**：`function_explanation`/`dtype`/`format`/`dimensions`/`allowed_range_value` 的 `src_text` 至少 30% 非空（无来源的纯模型外推视为无效）。
 8. **隐式参数完整性**：所有在 `constraints_in_parameters` 的 `expr` 中出现的**非函数签名标识符**（如 `BS`、`H`、`N`、`rankSize`），必须**全部**出现在 `inputs` 中，且 `is_operator_param.value=false`。
-9. **dimensions 合理性与类型门禁**：仅 `aclTensor` / `aclTensorList` 允许 `dimensions.value` 非空；其他类型必须为 `[]`。非空时必须是去重、升序的合法 rank 显式枚举，且每项均为满足 `0 ≤ rank ≤ 10` 的整数。连续范围必须完整展开：原文“1～3维”写 `[1,2,3]`，禁止写成 `[1,3]`；只有原文明示“1维或3维”时才写 `[1,3]`。轴长度及每轴范围不得写入 `dimensions.value`，应由 `constraints_in_parameters` 表达。
+9. **dimensions 合理性与类型门禁**：仅 `aclTensor` / `aclTensorList` 允许 `dimensions.value` 非空；其他类型必须为 `[]`。非空时必须是去重、升序的合法 rank 显式枚举，且每项均为非负整数。连续范围必须完整展开：原文“1～3维”写 `[1,2,3]`，禁止写成 `[1,3]`；只有原文明示“1维或3维”时才写 `[1,3]`。轴长度及每轴范围不得写入 `dimensions.value`，应由 `constraints_in_parameters` 表达。原文只给 rank 下界时按上方“rank 只给下界时的补齐规则”补齐到 8，不得留 `[]`；原文给出上界时照原文完整枚举，不得截断。
 10. **枚举拆分完整**：若 `allowed_range_value.type=enum` 且 value 是 `List[str]`，则字符串中**不得**再包含 `/`、`、`、`以及`、`and`、`/` 等分隔符（必须已被拆成独立元素）。
 11. **range 的 null 禁令**：若 `allowed_range_value.type=range`，所有区间端点必须为
     实际数值且不得为 `null`；`type=enum` 的离散候选允许包含 `null`。
@@ -961,14 +971,23 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
        `optional is None or x.dtype == optional.dtype` 必须均为
        `type_dependency`，不得为 `type_equality`。
 **聚合表达式求解器兼容性补充检查**：遍历所有 `expr`：
-    a. 不得出现 `sum(... for ... in ...)`、`sum(... for ... in zip(...))` 或
-       `sum([comprehension])`；当前生成器只支持 `sum(param.range_value)` 这类
-       对完整数组的直接求和；
-    b. 对 `reduceSum(A[i] - B[i])` 等线性聚合，必须改写为
+    a. 逐元素计算后再聚合写 `sum(生成器)`（或 `sum([...])` 列表推导）：被求和项须为
+       数值表达式；只支持**单个** `for` 子句与默认的 1 步长，禁止 `zip(...)` 生成器、
+       多 `for` 子句、`range(a, b, step)` 的非 1 步长；整段求和仍可直接写
+       `sum(param.range_value)`；
+    b. 迭代窗口必须能静态确定：`range(...)` 的界须由整数常量、`len(p.shape)` 的维度个数
+       范围、或 `len(p)` 的长度上界推出（可再做 `+ - * // 常量` 等整数运算）；用 `len(p)`
+       当循环上界时，必须另有 `len(p) <= N` 或 `len(p) == N` 约束给出上界，或参数卡
+       `array_length` 已声明长度枚举/区间；直接遍历序列
+       （`for v in p.range_value`）时长度须由 `len(p) == N` 唯一确定。推不出窗口的
+       `sum(生成器)` 会在求解期转换失败，该场景 fail-closed（0 用例）；
+    c. 对 `reduceSum(A[i] - B[i])` 等线性聚合，优先改写为
        `sum(A.range_value) - sum(B.range_value)`，并保留原有门控与容量不等式；
-    c. 不得用 `range(min(len(A), len(B)))` 静默截断较长数组；只在文档
+       也可逐下标写 `sum(A.range_value[i] - B.range_value[i] for i in range(len(A)))`，
+       但必须有长度上界；
+    d. 不得用 `range(min(len(A), len(B)))` 静默截断较长数组；只在文档
        明确要求等长时另建长度约束；
-    d. `aclnnScatterPaKvCache` 专项形式必须为
+    e. `aclnnScatterPaKvCache` 专项形式必须为
        `(seqLensOptional is None or compressLensOptional is None) or `
        `(sum(seqLensOptional.range_value) - sum(compressLensOptional.range_value) <= `
        `num_blocks.range_value * block_size.range_value)`，不得产出索引生成器或
