@@ -43,6 +43,7 @@ class CaseGenerate:
             self.global_role_definitions = CaseGenerate.get_global_role_definitions()
         else:
             self.global_role_definitions = global_role_definitions
+        self.param_shape_instance = ParamShapeModel(self.operator_name)
 
     @staticmethod
     def parse_role_rules(role_rules: List[Dict]):
@@ -214,15 +215,14 @@ class CaseGenerate:
         if param_shape_model is None:
             param_shape_model = self.default_return(task_name, "param shape model is None",
                                                     ParamShapeRoleRules.TYPICAL.value, param_name)
-        param_shape_instance = ParamShapeModel(self.operator_name)
         try:
-            param_shape_data = param_shape_instance.dispatch(param_shape_model, param_shape_dim_count, param_name,
+            param_shape_data = self.param_shape_instance.dispatch(param_shape_model, param_shape_dim_count, param_name,
                                                              target_type=DispatcherTargetType.METHOD.value)
         except ValueError as e:
             logger.error("Task name: %s, operator name: %s, param name: %s, err msg : %s", task_name,
                          self.operator_name, param_name, str(e))
             param_shape_model = ParamShapeRoleRules.DEFAULT.value
-            param_shape_data = param_shape_instance.dispatch(param_shape_model, param_shape_dim_count, param_name,
+            param_shape_data = self.param_shape_instance.dispatch(param_shape_model, param_shape_dim_count, param_name,
                                                              target_type=DispatcherTargetType.METHOD.value)
         logger.debug("End %s, operator name: %s, param name: %s, param shape: %s", task_name, self.operator_name,
                      param_name, param_shape_data)
