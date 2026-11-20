@@ -561,6 +561,9 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
         除数为 0：常量在转换期抛 ValueError；符号除数时这条约束不限制 q。
         两边都是 Python 整数常量时按整除语义直接算出结果，不建约束。
+
+        builder.ceil_div_inline 打开时不建变量、不加断言，直接返回除法表达式
+        （量词兜底路径用：断言会落在量词外面，只能靠纯表达式表达）。
         """
         if isinstance(left, TensorElementProxy):
             left = left._scalar()
@@ -577,6 +580,12 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         if not (z3.is_int(left) and z3.is_int(right)):
             raise TypeError(
                 f"Ceil division requires Int operands, got {left.sort()}/{right.sort()}")
+
+        # 纯表达式模式：直接返回除法表达式（不建变量、不加断言）。除数为正时
+        # 除数为负时 Z3 的 Div 恰好就是向上取整；除数为 0 退化成 0。
+        if getattr(self.builder, "ceil_div_inline", False):
+            return z3.If(right > 0, -((-left) / right),
+                         z3.If(right < 0, left / right, z3.IntVal(0)))
 
         # 缓存挂在 builder 上：每条约束都会 new 一个转换器，挂在转换器上等于不去重。
         cache = getattr(self.builder, "_div_cache", None)
@@ -799,19 +808,31 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                 if node.id == self.vn: return self.ph
                 return super().visit_Name(node)
 
-        tv = TempVisitor(self.builder, loop_var_name, k)
-        cond_expr = tv.visit(condition_ast)
-        # 生成器的 if 过滤条件（`all(P(i) for i in R if C(i))` 里的 C）也要并入判断条件
-        cond_expr = self._apply_generator_filters(tv, comprehension, cond_expr, quantifier_op)
-        bounds = z3.And(k >= start, k < stop)
-        if not (isinstance(step, z3.IntNumRef) and step.as_long() == 1):
-            bounds = z3.And(bounds, (k - start) % step == 0)
+        def build_cond(index_value):
+            """按具体下标重新转换一次生成器体（含生成器自带的 if 过滤条件）。
+
+            必须逐个下标重新转换，不能只转一次再 substitute：CeilDiv 这类函数在转换时会向求解器额外添加关于中间变量的断言，
+            substitute 改不到它们，所有展开子句就会共用同一个自由变量，约束等于没写。
+            """
+            visitor = TempVisitor(self.builder, loop_var_name, index_value)
+            cond = visitor.visit(condition_ast)
+            return self._apply_generator_filters(visitor, comprehension, cond, quantifier_op)
 
         # 守护式定长展开：上界可由文档的维度个数范围推出时，把 range() 量词改写成逐下标
         # 子句，避免 Z3 对含 shape 索引的量词反复实例化导致超时。
-        unrolled = self._try_unroll_range(start, stop, step, k, cond_expr, quantifier_op)
+        unrolled = self._try_unroll_range(start, stop, step, build_cond, quantifier_op)
         if unrolled is not None:
             return unrolled
+
+        # 推不出展开窗口时只能保留量词。量词体泄漏断言时先用无断言的纯表达式
+        # 仍泄漏才报错（见 _convert_quantifier_body）。
+        cond_expr = self._convert_quantifier_body(
+            lambda: build_cond(k), {k.decl()},
+            f"range() 量词 {ast.unparse(condition_ast)[:160]}")
+
+        bounds = z3.And(k >= start, k < stop)
+        if not (isinstance(step, z3.IntNumRef) and step.as_long() == 1):
+            bounds = z3.And(bounds, (k - start) % step == 0)
 
         if quantifier_op == z3.ForAll:
             return z3.ForAll([k], z3.Implies(bounds, cond_expr))
@@ -839,6 +860,82 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         if quantifier_op == z3.ForAll:
             return z3.Implies(guard, cond_expr)
         return z3.And(guard, cond_expr)
+
+    def _convert_quantifier_body(self, build_body, decls, context):
+        """转换保留下来的量词体；泄漏断言时改用无断言的纯表达式除法重转。
+
+        量词体在转换期可能向求解器追加断言（CeilDiv 的取值区间、切片长度等）。
+        这些断言不受量词约束，一旦引用循环变量就会落到量词外面，把「每个下标都
+        成立」悄悄放宽成「存在某个值成立」。CeilDiv 可以换成不加断言的除法表达式
+        （builder.ceil_div_inline），量词得以保留，代价是求解更慢；其它来源的泄漏
+        无法并入量词，仍抛错，由上层按 conversion_failed 拒产该 case。
+
+        :param build_body: 无参回调，按当前模式转换一次量词体
+        :param decls: 判泄漏的常量集合（循环变量 / 元素占位符）
+        :param context: 日志与报错里的定位文本
+        """
+        builder = self.builder
+        solver = builder.solver
+        cache = getattr(builder, "_div_cache", None)
+        cached_keys = set(cache or ())
+
+        # 探测：断言全部回滚，试转产生的中间变量不能残留在真实求解器里
+        before = len(solver.assertions())
+        solver.push()
+        try:
+            build_body()
+            leaked = [a for a in solver.assertions()[before:]
+                      if self._expr_mentions_decl(a, decls)]
+        finally:
+            solver.pop()
+            if cache is not None:
+                for key in set(cache) - cached_keys:
+                    del cache[key]
+        if not leaked:
+            return build_body()
+
+        logger.warning(f"[Unroll] 量词体追加了 {len(leaked)} 条引用循环变量的断言，"
+                       f"改用无断言的纯表达式除法保留量词: {context}")
+        builder.ceil_div_inline = True
+        try:
+            before = len(solver.assertions())
+            cond_expr = build_body()
+            self._reject_leaked_quantifier_assertions(before, decls, context)
+        finally:
+            builder.ceil_div_inline = False
+        return cond_expr
+
+    def _reject_leaked_quantifier_assertions(self, before_count, decls, context):
+        """保留量词前的检查：转换期新增的断言不能引用循环变量。
+
+        这类断言落在量词外面，会把「对所有下标成立」放宽成「存在某个值成立」，
+        求解照样 sat，但约束已经被削弱。检出即抛错中止转换，上层按
+        ``conversion_failed`` 拒产该 case。
+
+        :param before_count: 转换量词体之前 ``solver.assertions()`` 的条数
+        :param decls: 要检查的常量（循环变量 / 元素占位符）
+        :param context: 报错信息里的定位文本，通常是原表达式片段
+        """
+        new_assertions = self.builder.solver.assertions()[before_count:]
+        leaked = [a for a in new_assertions if self._expr_mentions_decl(a, decls)]
+        if not leaked:
+            return
+        raise NotImplementedError(
+            f"量词体转换时额外添加了 {len(leaked)} 条引用循环变量的断言，无法并入量词: "
+            f"{self._short_expr(leaked[0], 400)}；上下文: {context}。"
+            "请把循环范围改写成能静态展开的常量或长度窗口。")
+
+    @staticmethod
+    def _expr_mentions_decl(expr, decls):
+        """表达式中是否出现给定常量（按 decl 精确匹配，含量词体内部）。"""
+        if z3.is_app(expr):
+            if expr.decl() in decls:
+                return True
+            return any(ASTtoZ3Converter._expr_mentions_decl(arg, decls)
+                       for arg in expr.children())
+        if z3.is_quantifier(expr):
+            return ASTtoZ3Converter._expr_mentions_decl(expr.body(), decls)
+        return False
 
     @staticmethod
     def _short_expr(expr, limit=3000):
@@ -1001,7 +1098,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             found.extend(self._param_domain_assertions(arg, depth + 1))
         return found
 
-    def _try_unroll_range(self, start, stop, step, loop_var, cond_expr, quantifier_op):
+    def _try_unroll_range(self, start, stop, step, build_term, quantifier_op):
         """range() 量词守护式展开；返回 None 表示保持原量词。
 
         等价性：设 ``[lo, hi)`` 覆盖所有可达模型里 ``[start, stop)`` 的取值，则
@@ -1011,6 +1108,10 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
         区间外的下标由 guard 短路，不改变约束力。``lo/hi`` 推不出、或展开宽度
         超过 ``builder.unroll_limit`` 时返回 None（继续用量词）。
+
+        ``build_term`` 输入一个具体下标，返回该下标下的子句。调用方必须逐下标
+        重新转换，不能转一次再 substitute：转换期额外添加的断言（如 CeilDiv 的
+        ``__div_N`` 取值）改不到，所有子句会共用同一个自由变量。
 
         ``lo < 0`` 同样允许展开：下标转换已把负索引归一成 ``If(idx < 0, Len+idx, idx)``，
         代入负常量后与执行期的 Python 负索引语义一致（``range(-2, 0)`` 对应末两维）。
@@ -1041,7 +1142,7 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         terms = []
         for value in range(lo, hi):
             guard = z3.And(z3.IntVal(value) >= start, z3.IntVal(value) < stop)
-            body = z3.simplify(z3.substitute(cond_expr, (loop_var, z3.IntVal(value))))
+            body = z3.simplify(build_term(z3.IntVal(value)))
             terms.append(z3.Implies(guard, body) if quantifier_op == z3.ForAll
                          else z3.And(guard, body))
         kind = "all" if quantifier_op == z3.ForAll else "any"
@@ -1125,26 +1226,31 @@ class ASTtoZ3Converter(ast.NodeVisitor):
                     if node.id == self.vn: return self.ph
                     return super().visit_Name(node)
 
-            tv = TempVisitor(self.builder, loop_var_name, placeholder)
-            cond_expr = tv.visit(condition_ast)
-            # 列表路径同样要并入生成器的 if 过滤条件，见 _apply_generator_filters。
-            cond_expr = self._apply_generator_filters(tv, comprehension, cond_expr, quantifier_op)
-            actual_val = target_obj[k] if is_sequence else z3.Select(target_obj, k)
-            final_cond = z3.substitute(cond_expr, (placeholder, actual_val))
+            def build_cond(element_value):
+                """按具体元素值重新转换一次生成器体，原因见 _handle_range_quantifier。"""
+                visitor = TempVisitor(self.builder, loop_var_name, element_value)
+                cond = visitor.visit(condition_ast)
+                # 列表路径同样要并入生成器的 if 过滤条件，见 _apply_generator_filters。
+                return self._apply_generator_filters(visitor, comprehension, cond, quantifier_op)
 
             # 定长展开：Seq 长度已确定时把量词改成逐元素 And/Or——
             # ForAll(k, 0<=k<N => P(k)) ≡ And(P(0..N-1))，Exists 同理变 Or（N>=1）。
             # 约束文本仍是 all()/any()，求解器只看到点对点子句。
             static_len = self.builder.get_static_length(iter_param_name) if iter_param_name else None
             if is_sequence and static_len:
-                elements = [
-                    z3.substitute(cond_expr, (placeholder, target_obj[index]))
-                    for index in range(static_len)
-                ]
+                elements = [build_cond(target_obj[index]) for index in range(static_len)]
                 kind = "all" if quantifier_op == z3.ForAll else "any"
                 self.builder.record_unroll(iter_param_name, kind, static_len)
                 logger.debug(f"[Unroll] {kind}() over '{iter_param_name}' unrolled to {static_len} elements")
                 return z3.And(*elements) if quantifier_op == z3.ForAll else z3.Or(*elements)
+
+            # 长度不可静态确定，只能保留量词；泄漏断言时同样先尝试纯表达式除法
+            # （见 _convert_quantifier_body）。
+            cond_expr = self._convert_quantifier_body(
+                lambda: build_cond(placeholder), {placeholder.decl(), k.decl()},
+                f"对 '{iter_param_name}' 的量词 {ast.unparse(condition_ast)[:160]}")
+            actual_val = target_obj[k] if is_sequence else z3.Select(target_obj, k)
+            final_cond = z3.substitute(cond_expr, (placeholder, actual_val))
 
             if quantifier_op == z3.ForAll:
                 bounds = z3.And(k >= 0, k < z3.Length(target_obj)) if is_sequence else (k >= 0)

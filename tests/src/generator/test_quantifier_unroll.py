@@ -772,3 +772,128 @@ def test_exact_length_within_limit_resolves(length):
 def test_length_outside_unroll_range_does_not_resolve(length):
     assert resolve_static_lengths([f"len(a) == {length}"]) == {}
     assert resolve_static_lengths([], {"a": length}) == {}
+
+
+# ---------------------------------------------------------------------------
+# F. 量词展开：逐下标重新转换，兜底泄漏时内联除法
+#
+# CeilDiv 转换时会向求解器额外登记中间变量 `__div_N` 的取值断言，这些断言不会被
+# `z3.substitute` 改写。若只转换一次再逐个下标代入，所有展开子句会共用同一个
+# 自由变量，约束被悄悄削弱。本组覆盖：定长展开逐下标重转；推不出窗口时改用
+# 内联除法保留量词；切片一类无法内联的泄漏仍报错。
+# ---------------------------------------------------------------------------
+
+
+def _div_aux_names(expr):
+    text = str(expr)
+    return {token.strip("(),") for token in text.split() if token.startswith("__div_")}
+
+
+def test_ceildiv_in_range_body_uses_distinct_aux_per_index():
+    """逐 batch 差分用 CeilDiv 时，每个下标必须各有一个中间变量。"""
+    builder = Z3ConstraintBuilder(timeout_ms=0)
+    builder.declare_var("a", type_hint="list", dtype="int64", length=None)
+    builder.declare_var("b", type_hint="list", dtype="int64", length=None)
+    builder.declare_var("d", type_hint="scalar", dtype="int64")
+    builder.set_static_lengths({"a": 5, "b": 5})
+    var_a = builder.var_map["a"].z3_var
+    var_b = builder.var_map["b"].z3_var
+    expr = _convert(
+        builder,
+        "all(a[i] - a[i-1] == CeilDiv(b[i] - b[i-1], d) "
+        "for i in range(1, len(a)))",
+    )
+    assert not z3.is_quantifier(expr)
+    assert len(_div_aux_names(expr)) == len(_conjuncts(expr)) == 4
+
+    builder.solver.add(z3.Length(var_a) == 5, z3.Length(var_b) == 5, expr)
+    builder.solver.add(builder.var_map["d"].z3_var == 2)
+    for index, value in enumerate((0, 5, 10, 15, 20)):
+        builder.solver.add(var_b[index] == value)
+    # CeilDiv(5, 2) = 3：逐 batch 差分必须都是 3
+    builder.solver.push()
+    for index, value in enumerate((0, 3, 6, 9, 12)):
+        builder.solver.add(var_a[index] == value)
+    assert builder.solver.check() == z3.sat
+    builder.solver.pop()
+    # 共用同一个自由整数时这组「逐 batch 等差」的值会被误判 sat
+    builder.solver.push()
+    for index, value in enumerate((0, 5, 10, 15, 20)):
+        builder.solver.add(var_a[index] == value)
+    assert builder.solver.check() == z3.unsat
+    builder.solver.pop()
+
+
+def test_ceildiv_in_list_quantifier_uses_distinct_aux_per_element():
+    builder, var = _length_builder(3)
+    builder.declare_var("d", type_hint="scalar", dtype="int64")
+    expr = _convert(
+        builder, "all(CeilDiv(v, d) >= 0 for v in a.range_value)")
+    assert not z3.is_quantifier(expr)
+    assert len(_div_aux_names(expr)) == len(_conjuncts(expr)) == 3
+    builder.solver.add(expr, builder.var_map["d"].z3_var == 2)
+    builder.solver.push()
+    builder.solver.add(var[1] == 5)   # CeilDiv(5,2)=3
+    assert builder.solver.check() == z3.sat
+    builder.solver.pop()
+
+
+def test_unbounded_range_with_ceildiv_body_keeps_quantifier():
+    """推不出窗口且体内有 CeilDiv：改用内联除法保留量词，语义不能放宽。"""
+    builder = Z3ConstraintBuilder(timeout_ms=0)
+    builder.declare_var("a", type_hint="list", dtype="int64", length=None)
+    builder.declare_var("b", type_hint="list", dtype="int64", length=None)
+    builder.declare_var("d", type_hint="scalar", dtype="int64")
+    expr = _convert(
+        builder,
+        "all(a[i] - a[i-1] == CeilDiv(b[i], d.range_value) "
+        "for i in range(1, len(a)))",
+    )
+    assert z3.is_quantifier(expr)
+    var_a = builder.var_map["a"].z3_var
+    var_b = builder.var_map["b"].z3_var
+    builder.solver.add(z3.Length(var_a) == 3, z3.Length(var_b) == 3, expr)
+    builder.solver.add(builder.var_map["d"].z3_var == 2)
+    for index, value in enumerate((0, 5, 10)):
+        builder.solver.add(var_b[index] == value)
+    # CeilDiv(5,2)=3、CeilDiv(10,2)=5：逐 batch 差分必须是 3、5
+    builder.solver.push()
+    for index, value in enumerate((0, 3, 8)):
+        builder.solver.add(var_a[index] == value)
+    assert builder.solver.check() == z3.sat
+    builder.solver.pop()
+    # 旧实现共用同一个自由整数时会把这组等差值误判 sat
+    builder.solver.push()
+    for index, value in enumerate((0, 5, 10)):
+        builder.solver.add(var_a[index] == value)
+    assert builder.solver.check() == z3.unsat
+    builder.solver.pop()
+
+
+def test_unbounded_list_quantifier_with_ceildiv_body_keeps_quantifier():
+    builder = _list_builder()  # 无静态长度 → 保留量词
+    builder.declare_var("d", type_hint="scalar", dtype="int64")
+    expr = _convert(builder, "all(CeilDiv(v, d.range_value) == 3 for v in a.range_value)")
+    assert z3.is_quantifier(expr)
+    var = builder.var_map["a"].z3_var
+    builder.solver.add(z3.Length(var) == 2, expr, builder.var_map["d"].z3_var == 2)
+    builder.solver.push()
+    builder.solver.add(var[0] == 5, var[1] == 6)   # CeilDiv(5,2)=CeilDiv(6,2)=3
+    assert builder.solver.check() == z3.sat
+    builder.solver.pop()
+    builder.solver.push()
+    builder.solver.add(var[0] == 5, var[1] == 7)   # CeilDiv(7,2)=4
+    assert builder.solver.check() == z3.unsat
+    builder.solver.pop()
+
+
+def test_unbounded_quantifier_with_slice_body_fails_closed():
+    """切片长度断言无法内联，量词兜底仍必须报错而不是悄悄放宽约束。"""
+    builder = _list_builder()
+    builder.declare_var("b", type_hint="list", dtype="int32", length=None)
+    with pytest.raises(NotImplementedError):
+        _convert(
+            builder,
+            "all(a.range_value[i] == b.range_value[0:i][0] for i in range(1, len(a)))",
+        )
+
