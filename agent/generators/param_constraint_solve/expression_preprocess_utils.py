@@ -733,13 +733,38 @@ class ASTtoZ3Converter(ast.NodeVisitor):
 
     def _handle_max_min(self, node, func_name):
         if len(node.args) == 0: raise ValueError(f"{func_name}() requires at least 1 argument")
+        is_max = (func_name == 'max')
+        if len(node.args) == 1:
+            if isinstance(node.args[0], (ast.GeneratorExp, ast.ListComp)):
+                return self._handle_max_min_generator(node.args[0], is_max)
+            seq_var = self._resolve_sequence_var(node.args[0])
+            if seq_var is not None:
+                return self._handle_max_min_seq(seq_var, is_max)
         args_z3 = [self.visit(arg) for arg in node.args]
         if any(a is None for a in args_z3): raise ValueError(f"{func_name}() argument failed")
-        is_max = (func_name == 'max')
         if len(node.args) == 1:
             return self._handle_max_min_seq(args_z3[0], is_max)
         else:
             return self._handle_max_min_scalars(args_z3, is_max)
+
+    def _resolve_sequence_var(self, arg_node):
+        """把 max/min 的单参数按 AST 形态解析回参数变量对象。
+
+        整列表/整张量的 max/min 需要按变量类型取序列长度和元素，而``visit_Name`` 对 ListVar 返回 z3 序列常量、对 ``.range_value``
+        属性访问返回该属性表达式，均不是变量对象本身。这里直接按``名字`` / ``名字.range_value`` 取回 TensorVar、TensorListVar 或
+        ListVar；其它形态返回 None，由调用方走原有 visit 分支。
+        """
+        if isinstance(arg_node, ast.Name):
+            name = arg_node.id
+        elif isinstance(arg_node, ast.Attribute) and arg_node.attr == 'range_value' \
+                and isinstance(arg_node.value, ast.Name):
+            name = arg_node.value.id
+        else:
+            return None
+        var = self.builder.get_var(name)
+        if isinstance(var, (TensorVar, TensorListVar, ListVar)):
+            return var
+        return None
 
     def _handle_range_quantifier(self, comprehension, condition_ast, quantifier_op):
         range_call = comprehension.iter
@@ -1158,9 +1183,12 @@ class ASTtoZ3Converter(ast.NodeVisitor):
         return result
 
     def _handle_max_min_seq(self, target, is_max):
-        # 优化：如果是具体单值，直接返回
+        # 优化：如果是具体单值，直接返回。
+        # 列表参数的 range_value 只是元素取值的静态种子，元素本身仍由求解模型
+        # 决定（可能被其他约束改写），不能按单值折叠，否则 max/min 会算成种子值。
         spec = getattr(target, '_range_spec', None)
-        if spec is not None and not isinstance(spec, (list, tuple)):
+        if spec is not None and not isinstance(spec, (list, tuple)) \
+                and not isinstance(target, ListVar):
             logger.info(f"[Optimize] max/min on fixed value tensor {target.name}: {spec}")
             if isinstance(spec, bool):
                 return z3.BoolVal(spec)
@@ -1226,6 +1254,206 @@ class ASTtoZ3Converter(ast.NodeVisitor):
             self.builder.solver.add(rank == 1)
             return target.shape[0]
         raise NotImplementedError(f"Cannot determine length for type {type(target).__name__}")
+
+    def _handle_max_min_generator(self, generator_node, is_max):
+        """``max/min(elt for i in R [if C])`` 取最值。
+
+        与 ``sum`` 的生成器写法一样，只有迭代窗口能静态确定时才有确定语义：
+        窗口由 ``_int_bounds`` 或静态长度表推出，逐项展开后按 ``If`` 链折叠；
+        推不出或超展开上限时保持抛错（宁可不支持，不猜界）。
+        """
+        comprehensions = generator_node.generators
+        if len(comprehensions) > 1:
+            raise NotImplementedError(
+                f"max/min with multiple for clauses is not supported: {ast.unparse(generator_node)[:200]}")
+        comprehension = comprehensions[0]
+        if getattr(comprehension, "is_async", 0):
+            raise NotImplementedError("max/min over async comprehension is not supported")
+        if (isinstance(comprehension.iter, ast.Call)
+                and isinstance(comprehension.iter.func, ast.Name)
+                and comprehension.iter.func.id == 'range'):
+            return self._handle_max_min_range(comprehension, generator_node.elt, is_max)
+        return self._handle_max_min_sequence(comprehension, generator_node.elt, is_max)
+
+    def _maxmin_whole_list_var(self, comprehension, elt_node):
+        """识别 ``p.range_value[i] for i in range(len(p))`` 这类整列表最值。
+
+        元素逐个取满 ``p`` 的全部元素、且没有 ``if`` 过滤时，生成器写法与
+        ``max(p.range_value)`` 完全等价，直接复用整列表的量词编码即可；
+        列表长度是否静态已知都不影响。其它形态返回 None，交给逐项展开路径。
+        """
+        if comprehension.ifs:
+            return None
+        loop_var = getattr(comprehension.target, 'id', None)
+        if not loop_var:
+            return None
+        range_call = comprehension.iter
+        if not (isinstance(range_call, ast.Call)
+                and isinstance(range_call.func, ast.Name)
+                and range_call.func.id == 'range'):
+            return None
+        rargs = range_call.args
+        if len(rargs) == 2:
+            start = rargs[0]
+            if not (isinstance(start, ast.Constant) and start.value == 0):
+                return None
+            stop = rargs[1]
+        elif len(rargs) == 1:
+            stop = rargs[0]
+        else:
+            return None
+        if not (isinstance(stop, ast.Call)
+                and isinstance(stop.func, ast.Name) and stop.func.id == 'len'
+                and len(stop.args) == 1 and isinstance(stop.args[0], ast.Name)):
+            return None
+        param_name = stop.args[0].id
+        if not isinstance(elt_node, ast.Subscript) \
+                or not (isinstance(elt_node.slice, ast.Name)
+                        and elt_node.slice.id == loop_var):
+            return None
+        base = elt_node.value
+        if isinstance(base, ast.Attribute) and base.attr == 'range_value':
+            base = base.value
+        if not (isinstance(base, ast.Name) and base.id == param_name):
+            return None
+        var = self.builder.get_var(param_name)
+        return var if isinstance(var, ListVar) else None
+
+    def _handle_max_min_range(self, comprehension, elt_node, is_max):
+        """``max/min(f(i) for i in range(...))``：按静态窗口逐下标展开后折叠。"""
+        range_call = comprehension.iter
+        if len(range_call.args) not in (1, 2, 3):
+            raise ValueError("range() expects 1-3 arguments")
+        args = [self.visit(arg) for arg in range_call.args]
+        if any(arg is None for arg in args):
+            raise ValueError("range() argument failed")
+
+        if len(args) == 1:
+            start, stop, step = z3.IntVal(0), args[0], z3.IntVal(1)
+        elif len(args) == 2:
+            start, stop, step = args[0], args[1], z3.IntVal(1)
+        else:
+            start, stop, step = args
+        if not (z3.is_int_value(step) and step.as_long() == 1):
+            raise NotImplementedError(f"max/min over range() with step {step} is not supported")
+
+        start_bounds = self._int_bounds(start)
+        stop_bounds = self._int_bounds(stop)
+        unroll_limit = self.builder.unroll_limit
+        too_wide = start_bounds and stop_bounds and stop_bounds[1] - start_bounds[0] > unroll_limit
+        if not start_bounds or not stop_bounds or too_wide:
+            # 窗口确定不了（常见于列表长度只由求解决定）时，整列表遍历没有逐项展开的必要：
+            # `p.range_value[i] for i in range(len(p))` 与 `max(p.range_value)` 同义，
+            # 直接复用整列表的量词编码。其它形态保持 fail-closed。
+            whole_list_var = self._maxmin_whole_list_var(comprehension, elt_node)
+            if whole_list_var is not None:
+                return self._handle_max_min_seq(whole_list_var, is_max)
+        if not start_bounds or not stop_bounds:
+            raise NotImplementedError(
+                f"max/min over range() requires statically known bounds: {ast.unparse(range_call)[:200]}")
+        lo, hi = start_bounds[0], stop_bounds[1]
+        if too_wide:
+            raise NotImplementedError(
+                f"max/min unroll width {hi - lo} exceeds limit {unroll_limit}: {ast.unparse(range_call)[:200]}")
+
+        # 窗口可能由标量参数的声明区间推出：断言进去，保证展开覆盖所有可达下标。
+        for bound_expr in (start, stop):
+            for name, bounds, assertion in self._param_domain_assertions(bound_expr):
+                self.builder.assert_param_domain(name, bounds, assertion)
+
+        terms = []
+        for value in range(lo, hi):
+            body = self._maxmin_element(comprehension, elt_node, z3.IntVal(value), is_max)
+            guard = z3.And(z3.IntVal(value) >= start, z3.IntVal(value) < stop)
+            terms.append(z3.If(guard, body, self._extreme_like(body, is_max)))
+        self.builder.record_unroll("range", "max" if is_max else "min", len(terms))
+        if not terms:
+            raise ValueError("max/min() over empty window")
+        return self._handle_max_min_scalars(terms, is_max)
+
+    def _handle_max_min_sequence(self, comprehension, elt_node, is_max):
+        """``max/min(f(v) for v in p.range_value)``：按静态长度逐元素展开后折叠。"""
+        iter_param_name = self._iter_param_name(comprehension.iter)
+        iter_target = self.visit(comprehension.iter)
+        if iter_target is None:
+            raise ValueError("max/min() iter target is None")
+
+        if hasattr(iter_target, 'get_element_sort'):
+            if isinstance(iter_target, TensorVar):
+                target_obj = iter_target.range_value
+                is_sequence = False
+            else:
+                target_obj = iter_target.get_z3_expr()
+                is_sequence = True
+        elif z3.is_seq(iter_target):
+            target_obj = iter_target
+            is_sequence = True
+        elif z3.is_array(iter_target):
+            target_obj = iter_target
+            is_sequence = False
+        else:
+            raise TypeError(f"Cannot iterate over type: {type(iter_target).__name__}")
+
+        static_len = self.builder.get_static_length(iter_param_name) if iter_param_name else None
+        if not static_len:
+            raise NotImplementedError(
+                f"max/min() over '{ast.unparse(comprehension.iter)[:200]}' requires a statically known length")
+
+        terms = []
+        for index in range(static_len):
+            element = target_obj[index] if is_sequence else z3.Select(target_obj, index)
+            body = self._maxmin_element(comprehension, elt_node, element, is_max)
+            if is_sequence:
+                # 静态长度可能是上界：超出实际长度的下标不参与折叠。
+                guard = z3.IntVal(index) < z3.Length(target_obj)
+                body = z3.If(guard, body, self._extreme_like(body, is_max))
+            terms.append(body)
+        self.builder.record_unroll(iter_param_name, "max" if is_max else "min", static_len)
+        return self._handle_max_min_scalars(terms, is_max)
+
+    def _maxmin_element(self, comprehension, elt_node, loop_value, is_max):
+        """把循环变量替换成具体值得到单项表达式；尾部 ``if`` 过滤写成单位元分支。"""
+        loop_var_name = comprehension.target.id
+
+        class TempVisitor(ASTtoZ3Converter):
+            def __init__(self, builder, vn, ph):
+                super().__init__(builder)
+                self.vn, self.ph = vn, ph
+
+            def visit_Name(self, node):
+                if node.id == self.vn:
+                    return self.ph
+                return super().visit_Name(node)
+
+        visitor = TempVisitor(self.builder, loop_var_name, loop_value)
+        body = visitor.visit(elt_node)
+        if body is None:
+            raise ValueError("max/min() element expression failed")
+        if isinstance(body, bool):
+            raise NotImplementedError(
+                f"max/min over non-numeric element is not supported: {ast.unparse(elt_node)[:200]}")
+        if isinstance(body, int):
+            body = z3.IntVal(body)
+        elif isinstance(body, float):
+            body = z3.RealVal(body)
+        if not z3.is_expr(body) or not z3.is_arith(body):
+            raise NotImplementedError(
+                f"max/min over non-numeric element is not supported: {ast.unparse(elt_node)[:200]}")
+        filters = getattr(comprehension, "ifs", None)
+        if filters:
+            guard = z3.And(*[visitor.visit(item) for item in filters])
+            body = z3.If(guard, body, self._extreme_like(body, is_max))
+        return body
+
+    @staticmethod
+    def _extreme_like(expr, is_max):
+        """与 expr 同 sort 的折叠单位元：取 max 用下界，取 min 用上界。"""
+        if z3.is_real(expr):
+            return z3.RealVal(-(10 ** 308)) if is_max else z3.RealVal(10 ** 308)
+        if z3.is_int(expr):
+            return z3.IntVal(-(2 ** 63)) if is_max else z3.IntVal(2 ** 63 - 1)
+        raise NotImplementedError(
+            f"max/min over unsupported element sort: {expr.sort()}")
 
     def _handle_sum(self, node, func_name):
         if len(node.args) == 0:
