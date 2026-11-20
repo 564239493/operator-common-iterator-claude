@@ -178,7 +178,12 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
 
 - 无 open/unfixed → `passed`；允许保留 fixed 历史。
 - 有 open/unfixed 且 `current_round < max_rounds` → `needs_repair`。
-- 有 open/unfixed 且 `current_round == max_rounds` → `failed`。
+- 有 open/unfixed 且 `current_round == max_rounds` → `failed`。该状态只表示
+  **本 iteration 的检查轮次预算耗尽**，不代表问题不可修复；协调器可在用户选择
+  「继续修复」后用 `scripts/extend_constraint_check.py` 扩容预算（report 的
+  `max_rounds` 提升、`status` 改回 `needs_repair`），修复后由新一轮完整复检重写本报告。
+- `max_rounds` 以 `run_state.constraint_check.max_rounds` 为准（`init_run.py`
+  `--constraint-check-rounds` 配置，默认 3；可能已被扩容），不得写死 3。
 
 每次写完运行：
 

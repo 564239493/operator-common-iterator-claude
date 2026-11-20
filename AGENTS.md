@@ -10,7 +10,9 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 - 初始化 EXTRACT 固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 → 独立
   `constraint-checker` / `constraint-repairer` 语义检查修复循环（aclnn 时
   checker 每轮先自跑 `verify_relation_exprs.py` 做 Z3 正反例取证）；默认
-  `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
+  `--constraint-check-rounds 3`，通过可提前结束；达到上限仍有问题（报告 `failed`， 语义为预算耗尽）先征询用户：
+   继续修复 → `scripts/extend_constraint_check.py` 扩容（+3 轮，`failed`→`needs_repair`）后继续 repair→check；
+   选择停止才 → `BLOCKED`
 - 全部通过 → `SUCCESS`
 - 有失败 → `DIAGNOSE` 分析全部失败簇；所有簇均为约束问题且 findings 完整时，复制上一版
   constraints 到新 iteration，由独立 `constraint-updater` 最小修改，再 CHECK/REPAIR → GENERATE，
