@@ -90,7 +90,10 @@ python scripts/execute_cases.py --mode mock --cases <cases.json> --output <execu
 
 先确认 `cases_ttk.csv` 存在且可读。当前 HS/E2E 默认只做 NPU 功能运行，
 不要求 `golden_manifest.json`，不调用 `derive-ttk-golden`，不做精度/覆盖率
-门禁。ACLNN 同样直接使用 TTK 原生 ACLNN runner。
+门禁。ACLNN 同样直接使用 TTK 原生 ACLNN runner。若生成阶段使用了
+`--csv-plugin`，当前 `cases_ttk.csv` 已是插件输出（基础文件保留为
+`cases_ttk.pre_plugin.csv`，证据见 `csv_plugin_report.json`）；执行阶段仍读取
+`cases_ttk.csv`，不得改用基础文件或重新运行插件。
 
 结果判定（ACLNN 链 `scripts/execute_ttk_aclnn.py`，2026-10-13 裁决）：
 **results.csv 有结果行 = TTK 执行正常**——成败只看用例行（全过 `success` / 有败
