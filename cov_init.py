@@ -5,6 +5,7 @@
 - ``skills/``    下的全部内容 → ``.opencode/skills/``
 - ``agents/``    下的全部内容 → ``.opencode/agents/``
 - ``commands/``  下的全部内容 → ``.opencode/commands/``
+- ``ops_final_cov_report/`` 下的全部内容 → 项目根目录 ``ops_final_cov_report/``
 **同步模式**：
 - 默认（拷贝）：若目标已存在同名文件/目录则**直接覆盖**（``shutil.copytree``
   的 ``dirs_exist_ok=True`` 对文件做覆盖、对目录做递归合并），**不**清空目标目录、
@@ -16,7 +17,8 @@
   ``agents/<name>.md`` / ``commands/<name>.md`` 为文件软链接。若目标已存在同名条目
   （文件/目录/旧软链接），先删除再重建。Windows 需开启开发者模式或以管理员运行
   （"Create symbolic links" 用户权利），权限不足时脚本报错提示。
-子模块缺失（尚未 init）或 ``skills/``/``agents/``/``commands/`` 都不存在时不做操作。
+子模块缺失（尚未 init）或 ``skills/``/``agents/``/``commands/``/``ops_final_cov_report/``
+都不存在时不做操作。
 Python 版本要求：>=3.8（依赖 shutil.copytree dirs_exist_ok 参数）
 """
 from __future__ import annotations
@@ -34,12 +36,14 @@ DEFAULT_SOURCE = PROJECT_ROOT / "third_party" / "OperatorTestCoverage"
 DEFAULT_SKILLS_DEST = PROJECT_ROOT / ".opencode" / "skills"
 DEFAULT_AGENTS_DEST = PROJECT_ROOT / ".opencode" / "agents"
 DEFAULT_COMMANDS_DEST = PROJECT_ROOT / ".opencode" / "commands"
+DEFAULT_REPORT_DEST = PROJECT_ROOT / "ops_final_cov_report"
 IGNORED_NAMES = {".git", "__pycache__", ".DS_Store"}
 # (源子目录名, 目标目录名, 文件后缀过滤 or None)
 SYNC_CHANNELS = [
     ("skills", "skills", None),
     ("agents", "agents", ".md"),
     ("commands", "commands", ".md"),
+    ("ops_final_cov_report", "ops_final_cov_report", None),
 ]
 def _ignore(_directory: str, names: list[str]) -> set[str]:
     """copytree ignore回调：过滤忽略文件"""
@@ -150,6 +154,7 @@ def sync(
     skills_dest: Path,
     agents_dest: Path,
     commands_dest: Path,
+    report_dest: Path,
     clean: bool = False,
     dry_run: bool = False,
     link: bool = False,
@@ -168,6 +173,7 @@ def sync(
         "skills": skills_dest,
         "agents": agents_dest,
         "commands": commands_dest,
+        "ops_final_cov_report": report_dest,
     }
     any_has_content = False
     for src_name, _dest_name, _suffix in SYNC_CHANNELS:
@@ -175,7 +181,7 @@ def sync(
             any_has_content = True
             break
     if not any_has_content:
-        print(f"[cov_init] 子模块内 skills/、agents/、commands/ 均为空，跳过: {source}")
+        print(f"[cov_init] 子模块内 skills/、agents/、commands/、ops_final_cov_report/ 均为空，跳过: {source}")
         return 0
     if link:
         return _sync_link(source, dest_map, dry_run)
@@ -204,15 +210,15 @@ def _sync_copy(
                 f"{src_sub} -> {dest}"
             )
             if src_name == "skills":
-                print(f"[cov_init]   源技能目录列表: {', '.join(src_names)}")
+                print(f"[cov_init]   源技能目录列表: {', '.join(src_names)}")
                 if not dry_run:
                     found = _list_skill_names(dest)
                     if found:
-                        print(f"[cov_init]   目标可发现技能 {len(found)} 个: {', '.join(found)}")
+                        print(f"[cov_init]   目标可发现技能 {len(found)} 个: {', '.join(found)}")
                     else:
-                        print("[cov_init]   警告: 目标目录下未发现 SKILL.md，opencode 无法加载技能")
+                        print("[cov_init]   警告: 目标目录下未发现 SKILL.md，opencode 无法加载技能")
             else:
-                print(f"[cov_init]   源 {src_name} 文件列表: {', '.join(src_names)}")
+                print(f"[cov_init]   源 {src_name} 文件列表: {', '.join(src_names)}")
         except Exception as e:
             print(f"[cov_init] ERROR: 拷贝 {src_name} 失败: {e}")
             return 1
@@ -256,7 +262,7 @@ def _sync_link(
                 action = _make_symlink(src, target)
             except OSError as e:
                 print(f"[cov_init] {src_name}/{name}: 创建软链接失败: {e}")
-                print("[cov_init]   Windows 需开启开发者模式或以管理员运行")
+                print("[cov_init]   Windows 需开启开发者模式或以管理员运行")
                 total_failed += 1
                 continue
             if action == "created":
@@ -264,7 +270,7 @@ def _sync_link(
             else:
                 total_replaced += 1
             print(f"[cov_init] {src_name}/{name}: {action} -> {src}")
-        print(f"[cov_init]   {src_name} 软链接: {len(names)} 个")
+        print(f"[cov_init]   {src_name} 软链接: {len(names)} 个")
     if total_failed:
         print(
             f"[cov_init] ERROR: 新建 {total_created} 个, 替换 {total_replaced} 个, "
@@ -281,9 +287,10 @@ def _sync_link(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "把 third_party/OperatorTestCoverage 子模块分类同步到 .opencode： "
+            "把 third_party/OperatorTestCoverage 子模块分类同步： "
             "skills/ -> .opencode/skills/，agents/ -> .opencode/agents/，"
-            "commands/ -> .opencode/commands/；"
+            "commands/ -> .opencode/commands/，"
+            "ops_final_cov_report/ -> 项目根目录 ops_final_cov_report/；"
             "默认拷贝模式（同名覆盖、不清空目标、不动目标其他文件，--clean 仅删除"
             "目标中同名条目后再拷贝）；--link 改用软链接模式（按子项粒度创建"
             "目录/文件软链接，同名先删后建）。Python >=3.8"
@@ -310,6 +317,11 @@ def main() -> int:
         help="命令目标目录（默认 .opencode/commands）",
     )
     parser.add_argument(
+        "--report-dest",
+        default=str(DEFAULT_REPORT_DEST),
+        help="覆盖报告目标目录（默认项目根目录 ops_final_cov_report）",
+    )
+    parser.add_argument(
         "--clean",
         action="store_true",
         help="拷贝前删除目标中与源侧同名的条目（其余内容保留），避免残留过期文件",
@@ -333,6 +345,7 @@ def main() -> int:
         Path(args.skills_dest).resolve(),
         Path(args.agents_dest).resolve(),
         Path(args.commands_dest).resolve(),
+        Path(args.report_dest).resolve(),
         clean=args.clean,
         dry_run=args.dry_run,
         link=args.link,
