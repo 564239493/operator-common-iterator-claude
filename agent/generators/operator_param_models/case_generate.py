@@ -150,9 +150,18 @@ class CaseGenerate:
             #     continue
             param_range_profile_ori = param_attributes.range_value_profile
             if param_range_profile_ori is None:
+                # 必填参数（is_optional=false）不允许因 range_value_profile=None 被静默跳过：
+                # 这类参数（如 aclnnEinsum 的 equation）若缺席，用例在执行期必失败，
+                # 静默 continue 会产出"表面 10/10 通过实则缺必填参数"的伪成功用例。
+                # 拒绝整个 case 并报错，让生成器重试或上游 constraints.json 修正。
+                if not getattr(param_attributes, "is_optional", True):
+                    logger.error(
+                        f"Reject case, required param '{param_name}' has None range_value_profile "
+                        f"(is_optional=false), operator : '{self.operator_name}'")
+                    return None
                 logger.debug(
                     f"In generate case, operator : '{self.operator_name}', param : '{param_name}', range value ori is None")
-                # 如果某个参数可取值范围为None，则该参数用例生成，即生成的用例中没有该参数
+                # 如果某个可选参数可取值范围为None，则该参数不参与用例生成，即生成的用例中没有该参数
                 continue
             if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
                 param_shape = self.generate_param_shape(param_name, param_attributes.shape_property.dim_count,

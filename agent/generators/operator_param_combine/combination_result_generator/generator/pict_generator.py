@@ -1194,7 +1194,23 @@ def encode_pict_value(raw_value, pict_column_name, column_token_map):
         token_body = "_".join(str(element) for element in raw_value)
         candidate_token = "{}{}{}".format(PICT_LIST_TOKEN_PREFIX, token_body, PICT_LIST_TOKEN_SUFFIX)
     else:
-        return _format_pict_value(raw_value)          # 标量走原有路径
+        # 标量：先尝试 _format_pict_value（普通字母数字 token 直接原样返回，不进映射表）。
+        # 若返回 None（如含逗号/箭头/空格的字符串值 equation="abcd,abced->abce"），
+        # 改走 token 映射路径：把原始值规范化为安全 token，记录到 column_token_map，
+        # 这样 PICT 模型能保留该列、约束翻译能命中、行解析阶段可反解回原值。
+        direct = _format_pict_value(raw_value)
+        if direct is not None:
+            return direct
+        if isinstance(raw_value, bool):
+            return None  # bool 已被 _format_pict_value 处理，不会落到这里
+        if isinstance(raw_value, str):
+            # 把含特殊字符的字符串规范化为安全 token（只保留 [A-Za-z0-9_.\-]）
+            token_body = re.sub(r"[^A-Za-z0-9_.\-]", "_", raw_value)
+            if not token_body:
+                return None
+            candidate_token = "{}{}{}".format(PICT_LIST_TOKEN_PREFIX, token_body, PICT_LIST_TOKEN_SUFFIX)
+        else:
+            return None
     if not _SAFE_VALUE_TOKEN.match(candidate_token):
         return None                                    # 含非常规字符（如引号），放弃编码
     tokens_of_column = column_token_map.setdefault(pict_column_name, {})
