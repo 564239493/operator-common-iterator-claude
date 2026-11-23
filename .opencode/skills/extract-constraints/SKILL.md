@@ -194,7 +194,19 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
     `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。确认**独占提取**已执行：
     未选设备、未选量化场景专属的约束条目未产出（`no_scene_devices` 设备不做场景屏蔽过滤，也不虚构量化/非量化区分）。自检不通过则回到步骤 1
     重提，不放过半屏蔽的 constraints.json。
-
+13. **必填 char/枚举参数识别与取值约束**（避免 equation 类参数静默丢失）：
+    - 函数原型中 `const char *<param>` 或 `const <Enum> *<param>` 位置参数且无默认值
+      → `is_optional.value=false`（判据：C 原型无默认值的位置参数；`src_text` 摘函数原型原文）。
+    - 当 `allowed_range_value.value` 为非空 enum 候选（如 `["abcd,abced->abce", "a,b->ab"]`）
+      时，**必须**在 `constraints_in_parameters` 显式补一条 `self_value_enum` 约束
+      （`<param>.range_value in [<候选列表>]`），`src_txt_line` 指向文档"当前取值只支持"
+      /"取值范围为"等候选条款行；禁止只写 `allowed_range_value` 而不补 `self_value_enum`，
+      否则该参数在组合层因 `range_value_profile=None` 静默消失。
+    - 枚举值含逗号/箭头/空格等 PICT 特殊字符（如 `abcd,abced->abce`）时，在
+      `extraction_provenance.json` 备注"取值含 PICT 特殊字符，依赖生成器 token 映射"。
+    - 落盘前逐项复核：凡 `is_optional.value=false` 且 `type.value` 含 `char`/`string`
+      的参数，`allowed_range_value` 非空且对应 `self_value_enum` 约束存在；缺则回到步骤 1 重提。
+    
 ## 维度委派提取
 
 提取约束时可以根据最终输出件中的 inputs&outputs 参数属性, constraints_in_parameters 参数关系表达式, 剩余其他参数的 
