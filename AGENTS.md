@@ -10,7 +10,9 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 - 初始化 EXTRACT 固定执行：完整提取 → 可选 SUPPLEMENT/冲突合并 → 独立
   `constraint-checker` / `constraint-repairer` 语义检查修复循环（aclnn 时
   checker 每轮先自跑 `verify_relation_exprs.py` 做 Z3 正反例取证）；默认
-  `--constraint-check-rounds 3`，通过可提前结束，达到上限仍有问题 → `BLOCKED`
+  `--constraint-check-rounds 3`，通过可提前结束；达到上限仍有问题（报告 `failed`， 语义为预算耗尽）先征询用户：
+   继续修复 → `scripts/extend_constraint_check.py` 扩容（+3 轮，`failed`→`needs_repair`）后继续 repair→check；
+   选择停止才 → `BLOCKED`
 - 全部通过 → `SUCCESS`
 - 有失败 → `DIAGNOSE` 分析全部失败簇；所有簇均为约束问题且 findings 完整时，复制上一版
   constraints 到新 iteration，由独立 `constraint-updater` 最小修改，再 CHECK/REPAIR → GENERATE，
@@ -80,6 +82,7 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 /iterate-operator operator_docs/aclnnFoo.md --web  # 默认不自动打开工作台页面；加 --web 才在首轮 CHECK 通过后自动拉起浏览器
 /iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/plugin.py  # TTK 前置算子插件，执行时自动作为 ttk --plugin 传入
 /iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/tests/assets  # 目录连同父目录/同级内容打包上传，解压后以目录传给 ttk --plugin
+/iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --csv-plugin /path/to/fill_group_list_data.py  # 生成 cases_ttk.csv 后调用脚本填序列化 tensor，输出新的最终 CSV
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子；未传 --scenes 时先列出设备并征询
 /iterate-directory operator_docs --scenes "A2非量化"  # 批次确认设备后逐文档透传；量化场景每个 run 内按文档再选
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
@@ -155,6 +158,7 @@ opencode  # 启动 opencode
 | 阶段 | 子智能体 | 开工首载技能 | 主要产物 |
 |---|---|---|---|
 | 约束提取 | `constraint-extractor` | `extract-constraints` | `constraints.json` + `extraction_provenance.json` |
+| 插件契约分析（`--ttk-plugin` 条件） | `plugin-contract-analyst` | `analyze-ttk-plugin-contract` | `inputs/plugin_contract_review.json` |
 | 源码分析（条件） | `source-analyst` | `analyze-source` | `source_raw.json` + `supplementary/uncertain/conflict-doc.md` + `conflict_candidates.json` |
 | 约束补充（条件） | `constraint-supplementer` | `supplement-constraints` | `constraints_patch.json` |
 | 失败后约束增量更新 | `constraint-updater` | `update-constraints` | 新版 `constraints.json` + `constraint_update.json` |
@@ -170,10 +174,10 @@ opencode  # 启动 opencode
 
 ### opencode 编排层（.opencode/）
 
-- `.opencode/agents/*.md` — 12 个专职子智能体定义（WHO：角色身份、权限白名单、
+- `.opencode/agents/*.md` — 13 个专职子智能体定义（WHO：角色身份、权限白名单、
   返回契约；流程细节一律在各阶段技能，不重复抄写）
 - `.opencode/skills/<name>/SKILL.md` — 流程与知识技能（HOW：可执行规则、输入清单、
-  校验命令）。手写流程技能 17 个（`iterate-operator`、`iterate-directory`、各阶段技能；
+  校验命令）。手写流程技能 18 个（`iterate-operator`、`iterate-directory`、各阶段技能；
   其中 `atc-cpu-golden-derivation` 已废弃留档——CPU golden 已在生成时 mock 化，见
   WORKFLOW.md）
   + `build_knowledge_skills.py` 生成的知识技能 43 个（`aclnn-*` / `torch-npu-*`，生成物禁止手改）
@@ -217,7 +221,7 @@ opencode  # 启动 opencode
 - `batch_state.py` — 批次状态迁移；场景未确认时 claim 返回 `needs_scene`
 - `batch_scene.py` — 批次设备清单（并集 + 逐文档支持矩阵）与场景确认；`resolve` 写入 `batch_state.scene`，可 `--skip-unsupported` 跳过不支持该设备的文档
 - `flow_control.py` — **阶段迁移唯一通道**：迭代流程的阶段推进（EXTRACT→GENERATE→EXECUTE→GATE→…）必须用 `python scripts/flow_control.py advance`，由其按状态机条件表裁决去向与迭代轮次递增；`run_state.py set-state` 仅限人工调试场景，流程中禁止用它做阶段迁移（iterate-operator 技能同款硬守卫）
-- `generate_cases.py` — 调 facade 生成用例；TTK 时自动扫描算子知识目录的 `aux_params.json`，向 cases.json 注入辅助参数（如 `groupListData`），并在 CSV 转换后调用 `materialize_group_list_data.py`
+- `generate_cases.py` — 调 facade 生成用例；TTK 时自动扫描算子知识目录的 `aux_params.json`，向 cases.json 注入辅助参数（如 `groupListData`），并在 CSV 转换后调用 `materialize_group_list_data.py`；传入 `--csv-plugin` 时跳过上述文档驱动流程，改为用外部脚本对基础 CSV 做后处理（基础文件保留为 `cases_ttk.pre_plugin.csv`，插件输出写最终 `cases_ttk.csv`）
 - `execute_cases.py` — 调 executer 执行用例；TTK ACLNN 检测到 `group_list_data_report.json` 时自动加载算子 `__input__` 插件（`golden_resolution=input_plugin`）
 - `operator_aux_params.py` — 从算子文档/知识目录识别值语义辅助参数，写 **run-local** `<run>/inputs/aux_params.json`（不写项目知识目录），供 generate_cases 注入 cases.json；`detect` 子命令可单独重跑识别
 - `materialize_group_list_data.py` — 从 CSV 指定辅助属性（`--attr-name`，默认 groupListData）取显式序列（支持 JSON 字符串），按 `--validator`（group_list_data / non_negative_monotonic）校验并写回 list，可选清空目标 tensor 的 `input_data_ranges`；供 generation 自动调用

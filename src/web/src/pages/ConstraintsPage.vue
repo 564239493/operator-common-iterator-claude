@@ -351,7 +351,7 @@ export default {
                 const data = await res.json();
                 docContent.value = data.content || '';
             } catch (e) {
-                docDialogError.value = `加载算子文档失败: ${e.message}`;
+                docDialogError.value = `加载算子文档失败：${e.message}`;
                 docContent.value = '';
             } finally {
                 docDialogLoading.value = false;
@@ -412,10 +412,10 @@ export default {
                     editMode.value = false;
                     syncEditConstraints();
                 } else {
-                    ElMessage.error('生成失败: ' + (result.error || '未知错误'));
+                    ElMessage.error('生成失败：' + (result.error || '未知错误'));
                 }
             } catch (e) {
-                ElMessage.error('请求失败: ' + e.message);
+                ElMessage.error('请求失败：' + e.message);
             } finally {
                 submitLoading.value = false;
             }
@@ -509,8 +509,8 @@ export default {
             const state = task.state;
             if (state == null) return {text: '未查询', type: 'info', spinner: false, title: '点击按钮查询任务状态'};
             const label = STATE_LABELS[state] || state;
-            const detail = (task.passed || 0) + ' 通过 / ' + (task.failed || 0) + ' 失败 / ' +
-                (task.total || 0) + ' 总数' + (task.detail ? ' · ' + task.detail : '');
+            const detail = (task.passed || 0) + ' 通过 / ' + (task.failed || 0) + ' 失败 / 共 ' +
+                (task.total || 0) + ' 条' + (task.detail ? ' · ' + task.detail : '');
             if (TERMINAL_STATES.has(state)) {
                 return {
                     text: label,
@@ -752,7 +752,7 @@ export default {
                 const curItems = pick(DATA.value.constraints_in_parameters);
                 diffResult.value = computeDiff(prevItems, curItems);
             } catch (e) {
-                diffError.value = '加载上一轮约束失败: ' + e.message;
+                diffError.value = '加载上一轮约束失败：' + e.message;
             } finally {
                 diffLoading.value = false;
             }
@@ -1206,7 +1206,7 @@ export default {
     <!-- 原文定位弹框 -->
     <el-dialog v-model="docDialogVisible" :title="docDialogTitle" width="70%" top="5vh" destroy-on-close>
         <div v-if="docDialogLoading" style="text-align:center;padding:40px;color:var(--text-muted)">
-            加载算子文档中...
+            加载算子文档中…
         </div>
         <div v-else-if="docDialogError" style="text-align:center;padding:40px;color:var(--red)">
             {{ docDialogError }}

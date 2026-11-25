@@ -816,6 +816,9 @@ def main() -> int:
     inject.add_argument("--spec-file")
     inject.add_argument("--knowledge-root")
 
+    contract = subparsers.add_parser("apply-contract")
+    contract.add_argument("--cases", required=True)
+
     args = parser.parse_args()
     if args.command == "detect":
         payload = write_run_aux_specs(
@@ -829,6 +832,13 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "apply-contract":
+        report = apply_plugin_case_contract(
+            Path(args.cases).expanduser().resolve()
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+
     report = inject_aux_params_into_file(
         Path(args.cases).expanduser().resolve(),
         args.operator_name,
@@ -839,6 +849,195 @@ def main() -> int:
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
+
+
+def _find_case_input(case: dict[str, Any], name: str) -> dict[str, Any] | None:
+    for item in case.get("inputs") or []:
+        if isinstance(item, dict) and item.get("name") == name:
+            return item
+    return None
+
+
+def _upsert_case_attr(case: dict[str, Any], name: str, value: Any) -> bool:
+    item = _find_case_input(case, name)
+    if item is None:
+        item = {
+            "name": name,
+            "type": "aux_attr",
+            "aux": True,
+            "required": False,
+            "dtype": "string",
+            "shape": None,
+            "range_values": value,
+            "length": None,
+            "format": None,
+            "backward": False,
+            "align_32B": None,
+            "outlier_values": None,
+            "is_transpose": False,
+            "transpose_id": None,
+            "storage_shape": None,
+        }
+        case.setdefault("inputs", []).append(item)
+        return True
+    if item.get("range_values") != value:
+        item["range_values"] = value
+        item["type"] = "aux_attr"
+        item["aux"] = True
+        return True
+    return False
+
+
+def apply_plugin_case_contract(cases_path: Path) -> dict[str, Any]:
+    """Inject plugin scenario attributes and canonicalize KV physical shapes.
+
+    Rules come from the TTK plugin contract (case_converter/case_schema.py and
+    impl/inputs.py): the template must be explicit (SWA/CSA/HCA/...), and the
+    KV/block-table physical shapes must equal the values re-derived from the
+    seqused/cu_seqlens arrays; the plugin compares shapes exactly.
+    """
+    path = Path(cases_path)
+    cases = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(cases, list):
+        raise ValueError("cases root must be a list")
+    if not any(
+        isinstance(case, dict)
+        and _find_case_input(case, "oriKvOptional") is not None
+        for case in cases
+    ):
+        return {
+            "ok": True,
+            "cases": len(cases),
+            "attributes": 0,
+            "shapes": 0,
+            "skipped": "contract does not apply to this operator",
+            "details": [],
+        }
+    report: dict[str, Any] = {
+        "ok": True, "cases": len(cases), "attributes": 0,
+        "shapes": 0, "details": [],
+    }
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        changed: list[str] = []
+        cmp_kv = _find_case_input(case, "cmpKvOptional")
+        cmp_sparse = _find_case_input(case, "cmpSparseIndicesOptional")
+        ori_sparse = _find_case_input(case, "oriSparseIndicesOptional")
+        if cmp_kv is None:
+            mode = "ORI_SPARSE" if ori_sparse is not None else "SWA"
+        else:
+            mode = "CSA" if cmp_sparse is not None else "HCA"
+        if _upsert_case_attr(case, "template_run_mode", mode):
+            report["attributes"] += 1
+            changed.append(f"template_run_mode={mode}")
+        omask = _scalar_attr(case, "oriMaskMode")
+        cmask = _scalar_attr(case, "cmpMaskMode")
+        omode = "fullK" if omask == 0 else "no"
+        cmode = "fullK" if cmask == 0 else "no"
+        if _upsert_case_attr(case, "ori_kv_topk_mode", omode):
+            report["attributes"] += 1
+            changed.append(f"ori_kv_topk_mode={omode}")
+        if _upsert_case_attr(case, "cmp_kv_topk_mode", cmode):
+            report["attributes"] += 1
+            changed.append(f"cmp_kv_topk_mode={cmode}")
+
+        layout_q = _string_attr(case, "layoutQOptional") or ""
+        layout_kv = _string_attr(case, "layoutKvOptional") or ""
+        seq_ori = _aux_values(case, "seqused_ori_kv_values")
+        seq_cmp = _aux_values(case, "seqused_cmp_kv_values")
+        cu_ori = _aux_values(case, "cu_seqlens_ori_kv_values")
+        cu_cmp = _aux_values(case, "cu_seqlens_cmp_kv_values")
+        cu_q = _aux_values(case, "cu_seqlens_q_values")
+
+        q_item = _find_case_input(case, "q")
+        if (
+            layout_q == "TND" and cu_q
+            and q_item is not None
+            and isinstance(q_item.get("shape"), list)
+            and q_item["shape"]
+            and int(q_item["shape"][0]) != int(cu_q[-1])
+        ):
+            q_item["shape"][0] = int(cu_q[-1])
+            report["shapes"] += 1
+            changed.append(f"q.shape[0]={cu_q[-1]}")
+        out_item = _find_case_input(case, "attnOutOut")
+        if (
+            q_item is not None
+            and out_item is not None
+            and isinstance(q_item.get("shape"), list)
+            and out_item.get("shape") != q_item.get("shape")
+        ):
+            out_item["shape"] = list(q_item["shape"])
+            report["shapes"] += 1
+            changed.append("attnOutOut.shape=q.shape")
+
+        for tensor_name, seq, cu in (
+            ("oriKvOptional", seq_ori, cu_ori),
+            ("cmpKvOptional", seq_cmp, cu_cmp),
+        ):
+            tensor = _find_case_input(case, tensor_name)
+            if tensor is None or not isinstance(tensor.get("shape"), list):
+                continue
+            shape = tensor["shape"]
+            if layout_kv == "BSND":
+                if seq and len(shape) >= 2:
+                    want = max(int(v) for v in seq)
+                    if int(shape[1]) != want:
+                        shape[1] = want
+                        report["shapes"] += 1
+                        changed.append(f"{tensor_name}.shape[1]={want}")
+            elif layout_kv == "TND":
+                if cu and shape:
+                    want = int(cu[-1])
+                    if int(shape[0]) != want:
+                        shape[0] = want
+                        report["shapes"] += 1
+                        changed.append(f"{tensor_name}.shape[0]={want}")
+            elif layout_kv == "PA_BBND":
+                if seq and len(shape) >= 2:
+                    block_size = int(shape[1])
+                    if block_size <= 0:
+                        continue
+                    want = sum(
+                        (int(v) + block_size - 1) // block_size for v in seq
+                    )
+                    if int(shape[0]) != want:
+                        shape[0] = want
+                        report["shapes"] += 1
+                        changed.append(f"{tensor_name}.shape[0]={want}")
+                    table_name = (
+                        "oriBlockTableOptional"
+                        if tensor_name == "oriKvOptional"
+                        else "cmpBlockTableOptional"
+                    )
+                    table = _find_case_input(case, table_name)
+                    if (
+                        table is not None
+                        and isinstance(table.get("shape"), list)
+                        and len(table["shape"]) >= 2
+                    ):
+                        width = (
+                            max(int(v) for v in seq) + block_size - 1
+                        ) // block_size
+                        new_shape = [len(seq), width]
+                        if [int(x) for x in table["shape"][:2]] != new_shape:
+                            table["shape"] = new_shape
+                            report["shapes"] += 1
+                            changed.append(
+                                f"{table_name}.shape={new_shape}"
+                            )
+        if changed:
+            report["details"].append(
+                {"id": case.get("id"), "changes": changed}
+            )
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(cases, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+    return report
 
 
 if __name__ == "__main__":

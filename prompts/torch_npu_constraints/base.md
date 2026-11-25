@@ -281,6 +281,11 @@ torch_npu 原型中的每个真实输入参数以及原型/返回段定义的每
   `expr="p is None"` 的 `presence_dependency`，使当前 HS 校验器识别其恒缺省；
 - 其它 Tensor 若文档完全未给 rank，不得猜占位 rank。写 `[]` 并在 description 加
   `[DOC_GAP:rank]`；这可能触发质量门禁阻断，是比生成错误 shape 更安全的结果。
+- 文档只给 rank 下界（“不少于 N 维”“N 维及以上”“rank ≥ N”）时，上界取项目维度数
+  上限 8，写 `[N, N+1, …, 8]`（如“至少 2 维”写 `[2,3,4,5,6,7,8]`），并在 description
+  加 `[DOC_GAP:rank]` 注明上界为补齐值；下界已 ≥8 时只写 `[8]` 并同样标注。不得
+  留 `[]`：约束按 `range(len(p.shape))` 引用 shape 时没有上界会退回符号量词，求解
+  明显变慢甚至超时。
 
 只写 rank 不足以表达 shape。文档给出的每个固定轴、跨参数轴和输出轴仍须进入关系约束。
 

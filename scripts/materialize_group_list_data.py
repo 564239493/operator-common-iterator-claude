@@ -494,7 +494,10 @@ def _process_row(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any
                 f"{attr_name} length {len(data)} != target tensor length "
                 f"{expected_len}"
             )
-        is_key = "KOptional" in str(args.target_param) or "k_" in str(attr_name)
+        attr_l = str(attr_name).lower()
+        tp_l = str(args.target_param).lower()
+        is_kv = "kv" in attr_l or "kv" in tp_l
+        is_key = is_kv or "KOptional" in str(args.target_param) or "k_" in attr_l
         if validator in ("indexer_cu_seqlens", "prefix_sum_prefix0"):
             if data[0] != 0:
                 raise ValueError(f"{attr_name}[0] must be 0, got {data[0]}")
@@ -505,12 +508,13 @@ def _process_row(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any
                 for index in range(len(data) - 1)
             ):
                 raise ValueError(f"{attr_name} must be non-decreasing")
-            layout = _attr(
-                attrs,
-                "layoutKOptional" if is_key else "layoutQOptional",
-                "layout_k" if is_key else "layout_q",
-            )
-            if layout == "TND":
+            if is_kv:
+                layout = _attr(attrs, "layoutKvOptional", "layout_kv")
+            elif is_key:
+                layout = _attr(attrs, "layoutKOptional", "layout_k")
+            else:
+                layout = _attr(attrs, "layoutQOptional", "layout_q")
+            if layout == "TND" and not is_kv:
                 total_shape = _shape_at(
                     shapes,
                     args.weight_index if is_key else args.x_index,
@@ -525,9 +529,16 @@ def _process_row(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any
         elif validator in ("indexer_seqused", "within_prefix"):
             if any(value < 0 for value in data):
                 raise ValueError(f"{attr_name} must be non-negative")
-            ref_name = (
-                "cu_seqlens_k_values" if is_key else "cu_seqlens_q_values"
-            )
+            if is_kv:
+                ref_name = (
+                    "cu_seqlens_cmp_kv_values"
+                    if "cmp" in attr_l
+                    else "cu_seqlens_ori_kv_values"
+                )
+            elif is_key:
+                ref_name = "cu_seqlens_k_values"
+            else:
+                ref_name = "cu_seqlens_q_values"
             ref = attrs.get(ref_name)
             if ref is not None:
                 ref_values = _coerce_group_list_data(
@@ -644,6 +655,7 @@ def materialize_csv(
         clear_range=clear_range,
         full_values=full_values,
     )
+    csv.field_size_limit(2**31 - 1)
     with input_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         fieldnames = list(reader.fieldnames or [])

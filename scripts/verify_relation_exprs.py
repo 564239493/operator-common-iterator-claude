@@ -54,6 +54,11 @@ from agent.generators.param_constraint_solve.expression_preprocess_utils import 
 from agent.generators.param_constraint_solve.z3_expression_solver_utils import (
     Z3ConstraintBuilder,
 )
+from agent.generators.param_constraint_solve.length_bounds import (
+    len_ref_names,
+    resolve_unroll_window,
+    sum_window_len_refs,
+)
 
 import z3
 
@@ -151,12 +156,31 @@ def _collect_param_cards(value: dict, platform: str) -> dict[str, dict]:
 
 
 def _expr_param_names(expr: str, param_names=None) -> set[str]:
-    """返回 expr 引用的真实参数名（兼容 from_ 这类关键字参数名别名）。"""
+    """表达式引用的参数名：Load 上下文 Name，排除调用位函数名与推导式绑定变量。
+
+    解析走 ``ExpressionPreprocessor.parse_expression``，兼容 ``from_`` 这类
+    关键字参数名别名（先转义解析、再在 AST 层还原为真实参数名）。
+    """
     tree = ExpressionPreprocessor.parse_expression(expr, param_names)
+    call_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    bound = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.comprehension):
+            for target in ast.walk(node.target):
+                if isinstance(target, ast.Name):
+                    bound.add(target.id)
     return {
         node.id
         for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and node.id not in ALLOWED_CALLABLES
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id not in call_names
+        and node.id not in bound
+        and node.id not in ALLOWED_CALLABLES
     }
 
 
@@ -279,7 +303,47 @@ def _add_range_domains(builder: Z3ConstraintBuilder, declared: dict, cards: dict
             continue
 
 
-def _verify_single_expr(expr: str, cards: dict, timeout_ms: int) -> dict:
+def _register_length_bounds(builder: Z3ConstraintBuilder, declared: dict,
+                            cards: dict, sibling_exprs: list) -> dict:
+    """登记列表长度上界并断言进取证求解器，推导与生成管线共用 ``length_bounds``。
+
+    界来自参数卡 ``array_length`` 与同平台约束里的 ``len(p) <= N`` 条款
+    （扫描本平台全部约束——上界常写在别的条目里，单看本条看不见）。
+    界须断言进 solver，否则取证模型可采样窗口外长度，guard 展开式随之失真。
+
+    :return: 参数名 -> 展开窗口
+    """
+    texts = [e for e in sibling_exprs if isinstance(e, str) and e.strip()]
+    sum_refs = sum_window_len_refs(texts)
+    bounds = {}
+    for name in sorted(len_ref_names(texts)):
+        info = declared.get(name)
+        if info is None or info.get("type_hint") not in ("list", "tensor_list"):
+            continue
+        card = cards.get(name) or {}
+        upper, _ = resolve_unroll_window(
+            name, card.get("array_length"), texts,
+            allow_clamp=name in sum_refs)
+        if upper is not None:
+            bounds[name] = upper
+    if not bounds:
+        return {}
+    builder.set_static_length_max(bounds)
+    for name, upper in bounds.items():
+        var = builder.var_map.get(name)
+        if var is None:
+            continue
+        if declared.get(name, {}).get("type_hint") == "tensor_list":
+            builder.solver.add(var.length <= upper)
+        else:
+            seq = var.get_z3_expr() if hasattr(var, "get_z3_expr") else None
+            if seq is not None and z3.is_seq(seq):
+                builder.solver.add(z3.Length(seq) <= upper)
+    return bounds
+
+
+def _verify_single_expr(expr: str, cards: dict, timeout_ms: int,
+                        sibling_exprs: list | None = None) -> dict:
     """单条表达式：声明参数 → 补取值域 → 转换 → sat/Not(expr) 两次求解取证。
 
     ``cards`` 的 key 是真实参数名，用它作为关键字别名（``from_``）反查白名单。
@@ -289,6 +353,8 @@ def _verify_single_expr(expr: str, cards: dict, timeout_ms: int) -> dict:
     names = _expr_param_names(expr, param_names)
     declared = _declare_params(builder, names, cards)
     _add_range_domains(builder, declared, cards)
+    length_bounds = _register_length_bounds(
+        builder, declared, cards, sibling_exprs or [expr])
     undeclared = sorted(names - set(declared))
     tree = ExpressionPreprocessor.parse_expression(expr, param_names)
     z3_expr = ASTtoZ3Converter(builder).visit(tree.body)
@@ -321,6 +387,8 @@ def _verify_single_expr(expr: str, cards: dict, timeout_ms: int) -> dict:
         "violate_example": violate,
         "declared_params": declared,
     }
+    if length_bounds:
+        entry["length_bounds"] = length_bounds
     if undeclared:
         entry["undeclared_params"] = undeclared
     return entry
@@ -345,6 +413,8 @@ def _verify_bucket_joint(
             continue
     declared = _declare_params(builder, all_names, cards)
     _add_range_domains(builder, declared, cards)
+    # 平台全部约束的联合检测同样要登记长度上界：sum()/range(len(p)) 的转换依赖该表
+    _register_length_bounds(builder, declared, cards, list(exprs.values()))
     named = {f"json:[{platform}][{index}]": expr for index, expr in exprs.items()}
     builder.add_constraints(named)
     result = builder.solver.check()
@@ -446,7 +516,9 @@ def verify_constraints(value: dict, constraints_path: Path, timeout_ms: int = 60
                 continue
             joint_exprs[index] = replaced
             try:
-                entry.update(_verify_single_expr(replaced, cards, timeout_ms))
+                # 长度上界按本平台全部约束派生
+                bucket_texts = list(joint_exprs.values())
+                entry.update(_verify_single_expr(replaced, cards, timeout_ms, sibling_exprs=bucket_texts))
                 report["counts"][entry["status"]] += 1
             except Exception as exc:
                 entry["status"] = "unconvertible"

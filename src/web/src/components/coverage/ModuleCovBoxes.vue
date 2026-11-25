@@ -63,7 +63,7 @@ const cards = computed(() => METRICS.map((met) => {
   <div class="cb-panel">
     <div class="cb-head">
       <span class="cb-title">模块覆盖率</span>
-      <span class="cb-sub">盒子图 · 底色 = 覆盖率</span>
+      <span class="cb-sub">盒子图 · 底色表示覆盖率</span>
     </div>
 
     <div class="cb-cards">
@@ -82,7 +82,7 @@ const cards = computed(() => METRICS.map((met) => {
     </div>
 
     <div class="cb-foot">
-      <span>模块: op / host / tiling / kernel</span>
+      <span>模块：op / host / tiling / kernel</span>
       <span class="cb-legend">
         <i class="dot" :style="{ background: '#72cdb9' }"></i>≥ 80%
         <i class="dot" :style="{ background: '#fdcf87' }"></i>&lt; 80%

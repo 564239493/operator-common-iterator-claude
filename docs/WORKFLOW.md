@@ -251,8 +251,12 @@ SUPPLEMENT 之后、CONSTRAINT CHECK 之前，运行
    `constraint-repairer` 使用另一个隔离上下文，只 Edit 报告指出的问题并重跑
    validate_operator_rule + normalize + validate_artifacts constraints。
 3. 修复后必须由新的 checker 上下文完整复检；只有 checker 可把问题标记 fixed。
-4. 默认 3 轮表示 check1 → repair → check2 → repair → check3。达到上限仍失败则顶层
-   状态置 `BLOCKED`（code=`CONSTRAINT_CHECK_FAILED`），不得进入 GENERATE。
+4. 默认 3 轮表示 check1 → repair → check2 → repair → check3。
+   达到上限仍失败时报告记为 `failed`——语义是**轮次预算耗尽**，不代表问题不可修复。主协调器先征询用户：
+   选择「继续修复」则运行 `scripts/extend_constraint_check.py --run-dir <run-dir>`
+   （本 iteration 的 `max_rounds` +3、`status` 由 `failed` 改回 `needs_repair`，同步 run_state），继续 repair → check；
+   选择停止才置 `BLOCKED`（code=`CONSTRAINT_CHECK_FAILED`），不得进入 GENERATE。扩容后的预算随 run_state 保留，
+   run 内后续 iteration 的 `--reset` 继承新值。
    已 passed 后若同轮 constraints 又被迟到的 conflict resolution 或人工操作修改，必须
    使旧 passed 失效、重置 check 轮次并检查新版本，不能沿用旧报告结论。
 
@@ -276,6 +280,10 @@ source-analyst 产 `conflict-doc.md` 后，若非空，主协调器输出 `requi
 动作：所有框架先调用原有 Z3 生成器得到统一 `cases.json`；ATK直接消费，TTK通过
 adapter 生成 `cases_ttk.csv` 和转换审计。torch_npu/E2E 额外生成 Golden manifest；
 ACLNN 使用 constraints 中的 GetWorkspaceSize 或一段式 callable 签名生成原生 ACLNN CSV。
+`run_state.csv_plugin` 非空时，TTK 在基础 CSV 后调用该脚本
+（`--input_case_csv/--output_case_csv`），基础文件保留为 `cases_ttk.pre_plugin.csv`，
+插件输出继续写 `cases_ttk.csv`；同时跳过文档驱动的 aux 参数构造与 groupListData
+materialize。插件失败即阻断 GENERATE，不进入 EXECUTE。
 完成条件：`cases.json` 非空；TTK 还要求 CSV 与 audit 结构合法。
 失败策略：不让 LLM 手工“补齐”用例，保留 generator_bug 证据。
 

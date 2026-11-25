@@ -35,6 +35,9 @@ runs/<operator>-<timestamp>/
     generation_summary.json
     cases.json
     cases_ttk.csv
+    cases_ttk.pre_plugin.csv         # 可选：--csv-plugin 前的基础 CSV 保留副本
+    csv_plugin_report.json            # 可选：--csv-plugin 调用与输出校验报告
+    csv_plugin.log                    # 可选：--csv-plugin stdout/stderr
     execution_result.json
     ttk_artifacts/plog/                 # TTK E2E：本次执行 PLOG
       manifest.json
@@ -109,6 +112,8 @@ constraint-extractor 始终只读 `current_prompt` 快照， 不感知装配过�
 `constraint_check={max_rounds, iteration, current_round, status, report}` 保存当前约束版本的内部检查进度。
 `max_rounds` 默认 3；首轮 EXTRACT 或 UPDATE_CONSTRAINTS 创建新 iteration 时重置其他字段并保留上限。
 同 iteration 恢复时不得重置已通过结果。
+轮次用尽后用户选择继续修复时，`scripts/extend_constraint_check.py` 把 `max_rounds` 提升
+（默认 +3）并同步 `status=needs_repair`；新上限随重置保留到本 run 的后续 iteration。
 
 `hs_scenario_mode` 为 `original` 或 `planned`，默认 `original`。它只影响 torch_npu + TTK 的 GENERATE：
 `original` 使用原生生成器，`planned` 才启用 TND/BSND/paged-attention 场景拆分和投影。
@@ -225,7 +230,9 @@ issue status 只能为`open|fixed|unfixed`。
 constraint-repairer 不修改报告。
 `passed` 不得含 active issue；
 `needs_repair` 要求尚未到上限；
-`failed` 要求已到 上限且仍有 active issue。
+`failed` 要求已到 上限且仍有 active issue——`failed` 只表示**本 iteration 的检查轮次预算耗尽**，不代表问题不可修复。
+用户确认继续修复后，协调器运行 `scripts/extend_constraint_check.py` 把本文件 `max_rounds` 提升、
+`status` 改回 `needs_repair`（本轮唯一允许的非 checker 改写，只动这两个字段）。
 
 被 validate_artifacts.py constraint_check 校验，使用：
 `python scripts/validate_artifacts.py constraint_check <iter>/constraint_check.json`
@@ -447,8 +454,12 @@ CHECK 前的**参数长度探针**（advisory，不阻断流程）。它针对�
 `apply_supplement_constraints.py` 每次覆盖 `constraints.json.pre_supplement`，
 因此固定值合并后该备份是 **pre-pin** 而非 EXTRACT 原始版；回滚按 `origin="param_pin"` 过滤，
 不依赖该备份。
-探针**只固定长度**，不写 `x[0] < x[1]` 之类逐元素展开。列表参数的 `all()/any()` 量词由
-生成器在**长度可静态确定**时定长展开为逐元素 `And`/`Or`，约束文本保持文档原样
+探针**只固定长度**，不写 `x[0] < x[1]` 之类逐元素展开。以下均为**生成器内部行为**，
+约束文本保持文档原样（量词/聚合照常书写，不需逐下标展开）：列表参数的 `all()/any()`
+量词在**长度可静态确定**时定长展开为逐元素 `And`/`Or`；`range(...)` 量词在循环界可由
+常量 / `len(p.shape)` 维度数范围 / `len(p)` 长度上界推出时展开为逐下标 `Implies` 合取；
+`sum(表达式 for i in ...)`（含 `sum([...])`）按同一套静态窗口展开为逐项连加，窗口外的
+下标由 guard 短路
 （上限 `MAX_STATIC_UNROLL = 128`，见 `agent/generators/param_constraint_solve/`）。
 选择长度超过 `UNROLL_LIMIT`（同 128）、且组内存在量词时，patch 带
 `large_length_quantifier` 警告，此时仍按量词求解，可能明显变慢。
@@ -516,10 +527,21 @@ source-wins 的条目转为 `replace_constraint` patch 并入 `constraints.json`
 Metadata 前置算子 + TTK `--plugin` 时，EXTRACT 阶段由
 `scripts/prepare_plugin_values.py` 产出：
 
-- `inputs/plugin_requirements.json`：插件静态契约（`required_value_attrs`、
-  `metadata_slot`、`aux_targets`、`plugin_sha256`、`file:line` 证据）。
-- `inputs/value_constraints.candidates.json`：从主/伴随文档 + 插件契约提取的候选
-  value 规则，条目 `origin="doc_candidate"`、`review_required=true`。
+- `inputs/plugin_requirements.json`：插件静态契约（schema 1.1）。`required_value_attrs`
+  每条含 `name`/`base_name`/`target_param`/`channel`/`resolution`（`kind`/`file`/`line`/
+  `template`/`arg`）/`evidence`/`confidence`（`declared|derived|unresolved`）；
+  `required_attributes` 列出插件直接读取的标量属性（如 `template_run_mode`）；
+  `metadata_slot`、`aux_targets`、`plugin_sha256` 保留。分析器从真实
+  kwargs/attribute 读取推导（f-string 模板+调用点实参、常量元组循环、`AUX_TARGETS`），
+  不再假设属性名以 `*_values` 结尾。
+- `inputs/plugin_contract_review.json`：`plugin-contract-analyst` 读插件源码后的核对
+  结果（`confirmed_value_attrs` / `scenario_attributes` / `constraint_suggestions` /
+  `gaps`，每条带 `plugin: file:line` 证据）。
+- `inputs/value_constraints.candidates.json`：从主/伴随文档 + 插件契约自动提取的候选
+  value 规则（`origin="doc_candidate"`、`review_required=true`）；
+  `confidence=unresolved` 的条目不得 confirm。
+- `<iter>/plugin_case_contract_report.json`：生成器 `apply_plugin_case_contract` 的审计
+  （注入的 `template_run_mode`/`*_kv_topk_mode` 与 canonical shape 修改明细）。
 - `iter_<N>/value_constraints.json`：经 constraint-checker 复核、主协调器
   `--confirm` 终审后的正式文件（生成/更新只读这一份）。首轮同时写
   `inputs/value_constraints.json` 作为审计副本。反馈轮的值级更新由
@@ -646,6 +668,30 @@ ACLNN 模式；`api_name=torch_npu.*` 时使用 TTK E2E 模式。cases.json 中
 使用：
 
 `python scripts/validate_artifacts.py ttk_cases <iter>/cases_ttk.csv`
+
+### `--csv-plugin` 后处理
+
+当 `run_state.csv_plugin` 非空时，生成器在基础 `cases_ttk.csv` 完成后调用该本地
+Python 脚本：
+
+```text
+python <csv_plugin> --input_case_csv <iter>/cases_ttk.pre_plugin.csv \
+  --output_case_csv <iter>/cases_ttk.csv
+```
+
+- 基础 CSV 保留为 `cases_ttk.pre_plugin.csv`；最终 `cases_ttk.csv` 是插件输出，
+  EXECUTE 继续读取该固定路径。
+- `csv_plugin_report.json` 记录 `script`/`input_csv`/`output_csv`/`returncode`/
+  `row_count`/`validation`/`artifact_hashes`；`csv_plugin.log` 保留 stdout/stderr。
+- 插件输出必须保持表头与行数不变；ACLNN 还必须通过
+  `scripts.validate_ttk_aclnn_csv.validate_csv`（基础 CSV 原本 valid 时）。
+- 插件非 0 退出、输出缺失/非法或校验失败即阻断 GENERATE，不写出可执行的
+  `cases_ttk.csv`，不得回退使用基础 CSV。
+- 启用 `--csv-plugin` 时跳过文档驱动的 `inputs/aux_params.json`、groupListData
+  materialize 和 aux `golden.py`；`ttk_plugin` 值契约（plugin_requirements /
+  value_constraints / plugin_case_contract）仍保留。
+- `generation_summary.json.csv_plugin` 记录摘要（脚本、输入/输出路径、报告路径、
+  row_count、hashes）；未启用时为 `null`。
 
 TTK 路径消费统一 `cases.json`，但不得生成或消费 ATK `cases_executor.py/cases_expanded.json`。
 所有 TTK 模式都生成 `ttk_conversion_audit.json`。只有 torch_npu/E2E 生成

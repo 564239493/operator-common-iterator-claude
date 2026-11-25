@@ -171,6 +171,15 @@ def _resolve_aclnn_golden_plugin(
 
 def _run_state_ttk_plugin(iter_dir: Path) -> str:
     """Return ``run_state.ttk_plugin`` for the owning TTK run, if present."""
+    return _run_state_ttk_field(iter_dir, "ttk_plugin")
+
+
+def _run_state_ttk_plugin_root(iter_dir: Path) -> str:
+    """Return ``run_state.ttk_plugin_root`` for the owning TTK run, if present."""
+    return _run_state_ttk_field(iter_dir, "ttk_plugin_root")
+
+
+def _run_state_ttk_field(iter_dir: Path, field: str) -> str:
     current = iter_dir.resolve()
     for _ in range(5):
         candidate = current / "run_state.json"
@@ -181,7 +190,7 @@ def _run_state_ttk_plugin(iter_dir: Path) -> str:
                 return ""
             if not isinstance(state, dict) or state.get("test_framework") != "ttk":
                 return ""
-            return str(state.get("ttk_plugin") or "").strip()
+            return str(state.get(field) or "").strip()
         if current.parent == current:
             break
         current = current.parent
@@ -803,9 +812,16 @@ def main() -> int:
     except ValueError as exc:
         _emit({"ok": False, "code": "TTK_PLUGIN_INVALID", "message": str(exc)})
         return 2
+    cases_path = resolve_input_path(args.cases)
     manual_plugin_root = (
         resolve_input_path(args.plugin_root) if args.plugin_root else None
     )
+    if manual_plugin_root is None and args.test_framework == "ttk":
+        stored_root = _run_state_ttk_plugin_root(cases_path.parent)
+        if stored_root:
+            candidate_root = resolve_input_path(stored_root)
+            if candidate_root.is_dir():
+                manual_plugin_root = candidate_root
     if manual_plugin_root is not None and not manual_plugin_root.is_dir():
         _emit({
             "ok": False,
@@ -814,7 +830,6 @@ def main() -> int:
         })
         return 2
 
-    cases_path = resolve_input_path(args.cases)
     output_path = resolve_input_path(args.output)
     plugin_required_params: list[str] = []
     if args.test_framework == "ttk":

@@ -17,9 +17,13 @@ depends_on: []
 
 - `aclTensor` 管理张量；`aclTensorList` 管理多个张量。
 - `aclScalar` 管理标量；`aclScalarList` 管理多个标量。
-- `aclIntArray`、`aclFloatArray`、`aclBoolArray` 分别是 int、float32、bool 数组。
-  提取时以算子文档"数据类型"列为准（列写 `INT64` 即 `dtype.value=["INT64"]`），
-  仅当该列缺失、为空、为 `-` / `N/A` 时才按 int / float32 / bool 回落。
+- `aclIntArray`、`aclFloatArray`、`aclBoolArray` 分别是整数、浮点、布尔数组；
+  `aclIntArray` 在 ACL 接口层的元素数据类型固定为 int64（`aclCreateIntArray` 只接受
+  int64 数组，不存在 int32 传输形态——个别文档"数据类型"列写 `INT32` 或
+  `INT64、INT32` 属文档笔误/历史遗留，9.2.0 已将单独的 `INT32` 全部修正为 `INT64`）。
+  提取时仍以算子文档"数据类型"列为准：列有值就逐字提取（列写 `INT64` 即
+  `dtype.value=["INT64"]`；列写 `INT32` 等笔误值也照抄，不由本条改写），仅当该列
+  缺失、为空、为 `-` / `N/A` 或只写容器类型名时才按 INT64 / float32 / bool 回落。
 - `aclOpExecutor` 与 `aclrtStream` 是两段式调用流程对象，不是业务输入/输出。
 
 ## 数据类型

@@ -72,6 +72,8 @@ class Z3ConstraintBuilder:
         # 维度个数上限表：shape seq 常量名（如 "self.shape"）-> 文档声明的最大维度个数，
         # 来自已硬断言的 len(p.shape) in dimensions；仅供 range() 量词展开推导循环上界。
         self.static_rank_max = {}
+        # 列表长度上限表：param -> 约束里 len(p) 的最小上界（硬约束，如 len(p) <= 8），供 range(len(p)) / sum() 展开推导静态窗口。
+        self.static_length_max = {}
         # 标量参数取值范围表：param -> (lo, hi)，来自硬约束里 `lo <= p.range_value <= hi`
         # 这类条款；仅供 range() 量词展开推导符号界的静态窗口（展开时会一并断言）。
         self.static_param_ranges = {}
@@ -116,6 +118,21 @@ class Z3ConstraintBuilder:
     def get_rank_max(self, seq_name):
         """返回 shape seq 的维度个数上限；未知返回 None（继续用量词）。"""
         return self.static_rank_max.get(str(seq_name))
+
+    def set_static_length_max(self, bounds):
+        """设置列表长度上限表；键为参数名，只接受 1..MAX_STATIC_UNROLL 的整数。"""
+        self.static_length_max = {
+            str(name): int(value)
+            for name, value in (bounds or {}).items()
+            if isinstance(value, int) and not isinstance(value, bool)
+            and 1 <= value <= MAX_STATIC_UNROLL
+        }
+        if self.static_length_max:
+            logger.info(f"[Unroll] Static list length bounds for range/sum unroll : '{self.static_length_max}'")
+
+    def get_length_max(self, var_name):
+        """返回列表参数的长度上限；未知返回 None（不展开）。"""
+        return self.static_length_max.get(str(var_name))
 
     def set_static_param_ranges(self, ranges):
         """设置标量参数的取值范围表；键为参数名，值为 (lo, hi) 整数二元组。"""

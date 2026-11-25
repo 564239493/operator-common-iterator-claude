@@ -26,6 +26,37 @@ description: 从算子 Markdown 提取符合生成器模型的 constraints.json�
 完整隔离禁令（其他 run、memory、历史构建脚本、历史 constraints 复制等）与知识
 skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再复述。
 
+## 插件派生约束（`--ttk-plugin` 条件触发）
+
+当 `run_state.ttk_plugin` 非空（或调度消息给出插件快照路径）时，除文档约束外还必须
+读取 `inputs/ttk_plugin_snapshot/assets/`（`spec.py`、`impl/inputs.py`、
+`impl/npu_preprocess.py`、`case_converter/README.md`、`case_converter/case_schema.py`）
+与 `inputs/plugin_requirements.json`（schema 1.1），产出 `origin="plugin_contract"`
+的约束。证据写 `src_text = "plugin: <file>:<line> <原文/事实>"`；仅有文档依据的条目
+才填 `src_txt_line`，插件专属条目可缺省（checker 允许）。
+
+必须逐条判断并按证据落库（无证据不要臆造）：
+
+1. **模板与 ratio/mask**：cmpKv 缺席（SWA）⇒ `cmpRatio == 1`、`cmpMaskMode == 0`；
+   cmpSparseIndices 存在（CSA）⇒ `cmpRatio == 4`（设备 OpDef 运行期口径）、
+   `cmpMaskMode == 3`；cmpKv 存在且 cmpSparseIndices 缺席（HCA）⇒ `cmpRatio == 128`、
+   `cmpMaskMode == 3`。
+2. **dtype**：`q`、`oriKvOptional`、`cmpKvOptional`、`attnOutOut` 的 dtype 一致
+   （OpDef 只接受全 FLOAT16 或全 BFLOAT16）。
+3. **presence 反向**：blockTable 仅 `layoutKv == PA_BBND`（cmp 侧还需 cmpKv 存在）；
+   `cuSeqlens*` 仅对应 `TND`；`cmpSparseIndices` 存在 ⇒ cmpKv 存在；
+   `oriSparseIndices` 存在 ⇒ cmpKv/cmpSparseIndices 均缺席；cmpKv 缺席 ⇒
+   `sequsedCmpKv` 缺席。
+4. **rank/轴**：sparse indices 与 q 的 rank 关系（BSND 4 维 `(B,S1,N2,K)`、
+   TND 3 维 `(T1,N2,K)`），末两维绑定 N2/K。
+5. **PA 容量/稠密 cmp 长度**：block_num/block_table 与 seqused/block_size 的派生关系；
+   稠密 cmp 在 residual 缺席时 `cmpKv` 序列长度 == `oriKv` 长度 // cmpRatio
+   （BSND 用 `shape[1]`，TND 用 `shape[0]`）。
+6. **规模上限**（如 B/T 上限）属人工补充，不归插件契约，除非插件源码明确声明。
+
+冲突处理：插件/设备运行期证据优先于文档文字；同一语义已在文档约束中表达时保留
+文档条目，不重复新增；差异写入 `src_text` 说明张力。每条仍须全局唯一 `id`。
+
 ## 必载知识协议（强制）
 
 读取冻结快照 `prompt_v1.md` 末尾的「本次必载知识清单」（`<!-- required-knowledge-begin -->`
@@ -163,7 +194,19 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
     `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。确认**独占提取**已执行：
     未选设备、未选量化场景专属的约束条目未产出（`no_scene_devices` 设备不做场景屏蔽过滤，也不虚构量化/非量化区分）。自检不通过则回到步骤 1
     重提，不放过半屏蔽的 constraints.json。
-
+13. **必填 char/枚举参数识别与取值约束**（避免 equation 类参数静默丢失）：
+    - 函数原型中 `const char *<param>` 或 `const <Enum> *<param>` 位置参数且无默认值
+      → `is_optional.value=false`（判据：C 原型无默认值的位置参数；`src_text` 摘函数原型原文）。
+    - 当 `allowed_range_value.value` 为非空 enum 候选（如 `["abcd,abced->abce", "a,b->ab"]`）
+      时，**必须**在 `constraints_in_parameters` 显式补一条 `self_value_enum` 约束
+      （`<param>.range_value in [<候选列表>]`），`src_txt_line` 指向文档"当前取值只支持"
+      /"取值范围为"等候选条款行；禁止只写 `allowed_range_value` 而不补 `self_value_enum`，
+      否则该参数在组合层因 `range_value_profile=None` 静默消失。
+    - 枚举值含逗号/箭头/空格等 PICT 特殊字符（如 `abcd,abced->abce`）时，在
+      `extraction_provenance.json` 备注"取值含 PICT 特殊字符，依赖生成器 token 映射"。
+    - 落盘前逐项复核：凡 `is_optional.value=false` 且 `type.value` 含 `char`/`string`
+      的参数，`allowed_range_value` 非空且对应 `self_value_enum` 约束存在；缺则回到步骤 1 重提。
+    
 ## 维度委派提取
 
 提取约束时可以根据最终输出件中的 inputs&outputs 参数属性, constraints_in_parameters 参数关系表达式, 剩余其他参数的 

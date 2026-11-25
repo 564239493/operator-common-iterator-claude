@@ -1,7 +1,7 @@
 ---
 name: iterate-operator
 description: 编排算子约束提取、用例生成、执行、诊断和提示词优化闭环。用户要求运行或迭代算子测试流程时使用。
-argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--ttk-plugin path] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
+argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"] [--src path] [--prompt path] [--supplement-constraints path] [--source-analysis-knowledge] [--max-iterations N] [--constraint-check-rounds N] [--case-count N] [--mode real|mock] [--server-config path] [--operator-family auto|aclnn|hs|torch_npu] [--test-framework auto|atk|ttk|constraints] [--ttk-plugin path] [--csv-plugin path] [--hs-scenario-mode original|planned] [--human-checkpoint-round N] [--human-constraints-upload] [--resume-run <run-dir>] [--batch-dir path] [--web]
 ---
 
 # 算子闭环迭代
@@ -50,6 +50,13 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
    （本地文件、本地目录或 `/` 开头的远端绝对路径；本地目录会连同父目录上下文
    ——同级目录——一起打包上传，远端解压后按目录传入）。非 TTK 传入即报错，
    不要与 ATK 混用。
+   `--csv-plugin <本地脚本路径>` 可选，仅 TTK：建 run 时写入 `run_state.csv_plugin`。
+   GENERATE 完成 `cases.json → cases_ttk.csv` 后，生成器以
+   `--input_case_csv <基础CSV> --output_case_csv <最终CSV>` 调用该脚本；基础 CSV 保留为
+   `cases_ttk.pre_plugin.csv`，最终 `cases_ttk.csv` 继续供 EXECUTE 使用。启用时跳过
+   文档驱动的辅助参数构造、groupListData materialize 和 aux `golden.py`；`ttk_plugin`
+   的值契约保留。脚本必须本地存在且为 `.py`；失败（非 0/输出缺失/表头或行数变化）
+   以 `CSV_PLUGIN_FAILED`/`CSV_PLUGIN_OUTPUT_INVALID` 阻断 GENERATE。非 TTK 传入即报错。
    `--src` 可选，指定算子源码目录（项目内或外部）；未提供时可用
    `python scripts/locate_operator_source.py --aclnn-name <算子名>` 定位后再传。
    省略 `--src` 则跳过源码分析，退回纯文档驱动流程。
@@ -60,7 +67,7 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
     `--web` 默认关闭；开启时在「首轮 CHECK 通过后 DASHBOARD 拉起」步骤把 `--web`
     透传给 `raise_dashboard.py` 打开浏览器；不传则仅确保 server 就绪并返回 URL、
     **不自动打开浏览器**。该旗标只影响是否自动开浏览器，不影响 server 与工作台可用性。
-2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、`--ttk-plugin`、
+2. 调用 `python scripts/init_run.py` 创建 run（透传 `--src`、`--ttk-plugin`、`--csv-plugin`、
    `--supplement-constraints`、`--source-analysis-knowledge`、`--operator-family`、`--test-framework`、
    `--hs-scenario-mode`、`--constraint-check-rounds`、`--scenes "<场景描述>"` 等参数，
    `--scenes` 原文存 `run_state.scenes`（场景直输模式标记），
@@ -206,12 +213,24 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      `constraint-extractor`，退回纯文档驱动。
    - **PLUGIN VALUE CONTRACT（EXTRACT barrier 后；Metadata/TTK 条件触发）**：
      当 `run_state.test_framework="ttk"` 且 `run_state.ttk_plugin` 非空时，运行
-     `python scripts/prepare_plugin_values.py --run-dir <run-dir>`。该脚本**静态**分析
-     插件（不执行）、产出 `inputs/plugin_requirements.json` +
-     `inputs/value_constraints.candidates.json`；候选默认 `review_required=true`，
-     生成侧自动跳过。CHECK/REPAIR 阶段由 constraint-checker 复核候选，确认后主协调器运行
+     `python scripts/prepare_plugin_values.py --run-dir <run-dir>`。分析器**静态**解析
+     插件源码（不执行），从真实 kwargs/attribute 读取（含非 `*_values` 名称、f-string
+     模板+调用点实参、常量元组循环、`AUX_TARGETS`）产出
+     `inputs/plugin_requirements.json`（schema 1.1，含 `resolution`/`confidence`/
+     `required_attributes`）与 `inputs/value_constraints.candidates.json`；候选由
+     「文档序列语义 + 插件参数名/值语义」自动推导（`prefix_sum_prefix0` /
+     `within_prefix` / `lt_scalar`），默认 `review_required=true`，生成侧自动跳过。
+     CHECK/REPAIR 阶段由 constraint-checker 按步骤 M 复核；确认后主协调器运行
      `python scripts/prepare_plugin_values.py --run-dir <run-dir> --confirm` 落盘
-     `inputs/value_constraints.json`，并用 `validate_artifacts.py value_constraints` 校验。
+     `inputs/value_constraints.json`（必要时以 reviewed 候选经
+     `finalize_value_constraints.py`），并用 `validate_artifacts.py value_constraints` 校验。
+     `--ttk-plugin` 存在时还必须委派 `plugin-contract-analyst` 读插件快照产出
+     `inputs/plugin_contract_review.json`（属性确认/场景属性/约束建议/缺口）；发现缺失
+     约束时追加到 `inputs/supplement_constraints.md` 并重跑 SUPPLEMENT 后再 CHECK。
+     生成阶段（TTK 且存在插件值规格）由生成器自动调用
+     `apply_plugin_case_contract` 注入 `template_run_mode`/`*_kv_topk_mode` 并按
+     seqused/cu_seqlens 规范化 KV/block table shape，产出
+     `plugin_case_contract_report.json`；case-generator 不得重复注入。
      该步失败 → `BLOCKED`，不进入 GENERATE。
    - **CLASSIFY（EXTRACT barrier 后）**：主协调器跑
      `python scripts/classify_operator.py --doc <run>/inputs/<doc>.md`，读
@@ -330,19 +349,29 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
         把 report 的 `current_round/status` 回写子状态。报告 `passed` → 结束子循环，随后运行
         `python scripts/flow_control.py advance --run-dir <run-dir>` 推进到 GENERATE
         （constraints-only 范围由推进器按 `run_scope` 自动改道 SUCCESS，见下）；
-        `failed`（或 `needs_repair` 且轮次用尽）→ 运行
-        `python scripts/flow_control.py advance --run-dir <run-dir>`
-        （推进器将裁决至 `BLOCKED`，history 附 `code=CONSTRAINT_CHECK_FAILED`），
-        列出未修复问题并终止，
-        禁止进入 constraints-only SUCCESS 或 GENERATE。
+        报告 `failed` 只表示**本 iteration 的检查轮次预算用尽**（`current_round ==max_rounds` 且仍有 open/unfixed），
+        不代表问题不可修复，不得直接终止。先弹一次`AskUserQuestion`（固定顺序）：
+        1. **继续修复（推荐）**：运行
+           `python scripts/extend_constraint_check.py --run-dir <run-dir> --extra-rounds 3`
+           （report 的 `max_rounds` 提升 3 轮、`status` 由 `failed` 改回 `needs_repair`， 同步 `run_state.constraint_check`；
+           可先加 `--dry-run` 预览），然后**直接回第 4 步**
+           按原 open/unfixed 委派 constraint-repairer，复检回到第 2 步。每次轮次用尽都重新询问，不得自动扩容或连续扩容。
+        2. **立即停止**：运行
+           `python scripts/flow_control.py advance --run-dir <run-dir>`
+           （推进器将裁决至 `BLOCKED`，history 附 `code=CONSTRAINT_CHECK_FAILED`），
+           列出未修复问题并终止。
+        两种情况都禁止进入 constraints-only SUCCESS 或 GENERATE。
      4. 报告 `needs_repair` → 委派一个与 checker **隔离的新上下文**
         `constraint-repairer`，输入同一证据集 + constraints + report。repairer 只能 edit
         report 中 open/unfixed 对应约束，不得完整重提、不改 report 状态；修改后必须跑
         validate_operator_rule → normalize → validate_artifacts constraints。成功后运行
         `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --status recheck_pending`，
         回到第 2 步由新的 checker 上下文做下一轮完整复检。
-     5. `max_rounds=3` 的语义是 check1 → repair → check2 → repair → check3；最后一次
-        repair 后必有 check，不接受未复检约束。任何下游阶段开始前都必须确认当前
+     5. `max_rounds=3`（`--constraint-check-rounds` 配置）的语义是 check1 → repair →
+        check2 → repair → check3；最后一次 repair 后必有 check，不接受未复检约束。
+        用户在第 3 步选择继续修复后，`scripts/extend_constraint_check.py` 会扩容本 iteration 的预算（每次 +3），
+        扩容轮同样是 repair→check 并计入 budget；新预算随 `run_state.constraint_check.max_rounds` 保留（`--reset` 继承），
+        本次 run 内后续 iteration 同样生效。任何下游阶段开始前都必须确认当前
         iteration 的 report 有效且 `status=passed`。若 passed 后又因迟到的 conflict
         resolution 或人工操作修改了 constraints，旧 passed 立即失效；运行
         `python scripts/run_state.py set-constraint-check --run-dir <run-dir> --current-round 0 --status pending`，
@@ -364,7 +393,8 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
      报告成功范围仅为约束提取。跳过 case-generator、executor、Golden 和执行质量门禁。
    - `case-generator`：读取 `run_state.hs_scenario_mode`，调用
      `generate_cases.py` 时原样透传 `--hs-scenario-mode`；旧 run 缺少该字段时使用
-     `original`，不得自行改成 `planned`。
+     `original`，不得自行改成 `planned`。同时读取 `run_state.csv_plugin`，非空时原样
+     透传 `--csv-plugin <路径>`；不得在 GENERATE 阶段临时更换或猜测该脚本。
    - **生成的等待由主协调器负责，不由 case-generator 子 Agent 负责**（关键）：case-generator
      是子 Agent，寿命只有 ~1-2 分钟，只能用**前台** `bash` 跑 `scripts/generation_progress.py launch`
      （~1 秒、exit 0）后报告生成子进程 `pid`/`<iter>` 路径/cases 路径/count/platforms 后**结束本轮**
@@ -586,7 +616,9 @@ Optional 参数必须产出 `param is None`；**仅提取所选设备/所选场�
 8. **CHECK/REPAIR 子循环**：人工提交的是新约束版本，进 CHECK 前先按第 6 步规则跑一次
    PARAM PIN PROBE（`inputs/param_pins.json` 已裁决的组不再问，`--origin param_pin` 合并）。
    人工来源无 findings 清单，checker 做**首轮式完整语义检查**
-   （文档快照 + prompt + 场景指令 + 补充证据）；`failed` → `BLOCKED` 照旧。
+   （文档快照 + prompt + 场景指令 + 补充证据）；轮次用尽 `failed` 时与第 6 步
+   CHECK/REPAIR 同一套处理——先弹「继续修复 / 立即停止」，继续修复走
+   `scripts/extend_constraint_check.py` 扩容，选择停止才 `BLOCKED`。
    `passed` → GENERATE → EXECUTE → GATE → DIAGNOSE。若再次以 constraint_extraction 失败且
    `current_iteration >= human_checkpoint_round` → **回到 human-checkpoint 检查点重新弹四选一**
    （用户可再选人工修复 / 人工补充 / 自动修复 / 停止，逐轮切换）。终态（`SUCCESS` / `BLOCKED` /

@@ -70,7 +70,7 @@
 
     <!-- 底部：说明 + 图例（指标 + 层级） -->
     <div class="ht-foot">
-      <span>点击节点下钻 · 点「− / +」折叠展开 · 悬停查看 函数/分支/行 明细</span>
+      <span>点击节点下钻 · 点「− / +」折叠或展开 · 悬停查看函数、分支和行的明细</span>
       <span class="ht-legend">
         <span class="lg">
           <i class="dot" :style="{ background: 'var(--wb-green)' }"></i>函数
@@ -178,7 +178,7 @@ const items = computed(() => {
     const kids = Array.isArray(n.children) ? n.children : [];
     const prods = kids.filter((k: any) => !(k.children && k.children.length));
     const prodTip = prods.length
-      ? ' · 产品: ' + prods.map((k: any) => {
+      ? ' · 产品：' + prods.map((k: any) => {
           const ks = (k && k.summary) || {};
           return `${k.name} ${ks.func_total ? Math.round(rateOf(k, 'func')) + '%' : '—'}`;
         }).join('  ')

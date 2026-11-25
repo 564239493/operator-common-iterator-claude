@@ -15,7 +15,7 @@ const NAV_ITEMS: { view: 'workbench' | 'assets' | 'constraints' | 'coverage'; la
   { view: 'workbench', label: '工作台', route: '/' },
   { view: 'assets', label: '智能体资产', route: '/assets' },
   { view: 'constraints', label: '约束审核', route: '/constraints' },
-  { view: 'coverage', label: '覆盖率展示', route: '/coverage' },
+  { view: 'coverage', label: '覆盖率', route: '/coverage' },
 ]
 
 function go(route: string) {

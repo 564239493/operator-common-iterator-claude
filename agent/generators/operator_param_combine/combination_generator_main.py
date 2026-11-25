@@ -1,7 +1,7 @@
 from __future__ import annotations
 import copy
 import json
-import os.path
+import os
 import time
 from itertools import islice, cycle
 from typing import List, Dict, Any
@@ -101,6 +101,13 @@ class PairwiseParamCombinationGenerator:
                     universe=universe,
                     coverage_tracker=tracker,
                 )
+                # M1：PICT 超时预算。显式属性（外部注入）> 环境变量 PICT_TIMEOUT > 默认 60s。
+                # 依据（2026-11-17 实测）：gmmV5 级模型呈双峰分布——可解时 1s 内出结果，
+                # 不可解时 600s 也跑不完；旧默认 600s 每轮空等，9 轮松弛耗时 90 分钟。
+                # 降为 60s + 首轮超时批量移除（execute_pict 内），整体 ~1 分钟收敛。
+                pict_timeout = getattr(self, "pict_timeout", None)
+                if pict_timeout is None:
+                    pict_timeout = int(os.environ.get("PICT_TIMEOUT", "60"))
                 gen = PICTGenerator(
                     universe=universe,
                     coverage_tracker=tracker,
@@ -111,6 +118,7 @@ class PairwiseParamCombinationGenerator:
                     operator_name=self.operator_rule_data.operator_name,
                     domain_data=combination_input_data,
                     model_output_dir=self.combination_data_save_path,
+                    pict_timeout=pict_timeout,
                 )
                 combination_data_result = gen.generate()
 
@@ -146,6 +154,9 @@ class PairwiseParamCombinationGenerator:
             "coverage_rate": result.coverage_rate,
             "iterations": result.iterations,
             "elapsed_time": result.elapsed_time,
+            # M5：引擎标识落盘，回退（in_process_fallback）一眼可见
+            "engine": getattr(result, "engine", "in_process_fallback"),
+            "pict_failure_category": getattr(result, "pict_failure_category", ""),
             "cases": cases,
         }
         with open(output_path, "w", encoding="utf-8") as f:

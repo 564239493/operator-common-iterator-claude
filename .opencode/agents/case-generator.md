@@ -55,7 +55,9 @@ permission:
   输出 `<iter>/cases_ttk.csv` 和 `ttk_conversion_audit.json`。命令透传
   `--server-config <run_state.server_config>` 和
   `--hs-scenario-mode <run_state.hs_scenario_mode>`；旧 run 缺少该字段时按
-  `original` 处理。执行平台（决定 `cases.json`/CSV 内容）按服务器实际覆盖优先，
+  `original` 处理。`run_state.csv_plugin` 非空时还必须原样追加
+  `--csv-plugin <run_state.csv_plugin>`，由生成器在基础 CSV 后调用该本地脚本；
+  不得自行更换路径或手工执行脚本。执行平台（决定 `cases.json`/CSV 内容）按服务器实际覆盖优先，
   不得直接取 `product_support` 第一项。HS/E2E 可生成或复用 Golden，但精度结果
   不作为功能流程门禁；ACLNN 默认不要求 Golden。
 

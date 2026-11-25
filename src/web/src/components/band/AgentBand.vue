@@ -85,7 +85,7 @@ function statusText(eng: any): string {
           <div class="role">{{ eng.role || '流程外' }}</div>
           <div class="status" :data-status="eng.runtime?.status">
             {{ statusText(eng) }}
-            <span v-if="eng.runtime?.inferred" class="inferred-badge" :title="'由产物与 history 推导（规则集 ' + (eng.runtime?.ruleset || '?') + '）'">推导</span>
+            <span v-if="eng.runtime?.inferred" class="inferred-badge" :title="'由产物与历史记录推导（规则集 ' + (eng.runtime?.ruleset || '?') + '）'">推导</span>
           </div>
           <div v-if="defBadge(eng)" class="def-badge"
                :title="eng.load_error ? ('定义文件解析失败：' + eng.load_error) : '未找到该角色的定义文件，以下为流程固定角色'">
