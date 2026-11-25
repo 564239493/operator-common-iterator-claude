@@ -66,7 +66,9 @@ def _resolve_operator_name(operator_constraint: Union[str, os.PathLike, Mapping]
 
 
 def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
-                           case_num=1, jsonl_save_path=None, json_file_name = None) -> tuple[List, str]:
+                           case_num=1, jsonl_save_path=None, json_file_name = None,
+                           dim_axes_config_path=None, dim_axes_scene=None,
+                           seed: int = 42) -> tuple[List, str]:
     """
     算子用例生成的主入口。
 
@@ -115,6 +117,36 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
         return [], ""
     operator_name = _resolve_operator_name(operator_constraint, operator_constraint_data)
     logger.info(f"Start handle operator, operator name : {operator_name}")
+
+    dim_axes_profile = None
+    dim_axes_scene = None
+    try:
+        from agent.generators.operator_param_models.dim_axes import (
+            DimAxesError, load_dim_axes, resolve_scene,
+        )
+
+        dim_axes_config = load_dim_axes(dim_axes_config_path, strict=True)
+        dim_axes_profile, dim_axes_scene, scene_reason = resolve_scene(
+            dim_axes_config, operator_name, dim_axes_scene
+        )
+        if dim_axes_profile is not None and dim_axes_scene is None:
+            logger.warning(
+                "dim_axes matched operator %s but scene not resolved (%s); "
+                "available scenes: %s; fallback to legacy shape logic",
+                operator_name, scene_reason,
+                list(dim_axes_profile.scenes.keys()),
+            )
+        if dim_axes_scene is not None:
+            required = dim_axes_scene.required_cases()
+            if case_num < required:
+                raise DimAxesError(
+                    f"dim_axes 场景 {dim_axes_scene.name} 需要至少 {required} 条用例才能覆盖"
+                    f"典型值/区间代表值与全部布局，当前 case_num={case_num}"
+                )
+    except Exception as dim_axes_err:
+        logger.error("dim_axes config rejected: %s", dim_axes_err)
+        raise
+
     effective_operator_constraint_data = DataHandleUtil.select_effective_parameters(operator_constraint_data,
                                                                                     target_platform=platform)
     if effective_operator_constraint_data is None:
@@ -122,12 +154,14 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
         return [], operator_name
     param_combination_generator = PairwiseParamCombinationGenerator(
         operator_rule_data=effective_operator_constraint_data, case_num=case_num,
-        combination_data_save_path=jsonl_save_path)
+        combination_data_save_path=jsonl_save_path,
+        dim_axes_profile=dim_axes_profile, dim_axes_scene=dim_axes_scene)
     param_domain_data, param_combination_list = param_combination_generator.get_param_combination_input()
     case_list = operator_case_generate.handle_single_operator(
         operator_constraint_data=effective_operator_constraint_data, param_domain_data=param_domain_data,
         param_combination_list=param_combination_list, target_platform=platform,
-        case_num=case_num, jsonl_save_path=jsonl_save_path, json_file_name=json_file_name)
+        case_num=case_num, jsonl_save_path=jsonl_save_path, json_file_name=json_file_name,
+        dim_axes_profile=dim_axes_profile, dim_axes_scene=dim_axes_scene, dim_axes_seed=seed)
     # reduce 类算子输出 shape 派生兜底：权威落盘在 correct_case→solve_z3_constraints 已完成，
     # 这里对返回列表再跑一次（幂等），保证直接消费返回值的调用方也拿到派生后的 out.shape。
     final_case_list = []

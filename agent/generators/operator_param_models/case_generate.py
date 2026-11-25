@@ -27,8 +27,16 @@ logger = LazyLogger()
 
 
 class CaseGenerate:
-    def __init__(self, operator_name, params_role: Dict[str, str], global_role_definitions: Dict = None):
+    def __init__(self, operator_name, params_role: Dict[str, str], global_role_definitions: Dict = None,
+                 dim_axes_profile=None, dim_axes_scene=None, dim_axes_seed: int = 42):
         self.operator_name = operator_name
+        self.dim_axes_profile = dim_axes_profile
+        self.dim_axes_scene = dim_axes_scene
+        self.axis_resolver = None
+        if dim_axes_profile is not None and dim_axes_scene is not None:
+            from agent.generators.operator_param_models.axis_resolver import AxisShapeResolver
+
+            self.axis_resolver = AxisShapeResolver(dim_axes_scene, seed=dim_axes_seed)
         # 参数的角色，确定每个参数的角色，示例：
         # {
         #   "x1": "role_data_generic",
@@ -120,7 +128,7 @@ class CaseGenerate:
         return choose_rule
 
     def generate_case(self, param_combination: Dict[str, ParameterPropertyData],
-                      case_config_template: CaseConfig = None):
+                      case_config_template: CaseConfig = None, case_index: int = 0):
         """
         根据输入的参数取值，生成case data，格式为CaseConfig
         :param param_combination: 一组参数组合数据，参数组合后生成的每一组参数用例取值，用dict表示，第一层key为param_name,
@@ -136,7 +144,20 @@ class CaseGenerate:
         case_config.name = self.operator_name
         case_config.aclnn_name = self.operator_name
         input_case_list = []
+        resolver = self.axis_resolver
+        if resolver is not None:
+            row_layout = None
+            layout_param = resolver.scene.layout_param
+            if layout_param:
+                layout_property = param_combination.get(layout_param)
+                if layout_property is not None:
+                    row_layout = layout_property.range_value_profile
+            resolver.begin_case(case_index, row_layout)
         for param_name, param_attributes in param_combination.items():
+            if getattr(param_attributes, "is_present", True) is False:
+                logger.debug(
+                    f"Skip absent optional param '{param_name}', operator : '{self.operator_name}'")
+                continue
             param_type = param_attributes.param_type
             param_dtype = self.generate_param_dtype(param_name, param_type, param_attributes.dtype)
             param_length = param_attributes.length
@@ -163,14 +184,31 @@ class CaseGenerate:
                     f"In generate case, operator : '{self.operator_name}', param : '{param_name}', range value ori is None")
                 # 如果某个可选参数可取值范围为None，则该参数不参与用例生成，即生成的用例中没有该参数
                 continue
+            if resolver is not None and param_name == resolver.scene.layout_param:
+                param_attributes = param_attributes.model_copy(
+                    update={"range_value_profile": resolver.layout})
             if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
-                param_shape = self.generate_param_shape(param_name, param_attributes.shape_property.dim_count,
-                                                        param_attributes.shape_property.dim_value_profile)
+                axis_values = None
+                layout_name = None
+                if resolver is not None:
+                    if not resolver.managed_tensor(param_name):
+                        from agent.generators.operator_param_models.dim_axes import DimAxesError
+
+                        raise DimAxesError(
+                            f"算子 {self.operator_name} 命中 dim_axes 场景 {resolver.scene.name}，"
+                            f"但布局未覆盖张量 {param_name!r}"
+                        )
+                    param_shape, axis_values, layout_name = resolver.resolve(param_name)
+                else:
+                    param_shape = self.generate_param_shape(
+                        param_name, param_attributes.shape_property.dim_count,
+                        param_attributes.shape_property.dim_value_profile)
                 param_range = self.generate_param_range(param_name, param_attributes.range_value_profile, param_dtype,
                                                         param_shape)
                 input_case_config = InputCaseConfig(name=param_name, type=param_type, dtype=param_dtype,
                                                     shape=param_shape, range_values=param_range,
-                                                    format=param_attributes.format, length=param_length)
+                                                    format=param_attributes.format, length=param_length,
+                                                    axis_values=axis_values, layout=layout_name)
             else:
                 param_range = self.generate_param_range(param_name, param_attributes.range_value_profile,
                                                         param_dtype)

@@ -389,6 +389,84 @@ def _scene_platform_preference(output_dir: Path) -> str | None:
     return None
 
 
+def _dim_axes_scene_preference(output_dir: Path) -> str | None:
+    """从 run_state.scene.selection 提取用户选中的场景名（仅当唯一时）。"""
+    run_state_path = output_dir.parent / "run_state.json"
+    try:
+        payload = json.loads(run_state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    scene = payload.get("scene") if isinstance(payload, dict) else None
+    if not isinstance(scene, dict):
+        return None
+    selection = scene.get("selection")
+    if not isinstance(selection, dict):
+        return None
+    names: set[str] = set()
+    for device_selection in selection.values():
+        if not isinstance(device_selection, dict):
+            continue
+        for name in device_selection:
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip())
+    if len(names) == 1:
+        return next(iter(names))
+    return None
+
+
+def _dim_axes_coverage(cases_path: Path, operator_name: str, scene_name: str | None,
+                       config_path: str | None) -> dict | None:
+    if not scene_name:
+        return None
+    try:
+        from agent.generators.operator_param_models.dim_axes import (
+            load_dim_axes, resolve_scene,
+        )
+
+        config = load_dim_axes(config_path, strict=True)
+        profile, scene, _ = resolve_scene(config, operator_name, scene_name)
+        if scene is None:
+            return None
+        cases = json.loads(cases_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"error": str(exc), "scene": scene_name}
+
+    layouts: set[str] = set()
+    by_axis: dict[str, dict[str, int]] = {}
+    for case in cases or []:
+        for item in case.get("inputs") or []:
+            if not isinstance(item, dict):
+                continue
+            layout = item.get("layout")
+            if layout:
+                layouts.add(layout)
+            axis_values = item.get("axis_values")
+            if not isinstance(axis_values, dict):
+                continue
+            for axis, value in axis_values.items():
+                bucket = by_axis.setdefault(axis, {})
+                key = str(value)
+                bucket[key] = bucket.get(key, 0) + 1
+
+    missing: list[str] = []
+    for axis_name, axis in scene.axes.items():
+        if axis.is_expr:
+            continue
+        observed = {int(value) for value in by_axis.get(axis_name, {}) if str(value).lstrip("-").isdigit()}
+        for required in axis.coverage_schedule():
+            if required not in observed:
+                missing.append(f"{axis_name}={required}")
+
+    return {
+        "profile": profile.id if profile else None,
+        "scene": scene_name,
+        "layouts_total": len(scene.layouts),
+        "layouts_used": len(layouts),
+        "by_axis": by_axis,
+        "missing": missing,
+    }
+
+
 def _select_execution_platform(
     per_platform_paths: dict[str, Path],
     requested_platform: str | None,
@@ -724,6 +802,16 @@ def _main() -> int:
     parser.add_argument("--count", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--dim-axes-config",
+        default=None,
+        help="维度轴取值配置路径；缺省使用 agent/generators/configs/dim_axes.json（存在时）。",
+    )
+    parser.add_argument(
+        "--dim-axes-scene",
+        default=None,
+        help="显式指定 dim_axes 场景名；缺省从 run_state.scene.selection 推断。",
+    )
+    parser.add_argument(
         "--test-framework", choices=("atk", "ttk"), default="atk",
         help=(
             "测试框架；ttk 会按算子名分流：aclnn* 输出 TTK ACLNN CSV，"
@@ -856,8 +944,14 @@ def _main() -> int:
     # ``single_operator_handle`` for each platform.
     from agent.generators.facade import TestCaseGenerator
 
-    generator = TestCaseGenerator(constraints, seed=args.seed)
     output_dir = output_path.parent
+    dim_axes_scene = args.dim_axes_scene or _dim_axes_scene_preference(output_dir)
+    generator = TestCaseGenerator(
+        constraints,
+        seed=args.seed,
+        dim_axes_config_path=args.dim_axes_config,
+        dim_axes_scene=dim_axes_scene,
+    )
     generation_status_path = output_dir / "generation_status.json"
     if args.test_framework == "ttk":
         _atomic_write_json(generation_status_path, {
@@ -1566,6 +1660,11 @@ def _main() -> int:
         ),
         "id_format": "platform 内 0 基整数 (per-platform 0,1,2,...)",
     }
+    dim_axes_coverage = _dim_axes_coverage(
+        cases_json_path, operator_name, dim_axes_scene, args.dim_axes_config,
+    )
+    if dim_axes_coverage is not None:
+        summary["dim_axes"] = dim_axes_coverage
     summary["artifact_hashes"] = {
         "selected_execution_file": _sha256(selected_source),
         "cases_json": _sha256(cases_json_path),

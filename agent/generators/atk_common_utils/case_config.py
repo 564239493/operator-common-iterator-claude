@@ -2,7 +2,7 @@
 import hashlib
 import json
 from functools import reduce
-from typing import Optional, Union, List
+from typing import Dict, Optional, Union, List
 
 from pydantic import BaseModel
 
@@ -47,6 +47,9 @@ class InputCaseConfig(MyBaseModel):
     # storage_layout 轴表达式求值写入，执行侧 get_storage_shape 读本字段
     # 上报物理形状。
     storage_shape: Optional[List] = None
+    # dim_axes 分支产物：本用例该张量各轴的取值（审计/硬断言用），以及布局名。
+    axis_values: Optional[Dict[str, int]] = None
+    layout: Optional[str] = None
 
     def __hash__(self):
         dtype_hash = hash(self.dtype)

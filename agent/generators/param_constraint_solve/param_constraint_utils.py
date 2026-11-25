@@ -1373,6 +1373,26 @@ class ParamConstraintUtils(CommonDispatcher):
         else:
             constraint_exprs.extend(shape_static_value_expr_list)
 
+    def build_axis_plan_hard_exprs(self, builder: Z3ConstraintBuilder) -> List[str]:
+        """dim_axes 分支：把轴计划产出的 shape 作为不可丢弃的硬断言。
+
+        InputCaseConfig.layout 非空表示该张量来自 dim_axes 场景；此时 shape 已由
+        配置确定，不能再作为软偏好被冲突消解丢弃。未在 Z3 中声明的参数
+        （如缺席的可选参数）跳过，避免硬断言失败。
+        """
+        exprs: List[str] = []
+        for param_name, case_input in self.case_input_map.items():
+            layout = getattr(case_input, "layout", None)
+            shape = getattr(case_input, "shape", None)
+            if not layout or not shape:
+                continue
+            if param_name not in builder.var_map:
+                continue
+            exprs.append(f"len({param_name}.shape) == {len(shape)}")
+            for index, value in enumerate(shape):
+                exprs.append(f"{param_name}.shape[{index}] == {int(value)}")
+        return exprs
+
     def build_param_format_constraint(self, constraint_exprs: List[str],
                                       builder: Z3ConstraintBuilder, check: bool = True) -> None:
         """
@@ -1948,6 +1968,8 @@ class ParamConstraintUtils(CommonDispatcher):
         domain_static.extend(getattr(self, "_rank_hard_exprs", None) or [])
         # 同理：约束推出的列表长度上限也必须硬断言，否则 range(len(p)) / sum() 的展开窗口会大于实际可达长度，原不等式被悄悄削弱
         domain_static.extend(getattr(self, "_len_hard_exprs", None) or [])
+        # dim_axes 分支：轴计划值必须硬断言，不能被偏好消解改写
+        domain_static.extend(self.build_axis_plan_hard_exprs(builder))
         self.build_param_length_constraint(all_static, builder, check=False)
 
         # 文档声明的标量取值域（allowed_range_value enum/range）是硬约束：在偏好

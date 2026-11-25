@@ -241,7 +241,8 @@ class OperatorCaseGenerator:
                                param_combination_list: List[OperatorParameterCombination],
                                param_domain_data: Dict[str, Any],
                                target_platform=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
-                               case_num: int = 1, jsonl_save_path: str = None, json_file_name=None):
+                               case_num: int = 1, jsonl_save_path: str = None, json_file_name=None,
+                               dim_axes_profile=None, dim_axes_scene=None, dim_axes_seed: int = 42):
         """
         读取参数组合文件，xxx.tsv，解析数据，并生成对用的用例
         :param operator_constraint_data: 算子约束结构化数据
@@ -264,7 +265,10 @@ class OperatorCaseGenerator:
             return []
         params_role = self.get_params_roles(operator_name)
         case_generate_instance = CaseGenerate(operator_name=operator_name,
-                                              params_role=params_role)
+                                              params_role=params_role,
+                                              dim_axes_profile=dim_axes_profile,
+                                              dim_axes_scene=dim_axes_scene,
+                                              dim_axes_seed=dim_axes_seed)
         jsonl_fp = None
         if jsonl_save_path is not None:
             os.makedirs(jsonl_save_path, exist_ok=True)
@@ -285,7 +289,22 @@ class OperatorCaseGenerator:
             t_start = time.time()
             param_combination = param_combination_list[combination_index % len(param_combination_list)]
             param_combination_dict = {each.param_name: each for each in param_combination.parameter_property}
-            case_config = case_generate_instance.generate_case(param_combination_dict)
+            case_config = case_generate_instance.generate_case(param_combination_dict, case_index=case_index)
+            if dim_axes_scene is not None and case_config is not None:
+                # dim_axes 的 shape 已确定：把组合阶段的 rank 意图同步为实际秩，
+                # 避免软 rank 约束与轴计划硬断言互斥。
+                case_inputs = []
+                for entry in case_config.inputs:
+                    if isinstance(entry, (list, tuple)):
+                        case_inputs.extend(entry)
+                    else:
+                        case_inputs.append(entry)
+                for entry in case_inputs:
+                    if getattr(entry, "layout", None) and getattr(entry, "shape", None):
+                        param_property = param_combination_dict.get(entry.name)
+                        shape_property = getattr(param_property, "shape_property", None)
+                        if shape_property is not None:
+                            shape_property.dim_count = len(entry.shape)
             correct_status, correct_case = self.correct_case(case=case_config,
                                                              operator_rule_instance=operator_constraint_data,
                                                              param_combinations=param_combination_dict,

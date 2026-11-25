@@ -122,6 +122,8 @@ class TestCaseGenerator:
         json_constraints: dict[str, Any],
         *,
         seed: int | None = DEFAULT_SEED,
+        dim_axes_config_path: str | None = None,
+        dim_axes_scene: str | None = None,
     ) -> None:
         if not isinstance(json_constraints, dict):
             raise TypeError(
@@ -131,6 +133,8 @@ class TestCaseGenerator:
         self._operator_name = _extract_operator_name(json_constraints)
         self._supported_platforms = _extract_supported_platforms(json_constraints)
         self._seed = seed
+        self._dim_axes_config_path = dim_axes_config_path
+        self._dim_axes_scene = dim_axes_scene
         logger.debug(
             "TestCaseGenerator: operator=%s count_default=%d seed=%s platforms=%d",
             self._operator_name, DEFAULT_COUNT, seed, len(self._supported_platforms),
@@ -197,6 +201,9 @@ class TestCaseGenerator:
                     platform=platform,
                     case_num=count,
                     jsonl_save_path=jsonl_save_path,
+                    dim_axes_config_path=self._dim_axes_config_path,
+                    dim_axes_scene=self._dim_axes_scene,
+                    seed=self._seed if self._seed is not None else 42,
                 )
             except Exception as gen_err:
                 platform_logger.exception(

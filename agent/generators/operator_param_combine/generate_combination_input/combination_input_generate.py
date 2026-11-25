@@ -32,12 +32,15 @@ class CombinationInputDataModel(BaseModel):
 
 
 class CombinationInputGenerate:
-    def __init__(self, operator_rule_data: OperatorRule, case_num: int = 1, json_save_path: str = None):
+    def __init__(self, operator_rule_data: OperatorRule, case_num: int = 1, json_save_path: str = None,
+                 dim_axes_profile=None, dim_axes_scene=None):
         self.operator_rule_data = operator_rule_data
         self.case_num = case_num
         self.choose_dtype_map_combination = None
         self.choose_format_map_combination = None
         self.json_save_path = json_save_path
+        self.dim_axes_profile = dim_axes_profile
+        self.dim_axes_scene = dim_axes_scene
         self.constraint_generate = CombinationConstraintGenerate(operator_rule_data)
 
     @staticmethod
@@ -172,7 +175,10 @@ class CombinationInputGenerate:
         logger.debug(
             f"Start generate parameter shape property, "
             f"operator name : '{self.operator_rule_data.operator_name}', param name : '{param_name}'")
-        shape_value_profile = ParamModelConfig.DIM_VALUE_PROFILE_LIST
+        if self.dim_axes_profile is not None and self.dim_axes_scene is not None:
+            shape_value_profile = ["Profile"]
+        else:
+            shape_value_profile = ParamModelConfig.DIM_VALUE_PROFILE_LIST
         logger.debug(
             f"End generate parameter shape property, operator name : '{self.operator_rule_data.operator_name}', "
             f"param name : '{param_name}', shape property : '{shape_value_profile}'")
@@ -430,6 +436,17 @@ class CombinationInputGenerate:
             param_type_dict[param_name] = param_type
             range_value_profile = self.generate_range_value_property(param_name, param_type, param_dtype)
 
+            if (self.dim_axes_scene is not None
+                    and self.dim_axes_scene.layout_param
+                    and param_name == self.dim_axes_scene.layout_param):
+                allowed_layouts = [
+                    value for value in (range_value_profile or [])
+                    if value in self.dim_axes_scene.layouts
+                ]
+                if not allowed_layouts:
+                    allowed_layouts = list(self.dim_axes_scene.layouts.keys())
+                range_value_profile = allowed_layouts
+
             is_range_value_all_none = len(range_value_profile) > 0 and all(x is None for x in range_value_profile)
 
             # 如果某个参数可取值范围只有None，则该参数不参与组合以及后续用例生成，即生成的用例中没有该参数
@@ -451,7 +468,11 @@ class CombinationInputGenerate:
             if range_value_expr is not None:
                 valid_expr_list.append(range_value_expr)
             if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
-                dimension = self.generate_dimension_property(param_name)
+                if self.dim_axes_scene is not None:
+                    rank_options = self.dim_axes_scene.rank_options(param_name)
+                    dimension = rank_options or self.generate_dimension_property(param_name)
+                else:
+                    dimension = self.generate_dimension_property(param_name)
                 if dimension is not None:
                     input_data.dimension = dimension
                 shape_property = self.generate_shape_property(param_name)

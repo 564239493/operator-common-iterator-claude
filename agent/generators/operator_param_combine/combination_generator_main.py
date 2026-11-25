@@ -34,11 +34,14 @@ logger = LazyLogger()
 
 
 class PairwiseParamCombinationGenerator:
-    def __init__(self, operator_rule_data: OperatorRule, case_num: int = 1, combination_data_save_path=None):
+    def __init__(self, operator_rule_data: OperatorRule, case_num: int = 1, combination_data_save_path=None,
+                 dim_axes_profile=None, dim_axes_scene=None):
         self.operator_rule_data = operator_rule_data
         self.case_num = case_num
         self.generated_combinations: List[OperatorParameterCombination] | None = None
         self.combination_data_save_path = combination_data_save_path
+        self.dim_axes_profile = dim_axes_profile
+        self.dim_axes_scene = dim_axes_scene
 
     @staticmethod
     def load_config(combination_input_data: Dict) -> GeneratorConfig:
@@ -73,7 +76,10 @@ class PairwiseParamCombinationGenerator:
         t0 = time.perf_counter()
         try:
             with track_block("Parameter info generator"):
-                combination_input_generator = CombinationInputGenerate(operator_rule_data=self.operator_rule_data)
+                combination_input_generator = CombinationInputGenerate(
+                    operator_rule_data=self.operator_rule_data,
+                    dim_axes_profile=self.dim_axes_profile,
+                    dim_axes_scene=self.dim_axes_scene)
                 combination_input_data = combination_input_generator.generate_combination_input_data()
                 param_domain_data_save_path = os.path.join(self.combination_data_save_path,
                                                            f"{self.operator_rule_data.operator_name}_domain_data.json")

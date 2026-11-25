@@ -1,0 +1,93 @@
+{
+  "version": 7,
+  "profiles": [
+    {
+      "id": "fia_family",
+      "match": {
+        "operators": [
+          "aclnnFusedInferAttentionScore*"
+        ],
+        "exclude": []
+      },
+      "scenes": {
+        "非量化": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [1, 4, 8, 128, 1024, 4096],
+              "ranges": [[1, 1048576]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [64, 128, 192]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        }
+      }
+    }
+  ]
+}
