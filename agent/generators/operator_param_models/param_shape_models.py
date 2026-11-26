@@ -35,7 +35,7 @@ class ParamShapeModel(CommonDispatcher):
         else:
             self.shape_pools, self.shape_strategies = ParamShapeModel.init_shape_model_definition(
                 self.shape_definitions_file_path)
-        self.param_counter = defaultdict(int)
+        self.param_counter = defaultdict(lambda: defaultdict(int))
 
     @staticmethod
     def init_shape_model_definition(shape_definitions_file_path=None) -> Tuple[Dict[str, List],
@@ -103,22 +103,25 @@ class ParamShapeModel(CommonDispatcher):
         """
         if param_name is None:
             default_pool_name = strategy_config.default_pool
-            return self.shape_pools.get(default_pool_name, self.shape_strategies.get(ParamShapeRoleRules.DEFAULT.value))
+            if default_pool_name is None:
+                return ParamShapeRoleRules.DEFAULT.value, self.shape_strategies.get(ParamShapeRoleRules.DEFAULT.value)
+            else:
+                return default_pool_name, self.shape_pools.get(default_pool_name)
         param_name_lower = param_name.lower()
         # level1 Override
         overrides = strategy_config.param_overrides
         if overrides is not None:
             override_pool = overrides.get(param_name) or overrides.get(param_name_lower)
             if override_pool is not None and override_pool in self.shape_pools:
-                return self.shape_pools.get(override_pool)
+                return override_pool, self.shape_pools.get(override_pool)
         # level2 rules
         role_rules = strategy_config.role_rules
         for rule in role_rules:
             for key_word in rule.keywords:
                 if key_word.lower() in param_name_lower and rule.pool in self.shape_pools:
-                    return self.shape_pools.get(rule.pool)
+                    return rule.pool, self.shape_pools.get(rule.pool)
 
-        return self.shape_pools.get(ParamShapeRoleRules.DEFAULT.value)
+        return ParamShapeRoleRules.DEFAULT.value, self.shape_pools.get(ParamShapeRoleRules.DEFAULT.value)
 
     def get_strategy_pool(self, strategy_name, param_name=None):
         """
@@ -132,6 +135,7 @@ class ParamShapeModel(CommonDispatcher):
         # 当param_name为None时，如果strategy_config的base_pool存在，则使用base_pool，否则使用default_pool，如果两个都不存在，则使用
         # self.shape_pool中的默认值
         if strategy_config is None:
+            strategy_pool_name = ParamShapeRoleRules.DEFAULT.value
             strategy_pool = self.shape_pools.get(ParamShapeRoleRules.DEFAULT.value)
             logger.warning(
                 "Can't find match shape strategy by operator name, operator_name : %s, param name: %s, "
@@ -144,8 +148,8 @@ class ParamShapeModel(CommonDispatcher):
                 strategy_pool_name = strategy_config.base_pool
             strategy_pool = self.shape_pools.get(strategy_pool_name)
         else:
-            strategy_pool = self.infer_pool_by_param(param_name, strategy_config)
-        return strategy_config, strategy_pool
+            strategy_pool_name, strategy_pool = self.infer_pool_by_param(param_name, strategy_config)
+        return strategy_config, strategy_pool, strategy_pool_name
 
     def get_candidate_pool(self, dims, random_probability=0.7):
         """
@@ -162,7 +166,7 @@ class ParamShapeModel(CommonDispatcher):
             candidate_pool = self.shape_pools.get("small_integers")
         return candidate_pool
 
-    def hybrid_sampling_shape_value(self, param_name, strategy_pool):
+    def hybrid_sampling_shape_value(self, param_name, pool_name: str, strategy_pool):
         """
         利用混合采样算法选择shape填充值，混合采样算法为：一种“确定性遍历 + 统计分布采样”的混合生成算法。
         设某维度的候选池为P=p_1,p_2,…,p_n，p_i为候选池中的shape取值，该参数已生成的次数为k。第k次生成的维度值d_k服从以下分段函数：
@@ -174,12 +178,13 @@ class ParamShapeModel(CommonDispatcher):
         生成正态分布的随机整数，探索非标准维度。分布参数遵循"3σ"  准则覆盖池定义的范围
         同时对选择的d_k的上下限做处理：choose_shape_value = Clip(d_k, 1. 65535)
         :param param_name: 参数名称，用于统计当前该参数shape取值已生成次数，即k
+        :param pool_name: 候选池的名称
         :param strategy_pool: 策略对应的shape取值候选池
         :return: 指定dim_index的shape取值
         """
         if not strategy_pool:
             return ParamModelConfig.TENSOR_SHAPE_MIN_VALUE
-        param_choose_count = self.param_counter.get(param_name, 0)
+        param_choose_count = self.param_counter.get(param_name, {}).get(pool_name, 0)
         # 阶段一
         if param_choose_count < len(strategy_pool):
             shape_value = max(ParamModelConfig.TENSOR_SHAPE_MIN_VALUE,
@@ -198,11 +203,12 @@ class ParamShapeModel(CommonDispatcher):
                           min(random_shape_value, ParamModelConfig.TENSOR_SHAPE_MAX_VALUE))
         return shape_value
 
-    def fill_shape_safely(self, shape_list, indices_to_index, pool, param_name=None):
+    def fill_shape_safely(self, shape_list, indices_to_index, pool_name: str, pool, param_name=None):
         """
         shape中设置特殊值后，如large, odd等，填充剩下位置的值
         :param shape_list: 设置特殊值后的shape
         :param indices_to_index: 需要填充shape取值的索引
+        :param pool_name: 候选池名称
         :param pool: shape可取值的候选池
         :param param_name: 参数名称
         :return: 填充后的shape
@@ -212,9 +218,10 @@ class ParamShapeModel(CommonDispatcher):
             choose_shape_value = ParamModelConfig.TENSOR_SHAPE_MIN_VALUE
             for _ in range(ParamModelConfig.RANDOM_GENERATE_SHAPE_TIME_LIMIT):
                 if param_name:
-                    choose_value = self.hybrid_sampling_shape_value(param_name, pool)
+                    choose_value = self.hybrid_sampling_shape_value(param_name, pool_name, pool)
                 else:
                     choose_value = random.choice(pool)
+                    self.param_counter[param_name][pool_name] += 1
                 choose_shape_value = ParamShapeModel.tensor_elements_limit_check(current_elements, choose_value)
             max_elements_limit = int(ParamModelConfig.TENSOR_TENSOR_ELEMENT_LIMIT * 0.8)
             choose_shape_value = ParamShapeModel.tensor_elements_limit_check(current_elements=current_elements,
@@ -238,14 +245,14 @@ class ParamShapeModel(CommonDispatcher):
             logger.error("Tensor shape dim is invalid: %s, strategy : %s, operator_name : %s, param name： %s", dims,
                          ParamShapeRoleRules.TYPICAL.value, self.operator_name, param_name)
             return []
-        _, strategy_pool = self.get_strategy_pool(ParamShapeRoleRules.TYPICAL.value, param_name)
+        _, strategy_pool, strategy_pool_name = self.get_strategy_pool(ParamShapeRoleRules.TYPICAL.value, param_name)
         strategy_shape = [ParamModelConfig.TENSOR_SHAPE_MIN_VALUE] * dims
         current_elements = 1
         for dim_index in range(dims - 1, -1, -1):
             if ParamShapeModel.is_feature_dim(dims, dim_index):
-                shape_value = self.hybrid_sampling_shape_value(param_name, strategy_pool)
+                shape_value = self.hybrid_sampling_shape_value(param_name, strategy_pool_name, strategy_pool)
                 choose_shape_value = ParamShapeModel.tensor_elements_limit_check(current_elements, shape_value)
-                self.param_counter[param_name] += 1
+                self.param_counter[param_name][strategy_pool_name] += 1
             else:
                 candidate_pool = self.get_candidate_pool(dims)
                 choose_shape_value = 1
@@ -274,7 +281,8 @@ class ParamShapeModel(CommonDispatcher):
         logger.debug(
             "Start generate param shape by model: 'Has_Large_Size', operator name: %s, param name: %s, dims: %s",
             self.operator_name, param_name, dims)
-        strategy_config, strategy_pool = self.get_strategy_pool(ParamShapeRoleRules.HAS_LARGE_SIZE.value)
+        strategy_config, strategy_pool, strategy_pool_name = self.get_strategy_pool(
+            ParamShapeRoleRules.HAS_LARGE_SIZE.value)
         large_value = ParamModelConfig.DEFAULT_LARGE_FIX_DIM if strategy_config is None else strategy_config.fixed_large_dim
 
         strategy_shape = [ParamModelConfig.TENSOR_SHAPE_MIN_VALUE] * dims
@@ -288,7 +296,8 @@ class ParamShapeModel(CommonDispatcher):
         small_pool = self.shape_pools.get("small_shape_value")
         left_value_indices = [index for index in range(dims) if index != large_value_index]
         random.shuffle(left_value_indices)
-        strategy_shape_with_fill = self.fill_shape_safely(strategy_shape, left_value_indices, small_pool)
+        strategy_shape_with_fill = self.fill_shape_safely(strategy_shape, left_value_indices,
+                                                          pool_name=strategy_pool_name, pool=small_pool)
         logger.debug("End generate param shape by has_large_size, operator name: %s, param name: %s, dims: %s",
                      self.operator_name, param_name, dims)
         return strategy_shape_with_fill
@@ -308,11 +317,12 @@ class ParamShapeModel(CommonDispatcher):
             logger.error("Tensor shape dim is invalid: %s, strategy : %s, operator_name : %s, param name： %s", dims,
                          ParamShapeRoleRules.HAS_ODD_SIZE.value, self.operator_name, param_name)
             return []
-        _, strategy_pool = self.get_strategy_pool(ParamShapeRoleRules.HAS_ODD_SIZE.value)
+        _, strategy_pool, strategy_pool_name = self.get_strategy_pool(ParamShapeRoleRules.HAS_ODD_SIZE.value)
         strategy_shape = [ParamModelConfig.TENSOR_SHAPE_MIN_VALUE] * dims
         indices = list(range(dims))
         random.shuffle(indices)
-        strategy_shape = self.fill_shape_safely(strategy_shape, indices, strategy_pool)
+        strategy_shape = self.fill_shape_safely(strategy_shape, indices, pool_name=strategy_pool_name,
+                                                pool=strategy_pool)
         logger.debug("End generate param shape by has_odd_size, operator name: %s, param name: %s, dims: %s",
                      self.operator_name, param_name, dims)
         return strategy_shape
@@ -328,7 +338,7 @@ class ParamShapeModel(CommonDispatcher):
         logger.debug(
             "Start generate param shape by model: 'Has_One_Size', operator name: %s, param name: %s, dims: %s",
             self.operator_name, param_name, dims)
-        _, strategy_pool = self.get_strategy_pool(ParamShapeRoleRules.HAS_SIZE_1.value)
+        _, strategy_pool, strategy_pool_name = self.get_strategy_pool(ParamShapeRoleRules.HAS_SIZE_1.value)
         strategy_shape = [ParamModelConfig.TENSOR_SHAPE_MIN_VALUE] * dims
         if dims <= 0:
             logger.error("Tensor shape dim is invalid: %s, strategy : %s, operator_name : %s, param name： %s", dims,
@@ -338,7 +348,8 @@ class ParamShapeModel(CommonDispatcher):
         strategy_shape[one_value_index] = 1
         indices_fill = [index for index in range(dims) if index != one_value_index]
         random.shuffle(indices_fill)
-        strategy_shape = self.fill_shape_safely(strategy_shape, indices_fill, strategy_pool)
+        strategy_shape = self.fill_shape_safely(strategy_shape, indices_fill, pool_name=strategy_pool_name,
+                                                pool=strategy_pool)
         logger.debug("End generate param shape by has_one_size, operator name: %s, param name: %s, dims: %s",
                      self.operator_name, param_name, dims)
         return strategy_shape
