@@ -1,0 +1,82 @@
+---
+module: bitfield_pack
+description: 位拼接参数 groupSize/blockSize 的分量、公式与已确认打包值参考表；禁止模型手算位运算
+triggers:
+  - kind: doc_contains
+    value: "groupSizeK|groupSizeN|groupSizeM|blockSizeK|blockSizeN|blockSizeM|位拼接|按位拼接|按位或|低48位"
+---
+
+# 模块 bitfield_pack（按需加载：位拼接信号触发）
+
+> 本模块是**纯参考数据 + 使用规则**，不含场景判断。当前算子文档是唯一事实源；
+> 本表与文档冲突时以文档为准，并同步修正本表。
+
+## A. 识别信号
+
+参数说明或约束章节同时出现下列特征时，该参数是位拼接参数：
+
+- 「由 N 个方向的值拼接组成」「每个值占 16 位」「共占用 int64_t 低 48 位（高 16 位无效）」；
+- 公式形如 `v = vK | vN << 16 | vM << 32`。
+
+典型参数：`groupSize`、`blockSize`。
+
+## B. 公式与分量位置
+
+- `group_size_v1`
+  - 公式：`groupSize = groupSizeK | groupSizeN << 16 | groupSizeM << 32`
+  - 分量顺序（低位→高位）：`groupSizeK` bit0–15、`groupSizeN` bit16–31、`groupSizeM` bit32–47
+  - 说明：每个分量占 16 位，高 16 位数值无效；任一分量为 0 表示该方向由算子自动推导。
+- `block_size_v1`
+  - 公式：`blockSize = blockSizeK | blockSizeN << 16 | blockSizeM << 32`
+  - 分量顺序（低位→高位）：`blockSizeK` bit0–15、`blockSizeN` bit16–31、`blockSizeM` bit32–47
+  - 说明：与 `groupSize` 同一套位布局。
+
+## C. 已确认打包值表（查表优先）
+
+> 本表与 `scripts/bitfield_pack.py` 的 `TABLE` 逐行一致，由
+> `validate_aclnn_knowledge` / `bitfield_pack.py check-doc` 校验；改动必须同步。
+> 来源列使用稳定锚点（不写易漂移的行号）。
+
+| formula_id | 场景 | [M, N, K] | packed 值 | 来源（稳定锚点） |
+|---|---|---|---|---|
+| group_size_v1 | G-B量化 | [1, 128, 128] | 4303356032 | aclnnQuantMatmulV5「约束说明」G-B 量化取值表 |
+| group_size_v1 | B-B量化 | [128, 128, 128] | 549764202624 | aclnnQuantMatmulV5「约束说明」B-B 量化取值表 |
+| group_size_v1 | MX全量化/MX伪量化 | [1, 1, 32] | 4295032864 | aclnnQuantMatmulV5「约束说明」MX 全量化/伪量化取值表 |
+| group_size_v1 | MX伪量化/T-CG量化 | [0, 0, 32] | 32 | aclnnQuantMatmulV5「约束说明」MX 伪量化/T-CG 量化取值表 |
+| group_size_v1 | MX自适应组合 | [0, 1, 0] | 65536 | aclnnAlltoAllQuantMatmulV2 / aclnnQuantMatmulAlltoAllV2「约束说明」MX groupSize 取值表 |
+| group_size_v1 | MX自适应组合 | [0, 1, 32] | 65568 | aclnnAlltoAllQuantMatmulV2 / aclnnQuantMatmulAlltoAllV2「约束说明」MX groupSize 取值表 |
+| group_size_v1 | MX自适应组合 | [1, 0, 0] | 4294967296 | aclnnAlltoAllQuantMatmulV2 / aclnnQuantMatmulAlltoAllV2「约束说明」MX groupSize 取值表 |
+| group_size_v1 | MX自适应组合 | [1, 0, 32] | 4294967328 | aclnnAlltoAllQuantMatmulV2 / aclnnQuantMatmulAlltoAllV2「约束说明」MX groupSize 取值表 |
+| group_size_v1 | MX自适应组合 | [1, 1, 0] | 4295032832 | aclnnAlltoAllQuantMatmulV2 / aclnnQuantMatmulAlltoAllV2「约束说明」MX groupSize 取值表 |
+| group_size_v1 | K-G量化 | [0, 0, 256] | 256 | aclnnQuantMatmulV5「约束说明」K-G 量化取值表 |
+| group_size_v1 | 不生效/不支持groupSize，传0 | [0, 0, 0] | 0 | aclnnQuantMatmulWeightNz「约束说明」不生效/传 0 |
+| block_size_v1 | 当前版本仅支持M=N=0、K=0 | [0, 0, 0] | 0 | aclnnAllGatherMatmulV2「参数说明」blockSize 仅支持 0 |
+
+> 表中 `M/N/K` 对应位段 `M<<32 / N<<16 / K<<0`。同一组合可在多个算子复用；
+> 是否合法仍以当前算子文档为准，来源列标注该值的文档依据。
+>
+> `MX自适应组合` 行来自 `aclnnAlltoAllQuantMatmulV2` / `aclnnQuantMatmulAlltoAllV2`
+> 的显式取值表；其中 `[0,1,32]`、`[1,0,32]` 也满足
+> `aclnnTransposeQuantBatchMatMulWeightNz` 的 M/N 仅 0 或 1、K=32 约束。
+> 其他算子是否允许这些组合，仍以当前算子文档为准。
+
+## D. 使用规则（必须）
+
+1. **查表优先**：先按 `(formula_id, 场景或分量组合)` 查 C 表；命中则直接使用 packed 值，
+   禁止再心算 `|` / `<<`。
+2. **表外组合用脚本**：未命中时用
+   `python scripts/bitfield_pack.py pack --formula group_size_v1 --components M,N,K`
+   计算；把脚本输出的 `packed` 原样写入约束，禁止手工推算。
+3. **约束写法**：打包值放进 `allowed_range_value.value`，`type` 用 `enum`；
+   `src_text` 必须同时保留原公式与分量组合（例如
+   `[gsM, gsN, gsK]=[1, 128, 128]；groupSize = groupSizeK | groupSizeN << 16 | groupSizeM << 32`）。
+   不要新增 OperatorRule 未声明的字段（schema 为 `extra=forbid`），决策信息写进 `src_text`
+   或 `description`。
+4. **存在性**：`groupSize` / `blockSize` 是按值 `int64_t` 形参，`is_optional` 必须为
+   `false`，并写 `<param> is not None` 的 `presence_dependency`；分量取值为 0 不等于
+   参数缺席。
+5. **覆盖**：每个量化场景/OR 分支至少覆盖一个 C 表打包值；不同场景（如 G-B 与 K-G）
+   分开生成/执行，避免只命中单一分支。
+6. **校验**：需要复核某条约束时运行
+   `python scripts/bitfield_pack.py verify --formula group_size_v1 --components M,N,K --value 约束中的值`；
+   `ok=false` 即表示模型或表项写错。
