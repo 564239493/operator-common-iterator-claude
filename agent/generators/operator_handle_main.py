@@ -197,7 +197,7 @@ def main():
                         help="Operator constraint json file directory")
     parser.add_argument("--operator_constraint_path", type=str, required=False, default=None,
                         help="Operator constraint json path")
-    parser.add_argument("--platform", type=str, default="Ascend 950PR&950DT系列产品",
+    parser.add_argument("--platform", type=str, default=RunPlatform.ATLAS_A3_TRAIN_AND_INFER_SERIES.value,
                         required=False,
                         help="Test case executor environment platform")
     parser.add_argument("--case_save_path", type=str, default="output", required=False,
