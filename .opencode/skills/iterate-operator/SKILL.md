@@ -38,8 +38,9 @@ argument-hint: <项目内或外部算子文档路径> [--scenes "<场景描述>"
 
    `--scenes "<场景描述>"` 可选；提供时原文存 `run_state.scenes`，作为场景预填文本。
    场景收集强制分三段且**设备优先**：先让用户从文档"产品支持情况"支持的设备中选择
-   设备类型（硬性必要项），设备确定后主协调器再读文档识别**该设备下**的量化场景并
-   让用户选择，最后可选填写参数取值。未提供 `--scenes` 时同样先选设备。场景收集是
+   设备类型（硬性必要项），设备确定后再确定量化场景：**算子命中 `dim_axes.json` 时
+   直接取该 profile 的 `scenes` 让用户选择（**可多选**）**，未命中才读文档识别**该设备下**的量化
+   场景并让用户选择，最后可选填写参数取值。未提供 `--scenes` 时同样先选设备。场景收集是
    强制步骤，至少选择出设备类型才允许进入 EXTRACT。详见 SCENE_SCAN 子步骤。
 
    `hs-scenario-mode=original`；只有用户显式传入
@@ -119,7 +120,25 @@ Agent 扫 `scene_scan.json` + `check_scene_conflicts.py` 冲突预判 + `--scan`
 - 用户拒绝提供设备时，向用户确认是否停止任务（不得静默跳过场景步骤继续提取）。
 
 **第 2 段（设备确定后）：识别并选择该设备下的量化场景**
-- 主协调器重新读文档快照（产品支持情况、参数说明、约束说明、量化相关小节），
+- **优先 dim_axes 命中（单一场景来源，禁止再引入 `--dim-axes-scene`）**：设备确定后先运行
+  `python scripts/validate_dim_axes.py --operator <算子名> --list-scenes` 判断是否命中：
+  - 若输出 `profile` 非空（算子命中 dim_axes 的某个 profile）→ **候选场景直接取该输出的
+    `scenes` 列表**，不再做文档量化模板推演、不得臆造；用 AskUserQuestion 让用户从中选择
+    （**支持多选**）。选中的场景名（1..N 个）写入
+    `selection.json` → `run_state.scene.selection`，生成阶段据此解析，**不传任何额外场景参数**。
+    多场景时 `--case-count` 是**每平台总数**，会按所选场景数均分（每个场景至少 1 条；若某场景
+    分到的条数低于其覆盖所需，生成会报错，请增大 case-count）。
+    若用户所选不属于该 profile 的场景、或只选设备无场景 → 生成会以
+    `DIM_AXES_SCENE_UNRESOLVED` 硬失败（fail-closed，不再静默回退 legacy），因此这里必须让
+    用户从 `scenes` 清单中选择。
+  - **格式取值严格来自 dim_axes 场景**：渲染 directive 时 `render_scene_directive.py` 会自动把
+    所选场景的 `layout_param`（如 `inputLayout`）取值收窄为「该场景 `layouts` 的键清单」写入机读块
+    `param_modes`，并在正文加 dim_axes 格式约束提示。EXTRACT 必须据此产出 `allowed_range_value`
+    （`expand` 清单），**格式取值只能来自 dim_axes.json 当前场景，禁止再从文档取更大的格式枚举**。
+    组合格式名 `A_B` 表示**输入为 A、输出为 B**（如 `BSH_BNSD` = 输入 BSH、输出 BNSD；
+    `NTD_TND` = 输入 NTD、输出 TND），详见 `platform_dtype` 知识模块 §format。
+  - 未命中 profile（`profile` 为空 / 提示"未命中任何 profile"）→ 才走下面的文档量化模板识别。
+- （未命中 dim_axes 时）主协调器重新读文档快照（产品支持情况、参数说明、约束说明、量化相关小节），
   **只针对已选设备**识别量化场景。提取规则（沿用历史三段式的量化模板规则）：
   - 场景 = 具体量化模板，名称直接编码量化方式/位宽（如 `非量化`/`伪量化`/
     `全量化-A8W8`/`全量化-A4W4`/`K-C量化（A4W4）`/`全量化-GQA`），按文档实际用词；

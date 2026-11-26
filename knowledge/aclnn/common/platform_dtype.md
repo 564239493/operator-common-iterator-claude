@@ -68,3 +68,11 @@ NDC1HWC0, FRACTAL_NZ_C0_16, FRACTAL_NZ_C0_32, NDHWC, NCHW_VECT_C0_16, NC1HWC0, N
 - Tensor 参数始终用 `List[str]`：多格式如 `["FRACTAL_Z_3D", "ND"]`，单格式也必须写成 `["ND"]`，没有明确格式时使用 `[]`；
 - 标量 / 非 Tensor 参数用 `"N/A"`（注意是字符串，不是 `null`）。
 - **`NZ` / `FRACTAL_NZ` / `FRACTAL_NZ_C0_16` 张量必须配套应用 `knowledge/aclnn/features/nz_matmul.md` §4.6.5**（v2 新增）。
+- **组合布局值 `A_B`（`inputLayout` 等字符串属性枚举）**：`_` **前为输入布局、后为输出布局**，例如
+  `BSH_BNSD`（输入 BSH、输出 BNSD）、`NTD_TND`（输入 NTD、输出 TND）、`BNSD_BSND`（输入 BNSD、输出 BSND）、
+  `BSND_BNSD`、`BNSD_NBSD` 等。它们属于该**字符串属性**的枚举取值，**不是** tensor 的 `format` 字段
+  （tensor `format` 仍只取本 §format 受控列表）。提取 `allowed_range_value` 时按文档原文逐字保留，
+  并按「前缀=输入、后缀=输出」理解相关 shape/一致性约束（输入布局定 query/key/value 轴序，输出布局定
+  attentionOut 轴序）。
+- **dim_axes 收窄优先**：若场景 directive 的 `param_modes` 已把该格式参数收窄到当前 dim_axes 场景的
+  `layouts` 清单，则**严格以该清单为准**，不得再合并文档里更大的格式枚举（如未在本场景配置的组合格式）。

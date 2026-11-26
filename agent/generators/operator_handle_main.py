@@ -119,7 +119,6 @@ def single_operator_handle(operator_constraint, platform=RunPlatform.ATLAS_A3_TR
     logger.info(f"Start handle operator, operator name : {operator_name}")
 
     dim_axes_profile = None
-    dim_axes_scene = None
     try:
         from agent.generators.operator_param_models.dim_axes import (
             DimAxesError, load_dim_axes, resolve_scene,

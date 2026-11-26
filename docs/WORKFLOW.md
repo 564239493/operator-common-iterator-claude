@@ -128,9 +128,21 @@ EXECUTE 阶段走 4 步融合流程（fusion 走 `_SPECIAL_TEMPLATES` 专属 `.t
    AskUserQuestion 让用户选择（可多选；文档仅 1 个支持设备时回显确认）。**设备未
    选定前不得读取/展示量化场景、不得写 selection.json、不得渲染 directive、不得
    推进 EXTRACT**。与 `servers.json` platforms 并集比对，无执行机仅警示不阻断。
-2. **量化场景（设备确定后）**：主协调器重新读文档，按历史三段式的量化模板规则
+2. **量化场景（设备确定后）**：先判断算子是否命中 `dim_axes.json`——运行
+   `python scripts/validate_dim_axes.py --operator <算子名> --list-scenes`；`profile`
+   非空即命中，**候选场景直接取该输出的 `scenes` 清单**，用 AskUserQuestion 让用户选择
+   （**支持多选**），选中的场景名写入 `selection.json`/`run_state.scene.selection`，生成
+   阶段据此解析，**不接受额外的 `--dim-axes-scene` 参数**（避免两个场景入口冲突）。多场景时
+   `--case-count` 为**每平台总数**，按所选场景数均分（每场景至少 1 条，低于覆盖所需会报错）。
+   命中 dim_axes 但用户所选不属于该 profile 场景（或只选设备无场景）→ 生成以
+   `DIM_AXES_SCENE_UNRESOLVED` fail-closed 硬失败，不再静默回退 legacy。
+   **格式取值严格来自 dim_axes 场景**：`render_scene_directive.py` 渲染时自动把所选场景的
+   `layout_param`（如 `inputLayout`）取值收窄为「该场景 `layouts` 键清单」写入 `param_modes`；
+   EXTRACT 据此产出 `allowed_range_value`（`expand`），**不得再从文档取更大格式枚举**。组合格式
+   `A_B` 表示输入 A / 输出 B（如 `BSH_BNSD`=输入 BSH/输出 BNSD，见 `platform_dtype` §format）。
+   未命中 profile 时才走文档识别：主协调器重新读文档，按历史三段式的量化模板规则
    **只识别已选设备下**的场景：场景=具体量化模板（`非量化`/`伪量化`/
-   `全量化-A8W8`/`K-C量化（A4W4）`…，按文档原文用词）；"量化模式"等分类词不是
+   `全量化-A8W8`/`全量化-A4W4`…，按文档原文用词）；"量化模式"等分类词不是
    场景；无设备标注场景合并到该设备；只保留文档给出参数取值约束的场景；过滤
    ACLNN_ERR_*/校验场景；不臆造，**其它设备专属场景不得进入候选**。用
    AskUserQuestion 让用户选择（可多选，"全部"展开为实际场景名）；`--scenes` 文本
@@ -157,8 +169,9 @@ selection 无任何有效设备条目返回 `EMPTY_SCENE` exit 2（设备值 `nu
 是合法条目，全"仅设备"选择不触发），此时回到文字匹配重新征询。
 `--scope off` 显式禁用场景（不产 directive，纯文档驱动）；批处理
 （`iterate-directory`）在认领首个算术前执行**批次级设备确认**（见 §8），确认后把
-设备别名 + 场景原文透传给每个单算子 run；每个单算子 run 再按自己的文档识别该设备
-下的量化场景并征询用户（批次原文已含唯一匹配场景时只回显确认）。
+设备别名 + 场景原文透传给每个单算子 run；每个单算子 run 再确定该设备下的量化场景
+（命中 `dim_axes.json` 时取其 `scenes` 多选，否则按文档识别）并征询用户（批次原文
+已含唯一匹配场景时只回显确认）。
 
 **legacy 已下线**：基于 `scene_scan.json` 的**全量预扫**场景管线（scene-scanner
 Agent 一次性扫全部设备/模板 + Q1→Q2→Q3 逐级征询 + `check_scene_conflicts.py` 冲突
@@ -470,8 +483,8 @@ python scripts/batch_scene.py --batch-dir <batch-dir> resolve --scenes "<场景�
 原因提示给用户，由用户选择“跳过不支持的文档”（`--skip-unsupported`，标记
 `SKIPPED_UNSUPPORTED_DEVICE`）、“仍然全部执行”或“取消批次”。确认后的**设备**写入
 `batch_state.scene`；claim 返回的 `scenes` 为“该文档设备别名 + 用户场景原文”，
-`iterate-directory` 必须透传 `--scenes`。**量化场景在单算子 run 内按该文档识别**：
-同一设备下不同算子文档的量化场景不同，内层 run 读自己的文档识别已选设备下的场景并
+`iterate-directory` 必须透传 `--scenes`。**量化场景在单算子 run 内确定**：
+算子命中 `dim_axes.json` 时取其 `scenes` 多选；否则按文档识别已选设备下的场景并
 让用户选择（SCENE_SCAN 第 2 段）；批次原文已含唯一匹配场景时只回显确认、不重复询问。
 这样批次级只确认一次设备，场景选择始终发生在设备确定之后。
 

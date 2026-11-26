@@ -389,19 +389,24 @@ def _scene_platform_preference(output_dir: Path) -> str | None:
     return None
 
 
-def _dim_axes_scene_preference(output_dir: Path) -> str | None:
-    """从 run_state.scene.selection 提取用户选中的场景名（仅当唯一时）。"""
+def _read_run_scene(output_dir: Path) -> dict | None:
+    """Return ``run_state.json``'s ``scene`` payload, or None when unavailable."""
     run_state_path = output_dir.parent / "run_state.json"
     try:
         payload = json.loads(run_state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     scene = payload.get("scene") if isinstance(payload, dict) else None
+    return scene if isinstance(scene, dict) else None
+
+
+def _collect_selected_scene_names(scene: dict | None) -> set[str]:
+    """Collect every non-empty scene template name chosen in ``scene.selection``."""
     if not isinstance(scene, dict):
-        return None
+        return set()
     selection = scene.get("selection")
     if not isinstance(selection, dict):
-        return None
+        return set()
     names: set[str] = set()
     for device_selection in selection.values():
         if not isinstance(device_selection, dict):
@@ -409,14 +414,130 @@ def _dim_axes_scene_preference(output_dir: Path) -> str | None:
         for name in device_selection:
             if isinstance(name, str) and name.strip():
                 names.add(name.strip())
-    if len(names) == 1:
-        return next(iter(names))
-    return None
+    return names
 
 
-def _dim_axes_coverage(cases_path: Path, operator_name: str, scene_name: str | None,
+def _resolve_dim_axes_scenes(
+    output_dir: Path, operator_name: str, config_path: str | None,
+) -> tuple[list[str] | None, str]:
+    """Resolve the dim_axes scene(s) from ``run_state.scene.selection``.
+
+    Single scene entry point: users only ever choose scenes through ``--scenes`` /
+    ``selection.json`` (persisted to ``run_state.scene.selection``). This maps that
+    choice onto the operator's dim_axes profile — there is deliberately no separate
+    ``--dim-axes-scene`` option, so the two can never disagree.
+
+    Multi-select is supported: every selected name that belongs to the matched
+    profile's scenes is returned (sorted). Generation then splits ``--case-count``
+    across those scenes per platform.
+
+    Fail-closed: inside an enabled scene-scoped run, an operator that matches a
+    dim_axes profile MUST resolve to at least one of that profile's scenes. If the
+    user's selection names none of them (e.g. only a device, or a doc-derived
+    scene name), raise ``DimAxesError`` instead of silently falling back to legacy
+    shape generation. Ad-hoc invocations outside a run (no run_state/scene) keep
+    legacy.
+
+    Returns ``(scene_names_or_None, reason)``.
+    """
+    from agent.generators.operator_param_models.dim_axes import (
+        DimAxesError, load_dim_axes,
+    )
+
+    scene = _read_run_scene(output_dir)
+    selected = _collect_selected_scene_names(scene)
+    in_run_subset = bool(
+        isinstance(scene, dict)
+        and scene.get("enabled")
+        and scene.get("scope") == "subset"
+    )
+
+    try:
+        config = load_dim_axes(config_path, strict=True)
+    except Exception as exc:  # malformed config must not be silently ignored in-run
+        if in_run_subset:
+            raise DimAxesError(f"dim_axes 配置加载失败: {exc}") from exc
+        return None, f"config_error:{exc}"
+    if config is None:
+        return None, "no_config"
+
+    profile = config.resolve_profile(operator_name)
+    if profile is None:
+        return None, "no_profile"
+
+    candidates = list(profile.scenes.keys())
+    matched = sorted(selected & set(candidates))
+    if matched:
+        return matched, "from_selection"
+    if in_run_subset:
+        raise DimAxesError(
+            f"DIM_AXES_SCENE_UNRESOLVED: 算子 {operator_name} 命中 dim_axes profile "
+            f"{profile.id}，但 run_state.scene.selection={sorted(selected)} 未命中任何 "
+            f"可用场景；请在场景收集阶段从 dim_axes.json 的这些场景中选择: {candidates}"
+        )
+    return None, "no_selection"
+
+
+def _dim_axes_layout_param(
+    operator_name: str, scene_names: list[str] | None, config_path: str | None,
+) -> str | None:
+    """Return the single dim_axes layout param name shared by the scenes, if any."""
+    if not scene_names:
+        return None
+    try:
+        from agent.generators.operator_param_models.dim_axes import load_dim_axes
+
+        config = load_dim_axes(config_path, strict=True)
+    except Exception:
+        return None
+    if config is None:
+        return None
+    profile = config.resolve_profile(operator_name)
+    if profile is None:
+        return None
+    params = {
+        profile.scenes[name].layout_param
+        for name in scene_names
+        if name in profile.scenes and profile.scenes[name].layout_param
+    }
+    return next(iter(params)) if len(params) == 1 else None
+
+
+def _sync_layout_param(payload: list, layout_param: str) -> int:
+    """Force each case's ``layout_param`` attr to its tensors' actual dim_axes layout.
+
+    dim_axes plans tensor shapes/axis order, but the combination/solve stage may write
+    a different ``inputLayout`` attr value. Declaring a layout that disagrees with the
+    actual tensor order is invalid, so normalize the attr to the per-case tensor layout.
+    Returns the number of case attrs changed.
+    """
+    changed = 0
+    for case in payload:
+        if not isinstance(case, dict):
+            continue
+        inputs = case.get("inputs") or []
+        chosen = None
+        for item in inputs:
+            if isinstance(item, dict) and item.get("layout"):
+                chosen = item["layout"]
+                break
+        if not chosen:
+            continue
+        for item in inputs:
+            if (
+                isinstance(item, dict)
+                and item.get("name") == layout_param
+                and item.get("range_values") != chosen
+            ):
+                item["range_values"] = chosen
+                changed += 1
+    return changed
+
+
+def _dim_axes_coverage(cases_path: Path, operator_name: str, scene_names: list[str] | None,
                        config_path: str | None) -> dict | None:
-    if not scene_name:
+    """Advisory dim_axes coverage report for one or more selected scenes."""
+    if not scene_names:
         return None
     try:
         from agent.generators.operator_param_models.dim_axes import (
@@ -424,14 +545,11 @@ def _dim_axes_coverage(cases_path: Path, operator_name: str, scene_name: str | N
         )
 
         config = load_dim_axes(config_path, strict=True)
-        profile, scene, _ = resolve_scene(config, operator_name, scene_name)
-        if scene is None:
-            return None
         cases = json.loads(cases_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        return {"error": str(exc), "scene": scene_name}
+        return {"error": str(exc), "scenes": list(scene_names)}
 
-    layouts: set[str] = set()
+    observed_layouts: set[str] = set()
     by_axis: dict[str, dict[str, int]] = {}
     for case in cases or []:
         for item in case.get("inputs") or []:
@@ -439,7 +557,7 @@ def _dim_axes_coverage(cases_path: Path, operator_name: str, scene_name: str | N
                 continue
             layout = item.get("layout")
             if layout:
-                layouts.add(layout)
+                observed_layouts.add(layout)
             axis_values = item.get("axis_values")
             if not isinstance(axis_values, dict):
                 continue
@@ -448,22 +566,38 @@ def _dim_axes_coverage(cases_path: Path, operator_name: str, scene_name: str | N
                 key = str(value)
                 bucket[key] = bucket.get(key, 0) + 1
 
-    missing: list[str] = []
-    for axis_name, axis in scene.axes.items():
-        if axis.is_expr:
+    scenes_report: list[dict] = []
+    profile_id: str | None = None
+    for name in scene_names:
+        profile, scene, _ = resolve_scene(config, operator_name, name)
+        if profile is not None:
+            profile_id = profile.id
+        if scene is None:
+            scenes_report.append({"scene": name, "error": "scene_not_found"})
             continue
-        observed = {int(value) for value in by_axis.get(axis_name, {}) if str(value).lstrip("-").isdigit()}
-        for required in axis.coverage_schedule():
-            if required not in observed:
-                missing.append(f"{axis_name}={required}")
+        missing: list[str] = []
+        for axis_name, axis in scene.axes.items():
+            if axis.is_expr:
+                continue
+            observed = {
+                int(value)
+                for value in by_axis.get(axis_name, {})
+                if str(value).lstrip("-").isdigit()
+            }
+            for required in axis.coverage_schedule():
+                if required not in observed:
+                    missing.append(f"{axis_name}={required}")
+        scenes_report.append({
+            "scene": name,
+            "layouts_total": len(scene.layouts),
+            "layouts_present": sorted(observed_layouts & set(scene.layouts)),
+            "missing": missing,
+        })
 
     return {
-        "profile": profile.id if profile else None,
-        "scene": scene_name,
-        "layouts_total": len(scene.layouts),
-        "layouts_used": len(layouts),
+        "profile": profile_id,
+        "scenes": scenes_report,
         "by_axis": by_axis,
-        "missing": missing,
     }
 
 
@@ -554,15 +688,35 @@ def _select_execution_platform(
 
 
 def generate_platform_outputs(
-    generator: Any,
+    scene_generators: list[tuple[str | None, Any]],
     count: int,
     jsonl_save_path: Path,
     output_dir: Path,
+    layout_param: str | None = None,
 ) -> tuple[dict[str, Path], dict[str, int], dict[str, Path]]:
-    """逐平台生成 JSONL，并在该平台结束时立即转换为正式 JSON 产物。"""
+    """逐平台生成 JSONL，并在该平台结束时立即转换为正式 JSON 产物。
+
+    ``scene_generators`` 形如 ``[(scene_name|None, generator), ...]``：
+
+    - 单元素（legacy 或单个 dim_axes 场景）→ 保持原逐平台行为；
+    - 多元素（dim_axes 多场景）→ 每平台把 ``count`` 均分到各场景，各自生成后
+      合并为 ``cases_<platform>.json`` 并重新编号 ``id``（保证全局唯一）。
+    """
     from agent.generators.data_definition.param_models_def import RunPlatform
 
-    platforms = generator.supported_platforms or [RunPlatform.DEFAULT_PLATFORM.value]
+    if not scene_generators:
+        raise ValueError("scene_generators must not be empty")
+    base_generator = scene_generators[0][1]
+    n_scenes = len(scene_generators)
+    if n_scenes > count:
+        raise RuntimeError(
+            f"MULTI_SCENE_COUNT_TOO_SMALL: count={count} < 场景数 {n_scenes}；"
+            "请增大 --case-count 或减少 dim_axes 场景选择"
+        )
+    base, rem = divmod(count, n_scenes)
+    per_scene_counts = [base + (1 if i < rem else 0) for i in range(n_scenes)]
+
+    platforms = base_generator.supported_platforms or [RunPlatform.DEFAULT_PLATFORM.value]
     per_platform_paths: dict[str, Path] = {}
     per_platform_counts: dict[str, int] = {}
     checkpoint_paths: dict[str, Path] = {}
@@ -571,32 +725,76 @@ def generate_platform_outputs(
     for platform in platforms:
         sanitized = platform.replace("/", "_")
         checkpoint_dir = jsonl_save_path / sanitized
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)  # 新增
-        checkpoint_file = checkpoint_dir / f"{generator.operator_name}.jsonl"
-        converted_source = output_dir / f"{generator.operator_name}.json"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_file = checkpoint_dir / f"{base_generator.operator_name}.jsonl"
         target = output_dir / f"cases_{sanitized}.json"
         checkpoint_paths[platform] = checkpoint_file
         target.unlink(missing_ok=True)
-        converted_source.unlink(missing_ok=True)
 
-        try:
-            generator.generate_for_platform(
-                platform,
-                count,
-                jsonl_save_path=str(checkpoint_dir),
-                json_save_path=str(output_dir),
+        if n_scenes == 1:
+            scene_name, generator = scene_generators[0]
+            converted_source = output_dir / f"{generator.operator_name}.json"
+            converted_source.unlink(missing_ok=True)
+            try:
+                generator.generate_for_platform(
+                    platform,
+                    per_scene_counts[0],
+                    jsonl_save_path=str(checkpoint_dir),
+                    json_save_path=str(output_dir),
+                )
+            finally:
+                # facade 按 DataHandleUtil 的既有约定生成 <operator>.json；
+                # 这里立即重命名为平台正式产物，且中断时也保留已转换结果。
+                if converted_source.exists():
+                    converted_source.replace(target)
+            payload = (
+                json.loads(target.read_text(encoding="utf-8"))
+                if target.exists() else []
             )
-        finally:
-            # facade 按 DataHandleUtil 的既有约定生成 <operator>.json；
-            # 这里立即重命名为平台正式产物，且中断时也保留已转换结果。
-            if converted_source.exists():
-                converted_source.replace(target)
+        else:
+            payload = []
+            for index, (scene_name, generator) in enumerate(scene_generators):
+                scene_count = per_scene_counts[index]
+                if scene_count <= 0:
+                    continue
+                scene_dir = checkpoint_dir / f"scene_{index:02d}"
+                scene_dir.mkdir(parents=True, exist_ok=True)
+                generator.generate_for_platform(
+                    platform,
+                    scene_count,
+                    jsonl_save_path=str(scene_dir),
+                    json_save_path=str(scene_dir),
+                )
+                scene_json = scene_dir / f"{generator.operator_name}.json"
+                if not scene_json.exists():
+                    raise RuntimeError(
+                        f"Final case JSON was not produced for platform={platform}, "
+                        f"scene={scene_name!r}, operator={generator.operator_name}"
+                    )
+                scene_payload = json.loads(scene_json.read_text(encoding="utf-8"))
+                if not isinstance(scene_payload, list):
+                    raise ValueError(f"Converted case payload is not a list: {scene_json}")
+                payload.extend(scene_payload)
+            for new_id, case in enumerate(payload):
+                if isinstance(case, dict):
+                    case["id"] = new_id
+            _atomic_write_text(
+                target, json.dumps(payload, ensure_ascii=False, indent=4)
+            )
+
+        if layout_param:
+            # dim_axes planned the tensor shapes/axis order; make the declared
+            # layout attr agree with the actual per-case tensor layout.
+            _sync_layout_param(payload, layout_param)
+            _atomic_write_text(
+                target, json.dumps(payload, ensure_ascii=False, indent=4)
+            )
+
         if not target.exists():
             raise RuntimeError(
                 f"Final case JSON was not produced for platform={platform}, "
-                f"operator={generator.operator_name}"
+                f"operator={base_generator.operator_name}"
             )
-        payload = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(payload, list):
             raise ValueError(f"Converted case payload is not a list: {target}")
         per_platform_paths[platform] = target
@@ -604,7 +802,7 @@ def generate_platform_outputs(
         if not payload:
             raise RuntimeError(
                 f"ZERO_CASES_GENERATED: platform={platform}, "
-                f"operator={generator.operator_name}; inspect generation.log"
+                f"operator={base_generator.operator_name}; inspect generation.log"
             )
 
     return per_platform_paths, per_platform_counts, checkpoint_paths
@@ -807,11 +1005,6 @@ def _main() -> int:
         help="维度轴取值配置路径；缺省使用 agent/generators/configs/dim_axes.json（存在时）。",
     )
     parser.add_argument(
-        "--dim-axes-scene",
-        default=None,
-        help="显式指定 dim_axes 场景名；缺省从 run_state.scene.selection 推断。",
-    )
-    parser.add_argument(
         "--test-framework", choices=("atk", "ttk"), default="atk",
         help=(
             "测试框架；ttk 会按算子名分流：aclnn* 输出 TTK ACLNN CSV，"
@@ -945,14 +1138,60 @@ def _main() -> int:
     from agent.generators.facade import TestCaseGenerator
 
     output_dir = output_path.parent
-    dim_axes_scene = args.dim_axes_scene or _dim_axes_scene_preference(output_dir)
-    generator = TestCaseGenerator(
-        constraints,
-        seed=args.seed,
-        dim_axes_config_path=args.dim_axes_config,
-        dim_axes_scene=dim_axes_scene,
-    )
     generation_status_path = output_dir / "generation_status.json"
+    # Single scene source: map the user's --scenes choice (run_state.scene.selection)
+    # onto the operator's dim_axes profile. Multi-select is supported (one generator
+    # per selected scene; --case-count is split across them per platform). Fail-closed
+    # when a dim_axes operator is in an enabled scene-scoped run but the selection
+    # names none of its scenes — never silently fall back to legacy shapes.
+    try:
+        dim_axes_scenes, dim_axes_reason = _resolve_dim_axes_scenes(
+            output_dir,
+            str(constraints.get("operator_name", "")),
+            args.dim_axes_config,
+        )
+    except Exception as dim_axes_exc:
+        if args.test_framework == "ttk":
+            _atomic_write_json(generation_status_path, {
+                "state": "failed",
+                "code": "DIM_AXES_SCENE_UNRESOLVED",
+                "message": str(dim_axes_exc),
+            })
+        logger.error("dim_axes scene resolution failed: %s", dim_axes_exc)
+        raise
+    logger.info(
+        "dim_axes scenes resolved from run_state.scene.selection: scenes=%s reason=%s",
+        dim_axes_scenes, dim_axes_reason,
+    )
+    if dim_axes_scenes:
+        scene_generators = [
+            (
+                scene,
+                TestCaseGenerator(
+                    constraints,
+                    seed=args.seed,
+                    dim_axes_config_path=args.dim_axes_config,
+                    dim_axes_scene=scene,
+                ),
+            )
+            for scene in dim_axes_scenes
+        ]
+    else:
+        scene_generators = [(
+            None,
+            TestCaseGenerator(
+                constraints,
+                seed=args.seed,
+                dim_axes_config_path=args.dim_axes_config,
+                dim_axes_scene=None,
+            ),
+        )]
+    generator = scene_generators[0][1]
+    layout_param = _dim_axes_layout_param(
+        str(constraints.get("operator_name", "")),
+        dim_axes_scenes,
+        args.dim_axes_config,
+    )
     if args.test_framework == "ttk":
         _atomic_write_json(generation_status_path, {
             "state": "in_progress",
@@ -987,11 +1226,13 @@ def _main() -> int:
             )
         else:
             per_platform_paths, per_platform_counts, checkpoint_paths = generate_platform_outputs(
-                generator, args.count, jsonl_save_path, output_dir
+                scene_generators, args.count, jsonl_save_path, output_dir,
+                layout_param=layout_param,
             )
     else:
         per_platform_paths, per_platform_counts, checkpoint_paths = generate_platform_outputs(
-            generator, args.count, jsonl_save_path, output_dir
+            scene_generators, args.count, jsonl_save_path, output_dir,
+            layout_param=layout_param,
         )
 
     # ── Execution platform selection (unified for atk and ttk) ──────────
@@ -1661,7 +1902,7 @@ def _main() -> int:
         "id_format": "platform 内 0 基整数 (per-platform 0,1,2,...)",
     }
     dim_axes_coverage = _dim_axes_coverage(
-        cases_json_path, operator_name, dim_axes_scene, args.dim_axes_config,
+        cases_json_path, operator_name, dim_axes_scenes, args.dim_axes_config,
     )
     if dim_axes_coverage is not None:
         summary["dim_axes"] = dim_axes_coverage

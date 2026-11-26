@@ -70,9 +70,10 @@ argument-hint: <算子文档目录> [--glob pattern] [--recursive] [--scenes "<�
      选“跳过”时重新运行 resolve 并追加 `--skip-unsupported`；选“全部执行”则保留
      原结果继续（后续失败按正常迭代处理）；选“取消”则停止批次。
    - **逐算子量化场景（强制）**：批次只确认设备；每个单算子 run 创建后，由该 run
-     读取自己的文档识别**已选设备下**的量化场景并征询用户选择（见
-     `iterate-operator` SCENE_SCAN 第 2 段）。用户也可在批次阶段直接给出完整场景
-     文本，此时内层 run 只做匹配与回显确认；匹配不上仍回落到逐算子征询，不得跳过。
+     确定**已选设备下**的量化场景并征询用户选择（命中 `dim_axes.json` 时取其
+     `scenes` 多选，否则按文档识别；见 `iterate-operator` SCENE_SCAN 第 2 段）。用户也可
+     在批次阶段直接给出完整场景文本，此时内层 run 只做匹配与回显确认；匹配不上仍回落到
+     逐算子征询，不得跳过。
    - `action=start` / `action=resume`：设备已确认，继续认领流程。
 5. 处理 `action=start`：使用 skill 工具调用 `iterate-operator`，参数为返回的
    `operator_doc_source` 与 `--batch-dir <batch-dir>`；透传 claim 返回的

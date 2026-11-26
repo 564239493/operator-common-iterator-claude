@@ -39,7 +39,13 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 > EXTRACT 前强制场景收集（**设备优先三段式，唯一路径**）：场景信息来自
 > `--scenes "<场景描述>"` 预填文本或交互输入。固定顺序：① 先从文档"产品支持情况"
 > **支持（√）的设备中让用户选择设备类型**（硬性必要项；`--scenes` 也只先做设备
-> 对齐）；② 设备确定后再读文档识别**该设备下**的量化场景并让用户选择——场景=具体
+> 对齐）；② 设备确定后确定**该设备下**的量化场景并让用户选择——**算子命中
+> `dim_axes.json` 时直接取其 profile 的 `scenes` 让用户选择（**可多选**）**（生成阶段据此
+> 解析，不引入额外场景参数；多选时 case-count 每平台总数按场景数均分；命中但所选不在
+> profile 场景内会 fail-closed）；渲染 directive 时自动把场景 `layout_param`（如 inputLayout）
+> 收窄为场景 `layouts` 清单，约束格式取值只来自 dim_axes 场景、不再取文档更大枚举
+> （组合格式 `A_B`=输入 A/输出 B，见 `platform_dtype` §format）；未命中才读文档
+> 识别——场景=具体
 > 量化模板（非量化/伪量化/全量化-A8W8/K-C量化（A4W4）…，分类词不算场景；其它设备
 > 专属场景不得出现；该设备无任何量化场景→无场景维度，落盘 `null`，不得用"非量化"
 > 代替）；③ 可选参数取值（等值→fix、枚举→expand、大白话闭区间→展开整数序列）。
@@ -54,7 +60,8 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 > 同样强制：认领前先在批次级确认**设备**（`servers.json` 与批次文档设备并集 + 逐文档
 > 支持矩阵），再由 `scripts/batch_scene.py resolve` 校验并提示不支持/未列出的文档；
 > 明确不支持/未列出的文档提示用户后跳过或继续。确认后的设备随 claim 以 `--scenes`
-> 传入每个单算子 run，**每个 run 再按自己的文档识别该设备下的量化场景并征询用户**
+> 传入每个单算子 run，**每个 run 再确定该设备下的量化场景（命中 `dim_axes.json` 取其
+> `scenes` 多选，否则按文档识别）并征询用户**
 > （批次原文已含唯一匹配场景时只回显确认）。legacy 全量场景扫描管线（scene-scanner
 > Agent + `scan-scenes` Skill + `check_scene_conflicts.py`）**已下线删除，禁止调用**
 > （原实现仅存 git 历史）。
@@ -84,7 +91,7 @@ opencode 是顶层运行时；Python 只承担确定性业务（校验、用例�
 /iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --ttk-plugin /path/to/tests/assets  # 目录连同父目录/同级内容打包上传，解压后以目录传给 ttk --plugin
 /iterate-operator operator_docs/aclnnFoo.md --test-framework ttk --csv-plugin /path/to/fill_group_list_data.py  # 生成 cases_ttk.csv 后调用脚本填序列化 tensor，输出新的最终 CSV
 /iterate-directory operator_docs --max-iterations 3  # 串行执行目录中全部算子；未传 --scenes 时先列出设备并征询
-/iterate-directory operator_docs --scenes "A2非量化"  # 批次确认设备后逐文档透传；量化场景每个 run 内按文档再选
+/iterate-directory operator_docs --scenes "A2非量化"  # 批次确认设备后逐文档透传；量化场景每个 run 内确定（命中 dim_axes 取其 scenes 多选）
 /iterate-directory --batch-dir runs/batches/<batch-id>  # 恢复中断的批次
 /show-workforce  # 查看可用技能、子智能体和调度拓扑
 ```

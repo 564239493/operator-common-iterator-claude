@@ -36,7 +36,8 @@ class AxisShapeResolver:
         return dict(self._axis_values)
 
     def managed_tensor(self, param_name: str) -> bool:
-        return any(param_name in orders for orders in self.scene.layouts.values())
+        key = self.scene.layout_tensor_key(param_name)
+        return any(key in orders for orders in self.scene.layouts.values())
 
     def begin_case(self, case_index: int, row_layout: Optional[str] = None) -> None:
         self._case_index = int(case_index)

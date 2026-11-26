@@ -56,6 +56,10 @@ from typing import Any
 
 from run_state import save_run_state
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 SELECTION_POLICY = {
     "selected_param": "fix_or_expand",
     "unselected_param": "document_adaptive",
@@ -254,10 +258,91 @@ def _no_scene_devices(
     ]
 
 
+def _operator_name_from_run(run_dir: Path) -> str | None:
+    """Derive the aclnn operator name from run_state's operator doc snapshot."""
+    try:
+        state = _load_json(run_dir / "run_state.json")
+    except Exception:
+        return None
+    if not isinstance(state, dict):
+        return None
+    for key in ("operator_doc", "operator_doc_source"):
+        value = state.get(key)
+        if isinstance(value, str) and value.strip():
+            return Path(value).stem
+    return None
+
+
+def _dim_axes_layout_constraints(
+    run_dir: Path, selection_resolved: dict
+) -> tuple[dict[str, dict], list[str]]:
+    """Narrow the dim_axes scene's layout param to that scene's configured layouts.
+
+    When the operator matches a dim_axes profile, the constraint's layout value set
+    must come from ``dim_axes.json`` (the selected scenes' ``layouts`` keys), NOT
+    the larger enum in the operator doc. This returns
+    ``(supplement_param_modes, notes)`` where the supplement is fed into
+    ``param_modes`` (so the extractor emits the narrowed ``allowed_range_value``).
+
+    A combined layout name ``A_B`` means input layout ``A`` and output layout ``B``
+    (e.g. ``BSH_BNSD`` = input BSH, output BNSD); that is a format*value* here, not
+    a tensor ``format`` field, so it is carried verbatim as an enum string.
+    """
+    operator = _operator_name_from_run(run_dir)
+    if not operator:
+        return {}, []
+    try:
+        from agent.generators.operator_param_models.dim_axes import load_dim_axes
+
+        config = load_dim_axes(None, strict=False)
+    except Exception:
+        return {}, []
+    if config is None:
+        return {}, []
+    profile = config.resolve_profile(operator)
+    if profile is None:
+        return {}, []
+
+    selected: set[str] = set()
+    for device_selection in selection_resolved.values():
+        if isinstance(device_selection, dict):
+            selected.update(k for k in device_selection if isinstance(k, str))
+    if not selected:
+        return {}, []
+
+    layout_param: str | None = None
+    layouts: set[str] = set()
+    notes: list[str] = []
+    for name in sorted(selected & set(profile.scenes)):
+        scene = profile.scenes[name]
+        if not scene.layout_param:
+            continue
+        if layout_param is None:
+            layout_param = scene.layout_param
+        elif layout_param != scene.layout_param:
+            notes.append(
+                f"注意：所选 dim_axes 场景的 layout 参数不一致"
+                f"（{layout_param!r} vs {scene.layout_param!r}），无法合并为单一收窄"
+            )
+            return {}, notes
+        layouts.update(scene.layouts.keys())
+    if not layout_param or not layouts:
+        return {}, notes
+
+    ordered = sorted(layouts)
+    notes.append(
+        f"**dim_axes 场景格式约束**：`{layout_param}` 的取值必须且只能来自 "
+        f"dim_axes.json 当前所选场景的 `layouts`（{ordered}）；**禁止**再从文档枚举中"
+        f"取更大的格式集合（如未在本场景配置的 `*_*` 组合格式）。"
+    )
+    return {layout_param: {"expand": ordered}}, notes
+
+
 def _render_directive_noscan(
     sel_devices: list[str],
     selection_resolved: dict,
     param_modes: dict[str, dict],
+    extra_notes: list[str] | None = None,
 ) -> str:
     """文本直输模式的 directive：机读块由 selection 派生（无 scene_scan 来源）。
 
@@ -288,6 +373,10 @@ def _render_directive_noscan(
                 )
                 lines.append(f"  - {pname}: {tag}")
     listing = "\n".join(lines) if lines else "(无)"
+    notes_section = (
+        "\n".join(f"- {note}" for note in extra_notes) + "\n\n"
+        if extra_notes else ""
+    )
 
     machine = json.dumps(
         {
@@ -310,7 +399,7 @@ def _render_directive_noscan(
 
 {listing}
 
-### 提取要求
+{notes_section}### 提取要求
 
 1. **仅提取所选设备**：`product_support` 按机读块 `device_types` 与文档
    "产品支持情况" √ 行取交集，未列设备不产出。**场景屏蔽仅对列出了模板的设备
@@ -453,8 +542,32 @@ def main() -> int:
         ))
         return 2
     param_modes = _param_modes_noscan(sel_devices, selection_resolved)
+    dim_axes_supplement, dim_axes_notes = _dim_axes_layout_constraints(
+        run_dir, selection_resolved
+    )
+    for pname, spec in dim_axes_supplement.items():
+        allowed = spec["expand"]
+        user_mode = param_modes.get(pname)
+        if user_mode is None:
+            param_modes[pname] = {"expand": list(allowed)}
+            continue
+        user_values = (
+            [user_mode["fix"]]
+            if "fix" in user_mode
+            else list(user_mode.get("expand", []))
+        )
+        bad = [value for value in user_values if value not in allowed]
+        if bad:
+            print(json.dumps({
+                "ok": False,
+                "code": "LAYOUT_NOT_IN_DIM_AXES_SCENE",
+                "param": pname,
+                "invalid": bad,
+                "allowed": allowed,
+            }, ensure_ascii=False))
+            return 2
     directive_text = _render_directive_noscan(
-        sel_devices, selection_resolved, param_modes
+        sel_devices, selection_resolved, param_modes, dim_axes_notes
     )
     no_scene_devices = _no_scene_devices(sel_devices, selection_resolved)
     inputs_dir.mkdir(parents=True, exist_ok=True)

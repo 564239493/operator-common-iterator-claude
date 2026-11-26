@@ -10,7 +10,7 @@
         "exclude": []
       },
       "scenes": {
-        "非量化": {
+        "GQA非量化 prefill": {
           "layout_param": "inputLayout",
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
@@ -20,26 +20,807 @@
               "ranges": [[1, 256]]
             },
             "S": {
-              "typical": [1, 4, 8, 128, 1024, 4096],
-              "ranges": [[1, 1048576]]
+              "typical": [128, 1024, 4096, 32768, 131072],
+              "ranges": [[129, 1048576]]
             },
             "T": {
               "expr": "B * S"
             },
             "N": {
-              "typical": [8, 16, 32, 64, 96, 128]
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
             },
             "N_k": {
               "expr": "N"
             },
             "D": {
-              "typical": [64, 128, 192]
+              "typical": [128, 256]
             },
             "D_k": {
               "expr": "D"
             },
             "D_v": {
               "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "GQA非量化 decode": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 16]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [128, 256]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "GQA非量化 多模生成": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [128, 1024, 4096],
+              "ranges": [[1, 1048576]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [64, 128]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "GQA非量化 推荐(prefill)": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [128, 1024, 4096],
+              "ranges": [[129, 1048576]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [128, 256]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "MLA非量化 prefill": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [128, 1024, 4096],
+              "ranges": [[129, 1048576]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [192]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "typical": [128]
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "MLA非量化 decode": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 16]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [512]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "typical": [512]
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "GQA伪量化 decode": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 16]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [128, 256]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "GQA全量化 prefill": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [1, 4, 8, 16],
+              "ranges": [[1, 16]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [128]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "GQA全量化 decode": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 16]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [128]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "GQA全量化 多模(prefill)": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [1, 4, 8, 16],
+              "ranges": [[1, 16]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [128]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "expr": "D"
+            },
+            "H": {
+              "expr": "N * D"
+            },
+            "H_k": {
+              "expr": "N_k * D_k"
+            }
+          },
+          "layouts": {
+            "BSND": {
+              "query": ["B", "S", "N", "D"],
+              "key": ["B", "S", "N_k", "D_k"],
+              "value": ["B", "S", "N_k", "D_v"],
+              "attentionOut": ["B", "S", "N", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BNSD": {
+              "query": ["B", "N", "S", "D"],
+              "key": ["B", "N_k", "S", "D_k"],
+              "value": ["B", "N_k", "S", "D_v"],
+              "attentionOut": ["B", "N", "S", "D"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "BSH": {
+              "query": ["B", "S", "H"],
+              "key": ["B", "S", "H_k"],
+              "value": ["B", "S", "H_k"],
+              "attentionOut": ["B", "S", "H"],
+              "softmaxLse": ["B", "N", "S", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            },
+            "TND": {
+              "query": ["T", "N", "D"],
+              "key": ["T", "N_k", "D_k"],
+              "value": ["T", "N_k", "D_v"],
+              "attentionOut": ["T", "N", "D"],
+              "softmaxLse": ["T", "N", 1],
+              "blockTable": ["B", 4096],
+              "attenMask": ["S", "S"]
+            }
+          }
+        },
+        "MLA全量化 decode": {
+          "layout_param": "inputLayout",
+          "layout_pick": "round_robin",
+          "axis_pick": "scheduled",
+          "axes": {
+            "B": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 256]]
+            },
+            "S": {
+              "typical": [1, 4, 8],
+              "ranges": [[1, 16]]
+            },
+            "T": {
+              "expr": "B * S"
+            },
+            "N": {
+              "typical": [8, 16, 32, 64, 96, 128],
+              "ranges": [[1, 128]]
+            },
+            "N_k": {
+              "expr": "N"
+            },
+            "D": {
+              "typical": [512]
+            },
+            "D_k": {
+              "expr": "D"
+            },
+            "D_v": {
+              "typical": [512]
             },
             "H": {
               "expr": "N * D"

@@ -243,9 +243,29 @@ class SceneSpec:
             )
         return self.layout_names[case_index % len(self.layout_names)]
 
+    def layout_tensor_key(self, param_name: str) -> str:
+        """Map an ACLNN param name to the layout tensor key used in this scene.
+
+        dim_axes layouts use base tensor names (``blockTable``, ``attenMask``),
+        while ACLNN optional params carry an ``Optional`` suffix
+        (``blockTableOptional``). Match the base name so optional tensors present in
+        a case can also be planned, instead of failing "layout does not cover".
+        """
+        for orders in self.layouts.values():
+            if param_name in orders:
+                return param_name
+        for suffix in ("Optional", "optional"):
+            if param_name.endswith(suffix):
+                base = param_name[: -len(suffix)]
+                for orders in self.layouts.values():
+                    if base in orders:
+                        return base
+        return param_name
+
     def build_tensor_shape(self, layout: str, param_name: str, axis_values: Dict[str, int]):
         orders = self.layouts[layout]
-        if param_name not in orders:
+        key = self.layout_tensor_key(param_name)
+        if key not in orders:
             raise DimAxesError(
                 f"布局 {layout} 未定义张量 {param_name!r} 的轴序列（场景 {self.name}）"
             )
@@ -259,7 +279,7 @@ class SceneSpec:
             for dep in self.axes[name].depends_on:
                 record(dep)
 
-        for token in orders[param_name]:
+        for token in orders[key]:
             if _is_int(token):
                 shape.append(int(token))
             else:
