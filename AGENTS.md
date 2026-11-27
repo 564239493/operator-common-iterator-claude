@@ -227,6 +227,7 @@ opencode  # 启动 opencode
 - `materialize_group_list_data.py` — 从 CSV 指定辅助属性（`--attr-name`，默认 groupListData）取显式序列（支持 JSON 字符串），按 `--validator`（group_list_data / non_negative_monotonic）校验并写回 list，可选清空目标 tensor 的 `input_data_ranges`；供 generation 自动调用
 - `aux_input_plugin_template.py` — 通用 TTK `__input__` 插件模板；`generate_cases.py` 用 run-local spec 填入 `算子名 -> apply_aux_params` 和 `辅助参数 -> signature 位置` 映射，写到 `<iter>/golden.py`（不再绑定具体算子/参数名）
 - `normalize_constraints.py` — 原地规范化 constraints.json（Tensor format、dtype 等）
+- `bitfield_pack.py` — 位拼接参数（`groupSize` / `blockSize`）的确定性 `pack` / `unpack` / `lookup` / `verify` / `table` / `self-test`；`check-doc` 校验 `knowledge/aclnn/reference/bitfield_pack.md` 的打包值表与脚本 `TABLE` 逐行一致（`validate_aclnn_knowledge` 自动调用）。提取阶段只查表/调脚本，禁止手算位运算
 - `verify_relation_exprs.py` — Z3 正反例验证：`constraints_in_parameters` 逐条采 satisfy/violate 实例 + 整桶矛盾检测，产 `relation_examples.json`（CHECK 阶段 checker 步骤 0 自跑，仅 aclnn；语法错误 exit 2，其余 advisory）
 - `probe_param_pins.py` — 列表参数长度探测（CHECK 前 advisory，纯标准库）：
   `probe` 找出「`array_length` 未固定 + 被跨参数 `len(p)` 引用 + 无传递上界」的列表参数，产出 `param_probe.json`；

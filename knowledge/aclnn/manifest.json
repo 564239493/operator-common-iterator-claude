@@ -24,6 +24,7 @@
     {"id":"sparse_mode","scope":"feature","path":"features/sparse_mode.md","priority":66},
     {"id":"transpose_shape","scope":"feature","path":"features/transpose_shape.md","priority":65},
     {"id":"acl_format_enum","scope":"reference","path":"reference/acl_format_enum.md","priority":50},
+    {"id":"bitfield_pack","scope":"reference","path":"reference/bitfield_pack.md","priority":50},
     {"id":"source_analysis_grouped_matmul_v5","scope":"source_analysis","path":"source_analysis/grouped_matmul_v5.md","default_load":false,"priority":89},
     {"id":"grouped_matmul_v5","scope":"operator","path":"operators/grouped_matmul_v5.md","priority":85},
     {"id":"gmm_quant_knowledge","scope":"operator","path":"operators/groupedmatmul_quant/gmm_quant_knowledge.md","priority":86},
