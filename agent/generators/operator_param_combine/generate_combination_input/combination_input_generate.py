@@ -118,7 +118,9 @@ class CombinationInputGenerate:
         length_value, _ = DataHandleUtil.get_relevant_attribute_value(param_name, param_attribute.array_length,
                                                                       "array_length")
         if length_value is None:
-            return None
+            logger.warning(f"param '{param_name}' array_length empty, use default length "
+                           f"'{ParamModelConfig.DEFAULT_LIST_LENGTH}'")
+            return [ParamModelConfig.DEFAULT_LIST_LENGTH]
         length_valid_data = set()
         for length in length_value:
             if isinstance(length, list) and len(length) < 2:
@@ -134,7 +136,7 @@ class CombinationInputGenerate:
             else:
                 logger.warning(f"Array length data invalid, length should be list or int : '{length}'")
         length_valid_data = list(length_valid_data)
-        if length_valid_data is None:
+        if length_valid_data is None or len(length_valid_data) == 0:
             logger.warning(
                 f"Generate parameter length, param name : '{param_name}', length value is None, "
                 f"use default length: '{ParamModelConfig.DEFAULT_LIST_LENGTH}'")

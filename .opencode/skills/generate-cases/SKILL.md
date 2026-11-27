@@ -11,6 +11,14 @@ description: 从 constraints.json 生成 ATK JSON、TTK ACLNN CSV 或 torch_npu 
 python scripts/generate_cases.py --constraints <constraints.json> --output <cases.json> --count <N> --test-framework atk
 ```
 
+**dim_axes 场景（命中时）**：场景由 `run_state.scene` 解析，无需额外 scene 参数。
+- 未在场景 `layouts` 声明的张量（如 `learnableSink`/`pseShift`/左padding/公共前缀）按
+  参数卡 `shape_axes` + 场景轴取值范围组装 shape；无 `shape_axes` 才回退文档/角色 shape
+  （**不再对未列张量 fail-closed**）。
+- 需要 run 内覆盖 dim_axes 配置时追加 `--dim-axes-config <run>/inputs/dim_axes.local.json`。
+- `--case-count` 是每平台总数；必须 ≥ 场景 `required_cases`（典型值+区间代表+布局数），
+  否则 `ZERO_CASES_GENERATED`。
+
 上面是 `generate_cases.py` 的参数形式（仅参考参数）。**实际运行一律经
 `scripts/generation_progress.py launch` 启动，无论任务长短**：直接前台/后台调
 `generate_cases.py` 会让 `read` 把生成器逐条 verbose stderr

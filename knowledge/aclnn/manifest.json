@@ -22,6 +22,7 @@
     {"id":"type_conversion","scope":"feature","path":"features/type_conversion.md","priority":66},
     {"id":"quantization","scope":"feature","path":"features/quantization.md","priority":66},
     {"id":"sparse_mode","scope":"feature","path":"features/sparse_mode.md","priority":66},
+    {"id":"dim_axes","scope":"feature","path":"features/dim_axes.md","priority":66},
     {"id":"transpose_shape","scope":"feature","path":"features/transpose_shape.md","priority":65},
     {"id":"acl_format_enum","scope":"reference","path":"reference/acl_format_enum.md","priority":50},
     {"id":"bitfield_pack","scope":"reference","path":"reference/bitfield_pack.md","priority":50},

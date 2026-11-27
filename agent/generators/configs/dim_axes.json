@@ -15,76 +15,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [128, 1024, 4096, 32768, 131072],
-              "ranges": [[129, 1048576]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [128, 256]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "expr": "D"
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [128, 1024, 4096, 32768, 131072], "ranges": [[1, 4], [5, 16], [17, 64], [65, 256], [257, 1024], [1025, 4096], [4097, 16384], [16385, 65536], [65537, 1048576]]},
+            "S_k": {"typical": [128, 1024, 4096, 32768, 131072, 262144], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [128, 256], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": [2048, 2048],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": [2048, 2048],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": [2048, 2048],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": [2048, 2048],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -93,76 +82,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 16]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [128, 256]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "expr": "D"
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [1, 4, 8], "ranges": [[1, 4], [5, 16]]},
+            "S_k": {"typical": [128, 1024, 4096, 8192, 16384, 32768], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [128, 256], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -171,76 +149,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [128, 1024, 4096],
-              "ranges": [[1, 1048576]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [64, 128]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "expr": "D"
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [1, 4, 8, 16, 128, 1024], "ranges": [[1, 4], [5, 16], [17, 64], [65, 256], [257, 1024], [1025, 4096], [4097, 16384], [16385, 65536], [65537, 1048576]]},
+            "S_k": {"typical": [1, 4, 8, 16, 128, 1024, 4096], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [64, 128], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -249,76 +216,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [128, 1024, 4096],
-              "ranges": [[129, 1048576]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [128, 256]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "expr": "D"
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [128, 1024, 4096], "ranges": [[1, 4], [5, 16], [17, 64], [65, 256], [257, 1024], [1025, 4096], [4097, 16384], [16385, 65536], [65537, 1048576]]},
+            "S_k": {"typical": [128, 1024, 4096, 8192], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [128, 256], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -327,76 +283,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [128, 1024, 4096],
-              "ranges": [[129, 1048576]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [192]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "typical": [128]
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [128, 1024, 4096], "ranges": [[1, 4], [5, 16], [17, 64], [65, 256], [257, 1024], [1025, 4096], [4097, 16384], [16385, 65536], [65537, 1048576]]},
+            "S_k": {"typical": [128, 1024, 4096, 8192], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [192], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"typical": [128]},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -405,76 +350,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 16]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [512]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "typical": [512]
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [1, 4, 8], "ranges": [[1, 4], [5, 16]]},
+            "S_k": {"typical": [1024, 4096, 8192, 16384, 32768, 131072], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [512], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"typical": [512]},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -483,76 +417,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 16]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [128, 256]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "expr": "D"
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [1, 4, 8], "ranges": [[1, 4], [5, 16]]},
+            "S_k": {"typical": [128, 1024, 4096, 8192], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [128, 256], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -561,76 +484,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [1, 4, 8, 16],
-              "ranges": [[1, 16]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [128]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "expr": "D"
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [1, 4, 8, 16], "ranges": [[1, 4], [5, 16]]},
+            "S_k": {"typical": [1, 4, 8, 16, 1024, 4096], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [128], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -639,76 +551,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 16]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [128]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "expr": "D"
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [1, 4, 8], "ranges": [[1, 4], [5, 16]]},
+            "S_k": {"typical": [128, 1024, 4096, 8192], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [128], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -717,76 +618,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [1, 4, 8, 16],
-              "ranges": [[1, 16]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [128]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "expr": "D"
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [1, 4, 8, 16], "ranges": [[1, 4], [5, 16]]},
+            "S_k": {"typical": [1, 4, 8, 16, 1024, 4096], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [128], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         },
@@ -795,76 +685,65 @@
           "layout_pick": "round_robin",
           "axis_pick": "scheduled",
           "axes": {
-            "B": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 256]]
-            },
-            "S": {
-              "typical": [1, 4, 8],
-              "ranges": [[1, 16]]
-            },
-            "T": {
-              "expr": "B * S"
-            },
-            "N": {
-              "typical": [8, 16, 32, 64, 96, 128],
-              "ranges": [[1, 128]]
-            },
-            "N_k": {
-              "expr": "N"
-            },
-            "D": {
-              "typical": [512]
-            },
-            "D_k": {
-              "expr": "D"
-            },
-            "D_v": {
-              "typical": [512]
-            },
-            "H": {
-              "expr": "N * D"
-            },
-            "H_k": {
-              "expr": "N_k * D_k"
-            }
+            "B": {"typical": [1, 4, 8], "ranges": [[1, 8], [9, 20], [21, 48], [49, 128], [129, 256]]},
+            "S": {"typical": [1, 4, 8], "ranges": [[1, 4], [5, 16]]},
+            "S_k": {"typical": [1024, 4096, 8192, 16384, 32768, 131072], "ranges": [[1, 1024], [1025, 8192], [8193, 16384], [16385, 65536], [65537, 1048576]]},
+            "T": {"expr": "B * S"},
+            "T_k": {"expr": "B * S_k"},
+            "N": {"typical": [8, 16, 32, 64, 96, 128], "ranges": [[1, 32], [33, 64], [65, 128]]},
+            "N_k": {"expr": "N"},
+            "D": {"typical": [64, 128], "ranges": [[1, 64], [65, 128], [129, 256], [257, 512]]},
+            "D_k": {"expr": "D"},
+            "D_v": {"expr": "D"},
+            "ROPE_D": {"typical": [64]},
+            "H": {"expr": "N * D"},
+            "H_k": {"expr": "N_k * D_k"},
+            "H_v": {"expr": "N_k * D_v"}
           },
           "layouts": {
             "BSND": {
               "query": ["B", "S", "N", "D"],
-              "key": ["B", "S", "N_k", "D_k"],
-              "value": ["B", "S", "N_k", "D_v"],
+              "key": ["B", "S_k", "N_k", "D_k"],
+              "value": ["B", "S_k", "N_k", "D_v"],
               "attentionOut": ["B", "S", "N", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "N", "ROPE_D"],
+              "keyRope": ["B", "S_k", "N_k", "ROPE_D"]
             },
             "BNSD": {
               "query": ["B", "N", "S", "D"],
-              "key": ["B", "N_k", "S", "D_k"],
-              "value": ["B", "N_k", "S", "D_v"],
+              "key": ["B", "N_k", "S_k", "D_k"],
+              "value": ["B", "N_k", "S_k", "D_v"],
               "attentionOut": ["B", "N", "S", "D"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "N", "S", "ROPE_D"],
+              "keyRope": ["B", "N_k", "S_k", "ROPE_D"]
             },
             "BSH": {
               "query": ["B", "S", "H"],
-              "key": ["B", "S", "H_k"],
-              "value": ["B", "S", "H_k"],
+              "key": ["B", "S_k", "H_k"],
+              "value": ["B", "S_k", "H_v"],
               "attentionOut": ["B", "S", "H"],
               "softmaxLse": ["B", "N", "S", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["B", "S", "ROPE_D"],
+              "keyRope": ["B", "S_k", "ROPE_D"]
             },
             "TND": {
               "query": ["T", "N", "D"],
-              "key": ["T", "N_k", "D_k"],
-              "value": ["T", "N_k", "D_v"],
+              "key": ["T_k", "N_k", "D_k"],
+              "value": ["T_k", "N_k", "D_v"],
               "attentionOut": ["T", "N", "D"],
               "softmaxLse": ["T", "N", 1],
               "blockTable": ["B", 4096],
-              "attenMask": ["S", "S"]
+              "attenMask": ["S", "S_k"],
+              "queryRope": ["T", "N", "ROPE_D"],
+              "keyRope": ["T_k", "N_k", "ROPE_D"]
             }
           }
         }

@@ -194,6 +194,13 @@ class PairwiseParamCombinationGenerator:
                 is_operator_param, _ = DataHandleUtil.get_relevant_attribute_value(param_name,
                                                                                    input_attribute.is_operator_param,
                                                                                    "is_operator_param")
+                shape_axes = None
+                shape_axes_attr = getattr(input_attribute, "shape_axes", None)
+                if shape_axes_attr is not None:
+                    shape_axes_value, _ = DataHandleUtil.get_relevant_attribute_value(
+                        param_name, shape_axes_attr, "shape_axes")
+                    if isinstance(shape_axes_value, list) and shape_axes_value:
+                        shape_axes = shape_axes_value
                 # 语义修复：range_value 为真 None（token 反解产物）表示该行该参数取
                 # “空”枚举值（如 alltoAllAxesOptional 支持配置空），按缺席处理。
                 # 守卫条件说明：只要 range_value 为真 None 且 PICT 该行判定参数缺席
@@ -212,7 +219,8 @@ class PairwiseParamCombinationGenerator:
                                                                     ParameterAttribute.RANGE_VALUE),
                                                                 length=case_attribute.get(ParameterAttribute.LENGTH),
                                                                 is_present=is_present_value,
-                                                                is_operator_param=is_operator_param)
+                                                                is_operator_param=is_operator_param,
+                                                                shape_axes=shape_axes)
                 if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
                     shape_property = ParameterShapeProperty(dim_count=case_attribute.get(ParameterAttribute.DIMENSION),
                                                             dim_value_profile=case_attribute.get(

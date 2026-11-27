@@ -30,6 +30,13 @@ description: 根据 constraint_check.json 对当前 constraints.json 做最小�
 先 skill 加载对应 `aclnn-*` / `torch-npu-*` 知识 skill（description 按信号匹配）再
 修复，修复表达必须符合 skill 中的规则。
 
+**dim_axes 相关修复边界**（报告问题涉及 dim_axes / shape_axes 时）：
+- `shape_axes` 错误按文档 shape 语义改（token 只用场景可用轴名或整数）；不得改
+  dim_axes 布局，也不得给已覆盖张量补 `shape_axes`。
+- 文档约束与 dim_axes 固定形状冲突时，**只收窄离散参数取值域**；禁止删除/放宽文档
+  约束，禁止新增文档不存在的约束。若只能靠放宽文档才能满足，保留 issue 并注明需从
+  dim_axes 侧收窄，不得擅自放宽。
+
 ## 修复和校验
 
 1. 按 issue id 逐项定位当前文件行和约束。

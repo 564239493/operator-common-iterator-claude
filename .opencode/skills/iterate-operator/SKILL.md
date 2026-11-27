@@ -137,6 +137,13 @@ Agent 扫 `scene_scan.json` + `check_scene_conflicts.py` 冲突预判 + `--scan`
     （`expand` 清单），**格式取值只能来自 dim_axes.json 当前场景，禁止再从文档取更大的格式枚举**。
     组合格式名 `A_B` 表示**输入为 A、输出为 B**（如 `BSH_BNSD` = 输入 BSH、输出 BNSD；
     `NTD_TND` = 输入 NTD、输出 TND），详见 `platform_dtype` 知识模块 §format。
+  - **dim_axes 场景形状需与文档硬 shape 自洽**：dim_axes 的 `layouts` 只描述轴顺序，
+    一个布局只能表达一种形状。若文档对同一张量的形状按参数分支（典型：`attenMask`
+    在 `sparseMode` 0/1 需完整 S×S、2/3/4 需固定 2048×2048），必须先在 dim_axes 选定
+    一个 regime（如把该张量固定为某一合法形状），或在该场景的参数取值阶段用
+    `param_modes` 把冲突参数收窄到该 regime；**不要指望后续靠放宽文档约束兜底**。
+    未在 `layouts` 声明的可选张量，由提取阶段产出 `shape_axes`、生成器复用场景轴取值，
+    不必强行补进 dim_axes 布局。
   - 未命中 profile（`profile` 为空 / 提示"未命中任何 profile"）→ 才走下面的文档量化模板识别。
 - （未命中 dim_axes 时）主协调器重新读文档快照（产品支持情况、参数说明、约束说明、量化相关小节），
   **只针对已选设备**识别量化场景。提取规则（沿用历史三段式的量化模板规则）：

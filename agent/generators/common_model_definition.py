@@ -44,6 +44,15 @@ class ParamAttributes(BaseModel):
     array_length: ValueWithSrcText | str = Field(default="N/A", description="数组长度（可能为字符串或对象）")
     dtype: ValueWithSrcText | str = Field(..., description="支持的数据类型")
     dimensions: ValueWithSrcText | str = Field(..., description="维度信息")
+    shape_axes: ValueWithSrcText | str = Field(
+        default_factory=lambda: ValueWithSrcText(value=[], src_text=""),
+        description=(
+            "张量轴序（List[Any]：字符串=dim_axes 场景轴名，整数=常量维）。当该张量未在"
+            "dim_axes 场景 layouts 中声明时，生成器据此用场景轴值组装 shape（如 "
+            "learnableSink=[\"N\"]、pseShift=[\"B\",\"N\",\"S\",\"S_k\"]）。[]/\"N/A\"=无轴绑定，"
+            "回退文档/角色 shape"
+        ),
+    )
     allowed_range_value: ValueWithSrcText | str = Field(default_factory=lambda : ValueWithSrcText(value=[], src_text=""), description="允许的取值范围")
     transpose_id: ValueWithSrcText | str = Field(
         default_factory=lambda: ValueWithSrcText(value=[], src_text=""),

@@ -312,6 +312,8 @@ def _dim_axes_layout_constraints(
 
     layout_param: str | None = None
     layouts: set[str] = set()
+    axis_names: set[str] = set()
+    covered_tensors: set[str] = set()
     notes: list[str] = []
     for name in sorted(selected & set(profile.scenes)):
         scene = profile.scenes[name]
@@ -326,6 +328,9 @@ def _dim_axes_layout_constraints(
             )
             return {}, notes
         layouts.update(scene.layouts.keys())
+        axis_names.update(scene.axes.keys())
+        for orders in scene.layouts.values():
+            covered_tensors.update(orders.keys())
     if not layout_param or not layouts:
         return {}, notes
 
@@ -334,6 +339,24 @@ def _dim_axes_layout_constraints(
         f"**dim_axes 场景格式约束**：`{layout_param}` 的取值必须且只能来自 "
         f"dim_axes.json 当前所选场景的 `layouts`（{ordered}）；**禁止**再从文档枚举中"
         f"取更大的格式集合（如未在本场景配置的 `*_*` 组合格式）。"
+    )
+    notes.append(
+        "**dim_axes 优先且只收窄**：以 dim_axes 场景定义的张量形状为权威。当从文档提取的约束"
+        "与 dim_axes 冲突时，禁止删除/放宽文档约束，也禁止新增文档不存在的约束；只允许把相关"
+        "**离散参数取值域**（如 sparseMode、blockSize 等）收窄到与 dim_axes 固定形状可满足的"
+        "子集（例：本场景 attenMask 固定 2048×2048，则 sparseMode 去掉需要完整 S×S mask 的模式）。"
+        "若文档约束比 dim_axes 更严（如需某张量维度为常量），应在 dim_axes 侧收窄轴值/布局，"
+        "不得放宽文档。收窄后仍不可满足 → 明确报告冲突，不要臆造或扩大。"
+    )
+    notes.append(
+        f"**dim_axes 场景轴与已建模张量**：可用轴名 = {sorted(axis_names)}；"
+        f"已由 layouts 给出轴序、无需再产 shape 轴的张量 = {sorted(covered_tensors)}。"
+        "对文档给出 shape 轴、但**未**上述清单中的张量（如 learnableSink=(Q_N)、"
+        "pseShift、左padding、公共前缀等），必须在其参数卡新增 `shape_axes`"
+        "（`value` 用可用轴名或整数常量按物理轴序给出，如 learnableSink=[\"N\"]、"
+        "pseShift=[\"B\",\"N\",\"S\",\"S_k\"]、queryPaddingSize=[1]），生成器据此"
+        "用本场景轴取值范围组装 shape；**不得**改为修改 dim_axes 布局或把这些可选"
+        "参数一律置空。"
     )
     return {layout_param: {"expand": ordered}}, notes
 

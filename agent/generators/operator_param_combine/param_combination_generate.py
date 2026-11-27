@@ -75,12 +75,20 @@ class ParamCombinationGenerator:
                 is_operator_param, _ = DataHandleUtil.get_relevant_attribute_value(input_name,
                                                                                    input_attribute.is_operator_param,
                                                                                    "is_operator_param")
+                shape_axes = None
+                shape_axes_attr = getattr(input_attribute, "shape_axes", None)
+                if shape_axes_attr is not None:
+                    shape_axes_value, _ = DataHandleUtil.get_relevant_attribute_value(
+                        input_name, shape_axes_attr, "shape_axes")
+                    if isinstance(shape_axes_value, list) and shape_axes_value:
+                        shape_axes = shape_axes_value
                 parameter_property_data = ParameterPropertyData(param_name=input_name, dtype=param_dtype,
                                                                 param_type=param_type, format=param_format_value,
                                                                 range_value_profile=param_range_value_profile,
                                                                 length=param_length,
                                                                 is_operator_param=is_operator_param,
-                                                                is_optional=param_is_optional)
+                                                                is_optional=param_is_optional,
+                                                                shape_axes=shape_axes)
                 if param_type in ParamModelConfig.TENSOR_ATK_TYPE:
                     param_shape_property = self.generate_shape_property(input_name)
                     parameter_property_data.shape_property = param_shape_property

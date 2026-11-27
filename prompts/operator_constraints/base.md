@@ -192,6 +192,11 @@ python scripts/validate_artifacts.py constraints <constraints.json>
 | `dtype.src_text` | 是 | `str` | 摘录原文 |
 | `dimensions.value` | 是 | `List[int]` 或 `[]` | **合法 rank 的显式枚举**：列表中的每个整数都是一个真实可选 rank，不表示区间；如 `[1, 2, 3]` 表示支持 1～3 维，`[1, 3]` 表示只支持 1 维或 3 维；固定 3 维写 `[3]`；不适用 → `[]` |
 | `dimensions.src_text` | 是 | `str` | 摘录原文（如 `"2-3"`、`"2维"`） |
+| `shape_axes` | 否 | `ValueWithSrcText` 或 `"N/A"` | 仅当场景指令要求为**未在 dim_axes 布局中列出**的 Tensor 指定轴序时填写：`value` 为按物理轴序排列的 token 列表（字符串=场景轴名，如 `B`/`S`/`S_k`/`N`/`D`/`ROPE_D`；整数=常量维）；不适用 → `"N/A"` |
+
+**`shape_axes`（dim_axes 未列张量的轴序）**：当场景指令给出 dim_axes 场景轴名与"已由 layouts 覆盖的张量"清单时，对文档给出 shape 轴但未被覆盖的 Tensor（如 `learnableSink=(Q_N)`、`pseShift`、左padding、公共前缀），必须额外填写 `shape_axes.value`：用场景轴名/整数常量按物理轴序表达（`learnableSink`→`["N"]`、`queryPaddingSize`→`[1]`、`pseShift`→`["B","N","S","S_k"]`）。`dimensions` 仍按 rank 枚举填写；不得为这些张量改 dim_axes 布局，也不得一律强制置空。
+
+**dim_axes 优先与只收窄**：当场景指令声明了 dim_axes 场景（给出轴名/覆盖张量）时，以 dim_axes 定义的张量形状为权威。文档约束与之冲突时：①不得删除或放宽文档约束；②不得新增文档不存在的约束；③只允许把相关**离散参数取值域**收窄为与 dim_axes 固定形状可满足的子集（例：本场景 attenMask 固定 2048×2048，则 `sparseMode` 去掉需要完整 S×S mask 的 0/1 模式）。若文档约束比 dim_axes 更严（如需某张量维度为常量），应从 dim_axes 侧收窄轴值/布局，不得放宽文档；仍不可满足则明确报告冲突，禁止臆造或扩大。
 
 **rank 只给下界时的补齐规则**（防 range() 量词无上界导致求解变慢/超时）：
 

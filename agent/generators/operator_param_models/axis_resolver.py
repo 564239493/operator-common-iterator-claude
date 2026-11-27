@@ -76,5 +76,20 @@ class AxisShapeResolver:
         )
         return shape, used, self.layout
 
+    def resolve_with_axes(self, param_name: str, tokens: List) -> Tuple[List[int], Dict[str, int], str]:
+        """用文档识别出的轴序 tokens 解析未在 layouts 声明的张量 shape。
+
+        轴值取自当前场景 axes（dim_axes 的取值范围），派生轴按其依赖重算；不再
+        对"布局未覆盖"的张量 fail-closed。
+        """
+        if not isinstance(tokens, list) or not tokens:
+            raise DimAxesError(
+                f"张量 {param_name!r} 未在场景 {self.scene.name} 的布局中，且没有可用的 "
+                "shape_axes 轴序列"
+            )
+        values = self.scene.resolve_axes_for_tokens(tokens, self._case_index, self.seed)
+        shape, used = self.scene.build_shape_from_tokens(tokens, values)
+        return shape, used, self._layout or ""
+
     def layout_for_case(self) -> str:
         return self.layout

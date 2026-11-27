@@ -192,14 +192,24 @@ class CaseGenerate:
                 axis_values = None
                 layout_name = None
                 if resolver is not None:
-                    if not resolver.managed_tensor(param_name):
-                        from agent.generators.operator_param_models.dim_axes import DimAxesError
-
-                        raise DimAxesError(
-                            f"算子 {self.operator_name} 命中 dim_axes 场景 {resolver.scene.name}，"
-                            f"但布局未覆盖张量 {param_name!r}"
-                        )
-                    param_shape, axis_values, layout_name = resolver.resolve(param_name)
+                    if resolver.managed_tensor(param_name):
+                        param_shape, axis_values, layout_name = resolver.resolve(param_name)
+                    else:
+                        # 未在 dim_axes layouts 声明的张量（如 learnableSink/pseShift/
+                        # 左padding/公共前缀）：优先用文档识别出的轴序列 shape_axes，
+                        # 复用当前场景 dim_axes 的轴取值范围组装 shape；没有轴序列时
+                        # 回退文档/角色 shape，不再 fail-closed。
+                        shape_axes = getattr(param_attributes, "shape_axes", None)
+                        if isinstance(shape_axes, list) and shape_axes:
+                            param_shape, axis_values, layout_name = resolver.resolve_with_axes(
+                                param_name, shape_axes)
+                        else:
+                            logger.debug(
+                                "dim_axes uncovered tensor %s (scene=%s) has no shape_axes; "
+                                "fallback to document/role shape", param_name, resolver.scene.name)
+                            param_shape = self.generate_param_shape(
+                                param_name, param_attributes.shape_property.dim_count,
+                                param_attributes.shape_property.dim_value_profile)
                 else:
                     param_shape = self.generate_param_shape(
                         param_name, param_attributes.shape_property.dim_count,

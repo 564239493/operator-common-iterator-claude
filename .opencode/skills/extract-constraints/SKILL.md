@@ -122,6 +122,19 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
 场景只做"屏蔽"，不臆造文档未声明的限制；结果仍须满足 `OperatorRule` 与
 `validate_artifacts.py constraints` 校验。
 
+**dim_axes 契约（仅当 `scene_directive.md` 含 dim_axes 段时执行）**：
+- **未覆盖张量的轴序**：dim_axes `layouts` 已覆盖的张量（directive 会列出）不再写
+  `shape_axes`；文档给出 shape 轴但未覆盖的 Tensor（如 `learnableSink=(Q_N)`、
+  `pseShift`、左/右 padding、公共前缀）必须在其参数卡新增 `shape_axes`：`value` 用
+  directive 给出的**场景轴名/整数常量**按物理轴序表达（如 `["N"]`、
+  `["B","N","S","S_k"]`、`[1]`），`dimensions` 仍按 rank 枚举。不得改 dim_axes 布局，
+  也不得把这些可选参数一律置空。
+- **dim_axes 优先且只收窄**：以 dim_axes 场景定义的张量形状为权威。文档约束与之冲突时
+  **禁止删除/放宽文档约束，禁止新增文档不存在的约束**；只允许把相关**离散参数取值域**
+  收窄为与 dim_axes 固定形状可满足的子集（例：本场景 `attenMask` 固定 2048×2048 时，
+  `sparseMode` 去掉需要完整 S×S mask 的 0/1 模式）。若文档约束比 dim_axes 更严（如需某
+  张量维度为常量），应回报冲突由 dim_axes 侧收窄，不得放宽文档。
+
 0. **必载知识加载**：先按「必载知识协议」逐条 skill 加载必载清单并应用，再开始
    逐节阅读；知识规则与文档冲突时以文档为准，冲突本身写入 provenance 的 reason。
 1. 逐节阅读文档，区分明确约束、示例和说明性文字。
@@ -192,7 +205,11 @@ skill 例外以 constraint-extractor agent 定义为唯一权威，此处不再�
     确认 `product_support` 已按机读块 `device_types` 收窄并与文档 √ 行取交集
     （直接交集，无"通用"展开），`inputs`/
     `outputs` 等二级平台 key 仅含收窄后的平台、无遗漏无代笔。确认**独占提取**已执行：
-    未选设备、未选量化场景专属的约束条目未产出（`no_scene_devices` 设备不做场景屏蔽过滤，也不虚构量化/非量化区分）。自检不通过则回到步骤 1
+    未选设备、未选量化场景专属的约束条目未产出（`no_scene_devices` 设备不做场景屏蔽过滤，也不虚构量化/非量化区分）。
+    **dim_axes 自检**：directive 列出「已由 layouts 覆盖的张量」中每个张量都**没有** `shape_axes`；
+    文档给出 shape 轴但未被覆盖的 Tensor **都有** `shape_axes`（token 仅用 directive 的可用轴名或整数）、
+    `dimensions` 仍为 rank 枚举；文档约束与 dim_axes 固定形状的冲突已通过**收窄离散参数取值域**解决
+    （未删/未放宽文档约束、未新增文档没有的约束）。自检不通过则回到步骤 1
     重提，不放过半屏蔽的 constraints.json。
 13. **必填 char/枚举参数识别与取值约束**（避免 equation 类参数静默丢失）：
     - 函数原型中 `const char *<param>` 或 `const <Enum> *<param>` 位置参数且无默认值

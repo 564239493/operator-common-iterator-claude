@@ -140,6 +140,20 @@ Agent 对话的完整隔离禁令以 constraint-checker agent 定义为唯一权
       要求改为别名写法（关键字本身**不是**不可形式化的理由）；
     - 仅当关系语义本身不可形式化时才允许降级 `description`，不得以“参数名是关键字”
       作为降级依据。
+12. **dim_axes 契约审计（`scene_directive.md` 含 dim_axes 段时）**：
+    - **shape_axes**：directive「已由 layouts 覆盖的张量」之外、文档给出 shape 轴的
+      Tensor 必须有其参数卡 `shape_axes`，`value` 只用 directive 的可用轴名或整数常量，
+      且与文档 shape 语义一致（如 learnableSink=(Q_N)→`["N"]`、pseShift→`["B","N","S","S_k"]`）；
+      已覆盖张量**不得**有 `shape_axes`；`dimensions` 仍应为 rank 枚举。缺失/多余/轴名
+      不在可用清单 → open issue。
+    - **dim_axes 优先且只收窄**：检查「文档约束 ∩ dim_axes 场景固定形状」可满足。若
+      dim_axes 固定形状（如 attenMask 常量 2048）与文档硬约束冲突，正确做法是把相关
+      **离散参数取值域收窄**（如 sparseMode）到可满足子集；发现删除/放宽文档约束或新增
+      文档没有的约束 → open issue。若收窄后仍不可满足 → open issue，要求从 dim_axes 侧
+      收窄轴值/布局，不得放宽文档。
+    - **单布局多分支局限**：dim_axes 一个布局只能表达张量的一种形状，无法表达按参数
+      分支的多形状张量（如 attenMask 在 sparseMode 0/1 与 2/3/4 不同）。发现场景形状
+      只覆盖单一 regime 时，确认参数域已相应收窄（或应拆 scene），否则记 open。
 
 ## 唯一报告
 

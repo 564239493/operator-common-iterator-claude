@@ -262,13 +262,12 @@ class SceneSpec:
                         return base
         return param_name
 
-    def build_tensor_shape(self, layout: str, param_name: str, axis_values: Dict[str, int]):
-        orders = self.layouts[layout]
-        key = self.layout_tensor_key(param_name)
-        if key not in orders:
-            raise DimAxesError(
-                f"布局 {layout} 未定义张量 {param_name!r} 的轴序列（场景 {self.name}）"
-            )
+    def build_shape_from_tokens(self, tokens: List[Any], axis_values: Dict[str, int]):
+        """按给定轴 token 序列组装 shape（字符串=轴名、整数=常量维）。
+
+        与 ``build_tensor_shape`` 共用同一组装逻辑，供"未在 layouts 声明、
+        但由文档 shape 识别出轴序"的张量（如 learnableSink/pseShift）使用。
+        """
         shape: List[int] = []
         used: Dict[str, int] = {}
 
@@ -279,15 +278,46 @@ class SceneSpec:
             for dep in self.axes[name].depends_on:
                 record(dep)
 
-        for token in orders[key]:
+        for token in tokens:
             if _is_int(token):
                 shape.append(int(token))
             else:
                 if token not in axis_values:
-                    raise DimAxesError(f"布局 {layout} 引用未定义轴 {token!r}")
+                    raise DimAxesError(f"轴序引用未解析轴 {token!r}（场景 {self.name}）")
                 shape.append(axis_values[token])
                 record(token)
         return shape, used
+
+    def build_tensor_shape(self, layout: str, param_name: str, axis_values: Dict[str, int]):
+        orders = self.layouts[layout]
+        key = self.layout_tensor_key(param_name)
+        if key not in orders:
+            raise DimAxesError(
+                f"布局 {layout} 未定义张量 {param_name!r} 的轴序列（场景 {self.name}）"
+            )
+        return self.build_shape_from_tokens(orders[key], axis_values)
+
+    def resolve_axes_for_tokens(self, tokens: List[Any], case_index: int,
+                                seed: int) -> Dict[str, int]:
+        """为任意轴 token 序列按当前用例解析轴值（含派生轴依赖）。
+
+        与 ``resolve_axis_values`` 不同：这里不限于当前布局使用的轴，而是按传入
+        token 序列把需要的场景轴（含 expr 派生轴）都解析出来，供未在 layouts
+        中声明的张量复用 dim_axes 场景轴值。
+        """
+        base_axes: set[str] = set()
+        for token in tokens:
+            if isinstance(token, str) and token in self.axes:
+                self._base_axes(token, base_axes)
+        values: Dict[str, int] = {}
+        for name in self._topological_axes():
+            spec = self.axes[name]
+            if spec.is_expr:
+                if all(dep in values for dep in spec.depends_on):
+                    values[name] = int(_eval_expr(spec.expr_ast, values, name))
+            elif name in base_axes:
+                values[name] = spec.value_at(case_index, seed, self.axis_pick)
+        return values
 
     def _axis_candidates(self, name: str) -> List[int]:
         spec = self.axes[name]
