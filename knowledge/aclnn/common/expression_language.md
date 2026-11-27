@@ -34,6 +34,17 @@ depends_on: [implicit_parameters]
    - ✅ `transposeX1.range_value == False`（bool 等号）
    - ❌ `actType.range_value in [[0, 5]]`（嵌套列表是数据结构，不是区间谓词）
    - ❌ `epsilon.range_value in [[null, 0.0001]]`（不得用 `null` 充当数值边界）
+   - **张量元素值比较方向（强制）**：当比较的一侧是 `aclTensor` / `aclTensorList`
+     的元素取值（如 `x.range_value`、`x.range_value[i]`、`x[i]`），另一侧是常量或
+     标量参数时，**必须把张量/元素侧写在左边**：
+     - ✅ `x.range_value >= 0`、`x.range_value <= 1.0`、`x.range_value[i] >= 0`
+     - ✅ `x.range_value >= epsilon.range_value`（张量侧在左，标量参数在右）
+     - ❌ `0 <= x.range_value`、`1.0 >= x.range_value`、`0 <= x.range_value[i]`
+     - ❌ `epsilon.range_value <= x.range_value`（标量参数在左、张量侧在右）
+     原因：当前求值器只对“张量/序列在左、标量在右”做逐元素展开；常量或标量在左会
+     落入 `scalar op array/seq` 的 sort mismatch，表达式转换失败（虽可由 repair 兜底，
+     但应在提取阶段一次写对）。标量参数（非张量元素值）仍可使用
+     `min <= actType.range_value <= max` 的区间写法。
 3. **复合逻辑 —— 单向蕴含优先使用 if/else**：
    - **首选形式（if/else）**：`(B) if (A) else True` —— 条件不满足时返回 True（约束不适用）。
      对“当 A 时必须 B”这类单层业务规则统一优先使用本形式，使约束可直接按自然语言阅读。

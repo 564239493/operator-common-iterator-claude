@@ -7,9 +7,11 @@ import json
 from pathlib import Path
 
 try:
+    from scripts.bitfield_pack import check_doc_table
     from scripts.build_knowledge_skills import FAMILY_KNOWLEDGE, check_family
     from scripts.route_aclnn_knowledge import DEFAULT_KNOWLEDGE, _load_modules
 except ModuleNotFoundError:
+    from bitfield_pack import check_doc_table
     from build_knowledge_skills import FAMILY_KNOWLEDGE, check_family
     from route_aclnn_knowledge import DEFAULT_KNOWLEDGE, _load_modules
 
@@ -80,6 +82,9 @@ def validate(root: Path) -> list[str]:
     # scripts/build_knowledge_skills.py，否则 run 初始化在此拦截。
     if root.resolve() == FAMILY_KNOWLEDGE["aclnn"].resolve():
         errors.extend(check_family("aclnn"))
+        table_path = root / "reference" / "bitfield_pack.md"
+        if table_path.is_file():
+            errors.extend(check_doc_table(table_path))
     return errors
 
 

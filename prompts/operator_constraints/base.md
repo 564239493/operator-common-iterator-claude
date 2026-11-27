@@ -780,6 +780,12 @@ A 的 stride 表达会丢失 shape 重排；语义 A 误套 B 的 `transpose_id`
     实际数值且不得为 `null`；`type=enum` 的离散候选允许包含 `null`。
 12. **数值范围表达式**：禁止生成 `.range_value in [[min, max]]`；必须改写为
     `min <= param.range_value <= max` 或对应的单边/开区间不等式。
+    **张量元素值比较方向（强制）**：当比较一侧是 `aclTensor` / `aclTensorList` 的元素取值
+    （`x.range_value`、`x.range_value[i]`、`x[i]`）时，必须把张量/元素侧写在左边，
+    常量或标量参数写在右边：`x.range_value >= min`、`x.range_value[i] >= 0`；
+    **禁止** `min <= x.range_value`、`0 <= x.range_value[i]`。标量参数
+    （非张量元素值）仍可使用 `min <= actType.range_value <= max`。详见
+    `knowledge/aclnn/common/expression_language.md` §语法 第 2 条。
 13. **空值枚举序列化**：若 `allowed_range_value.type=enum` 且原文的"空"表示未传值、
     缺省、空指针或 `nullptr`，候选必须是 JSON `null`，不得是字符串 `"空"`；只有
     原文明示零长度容器时才使用空容器候选 `[[]]`。**必选参数 + 原文"仅支持 nullptr"场景**
