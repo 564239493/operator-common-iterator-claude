@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useTask } from '../../composables/useTask'
 import { fmtTaskOption, fmtTaskTime, stateTagType } from './group'
+import { toCovTreeSelectData, hasCovData } from '../coverage/data'
 import type { RunSummary } from '../../api/types'
 
 /**
@@ -103,30 +104,56 @@ const runsValue = computed({
   },
 })
 
-/* ===== covtree 模式：ops_final_cov_report 目录层级（树结构下拉） ===== */
+/* ===== covtree 模式：ops_final_cov_report 目录层级（树结构下拉） =====
+ * 每节点 value=层级路径（与页面 path.join('/') 一致，node-key 取 value），并透传原节点的
+ * summary/kind/has_analysis/version 等字段供下拉渲染使用。
+ * 无数据节点（无 summary：自身无报告、子级也没有数据）保留在树中并默认收起，可手动展开查看子级，
+ * 但标记 disabled → 点击不改变选中值（el-tree-select 的 onNodeClick 跳过 disabled 节点）。 */
 const versions = computed(() => (props.tree && Array.isArray(props.tree.versions) ? props.tree.versions : []))
-/** 转 el-tree-select 数据：每节点带 value=层级路径（与页面 path.join('/') 一致，node-key 取 value），
- *  并透传原节点的 summary/kind/has_analysis/version 等字段供下拉渲染使用 */
-function toTreeData(v: any) {
-  const map = (n: any, prefix: string[]): any => {
-    const path = [...prefix, n.name]
-    const node: any = { ...n, name: n.name, value: path.join('/') }
-    if (Array.isArray(n.children) && n.children.length) node.children = n.children.map((c: any) => map(c, path))
-    return node
-  }
-  return map(v, [])
-}
-const treeData = computed(() => versions.value.map(toTreeData))
+const treeData = computed(() => versions.value.map((v: any) => toCovTreeSelectData(v)))
+/** el-tree 字段映射：保持对象引用稳定（内联字面量每次渲染都是新对象，会触发 el-tree 重新解析 props） */
+const treeProps = { label: 'name', children: 'children' }
 const covValue = computed({
   get: () => props.modelValue ?? '',
   set: (v: string) => emit('update:modelValue', v),
 })
 
-/* ===== 树节点覆盖率指标（每层展示 函数/行/分支 覆盖率） ===== */
+/* ===== 默认展开：仅展开有数据的节点（有 summary）；无数据（空目录/空分支）默认收起 ===== */
+const defaultExpandedKeys = computed(() => {
+  const keys: string[] = []
+  const walk = (nodes: any[]) => {
+    for (const n of nodes) {
+      if (hasCovData(n)) keys.push(n.value)
+      if (Array.isArray(n.children) && n.children.length) walk(n.children)
+    }
+  }
+  walk(treeData.value)
+  return keys
+})
+
+/* ===== 树节点覆盖率指标 =====
+ * 聚合层（版本/库/域/算子目录，el-tree node.level≤4）展示 函数/行/分支 覆盖率%；
+ * 叶子层（level≥5：算子/产品）展示已覆盖数（不展示总数，总量见悬停提示），着色仍按隐含覆盖率。
+ * el-tree 虚拟根节点为 level 0，:data 数组（版本）为其子节点 → level 1 基：
+ * 1 版本 2 算子库 3 域 4 算子目录 5 算子 6 产品 */
 const fmtRate = (r: number | undefined | null) => (typeof r !== 'number' ? '—' : `${Math.round(r)}%`)
 const rateCls = (r: number | undefined | null) => {
   if (typeof r !== 'number' || r < 50) return 'low'
   return r >= 80 ? 'ok' : 'mid'
+}
+/** 算子里层（level≥5：算子/产品）展示「已覆盖/总量」计数；其上的目录聚合层（含算子目录）展示覆盖率% */
+const showCounts = (level: number | undefined) => typeof level === 'number' && level >= 5
+/** 由 covered/total 推算覆盖率（0~100，无总量记 0），用于数量节点的着色与提示 */
+const covRate = (covered: number | undefined, total: number | undefined) => {
+  const c = Number(covered) || 0
+  const t = Number(total) || 0
+  return t ? (c / t) * 100 : 0
+}
+/** 已覆盖/总量 计数文本（如 12/15） */
+const fmtCount = (covered: number | undefined, total: number | undefined) => {
+  const c = typeof covered === 'number' && Number.isFinite(covered) ? covered : 0
+  const t = typeof total === 'number' && Number.isFinite(total) ? total : 0
+  return `${c}/${t}`
 }
 </script>
 
@@ -177,7 +204,6 @@ const rateCls = (r: number | undefined | null) => {
             <span class="task-time">{{ fmtTaskTime(r.created_at) }}</span>
             <el-tag v-if="r.state" size="small" :type="stateTagType(r.state)" effect="light">{{ r.state }}</el-tag>
             <span class="task-meta">第 {{ r.current_iteration ?? '—' }}/{{ r.max_iterations ?? '—' }} 轮</span>
-            <span class="task-meta meta-dim">{{ frameworkText(r) }}</span>
           </div>
         </el-option>
       </div>
@@ -223,7 +249,9 @@ const rateCls = (r: number | undefined | null) => {
     <el-option v-if="!runsOptions.length" value="" label="暂无任务目录" disabled />
   </el-select>
 
-  <!-- covtree：ops_final_cov_report 目录层级（树结构下拉，可选中任意层级） -->
+  <!-- covtree：ops_final_cov_report 目录层级（树结构下拉，可选中任意层级）。
+       render-after-expand：子级按需渲染（收起时只留一行），树有数千个占位目录时首屏仍然流畅；
+       默认展开键只给有数据的节点，故深层有数据节点在打开下拉后即可见。 -->
   <el-tree-select
     v-else
     v-model="covValue"
@@ -231,12 +259,12 @@ const rateCls = (r: number | undefined | null) => {
     popper-class="cov-tree-popper"
     placement="bottom-end"
     :data="treeData"
-    :props="{ label: 'name', children: 'children' }"
+    :props="treeProps"
     node-key="value"
     check-strictly
     :expand-on-click-node="false"
-    :render-after-expand="false"
-    default-expand-all
+    :render-after-expand="true"
+    :default-expanded-keys="defaultExpandedKeys"
     placeholder="选择覆盖率目录"
     :disabled="props.disabled"
   >
@@ -246,25 +274,45 @@ const rateCls = (r: number | undefined | null) => {
         <span class="cov-picked-path">{{ value }}</span>
       </span>
     </template>
-    <!-- 树节点：单行内容（层级标签前置 / 层级名 / 函数·行·分支 覆盖率数值；第 5 层算子展示「算子」标签，第 6 层产品目录展示「产品」标签） -->
+    <!-- 树节点：层级标签 + 层级名 + 函数·行·分支 指标。
+         聚合层（版本/库/域/算子目录，node.level≤4）展示覆盖率%；叶子层（level≥5：算子/产品）展示已覆盖数（不展示总数）。
+         层级标签：算子（level 5）→「算子」，产品（level 6）→「产品」 -->
     <template #default="{ node, data }">
       <span class="cov-node">
         <span v-if="node && node.level === 5" class="cov-op">算子</span>
         <span v-if="node && node.level === 6" class="cov-prod">产品</span>
         <span class="cov-node-name" :title="data.name">{{ data.name }}</span>
-        <span v-if="data && data.summary" class="cov-node-metrics">
-          <span class="m" :class="rateCls(data.summary.func)" :title="`函数覆盖率 ${fmtRate(data.summary.func)}`">
-            <em class="mlab">函数</em><b>{{ fmtRate(data.summary.func) }}</b>
+        <template v-if="data && data.summary">
+          <!-- 聚合层（版本/库/域/算子目录）：函数/行/分支 覆盖率% -->
+          <span v-if="!showCounts(node?.level)" class="cov-node-metrics">
+            <span class="m" :class="rateCls(data.summary.func)" :title="`函数覆盖率 ${fmtRate(data.summary.func)}`">
+              <em class="mlab">函数</em><b>{{ fmtRate(data.summary.func) }}</b>
+            </span>
+            <span class="m" :class="rateCls(data.summary.line)" :title="`行覆盖率 ${fmtRate(data.summary.line)}`">
+              <em class="mlab">行</em><b>{{ fmtRate(data.summary.line) }}</b>
+            </span>
+            <span class="m" :class="rateCls(data.summary.branch)" :title="`分支覆盖率 ${fmtRate(data.summary.branch)}`">
+              <em class="mlab">分支</em><b>{{ fmtRate(data.summary.branch) }}</b>
+            </span>
           </span>
-          <span class="m" :class="rateCls(data.summary.line)" :title="`行覆盖率 ${fmtRate(data.summary.line)}`">
-            <em class="mlab">行</em><b>{{ fmtRate(data.summary.line) }}</b>
+          <!-- 算子/产品层（level≥5）：只展示已覆盖数（不展示总数，总量留在悬停提示里），着色按隐含覆盖率 -->
+          <span v-else class="cov-node-metrics">
+            <span class="m" :class="rateCls(covRate(data.summary.func_covered, data.summary.func_total))" :title="`函数 ${fmtCount(data.summary.func_covered, data.summary.func_total)} · 覆盖率 ${fmtRate(covRate(data.summary.func_covered, data.summary.func_total))}`">
+              <em class="mlab">函数</em><b class="cv">{{ data.summary.func_covered ?? 0 }}</b>
+            </span>
+            <span class="m" :class="rateCls(covRate(data.summary.line_covered, data.summary.line_total))" :title="`行 ${fmtCount(data.summary.line_covered, data.summary.line_total)} · 覆盖率 ${fmtRate(covRate(data.summary.line_covered, data.summary.line_total))}`">
+              <em class="mlab">行</em><b class="cv">{{ data.summary.line_covered ?? 0 }}</b>
+            </span>
+            <span class="m" :class="rateCls(covRate(data.summary.branch_covered, data.summary.branch_total))" :title="`分支 ${fmtCount(data.summary.branch_covered, data.summary.branch_total)} · 覆盖率 ${fmtRate(covRate(data.summary.branch_covered, data.summary.branch_total))}`">
+              <em class="mlab">分支</em><b class="cv">{{ data.summary.branch_covered ?? 0 }}</b>
+            </span>
           </span>
-          <span class="m" :class="rateCls(data.summary.branch)" :title="`分支覆盖率 ${fmtRate(data.summary.branch)}`">
-            <em class="mlab">分支</em><b>{{ fmtRate(data.summary.branch) }}</b>
-          </span>
-        </span>
+        </template>
+        <!-- 无 summary（无 json 数据）：每层均展示三个空指标占位（—），保持与有数据时同形 -->
         <span v-else class="cov-node-metrics">
-          <span class="m none"><em class="mlab">覆盖率</em><b>—</b></span>
+          <span class="m none"><em class="mlab">函数</em><b>—</b></span>
+          <span class="m none"><em class="mlab">行</em><b>—</b></span>
+          <span class="m none"><em class="mlab">分支</em><b>—</b></span>
         </span>
       </span>
     </template>
@@ -319,7 +367,7 @@ const rateCls = (r: number | undefined | null) => {
 .task-picker-popper .grp-options .el-select-dropdown__item { padding-left: 34px; }
 
 .cov-tree-popper {
-  width: 540px !important;
+  width: 580px !important;
   max-width: calc(100vw - 24px) !important;
   font-size: 13px;
 }
@@ -355,6 +403,23 @@ const rateCls = (r: number | undefined | null) => {
 }
 .cov-tree-popper .el-tree-node.is-current > .el-tree-node__content .cov-node-name {
   color: var(--wb-blue);
+}
+
+/* ===== 无数据节点（disabled：自身无报告、子级也无数据）=====
+ * 保留层级可展开（+/− 仍可点），但整行弱化 + 禁用指针，点击不改变选中值，避免误以为能下钻 */
+.cov-tree-popper .el-tree-node__content .el-select-dropdown__item.is-disabled {
+  cursor: not-allowed;
+  background: none;
+}
+.cov-tree-popper .el-tree-node__content .el-select-dropdown__item.is-disabled .cov-node {
+  opacity: .5;
+}
+.cov-tree-popper .el-tree-node__content .el-select-dropdown__item.is-disabled .cov-node-name {
+  color: var(--wb-muted);
+  font-weight: 500;
+}
+.cov-tree-popper .el-tree-node__content:has(.el-select-dropdown__item.is-disabled):hover {
+  background: transparent;
 }
 
 /* ===== 树连线（竖线 + 横线）：画在行内容自身（::before 竖线段 / ::after 横线支线），
@@ -445,8 +510,8 @@ const rateCls = (r: number | undefined | null) => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 0 0 auto;
-  width: 180px;
+  flex: 1 1 120px;
+  min-width: 0;
 }
 /* 第 5 层算子标签（蓝色） / 第 6 层产品目录标签（紫色） */
 .cov-tree-popper .cov-prod {
@@ -508,4 +573,6 @@ const rateCls = (r: number | undefined | null) => {
 .cov-tree-popper .cov-node-metrics .m.mid b { color: var(--wb-orange); }
 .cov-tree-popper .cov-node-metrics .m.low b { color: var(--wb-red); }
 .cov-tree-popper .cov-node-metrics .m.none { flex: 0 0 auto; color: var(--wb-faint); }
+
+/* 已覆盖数(.cv) 直接继承 .m 的健康度分级着色（.ok/.mid/.low 作用在 b 上），无需单独配色 */
 </style>

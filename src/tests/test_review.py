@@ -2,7 +2,9 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
+from unittest import mock
 from workbench.adapters import review
 from workbench.paths import PathEscapeError
 
@@ -116,6 +118,83 @@ class ReviewTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CoverageTreeCacheTests(unittest.TestCase):
+    """覆盖率树缓存（ops_final_cov_report）：命中复用、TTL 过期重建、后台定时刷新。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.base = self.root / 'ops_final_cov_report'
+        review._TREE_CACHE.clear()
+        self.addCleanup(review._TREE_CACHE.clear)
+        self.addCleanup(review.stop_coverage_tree_refresher)
+        self.make_version('v1')
+
+    def make_version(self, name, covered=1):
+        """造一份版本层汇总报告（level=agg 形态，带 op 粒度 metrics）。"""
+        d = self.base / name / 'lib'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ('%s_coverage.json' % name)).write_text(json.dumps({
+            'level': 'lib',
+            'summary': {'op': {'metrics': [
+                {'name': '函数覆盖率', 'covered': covered, 'total': 2, 'rate': covered * 50},
+                {'name': '语句覆盖率', 'covered': covered, 'total': 4, 'rate': covered * 25},
+                {'name': '分支覆盖率', 'covered': 0, 'total': 2, 'rate': 0},
+            ]}},
+        }), encoding='utf-8')
+        return d
+
+    def tree(self):
+        return review.get(self.root, ['cover', 'tree'], {}, '')
+
+    def test_repeated_reads_hit_cache(self):
+        first = self.tree()
+        second = self.tree()
+        self.assertIs(first, second)  # 命中缓存对象：不重复遍历目录/解析 json
+        self.assertEqual([v['name'] for v in first['versions']], ['v1'])
+        self.assertEqual(first['versions'][0]['children'][0]['name'], 'lib')
+        self.assertIn('cached_at', first)
+        self.assertIsInstance(first['build_ms'], int)
+
+    def test_expired_cache_rebuilds(self):
+        first = self.tree()
+        self.make_version('v2')
+        # TTL 内新增报告不生效（缓存即快照）
+        self.assertEqual([v['name'] for v in self.tree()['versions']], ['v1'])
+        with mock.patch.object(review, 'COVERAGE_TREE_TTL', 0.0):
+            rebuilt = self.tree()
+        self.assertIsNot(rebuilt, first)
+        self.assertEqual([v['name'] for v in rebuilt['versions']], ['v1', 'v2'])
+
+    def test_refresher_rebuilds_in_background(self):
+        self.tree()
+        review.start_coverage_tree_refresher(self.root, interval=0.05)
+        self.make_version('v2')
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and review.coverage_tree_status(self.root)['versions'] != 2:
+            time.sleep(0.05)
+        status = review.coverage_tree_status(self.root)
+        self.assertTrue(status['cached'])
+        self.assertEqual(status['versions'], 2)
+
+    def test_status_reports_cache_freshness(self):
+        self.assertFalse(review.coverage_tree_status(self.root)['cached'])
+        self.tree()
+        status = review.coverage_tree_status(self.root)
+        self.assertTrue(status['cached'])
+        self.assertEqual(status['ttl_seconds'], review.COVERAGE_TREE_TTL)
+        self.assertLess(status['age_seconds'], review.COVERAGE_TREE_TTL)
+
+    def test_ttl_from_env_override(self):
+        with mock.patch.dict('os.environ', {'WORKBENCH_COVER_TREE_TTL': '30'}):
+            self.assertEqual(review._ttl_from_env(), 30.0)
+        with mock.patch.dict('os.environ', {'WORKBENCH_COVER_TREE_TTL': 'bad'}):
+            self.assertEqual(review._ttl_from_env(), review.DEFAULT_COVERAGE_TREE_TTL)
+        with mock.patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(review._ttl_from_env(), review.DEFAULT_COVERAGE_TREE_TTL)
 
 class ReviewHttpTests(ReviewTests):
     def handler(self, payload, token='test-token', origin='http://localhost:8420'):

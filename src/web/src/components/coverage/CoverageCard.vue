@@ -23,7 +23,6 @@ defineEmits<{ click: [] }>();
     <MetricBar name="函数覆盖率" :rate="func" />
     <MetricBar name="行覆盖率" :rate="line" />
     <MetricBar name="分支覆盖率" :rate="branch" />
-    <div v-if="sub" class="c-sub">{{ sub }}</div>
   </div>
 </template>
 
