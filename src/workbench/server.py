@@ -249,12 +249,20 @@ class _Handler(BaseHTTPRequestHandler):
     # ----------------------------- helpers -----------------------------
     def _send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-        self._send_bytes(status, body, "application/json; charset=utf-8")
+        # JSON 响应（覆盖率树可达数百 KB）按需 gzip，传输量降到 1/10 左右
+        self._send_bytes(status, body, "application/json; charset=utf-8", compress=True)
 
-    def _send_bytes(self, status, body, content_type):
+    def _send_bytes(self, status, body, content_type, compress=False):
+        encoding = None
+        if compress and len(body) >= 1024 and "gzip" in (self.headers.get("Accept-Encoding") or "").lower():
+            body = gzip.compress(body, compresslevel=5)
+            encoding = "gzip"
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
@@ -265,13 +273,17 @@ def run_server(host="127.0.0.1", port=8420, root=None):
     dist = Path(__file__).resolve().parents[1] / "web" / "dist"
     handler = type("BoundHandler", (_Handler,), {"root": project, "dist_dir": dist})
     server = ThreadingHTTPServer((host, port), handler)
+    # 覆盖率树（ops_final_cov_report）构建昂贵：进程内缓存 + 后台每 10 分钟重建
+    review.start_coverage_tree_refresher(project)
     print("算子测试工作台 · 可视化审核服务")
     print("  项目根: %s" % project)
     print("  地址:   http://%s:%d/" % (host, port))
     print("  前端:   %s" % ("已构建（%s）" % dist if dist.is_dir() else "未构建，仅 API 可用"))
+    print("  缓存:   覆盖率树 %d 秒定时刷新（启动即预热，后台线程）" % int(review.COVERAGE_TREE_TTL))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
+        review.stop_coverage_tree_refresher()
         server.server_close()

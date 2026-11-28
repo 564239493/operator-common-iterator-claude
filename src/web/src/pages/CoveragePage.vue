@@ -6,12 +6,16 @@ import TopBar from '../components/shell/TopBar.vue';
 import CoverageList from '../components/coverage/CoverageList.vue';
 import ModuleCovPanel from '../components/coverage/ModuleCovPanel.vue';
 import CoverageHierarchyTree from '../components/coverage/CoverageHierarchyTree.vue';
+import { onlyCovData, toLayerOptions } from '../components/coverage/data';
 
 // 数据源：全局最终报告（ops_final_cov_report）默认；任务内嵌（runs/*/ops_cov_report）切换
 const source = ref<'global' | 'run'>('global');
 
 /* ===== 数据树（递归：版本/算子库/域/算子目录/算子/产品目录，每节点带 summary + children） ===== */
 const tree = ref<{ versions: any[] }>({ versions: [] });
+// 后端缓存新鲜度（payload 里携带的 cached_at / build_ms），仅用于界面提示
+const treeCachedAt = ref('');
+const treeBuildMs = ref(0);
 const loading = ref(true);
 // 整体统计（权威总数据，来自 cov-data/overview.json；后端暂无该版本完整报告时兜底展示）
 const overviewData = ref<any>(null);
@@ -113,10 +117,10 @@ const detailTitle = computed(() => {
   return c.name || c.operator || '';
 });
 /* ===== 算子层（crumb 第 5 层）：算子目录级（当前节点含算子子项）或算子叶子 =====
- * options = 该层算子名列表；fromLeaf=true 表示当前节点就是算子叶子（同级切换），
- * false 表示当前节点是算子目录、算子层在其下一层（下拉默认选中第一个算子）。
+ * options = 该层算子名列表（无数据的算子目录保留但置灰不可选）；fromLeaf=true 表示当前节点就是
+ * 算子叶子（同级切换），false 表示当前节点是算子目录、算子层在其下一层（下拉默认选中第一个算子）。
  */
-const operatorLayer = computed<{ options: string[]; fromLeaf: boolean } | null>(() => {
+const operatorLayer = computed<{ options: { name: string; disabled: boolean }[]; fromLeaf: boolean } | null>(() => {
   if (source.value !== 'global') return null;
   const c = current.value;
   if (!c) return null;
@@ -124,14 +128,14 @@ const operatorLayer = computed<{ options: string[]; fromLeaf: boolean } | null>(
   // 算子目录级（crumb 第 4 层）：子项 = 算子（第 5 层，其下还有产品子目录）→ 算子层在下一层，
   // 始终提供「选择算子」下拉（无论算子数量、也无论算子下是否有产品子目录）
   if (path.value.length === 4 && kids.length) {
-    return { options: kids.map((k: any) => k.name), fromLeaf: false };
+    return { options: toLayerOptions(kids), fromLeaf: false };
   }
   // 算子叶子（crumb 第 5 层，无产品子目录）：同级算子 = 父节点（算子目录）子项
   if (path.value.length === 5 && !kids.length) {
     const parent = path.value.length ? findNode(path.value.slice(0, -1)) : null;
-    const siblings = parent ? childrenOf(parent).filter((k: any) => !childrenOf(k).length).map((k: any) => k.name) : [];
-    if (siblings.length < 2 || !siblings.includes(c.name)) return null;
-    return { options: siblings, fromLeaf: true };
+    const siblings = parent ? childrenOf(parent).filter((k: any) => !childrenOf(k).length) : [];
+    if (siblings.length < 2 || !siblings.some((k: any) => k.name === c.name)) return null;
+    return { options: toLayerOptions(siblings), fromLeaf: true };
   }
   return null;
 });
@@ -157,26 +161,26 @@ function switchOperator(name: string) {
 }
 
 /* ===== 产品层（crumb 第 6 层）：算子（第 5 层）的子项 = 产品目录 A2/A3/A5，叶子 = 产品明细 =====
- * options = 该算子下产品目录名列表；fromLeaf=false 表示产品层在算子下一层（下拉默认
- * 不选中、占位「请选择产品」，未选时展示算子自身数据）；fromLeaf=true 表示当前节点就是
- * 产品叶子（同级产品切换）。
+ * options = 该算子下产品目录名列表（无数据的产品目录保留但置灰不可选）；fromLeaf=false 表示产品层在
+ * 算子下一层（下拉默认不选中、占位「请选择产品」，未选时展示算子自身数据）；fromLeaf=true 表示当前
+ * 节点就是产品叶子（同级产品切换）。
  * 下拉框无论产品数量多少都展示（1 个也展示，便于明确产品维度）。
  */
-const productLayer = computed<{ options: string[]; fromLeaf: boolean } | null>(() => {
+const productLayer = computed<{ options: { name: string; disabled: boolean }[]; fromLeaf: boolean } | null>(() => {
   if (source.value !== 'global') return null;
   const c = current.value;
   if (!c) return null;
   const kids = childrenOf(c);
   // 算子（crumb 第 5 层）：子项全部是产品目录叶子 → 产品层在下一层
   if (path.value.length === 5 && kids.length && kids.every((k: any) => !childrenOf(k).length)) {
-    return { options: kids.map((k: any) => k.name), fromLeaf: false };
+    return { options: toLayerOptions(kids), fromLeaf: false };
   }
   // 产品叶子（crumb 第 6 层）：同级产品 = 父节点（算子）子项
   if (path.value.length === 6 && !kids.length) {
     const parent = path.value.length ? findNode(path.value.slice(0, -1)) : null;
-    const siblings = parent ? childrenOf(parent).map((k: any) => k.name) : [];
-    if (!siblings.includes(c.name)) return null;
-    return { options: siblings, fromLeaf: true };
+    const siblings = parent ? childrenOf(parent) : [];
+    if (!siblings.some((k: any) => k.name === c.name)) return null;
+    return { options: toLayerOptions(siblings), fromLeaf: true };
   }
   return null;
 });
@@ -215,6 +219,10 @@ function onTopSelect(v: string) {
 /* ===== 聚合与统计（读节点 summary，不再从叶子平均） ===== */
 const _sum = (nodes: any[], key: string) => nodes.reduce((s, n) => s + ((n && n.summary && n.summary[key]) || 0), 0);
 
+/* 当前版本的「有数据」子树：无数据占位目录（只有 .gitkeep，整枝无覆盖率报告）不参与统计，
+ * 避免算子总数/叶子数被数千个空目录放大（与树形图、下拉框的口径一致） */
+const dataVersions = computed(() => onlyCovData(scopeVersions.value));
+
 function countLeaves(n: any): number {
   if (!n) return 0;
   if (!childrenOf(n).length) return 1;
@@ -226,7 +234,7 @@ function countNodes(n: any): number {
 }
 
 const stats = computed(() => {
-  const versions = scopeVersions.value;
+  const versions = dataVersions.value;
   const leaves = versions.flatMap((v: any) => {
     const out: any[] = [];
     (function walk(n: any) { if (!childrenOf(n).length) out.push(n); childrenOf(n).forEach(walk); })(v);
@@ -254,13 +262,13 @@ const kpiItems = computed(() => {
   const s = stats.value;
   const ovVer = scopeOverview.value;
   const ovNames = new Set(ovVer.map((v: any) => v.name));
-  const treeLibs = scopeVersions.value
+  const treeLibs = dataVersions.value
     .filter((v: any) => !ovNames.has(v.name))
     .reduce((a, v: any) => a + childrenOf(v).length, 0);
   const domainCount = ovVer.reduce((a, v) => a + (Array.isArray(v.rows) ? v.rows.length : 0), 0) + treeLibs;
   const covered = { func: 0, line: 0, branch: 0 };
   const total = { func: 0, line: 0, branch: 0 };
-  scopeVersions.value.forEach((v: any) => {
+  dataVersions.value.forEach((v: any) => {
     const sm = v.summary || {};
     covered.func += sm.func_covered || 0;
     covered.line += sm.line_covered || 0;
@@ -278,9 +286,11 @@ const kpiItems = computed(() => {
     total.branch += (v.total && v.total.branch) || 0;
   });
   // 算子总数卡：已执行数（树叶子）并入总量（权威总数据 total.operators），
-  // 参考函数总量卡样式（已执行 / 总量 · 执行率）；无总数据版本不展示
-  const opTotal = ovVer.reduce((a, v) => a + ((v.total && v.total.operators) || 0), 0);
-  const hasTree = scopeVersions.value.length > 0;
+  // 参考函数总量卡样式（已执行 / 总量 · 执行率）；overview.json 无该版本条目时，
+  // 用 operatorTotals 手工清单兜底（如 cann9.0.0 全量算子数 904）
+  const opTotal = ovVer.reduce((a, v) => a + ((v.total && v.total.operators) || 0), 0)
+    + ((overviewData.value && overviewData.value.operatorTotals && overviewData.value.operatorTotals[verTab.value]) || 0);
+  const hasTree = dataVersions.value.length > 0;
   const fmt = (x: number) => x.toLocaleString('en-US');
   const totalCard = (k: 'func' | 'line' | 'branch', label: string, color: string) => {
     const c = covered[k], t = total[k];
@@ -388,8 +398,11 @@ async function loadTree() {
   try {
     const res = await fetch(treeUrl());
     const data = await res.json();
-    if (data && data.versions) tree.value = data;
-    else if (data && data.error) { ElMessage.error('加载覆盖率失败：' + data.error); tree.value = { versions: [] }; }
+    if (data && data.versions) {
+      tree.value = data;
+      treeCachedAt.value = data.cached_at || '';
+      treeBuildMs.value = data.build_ms || 0;
+    } else if (data && data.error) { ElMessage.error('加载覆盖率失败：' + data.error); tree.value = { versions: [] }; }
     else tree.value = { versions: [] };
   } catch (e: any) { ElMessage.error('加载目录列表失败：' + e.message); }
   finally { syncVerTab(); loading.value = false; }
@@ -644,6 +657,11 @@ onMounted(() => { loadTree(); loadOverview(); });
     <div class="src-tabs">
       <button :class="{ on: source === 'global' }" @click="switchSource('global')">全局最终报告</button>
       <button :class="{ on: source === 'run' }" @click="switchSource('run')">任务内嵌报告</button>
+      <!-- 后端覆盖率树缓存新鲜度：ops_final_cov_report 由后端缓存并提供，默认每 10 分钟重建一次 -->
+      <span v-if="source === 'global' && treeCachedAt" class="cache-hint"
+        :title="treeBuildMs ? `后端缓存构建耗时 ${treeBuildMs} ms，按 TTL 定时重建` : '后端缓存按 TTL 定时重建'">
+        数据缓存于 {{ treeCachedAt.slice(11) }}（后端每 10 分钟刷新）
+      </span>
     </div>
 
     <!-- 面包屑（变长） -->
@@ -661,7 +679,7 @@ onMounted(() => { loadTree(); loadOverview(); });
             popper-class="op-sel-popper"
             placeholder="请选择算子"
           >
-            <el-option v-for="o in operatorLayer.options" :key="o" :value="o" :label="o" />
+            <el-option v-for="o in operatorLayer.options" :key="o.name" :value="o.name" :label="o.name" :disabled="o.disabled" />
           </el-select>
           <!-- 产品叶子层（crumb 第 6 层）：下拉切换同级产品 -->
           <el-select
@@ -672,7 +690,7 @@ onMounted(() => { loadTree(); loadOverview(); });
             popper-class="op-sel-popper"
             placeholder="请选择产品"
           >
-            <el-option v-for="p in productLayer.options" :key="p" :value="p" :label="p" />
+            <el-option v-for="p in productLayer.options" :key="p.name" :value="p.name" :label="p.name" :disabled="p.disabled" />
           </el-select>
           <span v-else class="step" :class="{ cur: i === crumbs.length - 1 }" @click="crumbGo(i)">{{ c.label }}</span>
         </template>
@@ -680,14 +698,14 @@ onMounted(() => { loadTree(); loadOverview(); });
         <template v-if="operatorLayer && !operatorLayer.fromLeaf">
           <span class="sep">›</span>
           <el-select v-model="opSel" size="small" class="op-sel" popper-class="op-sel-popper" placeholder="请选择算子">
-            <el-option v-for="o in operatorLayer.options" :key="o" :value="o" :label="o" />
+            <el-option v-for="o in operatorLayer.options" :key="o.name" :value="o.name" :label="o.name" :disabled="o.disabled" />
           </el-select>
         </template>
         <!-- 算子级（当前节点含产品子项）：追加第 6 层产品下拉（未选中展示算子自身数据） -->
         <template v-else-if="productLayer && !productLayer.fromLeaf">
           <span class="sep">›</span>
           <el-select v-model="prodSel" size="small" class="op-sel" popper-class="op-sel-popper" placeholder="请选择产品">
-            <el-option v-for="p in productLayer.options" :key="p" :value="p" :label="p" />
+            <el-option v-for="p in productLayer.options" :key="p.name" :value="p.name" :label="p.name" :disabled="p.disabled" />
           </el-select>
         </template>
       </template>
@@ -788,7 +806,6 @@ onMounted(() => { loadTree(); loadOverview(); });
       <!-- 详情（全局与任务内嵌共用） -->
       <template v-else-if="showDetail">
         <div class="view-scroll view-detail">
-        <button v-if="source === 'run'" class="back-btn" @click="runSel = ''">← 返回任务列表</button>
         <div v-if="detailLoading" class="cov-empty">加载中…</div>
         <template v-else-if="coverData">
           <div class="detail-head"><h2>{{ detailTitle }}</h2></div>
@@ -834,6 +851,8 @@ onMounted(() => { loadTree(); loadOverview(); });
 .src-tabs { display: flex; gap: 8px; padding: 14px 22px 0; flex-shrink: 0; }
 .src-tabs button { border: 1px solid var(--border); background: var(--panel-bg); color: var(--text-secondary); border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
 .src-tabs button.on { color: var(--accent); border-color: var(--accent); background: var(--accent-light); font-weight: 600; }
+/* 后端缓存新鲜度提示（靠右，弱化） */
+.src-tabs .cache-hint { margin-left: auto; align-self: center; font-size: 12px; color: var(--text-muted); cursor: help; }
 
 /* 视图切换（列表/树图） */
 .view-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-shrink: 0; }

@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from pathlib import Path
 from .. import paths
 
@@ -160,20 +161,57 @@ def _classify(data, node_dir):
     return 'leaf'
 
 
+def _aggregate_summary(children):
+    """json-less 中间层（缺本级汇总报告的目录）的摘要：children 摘要逐项相加，rate 由总和重算。
+
+    各子目录 = 不同源码/产物，covered/total 直接相加，rate 不再逐项平均，也不能把子级 rate 相加
+    （否则 60% + 84% 会得到 144%）。函数/行/分支三组指标同构处理。
+    """
+    groups = (('func', 'func_covered', 'func_total'),
+              ('line', 'line_covered', 'line_total'),
+              ('branch', 'branch_covered', 'branch_total'))
+    covered = {rate: 0 for rate, _c, _t in groups}
+    total = {rate: 0 for rate, _c, _t in groups}
+    for c in children:
+        s = c.get('summary') or {}
+        for rate_key, cov_key, tot_key in groups:
+            covered[rate_key] += s.get(cov_key, 0) or 0
+            total[rate_key] += s.get(tot_key, 0) or 0
+    acc = {}
+    for rate_key, cov_key, tot_key in groups:
+        # 键序与 _node_summary 一致（rate, covered, total），便于两侧摘要形状完全对齐
+        acc[rate_key] = round(covered[rate_key] / total[rate_key] * 100, 2) if total[rate_key] else 0
+        acc[cov_key] = covered[rate_key]
+        acc[tot_key] = total[rate_key]
+    return acc
+
+
 def _coverage_node(base, d):
     """递归构造一个目录节点（统一形状）。
 
-    返回 { name, path, kind, summary, has_analysis, children } 或 None（无可用覆盖率数据）。
+    返回 { name, path, kind, summary?, has_analysis, children }（永不返回 None，全量目录都展示）。
     子节点一律来自文件系统子目录（汇总层 agg 文件无 sources，不能靠 sources 重建）。
+    - 目录自身无覆盖率 json 但子目录有覆盖数据时（如某中间层缺本级汇总报告），
+      保留为 agg 节点（摘要 = 子级聚合），避免把整棵子树从树中丢掉；
+    - 目录完全为空（无 json、无子目录）时同样保留，但不带 summary → 前端展示空数据占位（—）。
     """
     jf = _latest_json(d)
-    if jf is None:
-        return None
+    data = None
+    if jf is not None:
+        try:
+            data = read(jf)
+        except (ValueError, OSError):
+            data = None
+    # 递归子目录（先于 data 分支：json-less 中间层也需要聚合 children）
+    children = []
     try:
-        data = read(jf)
-    except (ValueError, OSError):
-        return None
-    kind = _classify(data, d)
+        subs = sorted([p for p in d.iterdir() if p.is_dir() and not p.is_symlink()])
+    except OSError:
+        subs = []
+    for sub in subs:
+        child = _coverage_node(base, sub)
+        if child is not None:
+            children.append(child)
     try:
         rel_dir = d.relative_to(base).as_posix()
     except ValueError:
@@ -182,6 +220,20 @@ def _coverage_node(base, d):
         has_analysis = bool(list(d.glob('*.md')))
     except OSError:
         has_analysis = False
+    if data is None:
+        # 无本级报告：空目录也保留展示（不带 summary → 前端空数据占位）；
+        # 有子目录的中间层：仅当存在有数据的子节点时聚合 children 摘要，
+        # 整枝均无数据（全部子节点无 summary）时同样不带 summary → 前端默认收起。
+        has_data = any('summary' in c for c in children)
+        return {
+            'name': d.name,
+            'path': rel_dir,
+            'kind': 'agg',
+            **({'summary': _aggregate_summary(children)} if has_data else {}),
+            'has_analysis': has_analysis,
+            'children': children,
+        }
+    kind = _classify(data, d)
     node = {
         'name': d.name,
         'path': rel_dir,
@@ -194,16 +246,6 @@ def _coverage_node(base, d):
     if kind in ('merged', 'leaf'):
         node['operator'] = data.get('operator') or d.name
         node['domain'] = oi.get('domain', '')
-    # 递归子目录
-    children = []
-    try:
-        subs = sorted([p for p in d.iterdir() if p.is_dir() and not p.is_symlink()])
-    except OSError:
-        subs = []
-    for sub in subs:
-        child = _coverage_node(base, sub)
-        if child is not None:
-            children.append(child)
     node['children'] = children
     return node
 
@@ -212,8 +254,9 @@ def _coverage_tree(base):
     """覆盖率树。两种结构：
 
     - 平坦（任务内嵌 runs/<run>/ops_cov_report/）：json/md 直接在 base 下，包装成单算子树。
-    - 递归（全局 ops_final_cov_report/）：base/<版本>/<库>/<域>/<目录>/<算子>/…
-      按 JSON 形态（level/operator/mergedFrom）递归，每节点带预聚合 summary 与 children。
+    - 递归（全局 ops_final_cov_report/）：base/<版本>/<库>/<域>/<目录>/<算子>/<产品>/…
+      按 JSON 形态（level/operator/mergedFrom）递归，每节点带预聚合 summary 与 children；
+      目录树按文件系统全量展示——空目录（无 json 数据）也保留为无 summary 的空数据节点。
     """
     versions = []
     if not base.is_dir():
@@ -252,6 +295,110 @@ def _coverage_tree(base):
             node['version'] = vdir.name
             versions.append(node)
     return {'versions': versions}
+
+
+DEFAULT_COVERAGE_TREE_TTL = 600.0
+
+
+def _ttl_from_env(default=DEFAULT_COVERAGE_TREE_TTL):
+    raw = (os.environ.get('WORKBENCH_COVER_TREE_TTL') or '').strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+COVERAGE_TREE_TTL = _ttl_from_env()
+_TREE_CACHE = {}                 # key(base 路径) -> {'payload': dict, 'built_at': monotonic}
+_TREE_LOCK = threading.Lock()
+_TREE_STOP = threading.Event()
+_TREE_REFRESHER = None
+
+
+def _tree_key(base):
+    return str(base)
+
+
+def _rebuild_tree_locked(base):
+    """构建树并写入缓存（调用方必须持有 _TREE_LOCK）。"""
+    started = time.monotonic()
+    payload = _coverage_tree(base)
+    cost = time.monotonic() - started
+    # 缓存命中标记随构建结果一起下发，前端/日志可据此判断数据新鲜度
+    payload['cached_at'] = time.strftime('%Y-%m-%dT%H:%M:%S')
+    payload['build_ms'] = int(cost * 1000)
+    _TREE_CACHE[_tree_key(base)] = {'payload': payload, 'built_at': time.monotonic()}
+    return payload
+
+
+def coverage_tree(base):
+    """读覆盖率树（命中缓存直接返回，否则重建一次并写回）。返回的 dict 只读使用。"""
+    key = _tree_key(base)
+    entry = _TREE_CACHE.get(key)
+    if entry is not None and time.monotonic() - entry['built_at'] < COVERAGE_TREE_TTL:
+        return entry['payload']
+    with _TREE_LOCK:
+        entry = _TREE_CACHE.get(key)  # 等锁期间可能已被其他线程/预刷新重建
+        if entry is not None and time.monotonic() - entry['built_at'] < COVERAGE_TREE_TTL:
+            return entry['payload']
+        return _rebuild_tree_locked(base)
+
+
+def refresh_coverage_tree(root):
+    """强制重建全局最终报告树缓存（预热 / 后台定时刷新）。返回构建耗时毫秒。"""
+    base = Path(root) / 'ops_final_cov_report'
+    with _TREE_LOCK:
+        payload = _rebuild_tree_locked(base)
+    return payload.get('build_ms')
+
+
+def coverage_tree_status(root):
+    """缓存状态（日志/排障用）：是否已缓存、缓存时长、构建耗时、版本数。"""
+    entry = _TREE_CACHE.get(_tree_key(Path(root) / 'ops_final_cov_report'))
+    if entry is None:
+        return {'cached': False}
+    payload = entry['payload']
+    return {
+        'cached': True,
+        'age_seconds': round(time.monotonic() - entry['built_at'], 1),
+        'ttl_seconds': COVERAGE_TREE_TTL,
+        'cached_at': payload.get('cached_at'),
+        'build_ms': payload.get('build_ms'),
+        'versions': len(payload.get('versions') or []),
+    }
+
+
+def start_coverage_tree_refresher(root, interval=COVERAGE_TREE_TTL):
+    """启动后台守护线程：立即预热缓存，之后每 interval 秒重建一次。重复调用无副作用。"""
+    global _TREE_REFRESHER
+    if _TREE_REFRESHER is not None and _TREE_REFRESHER.is_alive():
+        return _TREE_REFRESHER
+
+    def loop():
+        while True:
+            try:
+                refresh_coverage_tree(root)
+            except Exception as exc:  # 刷新失败不该拖垮服务：记录后等下一轮
+                print('  [cache] 覆盖率树缓存刷新失败：%s' % exc, flush=True)
+            if _TREE_STOP.wait(interval):
+                return
+
+    _TREE_STOP.clear()
+    _TREE_REFRESHER = threading.Thread(target=loop, name='coverage-tree-refresher', daemon=True)
+    _TREE_REFRESHER.start()
+    return _TREE_REFRESHER
+
+
+def stop_coverage_tree_refresher():
+    """停止后台刷新线程（进程退出/测试用）。"""
+    global _TREE_REFRESHER
+    _TREE_STOP.set()
+    if _TREE_REFRESHER is not None:
+        _TREE_REFRESHER.join(timeout=5)
+        _TREE_REFRESHER = None
 
 
 def _coverage_detail(base, rel_parts, kind):
@@ -338,7 +485,8 @@ def get(root, parts, query, token):
     if parts and parts[0] == 'cover':
         base = root / 'ops_final_cov_report'
         if parts == ['cover', 'tree']:
-            return _coverage_tree(base)
+            # 命中进程内缓存（10 分钟 TTL，后台线程定时重建），避免每次请求重走数千目录
+            return coverage_tree(base)
         if parts == ['cover', 'runs']:
             result = []
             for run_dir in sorted((root / 'runs').glob('*')):

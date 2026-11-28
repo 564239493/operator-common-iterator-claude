@@ -4,16 +4,6 @@
     <div class="ht-head">
       <span class="ht-name">覆盖率总览</span>
       <span class="ht-right">
-        <span class="ht-mode">
-          <el-switch
-            v-model="subMode"
-            size="small"
-            active-value="indent"
-            active-text="缩进树列表"
-            inactive-value="node"
-            inactive-text="树形图"
-          />
-        </span>
         <span class="ht-sum">
           <template v-for="m in METRICS" :key="m.key">
             <i class="dot" :style="{ background: m.color }"></i>
@@ -26,9 +16,11 @@
       </span>
     </div>
 
-    <!-- 树形图 / 缩进树列表 切换区：节点样式与分层矩形图矩形一致（蓝底/蓝线/圆角 + 三指标） -->
+    <!-- 树形图 / 缩进树列表 切换区：节点样式与分层矩形图矩形一致（蓝底/蓝线/圆角 + 三指标）。
+         只渲染有数据的节点（dataTree），整枝无数据时不出现任何空节点占位 -->
     <div class="ht-scroll">
-      <svg v-if="subMode === 'node'" class="ht-svg" :width="items.W" :height="items.H" :viewBox="`0 0 ${items.W} ${items.H}`" role="img" aria-label="覆盖率层级树">
+      <div v-if="!dataTree.length" class="ht-empty">该版本暂无覆盖率数据</div>
+      <svg v-else-if="subMode === 'node'" class="ht-svg" :width="items.W" :height="items.H" :viewBox="`0 0 ${items.W} ${items.H}`" role="img" aria-label="覆盖率层级树">
         <!-- 虚线折线：父右缘 → 间隙中点（垂直）→ 子卡片左边缘 -->
         <g>
           <path v-for="(l, i) in items.links" :key="'l' + i" :d="`M ${l.x1} ${l.y1} H ${l.xm} V ${l.y2} H ${l.x3}`"
@@ -70,7 +62,7 @@
 
     <!-- 底部：说明 + 图例（指标 + 层级） -->
     <div class="ht-foot">
-      <span>点击节点下钻 · 点「− / +」折叠或展开 · 悬停查看函数、分支和行的明细</span>
+      <span>仅展示有数据的节点</span>
       <span class="ht-legend">
         <span class="lg">
           <i class="dot" :style="{ background: 'var(--wb-green)' }"></i>函数
@@ -93,9 +85,14 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue';
 import CoverageIndentNode from './CoverageIndentNode.vue';
+import { onlyCovData } from './data';
 
 const props = defineProps<{ tree: { versions: any[] } }>();
 const emit = defineEmits<{ (e: 'select', p: { path: string[] }): void }>();
+
+/* 数据树：只保留有数据的节点（无自身报告且无带数据子级的占位目录整枝剔除），
+ * 树形图与缩进树列表都基于它渲染 → 两种视图都不会出现「—」空节点 */
+const dataTree = computed(() => onlyCovData((props.tree && props.tree.versions) || []));
 
 /* 子视图切换：node = 节点连线树（方案 C）/ indent = 缩进树列表（方案 A） */
 const subMode = ref<'node' | 'indent'>('node');
@@ -157,7 +154,7 @@ function pick(it: any) { emit('select', { path: it.path }); }
 
 /* 整体汇总（面板头）：三个指标跨版本累加 */
 const overall = computed(() => {
-  const versions = (props.tree && props.tree.versions) || [];
+  const versions = dataTree.value;
   const sum = (k: 'func' | 'branch' | 'line') => {
     const covered = versions.reduce((s, v) => s + ((v.summary && v.summary[`${k}_covered`]) || 0), 0);
     const total = versions.reduce((s, v) => s + ((v.summary && v.summary[`${k}_total`]) || 0), 0);
@@ -213,7 +210,7 @@ const items = computed(() => {
     });
     return [lo, hi];
   }
-  (props.tree.versions || []).forEach((v: any) => { walk(v, [v.name], 0); leaf += 1; }); // 版本间留空隙
+  (dataTree.value || []).forEach((v: any) => { walk(v, [v.name], 0); leaf += 1; }); // 版本间留空隙
   return {
     nodes, links,
     W: (maxDepth + 1) * COLW + PADX * 2,
@@ -237,7 +234,7 @@ const indentTree = computed(() => {
       children: kids.map((k: any) => build(k, [...path, k.name], depth + 1)),
     };
   }
-  return (props.tree.versions || []).map((v: any) => build(v, [v.name], 0));
+  return (dataTree.value || []).map((v: any) => build(v, [v.name], 0));
 });
 </script>
 
@@ -267,6 +264,7 @@ const indentTree = computed(() => {
 .ht-sum em { font-style: normal; color: var(--wb-faint); font-size: 12px; }
 
 .ht-scroll { flex: 1 1 0; min-height: 0; overflow: auto; }
+.ht-empty { text-align: center; color: var(--wb-faint); padding: 60px 0; font-size: 14px; }
 .ht-svg { display: block; }
 
 /* 虚线肘线：统一蓝色调 */
